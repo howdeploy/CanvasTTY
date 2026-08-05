@@ -13,8 +13,9 @@ This contract preserves the approved MVP concept and prevents feature ownership 
 ## Launch and settings
 
 - Clicking a provider opens a Focus Card for that provider. The provider is fixed; there is no second provider selector.
-- The Focus Card contains only the provider mark, project folder, Normal/YOLO profile, launch action, and contextual danger confirmation.
+- The Focus Card contains only the provider mark, project folder, optional session name, Normal/YOLO profile, launch action, and contextual danger confirmation. Terminal launches through the same card without the profile row; an empty name falls back to the provider's default title.
 - Settings contains language, palette, background pattern, window snapping, edge panning (off by default; toggle plus slow/normal/fast speed), and zoom sensitivity (slow/normal/fast). Media controls never appear there. Snapping is enabled by default and can be disabled without changing existing window bounds.
+
 ## Visual system
 
 - Flat, large, pastel tiles; strong dark/light contrast; restrained shadows; no ornamental micro-controls or explanatory microcopy around self-evident controls.
@@ -24,6 +25,7 @@ This contract preserves the approved MVP concept and prevents feature ownership 
 - Dots and grid are CSS patterns. Waves use the seamless SVG tile in `assets/patterns/waves.svg`; do not emulate waves with radial gradients.
 - Terminal cards keep a `54px` header. At normal scale the header shows the provider mark and terminal working directory only. Close is the only window action and stays visible at the far right; canvas cards do not expose maximize/fullscreen. There is no lifecycle dot in terminal chrome.
 - Terminal cards switch to semantic summary mode below `0.5×`. Summary typography counter-scales as the camera moves farther out so identical cards keep the same readable hierarchy instead of exposing tiny xterm text.
+- Browser cards reuse the terminal card chrome: a `54px` header with a globe mark and an address field, close as the only window action, and resize on every edge and corner. Pages run in a `<webview>` on the shared `persist:canvastty-browser` partition; wheel input over a browser card belongs to the page. Addresses without a scheme default to `https://` (loopback hosts to `http://`); non-web schemes are rejected. Browser cards have no semantic summary mode.
 - In semantic summary mode a card is a canvas navigation target: wheel input zooms the camera around it, and clicking the summary focuses that terminal with a visible card outline. At normal scale the live terminal regains wheel ownership.
 - Every terminal edge and corner is a resize target. The minimum card size is `420 × 260`; resizing updates the xterm viewport and preserves the opposite edge.
 - With window snapping enabled, drag and resize use a hidden `10px` grid and a `10px` magnetic threshold for neighboring edges, centers, and a consistent `20px` gap.

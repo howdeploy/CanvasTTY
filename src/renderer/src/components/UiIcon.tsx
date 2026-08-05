@@ -6,6 +6,7 @@ import closeIcon from "../assets/icons/lucide/x.svg";
 import copyIcon from "../assets/icons/lucide/copy.svg";
 import errorIcon from "../assets/icons/lucide/circle-alert.svg";
 import folderIcon from "../assets/icons/lucide/folder.svg";
+import globeIcon from "../assets/icons/lucide/globe.svg";
 import homeIcon from "../assets/icons/lucide/house.svg";
 import imagePlusIcon from "../assets/icons/lucide/image-plus.svg";
 import maximizeIcon from "../assets/icons/lucide/square.svg";
@@ -27,6 +28,7 @@ export type UiIconName =
   | "maximize"
   | "restore"
   | "folder"
+  | "globe"
   | "arrow"
   | "chevron"
   | "plus"
@@ -52,6 +54,7 @@ const ICONS: Record<UiIconName, string> = {
   maximize: maximizeIcon,
   restore: copyIcon,
   folder: folderIcon,
+  globe: globeIcon,
   arrow: arrowIcon,
   chevron: chevronIcon,
   plus: plusIcon,

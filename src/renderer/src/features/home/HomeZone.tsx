@@ -30,6 +30,7 @@ interface HomeZoneProps {
   onOpenSettings(): void;
   onOpenAgent(provider: AgentProviderId): void;
   onOpenTerminal(): void;
+  onOpenBrowser(): void;
   onFocusSession(session: SessionSnapshot): void;
   onRequestMedia(): Promise<void>;
   onRemoveMedia(): Promise<void>;
@@ -44,6 +45,7 @@ export function HomeZone({
   onOpenSettings,
   onOpenAgent,
   onOpenTerminal,
+  onOpenBrowser,
   onFocusSession,
   onRequestMedia,
   onRemoveMedia
@@ -116,6 +118,9 @@ export function HomeZone({
               <ProviderIcon provider={provider} size="large" />
             </button>
           ))}
+          <button className="launcher-button" type="button" onClick={onOpenBrowser} title={t(locale, "browser")}>
+            <UiIcon name="globe" size={34} />
+          </button>
         </section>
         <button className="tile settings-button" type="button" onClick={onOpenSettings} aria-label={t(locale, "settings")}>
           <UiIcon name="settings" size={48} />

@@ -5,6 +5,8 @@
 - Fixed the main window never appearing when the renderer paints before `loadURL` resolves; the `ready-to-show` listener is now attached before loading.
 - Added RTS-style edge panning (off by default; enable in Settings): the camera drifts while the pointer rests near a viewport edge over empty canvas and pauses over interactive surfaces.
 - Added Settings controls for edge panning (toggle and speed) and wheel zoom sensitivity.
+- Added an optional session name to the launch flow; Terminal now launches through the same Focus Card as agents.
+- Added browser cards: canvas cards with an address bar that load web pages next to terminal sessions.
 
 ## 0.8.2 — public preview
 

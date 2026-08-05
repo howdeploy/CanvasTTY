@@ -141,6 +141,12 @@ button { border: 0; }
 .terminal-card__resize-handle--sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
 .terminal-card__resize-handle--nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
 
+.browser-card__address { flex: 1; min-width: 0; display: flex; }
+.browser-card__address input { width: 100%; border: 0; outline: 0; padding: 7px 12px; border-radius: 9px; color: white; background: rgba(255,255,255,.12); font: 700 12px var(--font-mono); }
+.browser-card__address input::placeholder { color: rgba(255,255,255,.45); }
+.browser-card__view { width: 100%; height: calc(100% - 54px); border: 0; background: white; }
+.browser-card__empty { height: calc(100% - 54px); display: grid; place-items: center; color: rgba(255,255,255,.55); font-size: 14px; background: var(--terminal-background, #202430); }
+
 .dialog-backdrop, .settings-backdrop { position: fixed; inset: 44px 0 0; z-index: 6000; background: rgba(29,30,39,.56); backdrop-filter: blur(10px); }
 .dialog-backdrop { display: grid; place-items: center; padding: 24px; animation: fade-in .16s ease both; }
 @keyframes fade-in { from { opacity: 0; } }
@@ -161,6 +167,10 @@ button { border: 0; }
 .folder-field small { font-size: 10px; font-weight: 900; letter-spacing: .11em; text-transform: uppercase; opacity: .58; }
 .folder-field strong { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; }
 .profile-row { margin-top: 13px; display: grid; grid-template-columns: 1fr 1fr 96px; gap: 9px; }
+.profile-row--launch-only { grid-template-columns: 1fr; }
+.name-field { margin-top: 13px; padding: 12px 25px; display: flex; flex-direction: column; gap: 7px; border-radius: 18px; color: var(--text-dark); background: rgba(255,255,255,.64); }
+.name-field small { font-size: 10px; font-weight: 900; letter-spacing: .11em; text-transform: uppercase; opacity: .58; }
+.name-field input { width: 100%; border: 0; outline: 0; color: inherit; background: transparent; font-size: 18px; font-weight: 700; }
 .profile-button, .launch-submit { min-height: 70px; border-radius: 16px; cursor: pointer; font-weight: 900; transition: transform .15s ease, background .15s ease; }
 .profile-button { color: var(--text-dark); background: rgba(255,255,255,.38); }
 .profile-button:hover, .launch-submit:hover { transform: translateY(-2px); }

@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import type {
   AgentProviderId,
   AppSettings,
-  LaunchProfileId
+  LaunchProfileId,
+  ProviderId
 } from "../../../../shared/contracts";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { UiIcon } from "../../components/UiIcon";
@@ -10,11 +11,11 @@ import { t } from "../../lib/i18n";
 import { PROVIDERS } from "../../lib/providers";
 
 interface AgentLaunchDialogProps {
-  provider: AgentProviderId | null;
+  provider: ProviderId | null;
   settings: AppSettings;
   onClose(): void;
   onAcknowledge(provider: AgentProviderId): Promise<void>;
-  onLaunch(provider: AgentProviderId, profile: LaunchProfileId, cwd: string): Promise<void>;
+  onLaunch(provider: ProviderId, profile: LaunchProfileId, cwd: string, title: string): Promise<void>;
 }
 
 export function AgentLaunchDialog({
@@ -26,6 +27,7 @@ export function AgentLaunchDialog({
 }: AgentLaunchDialogProps): React.JSX.Element | null {
   const [profile, setProfile] = useState<LaunchProfileId>("normal");
   const [cwd, setCwd] = useState(settings.lastDirectory);
+  const [name, setName] = useState("");
   const [confirmDanger, setConfirmDanger] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +37,7 @@ export function AgentLaunchDialog({
     if (!provider) return;
     setProfile("normal");
     setCwd(settings.lastDirectory);
+    setName("");
     setConfirmDanger(false);
     setError(null);
   }, [provider, settings.lastDirectory]);
@@ -50,8 +53,9 @@ export function AgentLaunchDialog({
 
   if (!provider) return null;
 
-  const acknowledged = settings.acknowledgedDangerousProfiles.includes(provider);
-  const dangerKey = PROVIDERS[provider].dangerKey!;
+  const isAgent = provider !== "terminal";
+  const acknowledged = isAgent && settings.acknowledgedDangerousProfiles.includes(provider as AgentProviderId);
+  const dangerKey = isAgent ? PROVIDERS[provider].dangerKey ?? null : null;
 
   const chooseDirectory = async (): Promise<void> => {
     const selected = await window.canvasTTY.dialog.pickDirectory(cwd);
@@ -59,7 +63,7 @@ export function AgentLaunchDialog({
   };
 
   const submit = async (): Promise<void> => {
-    if (profile === "yolo" && !acknowledged && !confirmDanger) {
+    if (isAgent && profile === "yolo" && !acknowledged && !confirmDanger) {
       setConfirmDanger(true);
       return;
     }
@@ -67,8 +71,8 @@ export function AgentLaunchDialog({
     setBusy(true);
     setError(null);
     try {
-      if (profile === "yolo" && !acknowledged) await onAcknowledge(provider);
-      await onLaunch(provider, profile, cwd);
+      if (isAgent && profile === "yolo" && !acknowledged) await onAcknowledge(provider as AgentProviderId);
+      await onLaunch(provider, isAgent ? profile : "normal", cwd, name.trim());
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t(locale, "launchFailed"));
@@ -81,7 +85,7 @@ export function AgentLaunchDialog({
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section className="launch-dialog" role="dialog" aria-modal="true" aria-label={`${t(locale, "launchAgent")}: ${PROVIDERS[provider].label}`}>
+      <section className="launch-dialog" role="dialog" aria-modal="true" aria-label={isAgent ? `${t(locale, "launchAgent")}: ${PROVIDERS[provider].label}` : t(locale, "terminal")}>
         <div className="launch-dialog__toolbar">
           <button className="launch-dialog__close" type="button" onClick={onClose} aria-label={t(locale, "close")}><UiIcon name="close" size={18} /></button>
         </div>
@@ -98,21 +102,35 @@ export function AgentLaunchDialog({
           </button>
         </div>
 
-        <div className="profile-row">
-          <button className={profile === "normal" ? "profile-button profile-button--active" : "profile-button"} type="button" onClick={() => {
-            setProfile("normal");
-            setConfirmDanger(false);
-          }}>{t(locale, "normal")}</button>
-          <button className={profile === "yolo" ? "profile-button profile-button--active" : "profile-button"} type="button" onClick={() => {
-            setProfile("yolo");
-            setConfirmDanger(false);
-          }}>{t(locale, "yolo")}</button>
+        <label className="name-field">
+          <small>{t(locale, "sessionName")}</small>
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder={PROVIDERS[provider].label}
+            maxLength={60}
+          />
+        </label>
+
+        <div className={`profile-row ${isAgent ? "" : "profile-row--launch-only"}`}>
+          {isAgent && (
+            <>
+              <button className={profile === "normal" ? "profile-button profile-button--active" : "profile-button"} type="button" onClick={() => {
+                setProfile("normal");
+                setConfirmDanger(false);
+              }}>{t(locale, "normal")}</button>
+              <button className={profile === "yolo" ? "profile-button profile-button--active" : "profile-button"} type="button" onClick={() => {
+                setProfile("yolo");
+                setConfirmDanger(false);
+              }}>{t(locale, "yolo")}</button>
+            </>
+          )}
           <button className="launch-submit" type="button" disabled={busy} onClick={() => void submit()}>
             {busy ? <span className="launch-submit__busy" /> : <UiIcon name="arrow" size={38} />}
           </button>
         </div>
 
-        {profile === "yolo" && (
+        {isAgent && profile === "yolo" && dangerKey && (
           <div className={`danger-note ${confirmDanger ? "danger-note--confirm" : ""}`}>
             <strong>{t(locale, dangerKey)}</strong>
             {!acknowledged && <span>{confirmDanger ? t(locale, "dangerousFirstUse") : t(locale, "confirmLaunch")}</span>}

@@ -16,6 +16,7 @@ import { Toast } from "./components/Toast";
 import { AgentLaunchDialog } from "./features/launcher/AgentLaunchDialog";
 import { SettingsPanel } from "./features/settings/SettingsPanel";
 import { WorkspaceCanvas } from "./features/workspace/WorkspaceCanvas";
+import type { BrowserCardState } from "./features/browser/BrowserCard";
 import type { LimitsLoadState } from "./features/home/homeModel";
 import { t } from "./lib/i18n";
 
@@ -36,12 +37,13 @@ const FALLBACK_SETTINGS: AppSettings = {
 export function App(): React.JSX.Element {
   const [settings, setSettings] = useState(FALLBACK_SETTINGS);
   const [sessions, setSessions] = useState<SessionSnapshot[]>([]);
+  const [browserCards, setBrowserCards] = useState<BrowserCardState[]>([]);
   const [limits, setLimits] = useState<LimitsSnapshot | null>(null);
   const [limitsLoadState, setLimitsLoadState] = useState<LimitsLoadState>("loading");
   const [mediaData, setMediaData] = useState<string | null>(null);
   const [camera, setCamera] = useState<CameraState>(() => homeCamera());
   const isHomeCamera = useRef(true);
-  const [launchProvider, setLaunchProvider] = useState<AgentProviderId | null>(null);
+  const [launchProvider, setLaunchProvider] = useState<ProviderId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
@@ -135,10 +137,11 @@ export function App(): React.JSX.Element {
   const createSession = useCallback(async (
     provider: ProviderId,
     profile: LaunchProfileId,
-    cwd: string
+    cwd: string,
+    title: string
   ): Promise<SessionSnapshot> => {
     const position = nextSessionPosition(sessions.length);
-    const session = await window.canvasTTY.terminal.create({ provider, profile, cwd, position });
+    const session = await window.canvasTTY.terminal.create({ provider, profile, cwd, position, title });
     setSessions((current) => upsertSnapshot(current, session));
     await saveSettings({ lastDirectory: cwd });
     isHomeCamera.current = false;
@@ -146,22 +149,16 @@ export function App(): React.JSX.Element {
     return session;
   }, [sessions.length, saveSettings]);
 
-  const openTerminal = useCallback(async (): Promise<void> => {
-    try {
-      await createSession("terminal", "normal", settings.lastDirectory);
-      showToast(t(settings.locale, "terminalStarted"));
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : t(settings.locale, "launchFailed"));
-    }
-  }, [createSession, settings.lastDirectory, settings.locale, showToast]);
-
-  const launchAgent = useCallback(async (
-    provider: AgentProviderId,
+  const launchSession = useCallback(async (
+    provider: ProviderId,
     profile: LaunchProfileId,
-    cwd: string
+    cwd: string,
+    title: string
   ): Promise<void> => {
-    await createSession(provider, profile, cwd);
-    showToast(`${t(settings.locale, "sessionStarted")}: ${provider}`);
+    await createSession(provider, profile, cwd, title);
+    showToast(provider === "terminal"
+      ? t(settings.locale, "terminalStarted")
+      : `${t(settings.locale, "sessionStarted")}: ${provider}`);
   }, [createSession, settings.locale, showToast]);
 
   const acknowledgeDanger = useCallback(async (provider: AgentProviderId): Promise<void> => {
@@ -206,6 +203,31 @@ export function App(): React.JSX.Element {
     setSessions((current) => current.filter((session) => session.id !== id));
   }, []);
 
+  const openBrowser = useCallback((): void => {
+    const position = nextSessionPosition(sessions.length + browserCards.length);
+    const size = { width: 940, height: 620 };
+    setBrowserCards((current) => [
+      ...current,
+      { id: `browser-${Date.now()}-${current.length}`, url: "", position, size }
+    ]);
+    isHomeCamera.current = false;
+    setCamera(focusCamera(position, size));
+  }, [sessions.length, browserCards.length]);
+
+  const changeBrowserBounds = useCallback((id: string, bounds: SessionBounds): void => {
+    setBrowserCards((current) => current.map((card) => (card.id === id
+      ? { ...card, position: bounds.position, size: bounds.size }
+      : card)));
+  }, []);
+
+  const changeBrowserUrl = useCallback((id: string, url: string): void => {
+    setBrowserCards((current) => current.map((card) => (card.id === id ? { ...card, url } : card)));
+  }, []);
+
+  const disposeBrowser = useCallback((id: string): void => {
+    setBrowserCards((current) => current.filter((card) => card.id !== id));
+  }, []);
+
   const focusSession = useCallback((session: SessionSnapshot): void => {
     isHomeCamera.current = false;
     setCamera(focusCamera(session.position, session.size));
@@ -235,6 +257,7 @@ export function App(): React.JSX.Element {
           settings={settings}
           mediaData={mediaData}
           sessions={sessions}
+          browserCards={browserCards}
           limits={limits}
           limitsLoadState={limitsLoadState}
           camera={camera}
@@ -242,12 +265,16 @@ export function App(): React.JSX.Element {
           onGoHome={goHome}
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenAgent={setLaunchProvider}
-          onOpenTerminal={() => void openTerminal()}
+          onOpenTerminal={() => setLaunchProvider("terminal")}
+          onOpenBrowser={openBrowser}
           onRequestMedia={requestMedia}
           onRemoveMedia={removeMedia}
           onFocusSession={focusSession}
           onSessionBoundsChange={changeSessionBounds}
           onDisposeSession={disposeSession}
+          onBrowserBoundsChange={changeBrowserBounds}
+          onBrowserUrlChange={changeBrowserUrl}
+          onDisposeBrowser={disposeBrowser}
         />
       </main>
 
@@ -256,7 +283,7 @@ export function App(): React.JSX.Element {
         settings={settings}
         onClose={() => setLaunchProvider(null)}
         onAcknowledge={acknowledgeDanger}
-        onLaunch={launchAgent}
+        onLaunch={launchSession}
       />
       <SettingsPanel
         open={settingsOpen}

@@ -9,6 +9,8 @@ import type {
   SessionSnapshot
 } from "../../../../shared/contracts";
 import { HomeZone } from "../home/HomeZone";
+import { BrowserCard } from "../browser/BrowserCard";
+import type { BrowserCardState } from "../browser/BrowserCard";
 import { EDGE_PAN_SPEEDS, edgePanVelocity } from "./edgePan";
 import { wheelZoomFactor } from "./zoom";
 import { TerminalCard } from "../terminal/TerminalCard";
@@ -20,6 +22,7 @@ interface WorkspaceCanvasProps {
   settings: AppSettings;
   mediaData: string | null;
   sessions: SessionSnapshot[];
+  browserCards: BrowserCardState[];
   limits: LimitsSnapshot | null;
   limitsLoadState: LimitsLoadState;
   camera: CameraState;
@@ -28,11 +31,15 @@ interface WorkspaceCanvasProps {
   onOpenSettings(): void;
   onOpenAgent(provider: AgentProviderId): void;
   onOpenTerminal(): void;
+  onOpenBrowser(): void;
   onFocusSession(session: SessionSnapshot): void;
   onRequestMedia(): Promise<void>;
   onRemoveMedia(): Promise<void>;
   onSessionBoundsChange(id: string, bounds: SessionBounds): void;
   onDisposeSession(id: string): void;
+  onBrowserBoundsChange(id: string, bounds: SessionBounds): void;
+  onBrowserUrlChange(id: string, url: string): void;
+  onDisposeBrowser(id: string): void;
 }
 
 interface PanState {
@@ -45,6 +52,7 @@ export function WorkspaceCanvas({
   settings,
   mediaData,
   sessions,
+  browserCards,
   limits,
   limitsLoadState,
   camera,
@@ -53,11 +61,15 @@ export function WorkspaceCanvas({
   onOpenSettings,
   onOpenAgent,
   onOpenTerminal,
+  onOpenBrowser,
   onFocusSession,
   onRequestMedia,
   onRemoveMedia,
   onSessionBoundsChange,
-  onDisposeSession
+  onDisposeSession,
+  onBrowserBoundsChange,
+  onBrowserUrlChange,
+  onDisposeBrowser
 }: WorkspaceCanvasProps): React.JSX.Element {
   const viewport = useRef<HTMLDivElement>(null);
   const panState = useRef<PanState | null>(null);
@@ -186,6 +198,7 @@ export function WorkspaceCanvas({
           onOpenSettings={onOpenSettings}
           onOpenAgent={onOpenAgent}
           onOpenTerminal={onOpenTerminal}
+          onOpenBrowser={onOpenBrowser}
           onFocusSession={onFocusSession}
           onRequestMedia={onRequestMedia}
           onRemoveMedia={onRemoveMedia}
@@ -202,11 +215,31 @@ export function WorkspaceCanvas({
               HOME_BOUNDS,
               ...sessions
                 .filter((candidate) => candidate.id !== session.id)
-                .map((candidate) => ({ position: candidate.position, size: candidate.size }))
+                .map((candidate) => ({ position: candidate.position, size: candidate.size })),
+              ...browserCards.map((candidate) => ({ position: candidate.position, size: candidate.size }))
             ]}
             onActivate={onFocusSession}
             onBoundsChange={onSessionBoundsChange}
             onDispose={onDisposeSession}
+          />
+        ))}
+        {browserCards.map((card) => (
+          <BrowserCard
+            key={card.id}
+            card={card}
+            locale={settings.locale}
+            zoom={camera.zoom}
+            snapEnabled={settings.snapToGrid}
+            snapTargets={[
+              HOME_BOUNDS,
+              ...sessions.map((candidate) => ({ position: candidate.position, size: candidate.size })),
+              ...browserCards
+                .filter((candidate) => candidate.id !== card.id)
+                .map((candidate) => ({ position: candidate.position, size: candidate.size }))
+            ]}
+            onBoundsChange={onBrowserBoundsChange}
+            onUrlChange={onBrowserUrlChange}
+            onDispose={onDisposeBrowser}
           />
         ))}
       </div>

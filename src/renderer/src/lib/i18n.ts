@@ -288,6 +288,9 @@ const ru = {
   statusNeedsApproval: "Требуется решение",
   statusDone: "Завершено",
   statusFailed: "Ошибка",
+  showErrorDetails: "Показать детали ошибки",
+  copyErrorDetails: "Скопировать детали ошибки",
+  failureOutputUnavailable: "Терминал не передал вывод. Код завершения: ",
   moveHint: "Тяните пустой канвас · Ctrl/Command + скролл масштабирует",
   loading: "Готовим рабочее пространство…"
 } as const;
@@ -580,6 +583,9 @@ const en: Record<keyof typeof ru, string> = {
   statusNeedsApproval: "Needs approval",
   statusDone: "Done",
   statusFailed: "Failed",
+  showErrorDetails: "Show error details",
+  copyErrorDetails: "Copy error details",
+  failureOutputUnavailable: "The terminal produced no output. Exit code: ",
   moveHint: "Drag the empty canvas · Ctrl/Command + scroll to zoom",
   loading: "Preparing your workspace…"
 };

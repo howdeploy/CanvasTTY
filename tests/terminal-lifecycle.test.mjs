@@ -101,8 +101,8 @@ test("late input and resize events are guarded after PTY exit", async () => {
   const source = await readFile(terminalManagerPath, "utf8");
 
   assert.match(source, /session\.metadata\.exitCode !== null/);
-  assert.match(source, /tryPtyOperation\(\(\) => session\.process\.write\(data\)\)/);
-  assert.match(source, /tryPtyOperation\(\(\) => session\.process\.resize\(safeCols, safeRows\)\)/);
+  assert.match(source, /tryPtyOperation\(\(\) => process\.write\(data\)\)/);
+  assert.match(source, /tryPtyOperation\(\(\) => process\.resize\(safeCols, safeRows\)\)/);
 });
 
 test("an exited PTY can restart in place without recreating its xterm card", async () => {
@@ -114,9 +114,17 @@ test("an exited PTY can restart in place without recreating its xterm card", asy
   assert.match(manager, /restart\(id: string\): SessionSnapshot/);
   assert.match(manager, /session\.metadata\.exitCode === null/);
   assert.match(manager, /session\.metadata\.status = "idle"/);
-  assert.match(manager, /this\.bindProcess\(id, session, launched\.process\)/);
+  assert.match(manager, /session\.metadata\.failureDetails = null/);
+  assert.match(manager, /if \(launched\.process\) this\.bindProcess\(id, session, launched\.process\)/);
   assert.match(card, /shouldRestartExitedTerminal\(event, sessionExited\.current\)/);
   assert.match(card, /onRestart\(session\.id\)/);
+});
+
+test("failed PTYs preserve their final sanitized output as failure details", async () => {
+  const source = await readFile(terminalManagerPath, "utf8");
+
+  assert.match(source, /terminalFailureDetails\(current\.bufferChunks\.slice\(current\.bufferStart\)\.join\(""\)\)/);
+  assert.match(source, /current\.metadata\.failureDetails = exitCode === 0/);
 });
 
 function effectDependenciesContaining(source, marker) {

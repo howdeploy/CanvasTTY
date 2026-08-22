@@ -33,6 +33,22 @@ const helper = Object.freeze({
   env: { ELECTRON_RUN_AS_NODE: "1" }
 });
 
+const providerClis = Object.freeze({
+  get(provider) {
+    return Object.freeze({
+      state: "available",
+      provider,
+      executable: `/resolved/${provider}`,
+      launcher: "native",
+      environment: Object.freeze({ PATH: "/resolved:/usr/bin" }),
+      checked: Object.freeze([{ path: `/resolved/${provider}`, result: "selected" }])
+    });
+  },
+  snapshot() {
+    throw new Error("Provider launch tests do not need a complete snapshot.");
+  }
+});
+
 async function fixture(t, prefix) {
   const root = await mkdtemp(join(tmpdir(), prefix));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -147,7 +163,10 @@ test("codexMcpArgs returns one complete table that replaces a same-name global s
 test("OpenCode receives one per-launch MCP override without losing existing inline config", () => {
   const adapters = new ProviderLaunchAdapters({
     helper,
+    providerClis,
     runtimeDirectory: "/tmp/canvastty-unused-runtime",
+    hermesHomeDirectory: "/tmp/canvastty-unused-hermes",
+    kimiHomeDirectory: "/tmp/canvastty-unused-kimi",
     environment: {
       OPENCODE_CONFIG_CONTENT: JSON.stringify({
         model: "opencode/kimi-k3",
@@ -178,7 +197,10 @@ test("OpenCode receives one per-launch MCP override without losing existing inli
 test("OpenCode browser launch rejects malformed inline config instead of replacing it", () => {
   const adapters = new ProviderLaunchAdapters({
     helper,
+    providerClis,
     runtimeDirectory: "/tmp/canvastty-unused-runtime",
+    hermesHomeDirectory: "/tmp/canvastty-unused-hermes",
+    kimiHomeDirectory: "/tmp/canvastty-unused-kimi",
     environment: { OPENCODE_CONFIG_CONTENT: "not-json" }
   });
   assert.throws(() => adapters.prepare("opencode", "connection-opencode"), /must contain valid JSON/u);
@@ -321,7 +343,9 @@ test("Hermes launch configuration is shared until the final session exits", asyn
   await writeFile(paths.config, original, { mode: 0o600 });
   const adapters = new ProviderLaunchAdapters({
     helper,
+    providerClis,
     hermesHomeDirectory: home,
+    kimiHomeDirectory: join(home, "kimi"),
     runtimeDirectory: join(home, "runtime")
   });
 
@@ -372,7 +396,9 @@ test("helper environment is validated before argv or filesystem artifacts are cr
     const runtimeDirectory = join(root, `runtime-${index}`);
     assert.throws(() => new ProviderLaunchAdapters({
       helper: invalidHelper,
+      providerClis,
       kimiHomeDirectory: home,
+      hermesHomeDirectory: join(root, `hermes-adapter-${index}`),
       runtimeDirectory,
       probeKimiPerRunConfig: () => false
     }), entry.message);
@@ -683,18 +709,19 @@ test("ProviderLaunchAdapters uses only injected temp Kimi paths and reference-co
   const probed = [];
   const adapters = new ProviderLaunchAdapters({
     helper,
+    providerClis,
     kimiHomeDirectory: home,
+    hermesHomeDirectory: join(root, "hermes-home"),
     runtimeDirectory,
-    kimiCommand: "never-launched-kimi",
-    probeKimiPerRunConfig: (command) => {
-      probed.push(command);
+    probeKimiPerRunConfig: (cli) => {
+      probed.push(cli.executable);
       return true;
     }
   });
 
   const first = adapters.prepare("kimi", "connection/one");
   const second = adapters.prepare("kimi", "connection-two");
-  assert.deepEqual(probed, ["never-launched-kimi"]);
+  assert.deepEqual(probed, ["/resolved/kimi"]);
   assert.equal(first.args[0], "--mcp-config-file");
   assert.equal(second.args[0], "--mcp-config-file");
   assert.equal(first.args[1].startsWith(runtimeDirectory), true);
@@ -716,7 +743,9 @@ test("ProviderLaunchAdapters fallback adds and removes only temporary Kimi state
   const home = join(root, "kimi-home");
   const adapters = new ProviderLaunchAdapters({
     helper,
+    providerClis,
     kimiHomeDirectory: home,
+    hermesHomeDirectory: join(root, "hermes-home"),
     runtimeDirectory: join(root, "runtime"),
     probeKimiPerRunConfig: () => false
   });

@@ -50,6 +50,7 @@ function session(id, status, startedAt) {
     status,
     startedAt,
     exitCode: status === "done" ? 0 : status === "failed" ? 1 : null,
+    failureDetails: null,
     buffer: ""
   };
 }

@@ -28,6 +28,7 @@ export type UiIconName =
   | "minimize"
   | "maximize"
   | "restore"
+  | "copy"
   | "folder"
   | "browser"
   | "terminal"
@@ -57,6 +58,7 @@ const ICONS: Record<UiIconName, string> = {
   minimize: minimizeIcon,
   maximize: maximizeIcon,
   restore: copyIcon,
+  copy: copyIcon,
   folder: folderIcon,
   browser: browserIcon,
   terminal: terminalIcon,

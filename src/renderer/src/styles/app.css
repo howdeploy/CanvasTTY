@@ -109,7 +109,7 @@ button { border: 0; }
 .limit-row__track { position: relative; width: 100%; height: 6px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.12); }
 .limit-row__fill { position: absolute; inset: 0 auto 0 0; max-width: 100%; border-radius: inherit; background: rgba(248,247,241,.78); }
 .limit-row__empty { overflow: hidden; color: var(--text-muted-on-dark); font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
-.limit-row--stale::before, .limit-row--error::before, .usage-row:has(.ui-icon--attention)::before, .usage-row:has(.ui-icon--error)::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 999px; }
+.limit-row--stale::before, .limit-row--error::before, .usage-row:has(.ui-icon--attention)::before, .usage-row-wrap:has(.ui-icon--error) .usage-row::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 999px; }
 .limit-row--stale::before, .usage-row:has(.ui-icon--attention)::before { background: var(--yellow); }
 .limit-row--error::before, .usage-row:has(.ui-icon--error)::before { background: var(--danger); }
 .limit-row--loading .provider-icon { opacity: .65; }
@@ -123,12 +123,23 @@ button { border: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .usage-list { padding: 13px 9px 13px 13px; display: grid; grid-auto-rows: 68px; align-content: start; gap: 9px; overflow-y: auto; scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.28) transparent; background: var(--surface); }
+.home-widget-slot:has(.usage-row__failure-trigger:hover), .home-widget-slot:has(.usage-row__failure-trigger:focus-visible), .home-widget-slot:has(.usage-row__failure-tooltip:hover), .home-widget-slot:has(.usage-row__failure-tooltip:focus-within) { z-index: 2; }
+.usage-list:has(.usage-row__failure-trigger:hover), .usage-list:has(.usage-row__failure-trigger:focus-visible), .usage-list:has(.usage-row__failure-tooltip:hover), .usage-list:has(.usage-row__failure-tooltip:focus-within) { overflow: visible; }
 .home-empty { min-height: 222px; display: grid; place-items: center; padding: 22px; border-radius: 12px; color: var(--text-muted-on-dark); background: var(--surface-soft); text-align: center; font-size: 13px; line-height: 1.45; }
-.usage-row { position: relative; min-height: 68px; padding: 8px 14px; display: grid; grid-template-columns: 46px minmax(0, 1fr) 28px; align-items: center; gap: 13px; border-radius: 12px; color: var(--text); background: var(--surface-soft); cursor: pointer; text-align: left; transition: background .15s ease; }
+.usage-row-wrap { position: relative; min-width: 0; min-height: 68px; }
+.usage-row-wrap:has(.usage-row__failure-trigger:hover), .usage-row-wrap:has(.usage-row__failure-trigger:focus-visible), .usage-row-wrap:has(.usage-row__failure-tooltip:hover), .usage-row-wrap:has(.usage-row__failure-tooltip:focus-within) { z-index: 1; }
+.usage-row { position: relative; width: 100%; min-height: 68px; padding: 8px 14px; display: grid; grid-template-columns: 46px minmax(0, 1fr) 28px; align-items: center; gap: 13px; border-radius: 12px; color: var(--text); background: var(--surface-soft); cursor: pointer; text-align: left; transition: background .15s ease; }
 .usage-row:hover { background: #4c4c5c; }
 .usage-row__copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .usage-row__copy strong { overflow: hidden; font-size: 18px; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
 .usage-row__copy span { overflow: hidden; color: var(--text-muted-on-dark); font-size: 11px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.usage-row__failure-trigger { position: absolute; top: 50%; right: 14px; width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border-radius: 7px; color: rgba(255,255,255,.88); background: transparent; cursor: help; transform: translateY(-50%); }
+.usage-row__failure-trigger:hover, .usage-row__failure-trigger:focus-visible { color: white; background: rgba(255,255,255,.1); }
+.usage-row__failure-tooltip { position: absolute; top: calc(100% + 6px); right: 0; width: min(520px, calc(100vw - 32px)); display: none; grid-template-columns: minmax(0, 1fr) 30px; gap: 8px; align-items: start; padding: 10px; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; color: white; background: #292936; box-shadow: var(--shadow-md); }
+.usage-row__failure-trigger:hover + .usage-row__failure-tooltip, .usage-row__failure-trigger:focus-visible + .usage-row__failure-tooltip, .usage-row__failure-tooltip:hover, .usage-row__failure-tooltip:focus-within { display: grid; }
+.usage-row__failure-details { max-height: 260px; overflow: auto; color: rgba(255,255,255,.84); font: 700 11px/1.4 var(--font-mono); white-space: pre; }
+.usage-row__failure-copy { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; color: rgba(255,255,255,.78); background: rgba(255,255,255,.1); cursor: pointer; }
+.usage-row__failure-copy:hover, .usage-row__failure-copy:focus-visible { color: white; background: rgba(255,255,255,.2); }
 .usage-row > .ui-icon--working { animation: spin 1.7s linear infinite; }
 .launcher-dock { padding: 8px; display: grid; grid-template-columns: repeat(var(--launcher-columns, 2), minmax(0, 1fr)); gap: 8px; border: 0; border-radius: 16px; background: var(--home-launcher-dock); }
 .launcher-button, .settings-button { display: grid; place-items: center; border-radius: 12px; color: var(--home-launcher-text); background: var(--home-launcher-tile); cursor: pointer; transition: background .15s ease, filter .15s ease; }

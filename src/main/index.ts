@@ -5,7 +5,10 @@ import { registerIpc } from "./ipc/registerIpc";
 import { SettingsStore } from "./services/SettingsStore";
 import { TerminalManager } from "./services/TerminalManager";
 import { LimitsService } from "./services/LimitsService";
-import { augmentCliPath } from "./services/cliEnvironment";
+import {
+  createProviderCliRegistry,
+  type ProviderCliRegistry
+} from "./services/providerCliRegistry";
 import { PluginManager } from "./services/PluginManager";
 import { GithubAuthService } from "./services/GithubAuthService";
 import { PluginMediaService } from "./services/PluginMediaService";
@@ -72,6 +75,7 @@ let canvasNavigationInput: CanvasNavigationInputController | null = null;
 let agentGateway: AgentGateway | null = null;
 let agentBrowserBridge: AgentBrowserBridge | null = null;
 let agentBrowserHelper: StdioHelperLaunch | null = null;
+let providerClis: ProviderCliRegistry | null = null;
 const pluginWindows = new Map<BrowserWindow, string>();
 let servicesReady = false;
 let startupRunning = false;
@@ -119,7 +123,7 @@ async function createWindow(): Promise<BrowserWindow> {
 }
 
 async function initializeServices(): Promise<void> {
-  augmentCliPath();
+  providerClis = buildProviderCliRegistry();
   // Recovery is independent of gateway availability: interrupted provider config
   // overlays must be restored before any new terminal can launch, including on Windows.
   const hermesHomeDirectory = resolveHermesHomeDirectory();
@@ -179,12 +183,10 @@ async function initializeServices(): Promise<void> {
     };
     agentBrowserBridge = new AgentBrowserBridge(agentGateway, {
       helper: agentBrowserHelper,
+      providerClis,
       runtimeDirectory,
       hermesHomeDirectory,
-      kimiHomeDirectory,
-      ...(process.env.CANVASTTY_PROVIDER_SMOKE_KIMI_COMMAND
-        ? { kimiCommand: process.env.CANVASTTY_PROVIDER_SMOKE_KIMI_COMMAND }
-        : {})
+      kimiHomeDirectory
     });
   } else {
     console.warn(WINDOWS_AGENT_GATEWAY_UNAVAILABLE);
@@ -194,8 +196,8 @@ async function initializeServices(): Promise<void> {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(channel, payload);
     }
-  }, agentBrowserBridge ?? undefined);
-  limitsService = new LimitsService(app.getVersion());
+  }, providerClis, agentBrowserBridge ?? undefined);
+  limitsService = new LimitsService(providerClis, app.getVersion());
   pluginManager = new PluginManager(app.getPath("userData"));
   await pluginManager.load();
   githubAuth = new GithubAuthService(app.getPath("userData"));
@@ -282,23 +284,7 @@ async function loadApplication(window: BrowserWindow): Promise<void> {
       helper: agentBrowserHelper,
       cwd: process.env.CANVASTTY_PROVIDER_SMOKE_CWD || app.getPath("temp"),
       targets,
-      commands: {
-        ...(process.env.CANVASTTY_PROVIDER_SMOKE_KIMI_COMMAND
-          ? { kimi: process.env.CANVASTTY_PROVIDER_SMOKE_KIMI_COMMAND }
-          : {}),
-        ...(process.env.CANVASTTY_PROVIDER_SMOKE_CLAUDE_COMMAND
-          ? { claude: process.env.CANVASTTY_PROVIDER_SMOKE_CLAUDE_COMMAND }
-          : {}),
-        ...(process.env.CANVASTTY_PROVIDER_SMOKE_CODEX_COMMAND
-          ? { codex: process.env.CANVASTTY_PROVIDER_SMOKE_CODEX_COMMAND }
-          : {}),
-        ...(process.env.CANVASTTY_PROVIDER_SMOKE_OPENCODE_COMMAND
-          ? { opencode: process.env.CANVASTTY_PROVIDER_SMOKE_OPENCODE_COMMAND }
-          : {}),
-        ...(process.env.CANVASTTY_PROVIDER_SMOKE_HERMES_COMMAND
-          ? { hermes: process.env.CANVASTTY_PROVIDER_SMOKE_HERMES_COMMAND }
-          : {})
-      }
+      providerClis: providerClis!
     });
     console.log("CANVASTTY_PROVIDER_SMOKE_READY");
     app.quit();
@@ -321,6 +307,12 @@ async function startApplication(): Promise<void> {
 
   try {
     if (!window) window = await createWindow();
+    if (process.env.CANVASTTY_CLI_RESOLUTION_SMOKE === "1") {
+      const registry = buildProviderCliRegistry();
+      console.log(`CANVASTTY_CLI_RESOLUTION_SMOKE_READY ${JSON.stringify(registry.snapshot())}`);
+      app.quit();
+      return;
+    }
     if (!servicesReady) await initializeServices();
     await loadApplication(window);
   } catch (error) {
@@ -333,6 +325,37 @@ async function startApplication(): Promise<void> {
   } finally {
     startupRunning = false;
   }
+}
+
+function buildProviderCliRegistry(): ProviderCliRegistry {
+  const providerSmoke = process.env.CANVASTTY_PROVIDER_SMOKE;
+  const smokeOverrides = providerSmoke ? {
+    ...(process.env.CANVASTTY_PROVIDER_SMOKE_KIMI_COMMAND
+      ? { kimi: process.env.CANVASTTY_PROVIDER_SMOKE_KIMI_COMMAND }
+      : {}),
+    ...(process.env.CANVASTTY_PROVIDER_SMOKE_CLAUDE_COMMAND
+      ? { claude: process.env.CANVASTTY_PROVIDER_SMOKE_CLAUDE_COMMAND }
+      : {}),
+    ...(process.env.CANVASTTY_PROVIDER_SMOKE_CODEX_COMMAND
+      ? { codex: process.env.CANVASTTY_PROVIDER_SMOKE_CODEX_COMMAND }
+      : {}),
+    ...(process.env.CANVASTTY_PROVIDER_SMOKE_OPENCODE_COMMAND
+      ? { opencode: process.env.CANVASTTY_PROVIDER_SMOKE_OPENCODE_COMMAND }
+      : {}),
+    ...(process.env.CANVASTTY_PROVIDER_SMOKE_HERMES_COMMAND
+      ? { hermes: process.env.CANVASTTY_PROVIDER_SMOKE_HERMES_COMMAND }
+      : {})
+  } : undefined;
+  const resolutionSmoke = process.env.CANVASTTY_CLI_RESOLUTION_SMOKE === "1";
+  return createProviderCliRegistry({
+    ...(smokeOverrides ? { overrides: smokeOverrides } : {}),
+    ...(resolutionSmoke && process.env.CANVASTTY_CLI_RESOLUTION_SMOKE_ROOT
+      ? { platformRoot: process.env.CANVASTTY_CLI_RESOLUTION_SMOKE_ROOT }
+      : {}),
+    ...(resolutionSmoke && process.env.CANVASTTY_CLI_RESOLUTION_SMOKE_HOME
+      ? { homeDirectory: process.env.CANVASTTY_CLI_RESOLUTION_SMOKE_HOME }
+      : {})
+  });
 }
 
 async function showStartupFailure(window: BrowserWindow, error: unknown): Promise<void> {

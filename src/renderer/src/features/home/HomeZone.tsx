@@ -293,22 +293,58 @@ export function HomeZone({
             <div className="home-empty">{t(locale, "noActiveSessions")}</div>
           ) : home.sessionRows.map((session) => {
             const statusIcon = sessionStatusIcon(session.status);
+            const failureDetails = session.status === "failed"
+              ? session.failureDetails ?? `${t(locale, "failureOutputUnavailable")}${session.exitCode ?? "unknown"}`
+              : null;
+            const failureTooltipId = failureDetails ? `session-failure-${session.id}` : undefined;
             return (
-              <button
-                className="usage-row"
-                type="button"
-                key={session.id}
-                onClick={() => onFocusSession(session)}
-                aria-label={`${session.title}, ${sessionStatusLabel(locale, session.status)}`}
-                title={session.title}
-              >
-                <ProviderIcon provider={session.provider} size="medium" />
-                <span className="usage-row__copy">
-                  <strong>{sessionStatusLabel(locale, session.status)}</strong>
-                  <span>{session.title}</span>
-                </span>
-                {statusIcon && <UiIcon name={statusIcon} size={24} />}
-              </button>
+              <div className="usage-row-wrap" key={session.id}>
+                <button
+                  className="usage-row"
+                  type="button"
+                  onClick={() => onFocusSession(session)}
+                  aria-label={`${session.title}, ${sessionStatusLabel(locale, session.status)}`}
+                  aria-describedby={failureDetails ? failureTooltipId : undefined}
+                  title={failureDetails ? undefined : session.title}
+                >
+                  <ProviderIcon provider={session.provider} size="medium" />
+                  <span className="usage-row__copy">
+                    <strong>{sessionStatusLabel(locale, session.status)}</strong>
+                    <span>{session.title}</span>
+                  </span>
+                  {!failureDetails && statusIcon && <UiIcon name={statusIcon} size={24} />}
+                </button>
+                {failureDetails && (
+                  <>
+                    <button
+                      className="usage-row__failure-trigger"
+                      type="button"
+                      aria-describedby={failureTooltipId}
+                      title={t(locale, "showErrorDetails")}
+                      aria-label={t(locale, "showErrorDetails")}
+                    >
+                      <UiIcon name="error" size={24} />
+                    </button>
+                    <div
+                      className="usage-row__failure-tooltip"
+                      id={failureTooltipId}
+                      role="group"
+                      aria-label={t(locale, "statusFailed")}
+                    >
+                      <span className="usage-row__failure-details">{failureDetails}</span>
+                      <button
+                        className="usage-row__failure-copy"
+                        type="button"
+                        onClick={() => window.canvasTTY.clipboard.writeText(failureDetails)}
+                        title={t(locale, "copyErrorDetails")}
+                        aria-label={t(locale, "copyErrorDetails")}
+                      >
+                        <UiIcon name="copy" size={16} />
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             );
           })}
         </section>

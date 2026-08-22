@@ -19,6 +19,11 @@ const smokeRoot = await mkdtemp(join(process.platform === "win32" ? tmpdir() : "
 const userDataPath = join(smokeRoot, "electron");
 const kimiHome = join(smokeRoot, "kimi-home");
 const workDirectory = join(smokeRoot, "work");
+// The direct smoke validates only the helper and its one-time capability; it
+// must not depend on a provider CLI being installed on the CI runner.
+const directPreflightCommand = targets.includes("direct") && !targets.includes("codex")
+  ? process.env.CANVASTTY_PROVIDER_SMOKE_CODEX_COMMAND ?? process.execPath
+  : undefined;
 let child;
 let output = "";
 let fakeApi = null;
@@ -52,7 +57,10 @@ try {
       KIMI_CODE_NO_AUTO_UPDATE: "1",
       KIMI_DISABLE_CRON: "1",
       CANVASTTY_PROVIDER_SMOKE: targets.join(","),
-      CANVASTTY_PROVIDER_SMOKE_CWD: workDirectory
+      CANVASTTY_PROVIDER_SMOKE_CWD: workDirectory,
+      ...(directPreflightCommand
+        ? { CANVASTTY_PROVIDER_SMOKE_CODEX_COMMAND: directPreflightCommand }
+        : {})
     },
     stdio: ["ignore", "pipe", "pipe"]
   });

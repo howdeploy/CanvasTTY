@@ -161,6 +161,7 @@ export interface SessionMetadata {
   status: SessionStatus;
   startedAt: number;
   exitCode: number | null;
+  failureDetails: string | null;
 }
 
 export interface SessionSnapshot extends SessionMetadata {

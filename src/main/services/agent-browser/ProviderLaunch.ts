@@ -32,6 +32,12 @@ import {
   resolveHermesHomeDirectory
 } from "../hermesConfig.ts";
 import { openCodeBrowserEnvironment } from "../openCodeConfig.ts";
+import {
+  providerChildProcessLaunch,
+  type AvailableProviderCli,
+  type ProviderCliRegistry,
+  type ProviderCliResolution
+} from "../providerCliRegistry.ts";
 
 const KIMI_RULE_PATTERN = `mcp__${MCP_SERVER_NAME}__*`;
 const CLAUDE_RULE_PATTERN = `mcp__${MCP_SERVER_NAME}__*`;
@@ -54,11 +60,11 @@ export interface PreparedProviderLaunch {
 
 export interface ProviderLaunchOptions {
   helper: StdioHelperLaunch;
+  providerClis: ProviderCliRegistry;
   hermesHomeDirectory?: string;
   kimiHomeDirectory?: string;
   runtimeDirectory: string;
-  kimiCommand?: string;
-  probeKimiPerRunConfig?: (command: string) => boolean;
+  probeKimiPerRunConfig?: (cli: AvailableProviderCli) => boolean;
   environment?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -69,10 +75,11 @@ interface ConfigurationLockHooks {
 
 export class ProviderLaunchAdapters {
   private readonly options: ProviderLaunchOptions;
+  private readonly providerClis: ProviderCliRegistry;
   private readonly hermesHomeDirectory: string;
   private readonly kimiHomeDirectory: string;
-  private readonly kimiCommand: string;
-  private readonly probe: (command: string) => boolean;
+  private readonly kimiCli: ProviderCliResolution;
+  private readonly probe: (cli: AvailableProviderCli) => boolean;
   private readonly environment: Readonly<Record<string, string | undefined>>;
   private kimiSupportsPerRunConfig: boolean | null = null;
   private kimiConfiguration: KimiTemporaryConfiguration | null = null;
@@ -83,16 +90,19 @@ export class ProviderLaunchAdapters {
   constructor(options: ProviderLaunchOptions) {
     validateStdioHelperLaunch(options.helper);
     this.options = options;
+    this.providerClis = options.providerClis;
     this.hermesHomeDirectory = options.hermesHomeDirectory ?? resolveHermesHomeDirectory();
     this.kimiHomeDirectory = validateKimiHomeDirectory(
       options.kimiHomeDirectory ?? join(homedir(), ".kimi-code")
     );
-    this.kimiCommand = options.kimiCommand ?? "kimi";
+    this.kimiCli = options.providerClis.get("kimi");
     this.probe = options.probeKimiPerRunConfig ?? probeKimiPerRunMcpConfig;
     this.environment = options.environment ?? process.env;
   }
 
   prepare(provider: AgentProvider, connectionId: string): PreparedProviderLaunch {
+    const providerCli = this.providerClis.get(provider);
+    if (providerCli.state === "unavailable") throw new Error(providerCli.diagnostic);
     if (provider === "claude") {
       return {
         args: claudeMcpArgs(this.options.helper),
@@ -153,8 +163,9 @@ export class ProviderLaunchAdapters {
   }
 
   private prepareKimi(connectionId: string): PreparedProviderLaunch {
+    if (this.kimiCli.state === "unavailable") throw new Error(this.kimiCli.diagnostic);
     if (this.kimiSupportsPerRunConfig === null) {
-      this.kimiSupportsPerRunConfig = this.probe(this.kimiCommand);
+      this.kimiSupportsPerRunConfig = this.probe(this.kimiCli);
       KimiTemporaryConfiguration.recover(this.kimiHomeDirectory);
     }
     const supportsPerRun = this.kimiSupportsPerRunConfig;
@@ -249,12 +260,15 @@ export function codexMcpArgs(helper: StdioHelperLaunch): string[] {
   return ["-c", `${prefix}={${table}}`];
 }
 
-export function probeKimiPerRunMcpConfig(command = "kimi"): boolean {
-  const result = spawnSync(command, ["--help"], {
+export function probeKimiPerRunMcpConfig(cli: AvailableProviderCli): boolean {
+  const launch = providerChildProcessLaunch(cli, ["--help"]);
+  const result = spawnSync(launch.command, launch.args, {
     encoding: "utf8",
+    env: { ...process.env, ...launch.environment },
     timeout: 3_000,
     maxBuffer: 256 * 1024,
-    windowsHide: true
+    windowsHide: true,
+    ...(launch.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {})
   });
   if (result.error || result.status !== 0) return false;
   return `${result.stdout ?? ""}\n${result.stderr ?? ""}`.includes("--mcp-config-file");

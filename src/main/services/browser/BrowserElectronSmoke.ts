@@ -4,8 +4,10 @@ import { join } from "node:path";
 import { BrowserWindow, webContents } from "electron";
 import type { BrowserActor, BrowserCommand, BrowserElementRef, BrowserResult } from "../../../shared/contracts.ts";
 import type { BrowserService } from "../BrowserService.ts";
+import { BROWSER_CANVAS_WHEEL_IDLE_MS } from "./BrowserCanvasFreeze.ts";
 
 const READY_TIMEOUT_MS = 12_000;
+const WHEEL_IDLE_SETTLE_MS = BROWSER_CANVAS_WHEEL_IDLE_MS * 2;
 const SENTINEL = "canvastty-secret-must-not-leak";
 
 export async function runBrowserElectronSmoke(
@@ -570,7 +572,9 @@ async function wheelRelayCount(
 }
 
 async function waitForWheelIdle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 320));
+  // The page preload and main process expire ownership independently. Allow
+  // both event loops a complete idle interval before starting a new sequence.
+  await new Promise((resolve) => setTimeout(resolve, WHEEL_IDLE_SETTLE_MS));
 }
 
 async function waitUntil(check: () => Promise<boolean>): Promise<void> {

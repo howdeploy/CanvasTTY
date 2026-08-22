@@ -21,7 +21,9 @@ import type {
 } from "./agent-browser/AgentBrowserBridge.ts";
 import { AGENT_BROWSER_ENV } from "./agent-browser/AgentBrowserBridge.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
+import { terminalFailureDetails } from "./terminalFailureDetails.ts";
 import { resolveTerminalLaunch } from "./terminalLaunch.ts";
+import type { ProviderCliRegistry, UnavailableProviderCli } from "./providerCliRegistry.ts";
 
 const MAX_SCROLLBACK_CHARS = 240_000;
 const OUTPUT_BATCH_MS = 16;
@@ -31,7 +33,7 @@ const MAX_TERMINAL_SIZE = { width: 1_600, height: 1_100 };
 
 interface ManagedSession {
   metadata: SessionMetadata;
-  process: IPty;
+  process: IPty | null;
   bufferChunks: string[];
   bufferStart: number;
   bufferLength: number;
@@ -54,10 +56,16 @@ type Emit = (
 export class TerminalManager {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly emit: Emit;
+  private readonly providerClis: ProviderCliRegistry;
   private readonly agentBrowser?: AgentBrowserLaunchCoordinator;
 
-  constructor(emit: Emit, agentBrowser?: AgentBrowserLaunchCoordinator) {
+  constructor(
+    emit: Emit,
+    providerClis: ProviderCliRegistry,
+    agentBrowser?: AgentBrowserLaunchCoordinator
+  ) {
     this.emit = emit;
+    this.providerClis = providerClis;
     this.agentBrowser = agentBrowser;
   }
 
@@ -70,7 +78,6 @@ export class TerminalManager {
     assertDirectory(request.cwd);
 
     const id = randomUUID();
-    const launched = this.spawnProcess(id, request.provider, request.profile, request.cwd);
     const metadata: SessionMetadata = {
       id,
       provider: request.provider,
@@ -82,8 +89,11 @@ export class TerminalManager {
       size: DEFAULT_TERMINAL_SIZE,
       status: "idle",
       startedAt: Date.now(),
-      exitCode: null
+      exitCode: null,
+      failureDetails: null
     };
+    const launched = this.spawnProcess(id, request.provider, request.profile, request.cwd);
+    if (launched.failure) applyLaunchFailure(metadata, launched.failure);
 
     const session: ManagedSession = {
       metadata,
@@ -96,7 +106,7 @@ export class TerminalManager {
       agentBrowser: launched.agentBrowser
     };
     this.sessions.set(id, session);
-    this.bindProcess(id, session, launched.process);
+    if (launched.process) this.bindProcess(id, session, launched.process);
 
     this.emitSession(metadata);
     return snapshot(session);
@@ -115,10 +125,15 @@ export class TerminalManager {
     );
     session.process = launched.process;
     session.agentBrowser = launched.agentBrowser;
-    session.metadata.status = "idle";
     session.metadata.startedAt = Date.now();
-    session.metadata.exitCode = null;
-    this.bindProcess(id, session, launched.process);
+    if (launched.failure) {
+      applyLaunchFailure(session.metadata, launched.failure);
+    } else {
+      session.metadata.status = "idle";
+      session.metadata.exitCode = null;
+      session.metadata.failureDetails = null;
+      if (launched.process) this.bindProcess(id, session, launched.process);
+    }
     this.emitSession(session.metadata);
     return snapshot(session);
   }
@@ -126,17 +141,19 @@ export class TerminalManager {
   input(id: string, data: string): void {
     if (typeof data !== "string" || data.length === 0) return;
     const session = this.sessions.get(id);
-    if (!session || session.metadata.exitCode !== null) return;
-    tryPtyOperation(() => session.process.write(data));
+    if (!session || session.metadata.exitCode !== null || !session.process) return;
+    const process = session.process;
+    tryPtyOperation(() => process.write(data));
   }
 
   resize(id: string, cols: number, rows: number): void {
     if (!Number.isFinite(cols) || !Number.isFinite(rows)) return;
     const session = this.sessions.get(id);
-    if (!session || session.metadata.exitCode !== null) return;
+    if (!session || session.metadata.exitCode !== null || !session.process) return;
     const safeCols = Math.max(20, Math.min(400, Math.floor(cols)));
     const safeRows = Math.max(5, Math.min(200, Math.floor(rows)));
-    tryPtyOperation(() => session.process.resize(safeCols, safeRows));
+    const process = session.process;
+    tryPtyOperation(() => process.resize(safeCols, safeRows));
   }
 
   setBounds(id: string, bounds: SessionBounds): void {
@@ -182,10 +199,12 @@ export class TerminalManager {
     this.flushOutput(id, session);
     this.sessions.delete(id);
     session.agentBrowser?.cleanup();
-    try {
-      session.process.kill();
-    } catch (error) {
-      console.warn(`PTY ${id} could not be killed cleanly.`, error);
+    if (session.process) {
+      try {
+        session.process.kill();
+      } catch (error) {
+        console.warn(`PTY ${id} could not be killed cleanly.`, error);
+      }
     }
     this.emit(IPC.terminalRemoved, { id });
   }
@@ -205,7 +224,15 @@ export class TerminalManager {
     provider: ProviderId,
     profile: CreateSessionRequest["profile"],
     cwd: string
-  ): { process: IPty; agentBrowser: PreparedAgentBrowserPtyLaunch | null } {
+  ): {
+    process: IPty | null;
+    agentBrowser: PreparedAgentBrowserPtyLaunch | null;
+    failure: UnavailableProviderCli | null;
+  } {
+    const providerCli = provider === "terminal" ? undefined : this.providerClis.get(provider);
+    if (providerCli?.state === "unavailable") {
+      return { process: null, agentBrowser: null, failure: providerCli };
+    }
     const agentBrowser = provider === "terminal" || provider === "grok"
       ? null
       : this.agentBrowser?.prepareLaunch({ terminalSessionId: id, provider, cwd }) ?? null;
@@ -213,7 +240,8 @@ export class TerminalManager {
       const baseEnvironment = terminalEnvironment();
       const browserEnvironment = agentBrowser?.environment ?? {};
       const launch = resolveTerminalLaunch(provider, profile, agentBrowser?.args ?? [], {
-        environment: { ...baseEnvironment, ...browserEnvironment }
+        environment: { ...baseEnvironment, ...browserEnvironment },
+        ...(providerCli ? { providerCli } : {})
       });
       return {
         process: pty.spawn(launch.command, launch.args, {
@@ -223,7 +251,8 @@ export class TerminalManager {
           cwd,
           env: { ...baseEnvironment, ...browserEnvironment, ...launch.environment }
         }),
-        agentBrowser
+        agentBrowser,
+        failure: null
       };
     } catch (error) {
       agentBrowser?.cleanup();
@@ -247,6 +276,9 @@ export class TerminalManager {
       this.flushOutput(id, current);
       current.metadata.exitCode = exitCode;
       current.metadata.status = exitCode === 0 ? "done" : "failed";
+      current.metadata.failureDetails = exitCode === 0
+        ? null
+        : terminalFailureDetails(current.bufferChunks.slice(current.bufferStart).join(""));
       current.agentBrowser?.cleanup();
       current.agentBrowser = null;
       this.emitSession(current.metadata);
@@ -271,6 +303,12 @@ export class TerminalManager {
     session.pendingOutput.length = 0;
     this.emit(IPC.terminalData, { id, data });
   }
+}
+
+function applyLaunchFailure(metadata: SessionMetadata, failure: UnavailableProviderCli): void {
+  metadata.status = "failed";
+  metadata.exitCode = 127;
+  metadata.failureDetails = failure.diagnostic;
 }
 
 export function terminalEnvironment(

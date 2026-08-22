@@ -8,6 +8,10 @@ import { AGENT_BROWSER_ENV } from "../agent-browser/AgentBrowserBridge.ts";
 import type { StdioHelperLaunch } from "../agent-browser/ProviderLaunch.ts";
 import type { AgentProvider } from "../agent-browser/protocol.ts";
 import {
+  providerChildProcessLaunch,
+  type ProviderCliRegistry
+} from "../providerCliRegistry.ts";
+import {
   APPROVED_BROWSER_TOOL_NAMES,
   MCP_SERVER_NAME,
   canonicalStringify
@@ -28,7 +32,7 @@ export interface ProviderElectronSmokeOptions {
   helper: StdioHelperLaunch;
   cwd: string;
   targets: ProviderSmokeTarget[];
-  commands?: Partial<Record<AgentProvider, string>>;
+  providerClis: ProviderCliRegistry;
 }
 
 export async function runProviderElectronSmoke(options: ProviderElectronSmokeOptions): Promise<void> {
@@ -97,15 +101,21 @@ async function runProviderCli(
   options: ProviderElectronSmokeOptions,
   provider: AgentProvider
 ): Promise<void> {
+  const resolution = options.providerClis.get(provider);
+  if (resolution.state === "unavailable") throw new Error(resolution.diagnostic);
   const launch = freshLaunch(options.bridge, provider, options.cwd, "cli");
-  const command = options.commands?.[provider] ?? provider;
   const args = providerSmokeArguments(provider, launch.args, options.cwd);
+  const providerLaunch = providerChildProcessLaunch(resolution, args);
   try {
-    const transcript = await runBounded(command, args, {
+    const transcript = await runBounded(providerLaunch.command, providerLaunch.args, {
       cwd: options.cwd,
-      environment: freshEnvironment(launch),
+      environment: {
+        ...freshEnvironment(launch),
+        ...providerLaunch.environment
+      },
       timeoutMs: provider === "kimi" ? DETERMINISTIC_TIMEOUT_MS : LIVE_TIMEOUT_MS,
-      redactions: Object.values(launch.environment)
+      redactions: Object.values(launch.environment),
+      windowsVerbatimArguments: providerLaunch.windowsVerbatimArguments ?? false
     });
     assertProviderTranscript(provider, transcript.stdout);
   } finally {
@@ -372,6 +382,7 @@ interface BoundedRunOptions {
   environment: NodeJS.ProcessEnv;
   timeoutMs: number;
   redactions: string[];
+  windowsVerbatimArguments: boolean;
 }
 
 async function runBounded(
@@ -384,7 +395,8 @@ async function runBounded(
     env: options.environment,
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
-    windowsHide: true
+    windowsHide: true,
+    windowsVerbatimArguments: options.windowsVerbatimArguments
   });
   let stdout = "";
   let stderr = "";

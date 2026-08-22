@@ -6,6 +6,22 @@ import { join } from "node:path";
 import test from "node:test";
 import { parse as parseYaml } from "yaml";
 
+const providerClis = Object.freeze({
+  get(provider) {
+    return Object.freeze({
+      state: "available",
+      provider,
+      executable: `/resolved/${provider}`,
+      launcher: "native",
+      environment: Object.freeze({ PATH: "/resolved:/usr/bin" }),
+      checked: Object.freeze([{ path: `/resolved/${provider}`, result: "selected" }])
+    });
+  },
+  snapshot() {
+    throw new Error("Agent browser helper tests do not need a complete snapshot.");
+  }
+});
+
 import {
   APPROVED_BROWSER_TOOL_NAMES,
   TOOL_DEFINITIONS
@@ -159,7 +175,10 @@ test("PTY bridge keeps the one-time capability in child env only and honors the 
   };
   const bridge = new AgentBrowserBridge(gateway, {
     helper: { command: "/usr/bin/node", args: ["/app/mcp-helper.mjs"] },
-    runtimeDirectory: "/tmp/canvastty-runtime"
+    providerClis,
+    runtimeDirectory: "/tmp/canvastty-runtime",
+    hermesHomeDirectory: "/tmp/canvastty-helper-hermes",
+    kimiHomeDirectory: "/tmp/canvastty-helper-kimi"
   });
   const launch = bridge.prepareLaunch({
     terminalSessionId: "terminal-id",
@@ -219,8 +238,10 @@ test("PTY bridge retains temporary Kimi configuration until session cleanup", as
   };
   const bridge = new AgentBrowserBridge(gateway, {
     helper: { command: "/usr/bin/node", args: ["/app/mcp-helper.mjs"] },
+    providerClis,
     runtimeDirectory: join(root, "runtime"),
     kimiHomeDirectory,
+    hermesHomeDirectory: join(root, "hermes-home"),
     probeKimiPerRunConfig: () => false
   });
   const launch = bridge.prepareLaunch({
@@ -262,6 +283,7 @@ test("PTY bridge gives Hermes environment placeholders and restores config on cl
   };
   const bridge = new AgentBrowserBridge(gateway, {
     helper: { command: "/usr/bin/node", args: ["/app/mcp-helper.mjs"] },
+    providerClis,
     runtimeDirectory: join(root, "runtime"),
     hermesHomeDirectory,
     kimiHomeDirectory: join(root, "kimi-home")

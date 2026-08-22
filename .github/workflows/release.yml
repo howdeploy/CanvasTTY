@@ -51,6 +51,9 @@ jobs:
           app="$(find release -type d -name 'CanvasTTY.app' -print -quit)"
           test -n "$app"
           codesign --verify --deep --strict --verbose=4 "$app"
+      - name: Smoke-test packaged macOS CLI resolution
+        if: runner.os == 'macOS'
+        run: npm run smoke:cli-resolution:mac
       - name: Install AppImage runtime dependency
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libfuse2t64

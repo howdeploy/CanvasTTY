@@ -11,6 +11,11 @@ import type {
   LimitsSnapshot,
   ProviderLimitsSnapshot
 } from "../../shared/contracts";
+import {
+  providerChildProcessLaunch,
+  type AvailableProviderCli,
+  type ProviderCliRegistry
+} from "./providerCliRegistry.ts";
 
 const CACHE_TTL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -45,7 +50,8 @@ interface PendingRequest {
 
 export class LimitsService {
   private readonly codex: CodexAppServerClient;
-  private readonly kimi = new KimiWebUsageClient();
+  private readonly kimi: KimiWebUsageClient;
+  private readonly providerClis: ProviderCliRegistry;
   private readonly clientVersion: string;
   private cache: CacheEntry | null = null;
   private inFlight: Promise<LimitsSnapshot> | null = null;
@@ -56,9 +62,11 @@ export class LimitsService {
   private lastGoodGrok: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
   private disposed = false;
 
-  constructor(clientVersion = "unknown") {
+  constructor(providerClis: ProviderCliRegistry, clientVersion = "unknown") {
+    this.providerClis = providerClis;
     this.clientVersion = clientVersion;
-    this.codex = new CodexAppServerClient(clientVersion);
+    this.codex = new CodexAppServerClient(availableCli(providerClis, "codex"), clientVersion);
+    this.kimi = new KimiWebUsageClient(availableCli(providerClis, "kimi"));
   }
 
   async get(): Promise<LimitsSnapshot> {
@@ -102,6 +110,9 @@ export class LimitsService {
   }
 
   private async loadCodex(checkedAt: number): Promise<ProviderLimitsSnapshot> {
+    if (this.providerClis.get("codex").state === "unavailable") {
+      return unavailable("codex", "codex-app-server", "cli-not-found", checkedAt);
+    }
     if (this.disposed) {
       return unavailable("codex", "codex-app-server", "protocol-error", checkedAt);
     }
@@ -135,6 +146,9 @@ export class LimitsService {
   }
 
   private async loadClaude(checkedAt: number): Promise<ProviderLimitsSnapshot> {
+    if (this.providerClis.get("claude").state === "unavailable") {
+      return unavailable("claude", "claude-usage-api", "cli-not-found", checkedAt);
+    }
     try {
       const raw = await readClaudeUsage(this.clientVersion);
       const windows = normalizeClaudeLimits(raw);
@@ -164,6 +178,9 @@ export class LimitsService {
   }
 
   private async loadKimi(checkedAt: number): Promise<ProviderLimitsSnapshot> {
+    if (this.providerClis.get("kimi").state === "unavailable") {
+      return unavailable("kimi", "kimi-usage-api", "cli-not-found", checkedAt);
+    }
     try {
       const raw = await this.kimi.readUsage();
       const windows = normalizeKimiLimits(raw);
@@ -193,6 +210,9 @@ export class LimitsService {
   }
 
   private async loadOpenCode(checkedAt: number): Promise<ProviderLimitsSnapshot> {
+    if (this.providerClis.get("opencode").state === "unavailable") {
+      return unavailable("opencode", "opencode-go-usage-api", "cli-not-found", checkedAt);
+    }
     try {
       const raw = await readOpenCodeGoUsage(this.clientVersion);
       const windows = normalizeOpenCodeGoLimits(raw);
@@ -222,6 +242,9 @@ export class LimitsService {
   }
 
   private async loadGrok(checkedAt: number): Promise<ProviderLimitsSnapshot> {
+    if (this.providerClis.get("grok").state === "unavailable") {
+      return unavailable("grok", "grok-billing-api", "cli-not-found", checkedAt);
+    }
     try {
       const raw = await readGrokUsage(this.clientVersion);
       const windows = normalizeGrokLimits(raw);
@@ -388,13 +411,26 @@ function cleanSecret(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function availableCli(
+  registry: ProviderCliRegistry,
+  provider: LimitProviderId
+): AvailableProviderCli | null {
+  const resolution = registry.get(provider);
+  return resolution.state === "available" ? resolution : null;
+}
+
 class KimiWebUsageClient {
+  private readonly cli: AvailableProviderCli | null;
   private child: ChildProcessWithoutNullStreams | null = null;
   private ready: Promise<void> | null = null;
   private baseUrl: string | null = null;
   private token: string | null = null;
   private buffer = "";
   private disposed = false;
+
+  constructor(cli: AvailableProviderCli | null) {
+    this.cli = cli;
+  }
 
   async readUsage(): Promise<unknown> {
     await this.ensureConnected();
@@ -424,12 +460,19 @@ class KimiWebUsageClient {
   }
 
   private async startChild(): Promise<void> {
+    if (!this.cli) throw new LimitsAdapterError("cli-not-found");
     const port = await reserveLoopbackPort();
+    const launch = providerChildProcessLaunch(
+      this.cli,
+      ["web", "--no-open", "--port", String(port), "--log-level", "silent"]
+    );
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn("kimi", ["web", "--no-open", "--port", String(port), "--log-level", "silent"], {
+      child = spawn(launch.command, launch.args, {
         shell: false,
-        stdio: ["pipe", "pipe", "pipe"]
+        env: { ...process.env, ...launch.environment },
+        stdio: ["pipe", "pipe", "pipe"],
+        ...(launch.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {})
       });
     } catch {
       throw new LimitsAdapterError("cli-not-found");
@@ -535,9 +578,11 @@ class CodexAppServerClient {
   private nextId = 1;
   private buffer = "";
   private disposed = false;
+  private readonly cli: AvailableProviderCli | null;
   private readonly clientVersion: string;
 
-  constructor(clientVersion: string) {
+  constructor(cli: AvailableProviderCli | null, clientVersion: string) {
+    this.cli = cli;
     this.clientVersion = clientVersion;
   }
 
@@ -570,11 +615,18 @@ class CodexAppServerClient {
   }
 
   private startChild(): void {
+    if (!this.cli) throw new LimitsAdapterError("cli-not-found");
+    const launch = providerChildProcessLaunch(
+      this.cli,
+      ["app-server", "--listen", "stdio://"]
+    );
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn("codex", ["app-server", "--listen", "stdio://"], {
+      child = spawn(launch.command, launch.args, {
         shell: false,
-        stdio: ["pipe", "pipe", "pipe"]
+        env: { ...process.env, ...launch.environment },
+        stdio: ["pipe", "pipe", "pipe"],
+        ...(launch.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {})
       });
     } catch {
       throw new LimitsAdapterError("cli-not-found");

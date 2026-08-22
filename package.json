@@ -25,6 +25,7 @@
     "smoke:browser:providers": "node scripts/smoke-browser-providers.mjs --deterministic",
     "smoke:browser:provider-helper": "node scripts/smoke-browser-providers.mjs --direct",
     "smoke:browser:providers:live": "node scripts/smoke-browser-providers.mjs --all",
+    "smoke:cli-resolution:mac": "node scripts/smoke-packaged-cli-resolution.mjs",
     "smoke:appimage": "node scripts/smoke-appimage.mjs",
     "preview": "electron-vite preview",
     "audit:secrets": "node scripts/audit-secrets.mjs",

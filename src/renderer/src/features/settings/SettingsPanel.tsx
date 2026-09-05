@@ -25,6 +25,7 @@ import type {
   PluginManifest,
   PluginInstallPreview,
   PluginUpdateStatus,
+  RadialLauncherItemId,
   SessionRowColorMode,
   ShortcutAction,
   ZoomSensitivity
@@ -33,6 +34,8 @@ import {
   BROWSER_PROVIDER_COLORS,
   CANVAS_LAUNCHER_ITEMS,
   DEFAULT_CANVAS_LAUNCHER_ITEMS,
+  DEFAULT_RADIAL_LAUNCHER_ITEMS,
+  RADIAL_LAUNCHER_ITEMS,
   UI_SCALE_MAX,
   UI_SCALE_MIN,
   UI_SCALE_STEP
@@ -70,6 +73,8 @@ import { CanvasNavigationShortcutEditor } from "./CanvasNavigationShortcutEditor
 import { AgentHooksSettings } from "./AgentHooksSettings";
 import { AboutSettings } from "./AboutSettings";
 import { setCanvasLauncherItemEnabled } from "../launcher/canvasLauncher";
+import { itemLabel } from "../launcher/QuickRadialMenu";
+import { setRadialLauncherItemEnabled } from "../launcher/radialLauncher";
 
 type SettingsSection = "general" | "appearance" | "agents" | "controls" | "browser" | "plugins" | "about";
 
@@ -548,6 +553,41 @@ export function SettingsPanel({
                     muted
                     onClick={() => void onChange({ canvasLauncherItems: [...DEFAULT_CANVAS_LAUNCHER_ITEMS] })}
                   >{t(locale, "resetCanvasLauncher")}</CanvasMenuRow>
+                </div>
+              </SettingGroup>
+              <SettingGroup
+                layout="stacked"
+                label={t(locale, "quickLauncher")}
+                description={t(locale, "quickLauncherDescription")}
+              >
+                <div className="canvas-menu canvas-launcher-settings-menu">
+                  <CanvasMenuLabel>{t(locale, "quickLauncherCount").replace("{count}", String(settings.radialLauncherItems.length))}</CanvasMenuLabel>
+                  {RADIAL_LAUNCHER_ITEMS.map((item: RadialLauncherItemId) => {
+                    const enabled = settings.radialLauncherItems.includes(item);
+                    return (
+                      <CanvasMenuRow
+                        icon={enabled ? "minus" : "plus"}
+                        muted={!enabled}
+                        aria-pressed={enabled}
+                        aria-label={`${t(locale, enabled ? "disable" : "enable")}: ${itemLabel(locale, item)}`}
+                        title={`${t(locale, enabled ? "disable" : "enable")}: ${itemLabel(locale, item)}`}
+                        key={item}
+                        onClick={() => void onChange({
+                          radialLauncherItems: setRadialLauncherItemEnabled(
+                            settings.radialLauncherItems,
+                            item,
+                            !enabled
+                          )
+                        })}
+                      >{itemLabel(locale, item)}</CanvasMenuRow>
+                    );
+                  })}
+                  <CanvasMenuDivider />
+                  <CanvasMenuRow
+                    icon="home"
+                    muted
+                    onClick={() => void onChange({ radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS] })}
+                  >{t(locale, "useDefaults")}</CanvasMenuRow>
                 </div>
               </SettingGroup>
               <SettingGroup

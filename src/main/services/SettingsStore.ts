@@ -23,6 +23,7 @@ import type {
   MinimapInteractionMode,
   PaletteId,
   PluginCanvasInstance,
+  RadialLauncherItemId,
   SessionRowColorMode,
   ShortcutBindings,
   StickyNote,
@@ -34,11 +35,13 @@ import {
   DEFAULT_HOME_ACCENT_COLORS,
   DEFAULT_HOME_GRID_SIZE,
   DEFAULT_HOME_LAYOUT,
+  DEFAULT_RADIAL_LAUNCHER_ITEMS,
   DEFAULT_UI_SCALE,
   HOME_GRID_MAX_COLUMNS,
   HOME_GRID_MAX_ROWS,
   HOME_GRID_MIN_COLUMNS,
   HOME_GRID_MIN_ROWS,
+  RADIAL_LAUNCHER_ITEMS,
   STICKY_NOTE_MAX_SIZE,
   STICKY_NOTE_MIN_SIZE,
   UI_SCALE_MAX,
@@ -59,7 +62,7 @@ const SESSION_ROW_COLOR_MODES = new Set<SessionRowColorMode>(["monochrome", "sta
 const CANVAS_COLORS = new Set<CanvasColorId>(["sage", "lilac", "night", "sand", "mist", "rose", "slate"]);
 const PATTERNS = new Set<CanvasPatternId>(["dots", "grid", "waves", "diagonal", "rings", "none"]);
 const MEDIA_FITS = new Set<MediaFit>(["cover", "contain"]);
-const SETTINGS_VERSION = 13;
+const SETTINGS_VERSION = 14;
 const GROK_LAUNCHER_SETTINGS_VERSION = 3;
 const EXPANDED_LIMIT_SETTINGS_VERSION = 5;
 const QWEN_SETTINGS_VERSION = 6;
@@ -71,6 +74,7 @@ const PRE_QWEN_LIMIT_PROVIDERS: LimitProviderId[] = [...LEGACY_LIMIT_PROVIDERS, 
 const LIMIT_PROVIDERS: LimitProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "grok"];
 const LIMIT_PROVIDER_SET = new Set<LimitProviderId>(LIMIT_PROVIDERS);
 const CANVAS_LAUNCHER_ITEM_SET = new Set<CanvasLauncherItemId>(CANVAS_LAUNCHER_ITEMS);
+const RADIAL_LAUNCHER_ITEM_SET = new Set<RadialLauncherItemId>(RADIAL_LAUNCHER_ITEMS);
 const EDGE_PAN_SPEEDS = new Set<EdgePanSpeed>(["slow", "normal", "fast"]);
 const ZOOM_SENSITIVITIES = new Set<ZoomSensitivity>(["slow", "normal", "fast"]);
 const FOCUS_ACTIVATIONS = new Set<FocusActivation>(["off", "single", "double"]);
@@ -133,6 +137,7 @@ export class SettingsStore {
         || !("homeLauncherProviders" in source)
         || !("homeLimitProviders" in source)
         || !("canvasLauncherItems" in source)
+        || !("radialLauncherItems" in source)
         || !("agentLifecycleHooksEnabled" in source)
         || !("uiScale" in source)
         || !("canvasColor" in source)
@@ -246,6 +251,7 @@ function createDefaults(systemLocale: string, platform: CanvasNavigationPlatform
     homeLauncherProviders: [...AGENT_PROVIDERS],
     homeLimitProviders: [...LIMIT_PROVIDERS],
     canvasLauncherItems: [...DEFAULT_CANVAS_LAUNCHER_ITEMS],
+    radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS],
     agentLifecycleHooksEnabled: true,
     uiScale: DEFAULT_UI_SCALE,
     canvasColor: "sage",
@@ -343,6 +349,10 @@ export function normalizeSettings(
     source.canvasLauncherItems,
     fallback.canvasLauncherItems ?? DEFAULT_CANVAS_LAUNCHER_ITEMS
   );
+  const radialLauncherItems = normalizeRadialLauncherItems(
+    source.radialLauncherItems,
+    fallback.radialLauncherItems ?? DEFAULT_RADIAL_LAUNCHER_ITEMS
+  );
   const palette = PALETTES.has(source.palette as PaletteId) ? source.palette as PaletteId : fallback.palette;
   const canvasColorCandidate = (source as Record<string, unknown>).canvasColor;
   const canvasColor = canvasColorCandidate === undefined || canvasColorCandidate === "palette"
@@ -373,6 +383,7 @@ export function normalizeSettings(
     homeLauncherProviders,
     homeLimitProviders,
     canvasLauncherItems,
+    radialLauncherItems,
     agentLifecycleHooksEnabled: typeof source.agentLifecycleHooksEnabled === "boolean"
       ? source.agentLifecycleHooksEnabled
       : fallback.agentLifecycleHooksEnabled,
@@ -459,6 +470,20 @@ export function normalizeCanvasLauncherItems(
   for (const item of candidate) {
     if (typeof item !== "string" || !CANVAS_LAUNCHER_ITEM_SET.has(item as CanvasLauncherItemId)) continue;
     if (!result.includes(item as CanvasLauncherItemId)) result.push(item as CanvasLauncherItemId);
+  }
+  return result.length > 0 ? result : [...fallback];
+}
+
+export function normalizeRadialLauncherItems(
+  candidate: unknown,
+  fallback: readonly RadialLauncherItemId[] = DEFAULT_RADIAL_LAUNCHER_ITEMS
+): RadialLauncherItemId[] {
+  if (!Array.isArray(candidate)) return [...fallback];
+  const result: RadialLauncherItemId[] = [];
+  for (const item of candidate) {
+    if (typeof item !== "string" || !RADIAL_LAUNCHER_ITEM_SET.has(item as RadialLauncherItemId)) continue;
+    if (!result.includes(item as RadialLauncherItemId)) result.push(item as RadialLauncherItemId);
+    if (result.length === 8) break;
   }
   return result.length > 0 ? result : [...fallback];
 }

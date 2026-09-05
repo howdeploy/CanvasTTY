@@ -20,6 +20,8 @@ export type BrowserViewportSurface = "native" | "placeholder" | "hidden";
 export type FocusActivation = "off" | "single" | "double";
 export type ShortcutAction = "home" | "renameWindow";
 export type CanvasLauncherItemId = ProviderId;
+export type RadialLauncherActionId = "note" | "browser" | "settings";
+export type RadialLauncherItemId = ProviderId | RadialLauncherActionId;
 
 export const CANVAS_LAUNCHER_ITEMS: readonly CanvasLauncherItemId[] = [
   "codex",
@@ -40,6 +42,31 @@ export const DEFAULT_CANVAS_LAUNCHER_ITEMS: readonly CanvasLauncherItemId[] = [
   "qwen",
   "opencode",
   "terminal"
+];
+
+export const RADIAL_LAUNCHER_ITEMS: readonly RadialLauncherItemId[] = [
+  "codex",
+  "claude",
+  "qwen",
+  "kimi",
+  "opencode",
+  "hermes",
+  "grok",
+  "terminal",
+  "note",
+  "browser",
+  "settings"
+];
+
+export const DEFAULT_RADIAL_LAUNCHER_ITEMS: readonly RadialLauncherItemId[] = [
+  "codex",
+  "claude",
+  "qwen",
+  "opencode",
+  "note",
+  "terminal",
+  "browser",
+  "settings"
 ];
 
 export const UI_SCALE_MIN = 0.85;
@@ -159,6 +186,7 @@ export interface AppSettings {
   homeLauncherProviders: AgentProviderId[];
   homeLimitProviders: LimitProviderId[];
   canvasLauncherItems: CanvasLauncherItemId[];
+  radialLauncherItems: RadialLauncherItemId[];
   agentLifecycleHooksEnabled: boolean;
   uiScale: number;
   canvasColor: CanvasColorId;

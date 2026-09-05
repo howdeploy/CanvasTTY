@@ -13,6 +13,7 @@ import type {
   LimitsSnapshot,
   Point,
   ProviderId,
+  RadialLauncherItemId,
   SessionBounds,
   SessionSnapshot,
   StickyNote
@@ -24,6 +25,7 @@ import { BrowserCard } from "../browser/BrowserCard";
 import type { LimitsLoadState } from "../home/homeModel";
 import { homeGridPixelSize, homeLayoutFitsGrid } from "../home/homeLayout";
 import { HomeZone } from "../home/HomeZone";
+import { RadialLauncher } from "../launcher/QuickRadialMenu";
 import { StickyNoteCard } from "../notes/StickyNoteCard";
 import { stickyNoteAtPoint } from "../notes/stickyNoteBounds";
 import { PluginCanvasCard } from "../plugins/PluginCanvasCard";
@@ -169,6 +171,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const [contextMenu, setContextMenu] = useState<CanvasMenuState | null>(null);
   const [regionEditor, setRegionEditor] = useState<RegionEditorState | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [radialLauncher, setRadialLauncher] = useState<{
+    anchor: Point;
+    pointerAnchor: Point;
+    canvasPosition: Point;
+    pointerId: number;
+  } | null>(null);
+  const suppressNextContextMenu = useRef(false);
+  const pendingRadialContextMenu = useRef<CanvasMenuState | null>(null);
   const [noteEditRequest, setNoteEditRequest] = useState<{ id: string; version: number } | null>(null);
   const [regionMovePreview, setRegionMovePreview] = useState<RegionMovePreview | null>(null);
   const cameraRef = useRef(camera);
@@ -353,11 +363,54 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     setCommandPaletteOpen(false);
   }, [onOpenAgent, onOpenTerminal]);
 
+  const activateRadialItem = useCallback((item: RadialLauncherItemId, fromPointerRelease = false): void => {
+    const launcher = radialLauncher;
+    if (!launcher) return;
+    suppressNextContextMenu.current = fromPointerRelease;
+    if (fromPointerRelease) {
+      window.setTimeout(() => {
+        suppressNextContextMenu.current = false;
+      }, 0);
+    }
+    pendingRadialContextMenu.current = null;
+    setRadialLauncher(null);
+    if (item === "note") createNote(launcher.canvasPosition);
+    else if (item === "browser") onOpenBrowser(launcher.canvasPosition);
+    else if (item === "settings") onOpenSettings();
+    else launchAt(item, launcher.canvasPosition);
+  }, [createNote, launchAt, onOpenBrowser, onOpenSettings, radialLauncher]);
+
+  const closeRadialLauncher = useCallback((reason: "release" | "cancel" = "cancel"): void => {
+    setRadialLauncher(null);
+    if (reason === "release" && pendingRadialContextMenu.current) {
+      setContextMenu(pendingRadialContextMenu.current);
+    }
+    pendingRadialContextMenu.current = null;
+  }, []);
+
+  const openRadialLauncher = useCallback((event: React.PointerEvent<HTMLDivElement>): boolean => {
+    if (event.button !== 2 || shouldKeepCanvasContextMenu(event.target)) return false;
+    const anchor = viewportPoint(event.clientX, event.clientY);
+    pendingRadialContextMenu.current = null;
+    setContextMenu(null);
+    setRegionEditor(null);
+    setCommandPaletteOpen(false);
+    setRadialLauncher({
+      anchor,
+      pointerAnchor: { x: event.clientX, y: event.clientY },
+      canvasPosition: worldPoint(event.clientX, event.clientY),
+      pointerId: event.pointerId
+    });
+    event.stopPropagation();
+    return true;
+  }, [viewportPoint, worldPoint]);
+
   useEffect(() => {
     if (homeEditing || !browserViewVisible) {
       setContextMenu(null);
       setRegionEditor(null);
       setCommandPaletteOpen(false);
+      setRadialLauncher(null);
       return;
     }
     const handleShortcut = (event: KeyboardEvent): void => {
@@ -391,6 +444,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       ref={viewport}
       className={`workspace pattern-${settings.pattern} ${pointerNavigation.panning ? "workspace--panning" : ""} ${canvasOverrideActive ? "workspace--canvas-override" : ""}`}
       onPointerDownCapture={(event) => {
+        if (openRadialLauncher(event)) return;
         const element = event.target as HTMLElement;
         if (event.button === 0) {
           const layerId = element.closest<HTMLElement>("[data-canvas-layer-id]")?.dataset.canvasLayerId;
@@ -418,6 +472,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       onPointerCancel={pointerNavigation.handlePointerEnd}
       onPointerLeave={pointerNavigation.handlePointerLeave}
       onContextMenu={(event) => {
+        if (suppressNextContextMenu.current) {
+          suppressNextContextMenu.current = false;
+          event.preventDefault();
+          return;
+        }
         const element = event.target as HTMLElement;
         const regionId = element.closest<HTMLElement>("[data-canvas-region-id]")?.dataset.canvasRegionId;
         const noteId = element.closest<HTMLElement>("[data-sticky-note-id]")?.dataset.stickyNoteId;
@@ -435,12 +494,17 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         event.preventDefault();
         setRegionEditor(null);
         setCommandPaletteOpen(false);
-        setContextMenu({
+        const nextContextMenu: CanvasMenuState = {
           kind,
           position: menuPosition(event.clientX, event.clientY),
           worldPoint: worldPoint(event.clientX, event.clientY),
           targetId: kind === "region" ? regionId : kind === "note" ? noteId : undefined
-        });
+        };
+        if (radialLauncher) {
+          pendingRadialContextMenu.current = nextContextMenu;
+          return;
+        }
+        setContextMenu(nextContextMenu);
       }}
     >
       <div className="workspace__scene" style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})` }}>
@@ -591,7 +655,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               zoom={camera.zoom}
               camera={camera}
               visible={browserViewVisible && !homeEditing && contextMenu === null
-                && regionEditor === null && !commandPaletteOpen && !browserOccluded}
+                && regionEditor === null && !commandPaletteOpen && radialLauncher === null && !browserOccluded}
               stackIndex={canvasLayerZIndex(layerOrder, browserLayerId)}
               uiScale={settings.uiScale}
               snapEnabled={settings.snapToGrid}
@@ -708,6 +772,18 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         />
       )}
 
+      {radialLauncher && (
+        <RadialLauncher
+          anchor={radialLauncher.anchor}
+          pointerAnchor={radialLauncher.pointerAnchor}
+          items={settings.radialLauncherItems}
+          locale={settings.locale}
+          pointerId={radialLauncher.pointerId}
+          onActivate={activateRadialItem}
+          onClose={closeRadialLauncher}
+        />
+      )}
+
       {regionEditor && (regionEditor.mode === "create" || editedRegion) && (
         <CanvasRegionMenu
           key={regionEditor.mode === "create" ? "create" : `edit:${regionEditor.regionId}:${regionEditor.focus}`}
@@ -817,4 +893,10 @@ function pluginLayerId(id: string): string {
 
 function noteLayerId(id: string): string {
   return `note:${id}`;
+}
+
+function shouldKeepCanvasContextMenu(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(
+    "textarea, input, select, [contenteditable='true'], .terminal-card, .plugin-canvas-card, .browser-card, .home-zone, .canvas-overlays, .canvas-menu, .canvas-region-editor, [data-canvas-region-id], [data-sticky-note-id], [data-interactive='true']"
+  ));
 }

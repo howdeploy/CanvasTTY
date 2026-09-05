@@ -261,8 +261,10 @@ button { border: 0; }
 
 .sticky-note-card { position: absolute; left: 0; top: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--yellow) 62%, var(--surface)); border-radius: 14px; color: var(--text-dark); background: var(--yellow); box-shadow: var(--shadow-lg); font-size: calc(13px * var(--ui-scale, 1)); }
 .sticky-note-card:focus-within { box-shadow: 0 0 0 3px var(--primary), var(--shadow-lg); }
-.sticky-note-card__header { height: 3.15em; padding: 0 .9em; display: flex; align-items: center; color: var(--text-dark); background: color-mix(in srgb, var(--yellow) 76%, var(--secondary)); cursor: move; touch-action: none; }
+.sticky-note-card__header { height: 3.15em; padding: 0 .5em 0 .9em; display: flex; align-items: center; justify-content: space-between; gap: .75em; color: var(--text-dark); background: color-mix(in srgb, var(--yellow) 76%, var(--secondary)); cursor: move; touch-action: none; }
 .sticky-note-card__header > span { display: flex; align-items: center; gap: .55em; font: 850 .8em/1 var(--font-mono); text-transform: uppercase; }
+.sticky-note-card__close { width: 2.15em; height: 2.15em; flex: 0 0 auto; display: grid; place-items: center; border-radius: .54em; color: color-mix(in srgb, var(--text-dark) 72%, transparent); background: color-mix(in srgb, var(--text-dark) 6%, transparent); cursor: pointer; transition: color .15s ease, background .15s ease; }
+.sticky-note-card__close:hover, .sticky-note-card__close:focus-visible { color: white; background: var(--danger); }
 .sticky-note-card__editor { width: 100%; height: calc(100% - 3.15em); padding: 1em; resize: none; border: 0; outline: 0; color: var(--text-dark); background: transparent; font: 700 1em/1.5 "Trebuchet MS", "Segoe UI", sans-serif; user-select: text; }
 .sticky-note-card__editor::placeholder { color: color-mix(in srgb, var(--text-dark) 58%, transparent); }
 .home-editor-toolbar { position: absolute; left: 50%; top: 18px; z-index: 500; min-height: 48px; padding: 5px 6px 5px 15px; display: flex; align-items: center; gap: 8px; border-radius: 14px; color: white; background: rgba(40,41,52,.96); box-shadow: var(--shadow-md); transform: translateX(-50%); }

@@ -134,6 +134,20 @@ test("one context dispatcher preserves native menus and routes regions and notes
   assert.match(workspace, /onCreateStickyNote/);
 });
 
+test("sticky notes expose a top-right close button wired to deletion", async () => {
+  const [workspace, noteCard, styles] = await Promise.all([
+    readFile(workspacePath, "utf8"),
+    readFile(new URL("../src/renderer/src/features/notes/StickyNoteCard.tsx", import.meta.url), "utf8"),
+    readFile(appStylesPath, "utf8")
+  ]);
+  assert.match(workspace, /onClose=\{onDeleteStickyNote\}/);
+  assert.match(noteCard, /className="sticky-note-card__close"/);
+  assert.match(noteCard, /onClose\(note\.id\)/);
+  assert.match(noteCard, /aria-label=\{t\(locale, "close"\)\}/);
+  assert.match(styles, /\.sticky-note-card__header \{[^}]*justify-content: space-between/);
+  assert.match(styles, /\.sticky-note-card__close \{/);
+});
+
 test("canvas windows use click-to-front stacking and Browser occlusion", async () => {
   const workspace = await readFile(workspacePath, "utf8");
   assert.match(workspace, /closest<HTMLElement>\("\[data-canvas-layer-id\]"\)/);

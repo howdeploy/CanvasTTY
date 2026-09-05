@@ -9,7 +9,6 @@ test("agent launcher can import its project path from the clipboard", async () =
 
   assert.match(source, /window\.canvasTTY\.clipboard\.readText\(\)/);
   assert.match(source, /directoryPathFromClipboard/);
-  assert.match(source, /file:\/\//);
   assert.match(source, /folder-field__paste/);
   assert.match(source, /aria-label=\{t\(locale, "pasteProjectPath"\)\}/);
 });

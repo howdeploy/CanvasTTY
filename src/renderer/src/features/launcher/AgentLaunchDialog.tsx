@@ -8,6 +8,7 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 import { PROVIDERS } from "../../lib/providers";
+import { directoryPathFromClipboard } from "../../lib/directoryPathFromClipboard";
 
 interface AgentLaunchDialogProps {
   provider: AgentProviderId | null;
@@ -15,33 +16,6 @@ interface AgentLaunchDialogProps {
   onClose(): void;
   onAcknowledge(provider: AgentProviderId): Promise<void>;
   onLaunch(provider: AgentProviderId, profile: LaunchProfileId, cwd: string): Promise<void>;
-}
-
-export function directoryPathFromClipboard(text: string): string | null {
-  let path = text.trim();
-  if (!path) return null;
-
-  // Finder and file managers may expose copied folders as a URI list.
-  if (path.includes("\n") || path.includes("\r")) {
-    path = path.split(/\r?\n/).map((line) => line.trim()).find((line) => line && !line.startsWith("#")) ?? "";
-  }
-  if ((path.startsWith('"') && path.endsWith('"')) || (path.startsWith("'") && path.endsWith("'"))) {
-    path = path.slice(1, -1).trim();
-  }
-  if (!path) return null;
-
-  if (path.toLowerCase().startsWith("file://")) {
-    try {
-      const url = new URL(path);
-      const decodedPath = decodeURIComponent(url.pathname);
-      path = url.hostname ? `//${url.hostname}${decodedPath}` : decodedPath;
-      if (/^\/[a-zA-Z]:\//.test(path)) path = path.slice(1);
-    } catch {
-      return null;
-    }
-  }
-
-  return path || null;
 }
 
 export function AgentLaunchDialog({

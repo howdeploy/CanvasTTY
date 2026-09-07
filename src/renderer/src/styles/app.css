@@ -56,6 +56,71 @@ button { border: 0; }
 .workspace__windows { position: absolute; left: 0; top: 0; }
 .workspace__windows--hidden { visibility: hidden; pointer-events: none; }
 
+.radial-launcher {
+  position: absolute;
+  z-index: 8500;
+  width: 0;
+  height: 0;
+  outline: 0;
+  cursor: default;
+  font-size: calc(13px * var(--ui-scale, 1));
+  filter: drop-shadow(0 1.1em 2.2em color-mix(in srgb, var(--surface) 48%, transparent));
+}
+.radial-launcher__center {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 6.6em;
+  height: 6.6em;
+  padding: 1.05em;
+  display: grid;
+  place-items: center;
+  border: .08em solid color-mix(in srgb, var(--text) 18%, transparent);
+  border-radius: 50%;
+  color: var(--text-muted-on-dark);
+  background: color-mix(in srgb, var(--surface) 93%, transparent);
+  box-shadow: inset 0 .08em color-mix(in srgb, var(--text) 8%, transparent);
+  font: 800 .7em/1.25 var(--font-mono);
+  text-align: center;
+  transform: translate(-50%, -50%);
+  backdrop-filter: blur(.9em);
+}
+.radial-launcher__item {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 6.6em;
+  min-height: 5.4em;
+  padding: .6em .45em;
+  display: grid;
+  grid-template-rows: 2.6em auto;
+  place-items: center;
+  gap: .25em;
+  border: .08em solid color-mix(in srgb, var(--text) 13%, transparent);
+  border-radius: 1.4em;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface-soft) 94%, transparent);
+  box-shadow: inset 0 .08em color-mix(in srgb, var(--text) 6%, transparent);
+  cursor: pointer;
+  font-size: .7em;
+  font-weight: 900;
+  text-align: center;
+  transition: width .1s ease, min-height .1s ease, color .1s ease, background .1s ease, box-shadow .1s ease;
+  backdrop-filter: blur(.9em);
+}
+.radial-launcher__item--active,
+.radial-launcher__item:hover,
+.radial-launcher__item:focus-visible {
+  width: 7.25em;
+  min-height: 5.85em;
+  color: var(--text-dark);
+  background: var(--primary);
+  box-shadow: 0 0 0 .3em color-mix(in srgb, var(--text) 18%, transparent), inset 0 .08em color-mix(in srgb, var(--text) 50%, transparent);
+  outline: 0;
+}
+.radial-launcher__icon { height: 2.6em; display: grid; place-items: center; }
+.radial-launcher__item .provider-icon { --provider-icon-art-size: 1.85em; }
+
 .tile { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
 
 .home-zone { position: absolute; left: 0; top: 0; display: grid; gap: 18px; border-radius: calc(var(--radius-lg) + 4px); }

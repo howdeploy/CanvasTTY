@@ -30,6 +30,7 @@ import {
   DEFAULT_HOME_GRID_SIZE,
   DEFAULT_HOME_LAYOUT,
   DEFAULT_CANVAS_LAUNCHER_ITEMS,
+  DEFAULT_RADIAL_LAUNCHER_ITEMS,
   DEFAULT_UI_SCALE,
   DEFAULT_SHORTCUTS
 } from "../../shared/contracts";
@@ -76,6 +77,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   homeLauncherProviders: ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok"],
   homeLimitProviders: ["codex", "claude", "qwen", "kimi", "opencode", "grok"],
   canvasLauncherItems: [...DEFAULT_CANVAS_LAUNCHER_ITEMS],
+  radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS],
   agentLifecycleHooksEnabled: true,
   uiScale: DEFAULT_UI_SCALE,
   canvasColor: "sage",

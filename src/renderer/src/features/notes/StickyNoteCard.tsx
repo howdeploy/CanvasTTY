@@ -19,6 +19,7 @@ interface StickyNoteCardProps {
   snapTargets: readonly SessionBounds[];
   onBoundsChange(id: string, bounds: SessionBounds): void;
   onTextChange(id: string, text: string): void;
+  onClose(id: string): void;
 }
 
 interface DragState {
@@ -43,7 +44,8 @@ export function StickyNoteCard({
   snapEnabled,
   snapTargets,
   onBoundsChange,
-  onTextChange
+  onTextChange,
+  onClose
 }: StickyNoteCardProps): React.JSX.Element {
   const editor = useRef<HTMLTextAreaElement>(null);
   const dragState = useRef<DragState | null>(null);
@@ -216,6 +218,18 @@ export function StickyNoteCard({
         onPointerCancel={endDrag}
       >
         <span><UiIcon name="sticky-note" size="1.15em" />{t(locale, "stickyNote")}</span>
+        <button
+          className="sticky-note-card__close"
+          type="button"
+          onClick={() => {
+            saveText(text);
+            onClose(note.id);
+          }}
+          title={t(locale, "close")}
+          aria-label={t(locale, "close")}
+        >
+          <UiIcon name="close" size="1.23em" />
+        </button>
       </header>
       <textarea
         ref={editor}

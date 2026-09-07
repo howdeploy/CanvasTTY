@@ -703,6 +703,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               ]}
               onBoundsChange={onStickyNoteBoundsChange}
               onTextChange={onStickyNoteTextChange}
+              onClose={onDeleteStickyNote}
             />
           ))}
         </div>

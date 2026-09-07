@@ -2,6 +2,16 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## 1.5.1
+
+- Fixed the HOME Terminal button passing a mouse event as canvas coordinates and failing with “Session position is invalid”.
+- Added local file drag-and-drop into terminal cards. File paths are quoted for the host's default shell and pasted without submitting the command; filenames with spaces and Unicode are preserved.
+- Fixed terminal history replay overlapping live output, scrollbar coordinates at canvas zoom, and scrollback/follow-output position during resize.
+- Added the configurable radial quick launcher from PR #29. It is off by default and can be enabled under Settings → Agents → Quick launcher without losing the selected actions when disabled.
+- Added a close button that deletes sticky notes (PR #30).
+- Added project-path paste in agent launch dialogs and corrected GNOME clipboard metadata handling (PRs #27 and #31). Terminal links now offer a choice between the built-in and system browser (PR #28).
+- Restored Claude Code usage tracking with credential-store selection fixes (PR #25).
+
 ## 1.5.0
 
 - Replaced competing canvas right-click handlers with one context-sensitive dispatcher. Empty canvas, color regions, and sticky notes now expose their own actions; the configurable safe agent/terminal launcher is shared with the searchable `Cmd/Ctrl+K` command palette.

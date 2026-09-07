@@ -138,6 +138,7 @@ export class SettingsStore {
         || !("homeLimitProviders" in source)
         || !("canvasLauncherItems" in source)
         || !("radialLauncherItems" in source)
+        || !("radialLauncherEnabled" in source)
         || !("agentLifecycleHooksEnabled" in source)
         || !("uiScale" in source)
         || !("canvasColor" in source)
@@ -252,6 +253,7 @@ function createDefaults(systemLocale: string, platform: CanvasNavigationPlatform
     homeLimitProviders: [...LIMIT_PROVIDERS],
     canvasLauncherItems: [...DEFAULT_CANVAS_LAUNCHER_ITEMS],
     radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS],
+    radialLauncherEnabled: false,
     agentLifecycleHooksEnabled: true,
     uiScale: DEFAULT_UI_SCALE,
     canvasColor: "sage",
@@ -384,6 +386,9 @@ export function normalizeSettings(
     homeLimitProviders,
     canvasLauncherItems,
     radialLauncherItems,
+    radialLauncherEnabled: typeof source.radialLauncherEnabled === "boolean"
+      ? source.radialLauncherEnabled
+      : fallback.radialLauncherEnabled ?? false,
     agentLifecycleHooksEnabled: typeof source.agentLifecycleHooksEnabled === "boolean"
       ? source.agentLifecycleHooksEnabled
       : fallback.agentLifecycleHooksEnabled,

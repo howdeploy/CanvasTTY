@@ -25,6 +25,26 @@ const MOUSE_EVENT_TYPES = [
   "contextmenu"
 ] as const;
 
+export function attachTerminalScrollbarCoordinateAdapter(terminal: { element?: HTMLElement }): () => void {
+  const element = terminal.element;
+  const scrollbar = (terminal as typeof terminal & {
+    _core?: { _viewport?: { _scrollableElement: { _verticalScrollbar: {
+      _sliderPointerPosition(event: { pageY: number }): number;
+    } } } };
+  })._core?._viewport?._scrollableElement._verticalScrollbar;
+  if (!element || !scrollbar) return () => undefined;
+
+  // xterm 6's scrollbar is outside .xterm-screen and uses native PointerEvents.
+  // Normalize only its drag distance, preserving pointer capture and canvas input.
+  const original = scrollbar._sliderPointerPosition;
+  scrollbar._sliderPointerPosition = (event) => {
+    const height = element.getBoundingClientRect().height;
+    const scale = height / element.offsetHeight;
+    return original.call(scrollbar, event) / (Number.isFinite(scale) && scale > 0 ? scale : 1);
+  };
+  return () => { scrollbar._sliderPointerPosition = original; };
+}
+
 export function remapTerminalMouseCoordinates(
   point: ClientPoint,
   rect: VisualRect,

@@ -29,6 +29,7 @@ const fallback = {
   homeLimitProviders: ["codex", "claude", "qwen", "kimi", "opencode", "grok"],
   canvasLauncherItems: ["codex", "claude", "qwen", "opencode", "terminal"],
   radialLauncherItems: ["codex", "claude", "qwen", "opencode", "note", "terminal", "browser", "settings"],
+  radialLauncherEnabled: false,
   agentLifecycleHooksEnabled: true,
   uiScale: 1,
   canvasColor: "sage",

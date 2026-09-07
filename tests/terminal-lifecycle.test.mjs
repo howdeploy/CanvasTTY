@@ -69,7 +69,7 @@ test("Grok waits for the measured xterm grid before its first TUI draw", async (
   assert.match(card, /new Terminal\(\{\s*cols: INITIAL_TERMINAL_COLS,\s*rows: INITIAL_TERMINAL_ROWS/);
   assert.match(card, /fitTerminalPreservingViewport[\s\S]*?reportGrid\(terminal\.cols, terminal\.rows\)/);
   assert.match(card, /terminal-card--\$\{session\.provider\}/);
-  assert.match(card, /replayingSnapshot[\s\S]*?queuedLiveOutput/);
+  assert.match(card, /attachTerminalOutput\([\s\S]*?session\.id/);
   assert.match(manager, /this\.spawnPty\([\s\S]*?cols,\s*rows,\s*cwd/);
   assert.match(manager, /session\.cols = safeCols;\s*session\.rows = safeRows/);
   assert.match(manager, /request\.provider === "grok"[\s\S]*?awaitingInitialResize: awaitMeasuredGrid/);

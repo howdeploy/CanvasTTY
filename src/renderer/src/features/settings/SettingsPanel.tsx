@@ -560,6 +560,11 @@ export function SettingsPanel({
                 label={t(locale, "quickLauncher")}
                 description={t(locale, "quickLauncherDescription")}
               >
+                <Segmented
+                  value={settings.radialLauncherEnabled ? "on" : "off"}
+                  options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
+                  onChange={(value) => void onChange({ radialLauncherEnabled: value === "on" })}
+                />
                 <div className="canvas-menu canvas-launcher-settings-menu">
                   <CanvasMenuLabel>{t(locale, "quickLauncherCount").replace("{count}", String(settings.radialLauncherItems.length))}</CanvasMenuLabel>
                   {RADIAL_LAUNCHER_ITEMS.map((item: RadialLauncherItemId) => {

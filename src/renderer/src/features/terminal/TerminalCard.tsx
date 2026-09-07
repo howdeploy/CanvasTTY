@@ -18,7 +18,7 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 import { sessionStatusLabel } from "../../lib/sessionStatus";
-import { attachTerminalMouseCoordinateAdapter } from "./terminalMouseCoordinates";
+import { attachTerminalMouseCoordinateAdapter, attachTerminalScrollbarCoordinateAdapter } from "./terminalMouseCoordinates";
 import {
   SHIFT_ENTER_SEQUENCE,
   shouldCopyTerminalSelection,
@@ -28,6 +28,7 @@ import {
   shouldSendTerminalLineBreak
 } from "./terminalShortcuts";
 import { fitTerminalPreservingViewport } from "./terminalViewport";
+import { attachTerminalOutput } from "./terminalOutput";
 import {
   constrainResize,
   snapMove,
@@ -186,13 +187,15 @@ export function TerminalCard({
       window.canvasTTY.terminal.resize(session.id, cols, rows);
     };
     const resize = terminal.onResize(({ cols, rows }) => reportGrid(cols, rows));
-    let replayingSnapshot = true;
-    const queuedLiveOutput: string[] = [];
-    const unsubscribe = window.canvasTTY.terminal.onData((event) => {
-      if (event.id !== session.id) return;
-      if (replayingSnapshot) queuedLiveOutput.push(event.data);
-      else terminal.write(event.data);
-    });
+    const unsubscribe = attachTerminalOutput(
+      window.canvasTTY.terminal,
+      session.id,
+      (data) => terminal.write(data),
+      (error) => {
+        console.error("CanvasTTY could not load terminal history.", error);
+        terminal.write(`\r\n[CanvasTTY] ${t(locale, "terminalHistoryFailed")}\r\n`);
+      }
+    );
     const fit = (): void => {
       try {
         fitTerminalPreservingViewport(terminal, () => fitAddon.fit());
@@ -249,11 +252,8 @@ export function TerminalCard({
       )
       : () => undefined;
     terminalRef.current = terminal;
+    const detachScrollbarCoordinateAdapter = attachTerminalScrollbarCoordinateAdapter(terminal);
     fit();
-    if (session.buffer) terminal.write(session.buffer);
-    replayingSnapshot = false;
-    for (const data of queuedLiveOutput) terminal.write(data);
-    queuedLiveOutput.length = 0;
 
     const frame = requestAnimationFrame(fit);
     const resizeObserver = new ResizeObserver(fit);
@@ -267,6 +267,7 @@ export function TerminalCard({
     return () => {
       cancelAnimationFrame(frame);
       detachMouseCoordinateAdapter();
+      detachScrollbarCoordinateAdapter();
       unsubscribe();
       resizeObserver.disconnect();
       input.dispose();
@@ -436,6 +437,27 @@ export function TerminalCard({
       }}
       onClick={activateCard}
       onDoubleClick={activateCardDouble}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = sessionExited.current || renaming ? "none" : "copy";
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const terminal = terminalRef.current;
+        if (!terminal || sessionExited.current || renaming) return;
+        try {
+          const text = window.canvasTTY.terminal.fileDropText(Array.from(event.dataTransfer.files));
+          onSelect(session.id);
+          terminal.focus();
+          terminal.paste(text);
+        } catch {
+          terminal.write(`\r\n[CanvasTTY] ${t(locale, "terminalFileDropFailed")}\r\n`);
+        }
+      }}
       style={{
         width: size.width,
         height: size.height,

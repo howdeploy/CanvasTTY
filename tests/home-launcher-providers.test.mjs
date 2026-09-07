@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import {
   AGENT_PROVIDERS,
   LIMIT_PROVIDERS,
@@ -9,6 +11,20 @@ import {
   setHomeLimitProviderEnabled,
   setHomeLauncherProviderEnabled
 } from "../src/renderer/src/lib/providers.ts";
+
+test("HOME terminal clicks do not pass mouse events as canvas positions", async () => {
+  const source = await readFile(new URL("../src/renderer/src/features/home/HomeZone.tsx", import.meta.url), "utf8");
+  const handler = source.match(/<button\b[^>]*className="launcher-button launcher-button--terminal"[^>]*onClick=\{([^}]+)\}/)?.[1];
+  assert.ok(handler, "HOME terminal button has a click handler");
+  const calls = [];
+  const onClick = runInNewContext(`(${handler})`, {
+    onOpenTerminal: (...args) => calls.push(args)
+  });
+
+  onClick({ type: "click", clientX: 500, clientY: 300 });
+
+  assert.deepEqual(calls, [[]]);
+});
 
 test("stale settings keep every current agent visible in the HOME launcher", () => {
   assert.deepEqual(resolveHomeLauncherProviders({}), AGENT_PROVIDERS);

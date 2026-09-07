@@ -50,6 +50,9 @@ This contract preserves the approved MVP concept and prevents feature ownership 
 - The canvas edge-pans RTS-style while the pointer rests within `56px` of a viewport edge over empty canvas; speed ramps linearly up to `900px/s` at the edge itself. Edge panning is off by default and enabled in Settings. Motion pauses over interactive surfaces (terminal cards, Home, controls) and while drag-panning.
 - Dialog close actions stay inside their own header/control row with a consistent inset; they never overlap a field, outline, or panel boundary.
 
+- The radial quick launcher is opt-in under Agents → Quick launcher and defaults off for fresh profiles and existing profiles without an explicit preference. With it off, right-click opens the standard context menu. Disabling it preserves the configured action list.
+- Dropping local files onto a live terminal card pastes their quoted paths without pressing Enter. Quoting targets POSIX shells on Linux/macOS and PowerShell on Windows; nested shells and the Windows cmd.exe fallback may require manual quoting. Exited sessions and active title edits reject drops. Control characters and unavailable native paths produce an explicit error rather than partial input.
+
 ## Acceptance checks
 
 - No custom `<svg>` or `<path>` elements in React TSX.

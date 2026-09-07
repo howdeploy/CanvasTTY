@@ -389,7 +389,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   }, []);
 
   const openRadialLauncher = useCallback((event: React.PointerEvent<HTMLDivElement>): boolean => {
-    if (event.button !== 2 || shouldKeepCanvasContextMenu(event.target)) return false;
+    if (!settings.radialLauncherEnabled || event.button !== 2 || shouldKeepCanvasContextMenu(event.target)) return false;
     const anchor = viewportPoint(event.clientX, event.clientY);
     pendingRadialContextMenu.current = null;
     setContextMenu(null);
@@ -403,7 +403,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     });
     event.stopPropagation();
     return true;
-  }, [viewportPoint, worldPoint]);
+  }, [settings.radialLauncherEnabled, viewportPoint, worldPoint]);
+
+  useEffect(() => {
+    if (!settings.radialLauncherEnabled) closeRadialLauncher();
+  }, [closeRadialLauncher, settings.radialLauncherEnabled]);
 
   useEffect(() => {
     if (homeEditing || !browserViewVisible) {
@@ -593,7 +597,12 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                 focusController.focus(terminalCanvasWidgetId(selectedSession.id), "explicit");
                 onFocusSession(selectedSession);
               }}
-              onSelect={onSelectSession}
+              onSelect={(id) => {
+                raiseLayer(terminalLayerId(id));
+                focusController.cancelHover();
+                focusController.focus(terminalCanvasWidgetId(id), "explicit");
+                onSelectSession(id);
+              }}
               onRename={onRenameSession}
               onRenameEnd={onRenameEnd}
               onBoundsChange={onSessionBoundsChange}

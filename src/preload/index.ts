@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AppSettings,
   BrowserActivityStateEvent,
@@ -25,6 +25,7 @@ import type {
   TerminalDataEvent
 } from "../shared/contracts";
 import { IPC } from "../shared/contracts";
+import { terminalFileDropText } from "../shared/terminalFileDrop";
 
 function subscribe<T>(channel: string, listener: (event: T) => void): () => void {
   const wrapped = (_event: Electron.IpcRendererEvent, payload: T): void => listener(payload);
@@ -156,7 +157,12 @@ const api: CanvasTTYApi = {
     )
   },
   terminal: {
+    fileDropText: (files: File[]) => terminalFileDropText(
+      files.map((file) => webUtils.getPathForFile(file)),
+      process.platform
+    ),
     list: () => ipcRenderer.invoke(IPC.terminalList),
+    readBuffer: (id: string) => ipcRenderer.invoke(IPC.terminalReadBuffer, id),
     create: (request: CreateSessionRequest) => ipcRenderer.invoke(IPC.terminalCreate, request),
     restart: (id: string) => ipcRenderer.invoke(IPC.terminalRestart, id),
     input: (id: string, data: string) => ipcRenderer.send(IPC.terminalInput, id, data),

@@ -186,6 +186,7 @@ export interface AppSettings {
   homeLauncherProviders: AgentProviderId[];
   homeLimitProviders: LimitProviderId[];
   canvasLauncherItems: CanvasLauncherItemId[];
+  radialLauncherEnabled: boolean;
   radialLauncherItems: RadialLauncherItemId[];
   agentLifecycleHooksEnabled: boolean;
   uiScale: number;
@@ -256,6 +257,13 @@ export interface SessionSnapshot extends SessionMetadata {
 export interface TerminalDataEvent {
   id: string;
   data: string;
+  /** Total UTF-16 code units produced, including this batch and trimmed history. */
+  outputOffset: number;
+}
+
+export interface TerminalBufferSnapshot {
+  buffer: string;
+  outputOffset: number;
 }
 
 export interface SessionEvent {
@@ -982,7 +990,9 @@ export interface CanvasTTYApi {
     openUrl(url: string): Promise<void>;
   };
   terminal: {
+    fileDropText(files: File[]): string;
     list(): Promise<SessionSnapshot[]>;
+    readBuffer(id: string): Promise<TerminalBufferSnapshot>;
     create(request: CreateSessionRequest): Promise<SessionSnapshot>;
     restart(id: string): Promise<SessionSnapshot>;
     input(id: string, data: string): void;
@@ -1089,6 +1099,7 @@ export const IPC = {
   githubAuthSignOut: "github-auth:sign-out",
   githubAuthOpenUrl: "github-auth:open-url",
   terminalList: "terminal:list",
+  terminalReadBuffer: "terminal:read-buffer",
   terminalCreate: "terminal:create",
   terminalRestart: "terminal:restart",
   terminalInput: "terminal:input",

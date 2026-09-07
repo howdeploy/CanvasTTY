@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,7 +8,40 @@ import {
   radialItemOffset,
   setRadialLauncherItemEnabled
 } from "../src/renderer/src/features/launcher/radialLauncher.ts";
-import { normalizeRadialLauncherItems, SettingsStore } from "../src/main/services/SettingsStore.ts";
+import { normalizeRadialLauncherItems, normalizeSettings, SettingsStore } from "../src/main/services/SettingsStore.ts";
+
+test("radial launcher defaults off and persists explicit choices without losing actions", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "canvastty-radial-opt-in-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new SettingsStore(directory, "en", "darwin");
+  const defaults = await store.load();
+  assert.equal(defaults.radialLauncherEnabled, false);
+  assert.equal(normalizeSettings({ radialLauncherEnabled: "true" }, defaults).radialLauncherEnabled, false);
+
+  for (const enabled of [true, false]) {
+    await store.update({ radialLauncherEnabled: enabled, radialLauncherItems: ["terminal", "note"] });
+    const reloaded = await new SettingsStore(directory, "en", "darwin").load();
+    assert.equal(reloaded.radialLauncherEnabled, enabled);
+    assert.deepEqual(reloaded.radialLauncherItems, ["terminal", "note"]);
+  }
+
+  const file = join(directory, "settings.json");
+  const legacy = JSON.parse(await readFile(file, "utf8"));
+  delete legacy.radialLauncherEnabled;
+  await writeFile(file, JSON.stringify(legacy));
+  const migrated = await new SettingsStore(directory, "en", "darwin").load();
+  assert.equal(migrated.radialLauncherEnabled, false);
+  assert.deepEqual(migrated.radialLauncherItems, ["terminal", "note"]);
+  assert.equal(JSON.parse(await readFile(file, "utf8")).radialLauncherEnabled, false);
+});
+
+test("radial pointer handling is gated by the persisted settings toggle", async () => {
+  const workspace = await readFile(new URL("../src/renderer/src/features/workspace/WorkspaceCanvas.tsx", import.meta.url), "utf8");
+  const settings = await readFile(new URL("../src/renderer/src/features/settings/SettingsPanel.tsx", import.meta.url), "utf8");
+  assert.match(workspace, /if \(!settings\.radialLauncherEnabled \|\| event\.button !== 2 \|\| shouldKeepCanvasContextMenu\(event\.target\)\) return false/);
+  assert.match(workspace, /if \(!settings\.radialLauncherEnabled\) closeRadialLauncher\(\)/);
+  assert.match(settings, /onChange\(\{ radialLauncherEnabled: value === "on" \}\)/);
+});
 
 test("direction selection follows the visual radial positions", () => {
   const anchor = { x: 400, y: 300 };

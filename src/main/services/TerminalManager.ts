@@ -12,6 +12,7 @@ import type {
   SessionMetadata,
   SessionRemovedEvent,
   SessionSnapshot,
+  TerminalBufferSnapshot,
   TerminalDataEvent
 } from "../../shared/contracts.ts";
 import {
@@ -59,6 +60,7 @@ interface ManagedSession {
   bufferChunks: string[];
   bufferStart: number;
   bufferLength: number;
+  outputOffset: number;
   pendingOutput: string[];
   outputTimer: ReturnType<typeof setTimeout> | null;
   agentBrowser: PreparedAgentBrowserPtyLaunch | null;
@@ -146,6 +148,15 @@ export class TerminalManager {
     return [...this.sessions.values()].map((session) => snapshot(session));
   }
 
+  readBuffer(id: string): TerminalBufferSnapshot {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error("Terminal session does not exist.");
+    return {
+      buffer: session.bufferChunks.slice(session.bufferStart).join(""),
+      outputOffset: session.outputOffset
+    };
+  }
+
   create(request: CreateSessionRequest): SessionSnapshot {
     assertCreateRequest(request);
     assertDirectory(request.cwd);
@@ -181,6 +192,7 @@ export class TerminalManager {
       bufferChunks: [],
       bufferStart: 0,
       bufferLength: 0,
+      outputOffset: 0,
       pendingOutput: [],
       outputTimer: null,
       agentBrowser: launched.agentBrowser,
@@ -425,6 +437,7 @@ export class TerminalManager {
       bufferChunks: [],
       bufferStart: 0,
       bufferLength: 0,
+      outputOffset: 0,
       pendingOutput: [],
       outputTimer: null,
       agentBrowser,
@@ -603,7 +616,7 @@ export class TerminalManager {
 
     const data = session.pendingOutput.join("");
     session.pendingOutput.length = 0;
-    this.emit(IPC.terminalData, { id, data });
+    this.emit(IPC.terminalData, { id, data, outputOffset: session.outputOffset });
   }
 }
 
@@ -695,6 +708,7 @@ function snapshot(session: ManagedSession): SessionSnapshot {
 }
 
 function appendScrollback(session: ManagedSession, data: string): void {
+  session.outputOffset += data.length;
   session.bufferChunks.push(data);
   session.bufferLength += data.length;
 

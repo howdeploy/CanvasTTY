@@ -492,7 +492,7 @@ export function HomeZone({
           className="tile launcher-dock"
           style={{ "--launcher-columns": homeLauncherColumnCount(launcherProviders) } as React.CSSProperties}
         >
-          <button className="launcher-button launcher-button--terminal" type="button" onClick={onOpenTerminal} title={t(locale, "terminal")}>
+          <button className="launcher-button launcher-button--terminal" type="button" onClick={() => onOpenTerminal()} title={t(locale, "terminal")}>
             <ProviderIcon provider="terminal" size="large" />
           </button>
           {launcherProviders.map((provider) => (

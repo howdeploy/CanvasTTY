@@ -78,6 +78,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   homeLimitProviders: ["codex", "claude", "qwen", "kimi", "opencode", "grok"],
   canvasLauncherItems: [...DEFAULT_CANVAS_LAUNCHER_ITEMS],
   radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS],
+  radialLauncherEnabled: false,
   agentLifecycleHooksEnabled: true,
   uiScale: DEFAULT_UI_SCALE,
   canvasColor: "sage",

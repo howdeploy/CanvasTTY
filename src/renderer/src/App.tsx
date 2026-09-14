@@ -114,7 +114,8 @@ const FALLBACK_SETTINGS: AppSettings = {
   browserCanvas: null,
   browserAgentAccess: true,
   browserShowAgentPresence: true,
-  browserRestoreTabs: true
+  browserRestoreTabs: true,
+  attentionNotifications: true
 };
 
 const EMPTY_BROWSER_SNAPSHOT: BrowserSnapshot = {

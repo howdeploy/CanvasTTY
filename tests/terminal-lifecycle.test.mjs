@@ -101,7 +101,10 @@ test("session metadata revisions advance before lifecycle events cross IPC", asy
   const source = await readFile(terminalManagerPath, "utf8");
 
   assert.match(source, /revision: 0/);
-  assert.match(source, /metadata\.revision \+= 1;\s*this\.emit\(IPC\.terminalSession/);
+  // The revision must advance before the session event is emitted, with only the
+  // emit-scoped bookkeeping in between; a bounded gap keeps a reordering that
+  // moves the emit away from the bump failing here.
+  assert.match(source, /metadata\.revision \+= 1;[\s\S]{0,120}?this\.emit\(IPC\.terminalSession/);
 });
 
 test("revoking lifecycle hooks makes live agent status unavailable until a restarted session gets a new parser", async () => {

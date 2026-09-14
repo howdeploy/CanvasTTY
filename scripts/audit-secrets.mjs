@@ -15,15 +15,27 @@ const IGNORED_ENTRY_NAMES = new Set([
   "release",
   "artifacts"
 ]);
+// Generated native build output, gitignored exactly like out/ and dist/. node-gyp
+// writes the builder's absolute home path into the generated project files and
+// objects, which is build-environment noise rather than publishable content.
+// `build/` itself is not ignored: it also holds tracked icons and resources.
+const IGNORED_RELATIVE_PATHS = new Set([
+  "build/windows-agent-pipe-host",
+  "native/windows-agent-pipe-host/build"
+]);
+const BUILD_OUTPUT_DIRECTORY = "out";
 const BINARY_EXTENSIONS = new Set([
   ".gif", ".icns", ".ico", ".jpeg", ".jpg", ".pdf", ".png", ".webp", ".zip"
 ]);
 const MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024;
 
-const SECRET_PATTERNS = [
+export const SECRET_PATTERNS = [
   ["private key", /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g],
-  ["Anthropic token", /sk-ant-[A-Za-z0-9_-]{16,}/g],
-  ["OpenAI-style token", /sk-[A-Za-z0-9_-]{20,}/g],
+  // The negative lookbehind keeps identifier-like text that merely contains a
+  // key prefix (`disk-…`, `task-…`) out of the report; a real key never follows
+  // an alphanumeric character.
+  ["Anthropic token", /(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{16,}/g],
+  ["OpenAI-style token", /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/g],
   ["GitHub token", /gh[pousr]_[A-Za-z0-9]{20,}/g],
   ["Slack token", /xox[baprs]-[A-Za-z0-9-]{16,}/g],
   ["AWS access key", /AKIA[0-9A-Z]{16}/g],
@@ -32,7 +44,17 @@ const SECRET_PATTERNS = [
     "hard-coded secret assignment",
     /(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password)\s*[:=]\s*["'`][^"'`\r\n]{12,}["'`]/gi
   ],
-  ["personal home path", /\/(?:home|Users)\/(?!runner(?:\/|$))[^/\s"'`]+\//g]
+  // Personal home directories: a `home` or `Users` path segment on Linux and
+  // macOS, or a drive-rooted `Users` directory on Windows. Both branches require
+  // a name segment after the user directory and a separator after that name, so
+  // generic environment content such as a bare `%USERPROFILE%` cannot match, and
+  // the Windows branch requires the drive prefix so system directories such as
+  // `C:\Windows` or `C:\Program Files` cannot match. CI runner homes are exempt
+  // in both branches.
+  [
+    "personal home path",
+    /(?:\/(?:home|Users)\/(?!runner(?:\/|$))[^/\s"'`]+\/|[A-Za-z]:\\[Uu]sers\\(?!runner(?:\\|$))[^\\\s"'`]+\\)/g
+  ]
 ];
 
 const SENSITIVE_FILE_NAMES = [
@@ -42,8 +64,23 @@ const SENSITIVE_FILE_NAMES = [
 ];
 
 export async function collectRepositoryIssues(root = PROJECT_ROOT) {
+  return scanFiles(await walk(root, root), root);
+}
+
+/**
+ * Scans the built application bundle, which is what electron-builder packages and
+ * what a build-time-injected value ends up inside. Returns `null` when no build
+ * exists, so a caller can tell "nothing was scanned" from "scanned and clean"
+ * instead of reporting coverage it does not have.
+ */
+export async function collectArtifactIssues(root = PROJECT_ROOT) {
+  const artifactRoot = resolve(root, BUILD_OUTPUT_DIRECTORY);
+  if (!await isDirectory(artifactRoot)) return null;
+  return scanFiles(await walk(artifactRoot, root), root);
+}
+
+async function scanFiles(files, root) {
   const issues = [];
-  const files = await walk(root);
 
   for (const file of files) {
     const projectPath = relative(root, file).replaceAll("\\", "/");
@@ -70,7 +107,15 @@ export async function collectRepositoryIssues(root = PROJECT_ROOT) {
   return issues;
 }
 
-async function walk(directory) {
+async function isDirectory(path) {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function walk(directory, root) {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = [];
 
@@ -81,7 +126,8 @@ async function walk(directory) {
     if (IGNORED_ENTRY_NAMES.has(entry.name)) continue;
 
     const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) files.push(...await walk(path));
+    if (IGNORED_RELATIVE_PATHS.has(relative(root, path).replaceAll("\\", "/"))) continue;
+    if (entry.isDirectory()) files.push(...await walk(path, root));
     else if (entry.isFile()) files.push(path);
   }
 
@@ -89,12 +135,23 @@ async function walk(directory) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const issues = await collectRepositoryIssues();
+  const artifactIssues = await collectArtifactIssues();
+  const issues = [...await collectRepositoryIssues(), ...(artifactIssues ?? [])];
+
   if (issues.length > 0) {
-    console.error("Repository secret audit failed:");
+    console.error("Secret audit failed:");
     for (const issue of issues) console.error(`- ${issue.path}: ${issue.rule}`);
     process.exitCode = 1;
+  } else if (artifactIssues === null) {
+    console.log(
+      `Repository secret audit passed: no high-confidence secrets or private paths found in the repository source tree. `
+      + `No built application bundle exists (${BUILD_OUTPUT_DIRECTORY}/), so the packaged output was not scanned; `
+      + "run the audit after `npm run build` to gate the artifact too."
+    );
   } else {
-    console.log("Repository secret audit passed: no high-confidence secrets or private paths found.");
+    console.log(
+      "Secret audit passed: no high-confidence secrets or private paths found in the repository source tree "
+      + `or the built ${BUILD_OUTPUT_DIRECTORY}/ application bundle.`
+    );
   }
 }

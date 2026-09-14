@@ -289,7 +289,8 @@ function createDefaults(systemLocale: string, platform: CanvasNavigationPlatform
     browserCanvas: null,
     browserAgentAccess: true,
     browserShowAgentPresence: true,
-    browserRestoreTabs: true
+    browserRestoreTabs: true,
+    attentionNotifications: true
   };
 }
 
@@ -462,7 +463,10 @@ export function normalizeSettings(
       : fallback.browserShowAgentPresence,
     browserRestoreTabs: typeof source.browserRestoreTabs === "boolean"
       ? source.browserRestoreTabs
-      : fallback.browserRestoreTabs
+      : fallback.browserRestoreTabs,
+    attentionNotifications: typeof source.attentionNotifications === "boolean"
+      ? source.attentionNotifications
+      : fallback.attentionNotifications
   };
 }
 

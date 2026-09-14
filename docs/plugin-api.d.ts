@@ -11,7 +11,7 @@ export interface CanvasTTYPluginHost {
   request(method: "host.getContext"): Promise<CanvasTTYPluginContext>;
   request(method: "sessions.list"): Promise<CanvasTTYPluginSession[]>;
   request(method: "limits.get"): Promise<CanvasTTYPluginLimitsResult>;
-  request(method: "launcher.open", params: { provider: "terminal" | "codex" | "claude" | "qwen" | "kimi" | "opencode" | "hermes" | "grok" }): Promise<null>;
+  request(method: "launcher.open", params: { provider: "terminal" | "codex" | "claude" | "qwen" | "kimi" | "opencode" | "hermes" | "grok" | "omp" | "pi" }): Promise<null>;
   request(method: "canvas.open", params: { contributionId: string }): Promise<null>;
   request(method: "external.open", params: { url: string }): Promise<null>;
   request(method: "browser.open", params: { url: string }): Promise<null>;
@@ -84,7 +84,7 @@ export interface CanvasTTYPluginContext {
 
 export interface CanvasTTYPluginSession {
   id: string;
-  provider: "terminal" | "codex" | "claude" | "qwen" | "kimi" | "opencode" | "hermes" | "grok";
+  provider: "terminal" | "codex" | "claude" | "qwen" | "kimi" | "opencode" | "hermes" | "grok" | "omp" | "pi";
   title: string;
   status: "idle" | "working" | "needs_approval" | "unavailable" | "done" | "failed";
   startedAt: number;

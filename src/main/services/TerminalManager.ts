@@ -618,7 +618,9 @@ export class TerminalManager {
       : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd }) ?? null;
     let agentBrowser: PreparedAgentBrowserPtyLaunch | null = null;
     try {
-      agentBrowser = provider === "terminal" || provider === "grok"
+      // omp and pi take no browser bridge, exactly like grok: the adapter chain below
+      // ends in the Kimi MCP configuration, which would hand them foreign launch flags.
+      agentBrowser = provider === "terminal" || provider === "grok" || provider === "omp" || provider === "pi"
         ? null
         : this.agentBrowser?.prepareLaunch({ terminalSessionId: id, provider, cwd }) ?? null;
       const baseEnvironment = terminalEnvironment();
@@ -736,6 +738,8 @@ function defaultTitle(provider: ProviderId, cwd: string): string {
   if (provider === "hermes") return `${project} · Hermes`;
   if (provider === "qwen") return `${project} · Qwen Code`;
   if (provider === "grok") return `${project} · Grok Build`;
+  if (provider === "omp") return `${project} · OMP`;
+  if (provider === "pi") return `${project} · Pi`;
   return `${project} · ${provider[0].toUpperCase()}${provider.slice(1)}`;
 }
 
@@ -748,7 +752,7 @@ function assertDirectory(cwd: string): void {
 }
 
 function assertCreateRequest(request: CreateSessionRequest): void {
-  const providers = new Set<ProviderId>(["terminal", "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok"]);
+  const providers = new Set<ProviderId>(["terminal", "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]);
   if (!request || !providers.has(request.provider)) throw new Error("Unknown terminal provider.");
   if (request.profile !== "normal" && request.profile !== "yolo") throw new Error("Unknown launch profile.");
   if (typeof request.cwd !== "string" || request.cwd.length === 0) throw new Error("Project folder is required.");

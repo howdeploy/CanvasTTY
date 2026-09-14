@@ -49,9 +49,9 @@ export function resolveTerminalLaunch(
     ? openCodeYoloEnvironment({ ...environment, ...providerCli.environment })
     : undefined;
   const providerArgs = [
-    ...(profile === "yolo" && provider !== "opencode" ? dangerousArguments(provider) : []),
+    ...(profile === "yolo" && provider !== "opencode" ? DANGEROUS_ARGUMENTS[provider] : []),
     ...agentBrowserArgs,
-    ...(options.resumePrevious ? resumeArguments(provider) : [])
+    ...(options.resumePrevious ? RESUME_ARGUMENTS[provider] : [])
   ];
   const combinedEnvironment = {
     ...providerCli.environment,
@@ -72,16 +72,35 @@ export function resolveTerminalLaunch(
   };
 }
 
-function resumeArguments(provider: Exclude<ProviderId, "terminal">): string[] {
-  return provider === "codex" ? ["resume", "--last"] : ["--continue"];
-}
+// Per-provider instead of a fallthrough: the old `return ["--continue"]` default would
+// have handed an unverified flag to whatever provider was added next. A missing entry is
+// now a compile error.
+const RESUME_ARGUMENTS: Record<Exclude<ProviderId, "terminal">, string[]> = {
+  codex: ["resume", "--last"],
+  claude: ["--continue"],
+  qwen: ["--continue"],
+  kimi: ["--continue"],
+  opencode: ["--continue"],
+  hermes: ["--continue"],
+  grok: ["--continue"],
+  omp: ["--continue"],
+  pi: ["--continue"]
+};
 
-function dangerousArguments(provider: Exclude<ProviderId, "terminal" | "opencode">): string[] {
-  if (provider === "codex") return ["--dangerously-bypass-approvals-and-sandbox"];
-  if (provider === "claude") return ["--dangerously-skip-permissions"];
-  if (provider === "grok") return ["--always-approve"];
-  return ["--yolo"];
-}
+const DANGEROUS_ARGUMENTS: Record<Exclude<ProviderId, "terminal" | "opencode">, string[]> = {
+  codex: ["--dangerously-bypass-approvals-and-sandbox"],
+  claude: ["--dangerously-skip-permissions"],
+  qwen: ["--yolo"],
+  kimi: ["--yolo"],
+  hermes: ["--yolo"],
+  grok: ["--always-approve"],
+  // Measured on omp 18.1.19: `omp --help` documents `--auto-approve` ("Auto-approve all
+  // tool calls"); the undocumented `--yolo` also parses but is not relied on here.
+  omp: ["--auto-approve"],
+  // pi 0.85.1 has no permission system, so it has no auto-approve flag. `-a, --approve`
+  // only skips its one prompt (trust project-local settings for this run).
+  pi: ["--approve"]
+};
 
 function resolveWindowsShell(
   environment: Readonly<NodeJS.ProcessEnv>,

@@ -70,7 +70,7 @@ test("helper process flags stay scoped to hook commands instead of the agent PTY
 test("revoking CanvasTTY lifecycle hooks leaves every provider launch unmodified", async (t) => {
   const root = await fixture(t);
   const adapters = adaptersFor(root);
-  for (const provider of ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok"]) {
+  for (const provider of ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]) {
     const launch = adapters.prepare(provider, `session-${provider}`, false);
     assert.deepEqual(launch.args, []);
     assert.deepEqual(launch.environment, {});

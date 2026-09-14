@@ -73,7 +73,7 @@ const MAX_RUNTIME_HOOK_REGISTRY_BYTES = 1024 * 1024;
 const MAX_PLUGIN_ICON_BYTES = 512 * 1024;
 const PLUGIN_INPUT_BRIDGE_URL = "canvastty-plugin://host/input-bridge.js";
 const AGENT_PROVIDERS = new Set<AgentProviderId>([
-  "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok"
+  "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"
 ]);
 const PLUGIN_HOOK_EVENTS = new Set<PluginAgentHookEvent>([
   "session-start",

@@ -7,7 +7,7 @@ if (process.platform !== "darwin") {
   throw new Error("The packaged CLI-resolution smoke requires macOS.");
 }
 
-const PROVIDERS = ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok"];
+const PROVIDERS = ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"];
 const READY_MARKER = "CANVASTTY_CLI_RESOLUTION_SMOKE_READY ";
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const root = await mkdtemp(join(tmpdir(), "canvastty-cli-resolution-"));

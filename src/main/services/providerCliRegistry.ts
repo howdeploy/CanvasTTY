@@ -10,7 +10,9 @@ export const PROVIDER_CLI_IDS: readonly AgentProviderId[] = Object.freeze([
   "kimi",
   "opencode",
   "hermes",
-  "grok"
+  "grok",
+  "omp",
+  "pi"
 ]);
 
 export type ProviderCliLauncher = "native" | "batch";
@@ -370,5 +372,7 @@ function providerLabel(provider: AgentProviderId): string {
   if (provider === "opencode") return "OpenCode";
   if (provider === "qwen") return "Qwen Code";
   if (provider === "grok") return "Grok Build";
+  if (provider === "omp") return "OMP";
+  if (provider === "pi") return "Pi";
   return `${provider[0].toUpperCase()}${provider.slice(1)}`;
 }

@@ -1,4 +1,4 @@
-export type ProviderId = "terminal" | "codex" | "claude" | "qwen" | "kimi" | "opencode" | "hermes" | "grok";
+export type ProviderId = "terminal" | "codex" | "claude" | "qwen" | "kimi" | "opencode" | "hermes" | "grok" | "omp" | "pi";
 export type AgentProviderId = Exclude<ProviderId, "terminal">;
 export type LimitProviderId = Extract<AgentProviderId, "codex" | "claude" | "qwen" | "kimi" | "opencode" | "grok">;
 export type LaunchProfileId = "normal" | "yolo";
@@ -31,6 +31,8 @@ export const CANVAS_LAUNCHER_ITEMS: readonly CanvasLauncherItemId[] = [
   "opencode",
   "hermes",
   "grok",
+  "omp",
+  "pi",
   "terminal"
 ];
 
@@ -52,6 +54,8 @@ export const RADIAL_LAUNCHER_ITEMS: readonly RadialLauncherItemId[] = [
   "opencode",
   "hermes",
   "grok",
+  "omp",
+  "pi",
   "terminal",
   "note",
   "browser",
@@ -555,6 +559,10 @@ export const BROWSER_PROVIDER_COLORS: Record<BrowserAgentProvider, string> = {
   opencode: "#5A5858",
   hermes: "#D6A700",
   grok: "#111111",
+  // OMP and Pi never reach the browser bridge, so these two values are never
+  // rendered; they exist only to keep the record total over the provider union.
+  omp: "#6E6A8A",
+  pi: "#4F7C8A",
   unknown: "#7A8291"
 };
 

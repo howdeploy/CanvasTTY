@@ -2,12 +2,16 @@ import { ipcRenderer } from "electron";
 
 const BROWSER_PAGE_WHEEL_CHANNEL = "browser:page-wheel";
 const BROWSER_PAGE_WHEEL_DECISION_CHANNEL = "browser:page-wheel-decision";
-const BROWSER_PAGE_WHEEL_IDLE_MS = 250;
 type BrowserWheelDecision = {
   generation: number;
   owner: "page" | "canvas";
 };
 
+// Main owns the wheel idle boundary and reports it in the ownership reply, so this sandboxed
+// entry mirrors the value instead of duplicating the constant. A reply without a usable window
+// keeps asking main on every event: main latches the sequence itself, so that fallback costs
+// round-trips but never wrong ownership.
+let wheelIdleMs: number | null = null;
 let wheelDecision: (BrowserWheelDecision & { lastEventAt: number }) | null = null;
 
 window.addEventListener("wheel", (event) => {
@@ -27,10 +31,11 @@ window.addEventListener("wheel", (event) => {
     ctrlKey: event.ctrlKey,
     metaKey: event.metaKey,
   };
-  if (!wheelDecision || now - wheelDecision.lastEventAt >= BROWSER_PAGE_WHEEL_IDLE_MS) {
+  if (!wheelDecision || wheelIdleMs === null || now - wheelDecision.lastEventAt >= wheelIdleMs) {
     const value = ipcRenderer.sendSync(BROWSER_PAGE_WHEEL_DECISION_CHANNEL, input);
+    wheelIdleMs = browserWheelIdleMs(value);
     wheelDecision = isBrowserWheelDecision(value)
-      ? { ...value, lastEventAt: now }
+      ? { generation: value.generation, owner: value.owner, lastEventAt: now }
       : { generation: 0, owner: "canvas", lastEventAt: now };
   } else {
     wheelDecision.lastEventAt = now;
@@ -52,4 +57,10 @@ function isBrowserWheelDecision(value: unknown): value is BrowserWheelDecision {
   return Number.isInteger(decision.generation)
     && (decision.generation as number) > 0
     && (decision.owner === "page" || decision.owner === "canvas");
+}
+
+function browserWheelIdleMs(value: unknown): number | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const idleMs = (value as Record<string, unknown>).idleMs;
+  return typeof idleMs === "number" && Number.isFinite(idleMs) && idleMs > 0 ? idleMs : null;
 }

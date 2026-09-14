@@ -210,9 +210,13 @@ export function useCanvasWheelNavigation({
     const element = viewport.current;
     if (!element) return;
     const handleWheel = (event: WheelEvent): void => {
-      const browserFreezeOwned = event.target instanceof Element
-        && event.target.closest('[data-browser-canvas-wheel-owner="canvas"]') !== null;
+      // A priority-local surface (Browser panels, HOME session list) keeps the
+      // wheel over its own scroll area, so the freeze marker on the card must
+      // not outrank it; explicit capture modes still claim the wheel below.
       const priorityLocalOwner = isPriorityLocalCanvasWheelTarget(event.target);
+      const browserFreezeOwned = !priorityLocalOwner
+        && event.target instanceof Element
+        && event.target.closest('[data-browser-canvas-wheel-owner="canvas"]') !== null;
       const ownedByCanvas = browserFreezeOwned || shouldCanvasOwnWheel({
         overFocusedWidget: priorityLocalOwner
           || isFocusedCanvasWidgetTarget(event.target, widgetFocusRef.current.id),

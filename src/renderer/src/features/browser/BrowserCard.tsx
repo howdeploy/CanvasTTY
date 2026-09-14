@@ -665,7 +665,7 @@ export function BrowserCard({
       )}
 
       {panel === "downloads" && (
-        <section className="browser-card__popover browser-card__download-panel" data-browser-action="true" data-wheel-owner="local">
+        <section className="browser-card__popover browser-card__download-panel" data-browser-action="true" data-wheel-owner="local" data-canvas-wheel-priority="local">
           <header>
             <strong>{t(locale, "browserDownloads")}</strong>
             <button type="button" onClick={() => setPanel(null)} aria-label={t(locale, "close")}><UiIcon name="close" size={14} /></button>
@@ -679,7 +679,7 @@ export function BrowserCard({
       )}
 
       {panel === "inspect" && (
-        <section className="browser-inspect" data-browser-action="true" data-wheel-owner="local" aria-label={t(locale, "browserInspectTitle")}>
+        <section className="browser-inspect" data-browser-action="true" data-wheel-owner="local" data-canvas-wheel-priority="local" aria-label={t(locale, "browserInspectTitle")}>
           <strong className="browser-inspect__title">{t(locale, "browserInspectTitle")}</strong>
           {inspectError && <p className="browser-inspect__empty">{inspectError}</p>}
           {!inspectError && (observed === null || observed.elements.length === 0) && (

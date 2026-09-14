@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { BROWSER_CANVAS_WHEEL_IDLE_MS } from "../src/main/services/browser/BrowserCanvasFreeze.ts";
 import * as browserWheelModule from "../src/main/services/browser/BrowserCanvasWheel.ts";
 
 const {
@@ -48,6 +49,20 @@ test("Browser wheel ownership sequence latches one tab-scoped owner across frame
   sequence.reset();
   assert.equal(sequence.touch(2, 1_452), null);
   assert.deepEqual(sequence.decide("page", 1_453), { generation: 3, owner: "page" });
+});
+
+test("the ownership reply carries the one shared idle window without changing the decision", () => {
+  assert.equal(typeof browserWheelModule.browserPageWheelReply, "function");
+  const decision = { generation: 7, owner: "canvas" };
+
+  const reply = browserWheelModule.browserPageWheelReply(decision);
+
+  // The preload holds no copy of this window: dropping the attachment here would
+  // silently send every page back to its own stale boundary.
+  assert.equal(reply.idleMs, BROWSER_CANVAS_WHEEL_IDLE_MS);
+  assert.deepEqual(reply, { generation: 7, owner: "canvas", idleMs: BROWSER_CANVAS_WHEEL_IDLE_MS });
+  // The decision the sequence compares by value must survive untouched.
+  assert.deepEqual(decision, { generation: 7, owner: "canvas" });
 });
 
 test("browser page wheel input validates, normalizes delta modes, and clamps both axes", () => {

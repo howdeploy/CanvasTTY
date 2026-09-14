@@ -48,7 +48,7 @@ test("the queue lives in the screen-anchored overlay layer, not inside the trans
     new URL("../src/renderer/src/features/workspace/WorkspaceCanvas.tsx", import.meta.url),
     "utf8"
   );
-  const overlays = canvas.match(/<div className="canvas-overlays">[\s\S]*?\n      <\/div>/)?.[0];
+  const overlays = canvas.match(/<div className="canvas-overlays"[^>]*>[\s\S]*?\n      <\/div>/)?.[0];
   const home = await readFile(
     new URL("../src/renderer/src/features/home/HomeZone.tsx", import.meta.url),
     "utf8"

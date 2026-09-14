@@ -54,9 +54,12 @@ import {
   translateBounds
 } from "./canvasRegions";
 import {
+  boundsEqual,
+  boundsOverlap,
   bringCanvasLayerToFront,
   canvasLayerIsOccluded,
   canvasLayerZIndex,
+  canvasScreenRect,
   reconcileCanvasLayerOrder
 } from "./canvasStacking";
 import {
@@ -218,6 +221,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const [noteEditRequest, setNoteEditRequest] = useState<{ id: string; version: number } | null>(null);
   const [regionMovePreview, setRegionMovePreview] = useState<RegionMovePreview | null>(null);
   const [marqueeSelection, setMarqueeSelection] = useState<ReadonlySet<string>>(EMPTY_MARQUEE_SELECTION);
+  const overlays = useRef<HTMLDivElement>(null);
+  const [overlayRects, setOverlayRects] = useState<SessionBounds[]>([]);
   const cameraRef = useRef(camera);
   cameraRef.current = camera;
   const commitCamera = useCallback((next: CameraState): void => {
@@ -431,6 +436,51 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     onFocusSession(session);
   }, [focusController, onFocusSession, raiseLayer]);
   const attention = useMemo(() => attentionSessions(renderedSessions), [renderedSessions]);
+  // The page area is a native child view, so it composites above every DOM layer including this
+  // HUD; the page can only yield by hiding. Slot boxes are measured instead of their children:
+  // they are content-sized, which keeps this effect keyed to what can move or resize a slot and
+  // not to every row inside the dynamic panels.
+  useEffect(() => {
+    const root = overlays.current;
+    if (!root) return;
+    const slots = [...root.querySelectorAll<HTMLElement>(".canvas-overlay-slot")];
+    const measure = (): void => {
+      const rootRect = root.getBoundingClientRect();
+      const next = slots.map((slot) => {
+        const rect = slot.getBoundingClientRect();
+        return {
+          position: { x: rect.left - rootRect.left, y: rect.top - rootRect.top },
+          size: { width: rect.width, height: rect.height }
+        };
+      });
+      // Compared by value: a re-render that leaves the layout alone must not publish new state,
+      // otherwise the observer and the state update could ping-pong forever.
+      setOverlayRects((current) => (
+        next.length === current.length && next.every((rect, index) => boundsEqual(rect, current[index]))
+          ? current
+          : next
+      ));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    for (const slot of slots) observer.observe(slot);
+    return () => observer.disconnect();
+  }, [
+    attention.length,
+    settings.canvasControlsPlacement,
+    settings.minimapPlacement,
+    settings.shortcutHintsPlacement,
+    settings.showShortcutHints,
+    settings.uiScale
+  ]);
+  const browserScreenRect = renderedBrowserCanvas === null
+    ? null
+    : canvasScreenRect(renderedBrowserCanvas, camera);
+  // Both sides are screen-relative to this viewport: the camera translation is measured from the
+  // scene origin, and the overlay rects are measured from the overlay root, which shares it.
+  const browserUnderOverlay = browserScreenRect !== null
+    && overlayRects.some((rect) => boundsOverlap(browserScreenRect, rect));
   const wheelNavigation = useCanvasWheelNavigation({
     viewport,
     settings,
@@ -871,7 +921,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               zoom={camera.zoom}
               camera={camera}
               visible={browserViewVisible && !homeEditing && contextMenu === null
-                && regionEditor === null && !commandPaletteOpen && radialLauncher === null && !browserOccluded}
+                && regionEditor === null && !commandPaletteOpen && radialLauncher === null
+                && !browserOccluded && !browserUnderOverlay}
               stackIndex={canvasLayerZIndex(layerOrder, browserLayerId)}
               uiScale={settings.uiScale}
               snapEnabled={settings.snapToGrid}
@@ -1060,7 +1111,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         />
       )}
 
-      <div className="canvas-overlays">
+      <div className="canvas-overlays" ref={overlays}>
         {CANVAS_OVERLAY_PLACEMENTS.map((placement) => (
           <div className={`canvas-overlay-slot canvas-overlay-slot--${placement}`} key={placement}>
             {/* The canvas scene is transformed and therefore its own stacking context, so anything

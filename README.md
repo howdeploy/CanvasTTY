@@ -51,6 +51,7 @@ npm run dev
 | [Documentation hub](docs/README.md) | [Widget authoring](docs/widget-authoring.md) |
 | [Getting started](docs/getting-started.md) | [Metrics and telemetry](docs/metrics-and-telemetry.md) |
 | [Built-in browser and audit log](docs/browser.md) | [Bundled agent browser skill](agent/browser/SKILL.md) |
+| [Native Codex control CLI](docs/agent-orchestration.md) | [Bundled orchestration skill](agent/orchestrator/SKILL.md) |
 | [Install, releases, and local data](docs/installing-and-security.md) | [Security policy](SECURITY.md) |
 | [Architecture](docs/ARCHITECTURE.md) | [UI contract](docs/UI_CONTRACT.md) |
 | [Runtime plugin authoring](docs/plugins.md) | [Typed plugin SDK](docs/plugin-api.d.ts) |

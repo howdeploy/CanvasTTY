@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { ProviderId } from "../../../shared/contracts.ts";
 import {
   MAX_RUNTIME_MESSAGE_BYTES,
+  MAX_RESULT_CHARS,
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_STATES
 } from "../../../agent-runtime/runtime-protocol.mjs";
@@ -27,6 +28,7 @@ export interface RuntimeLifecycleSignal {
   state: RuntimeLifecycleState;
   event: string;
   turnId: string | null;
+  result?: { text: string; truncated: boolean };
 }
 
 export interface RuntimeSessionCapability {
@@ -42,6 +44,7 @@ interface RuntimeLease {
   tokenDigest: Buffer;
   activeTurnId: string | null;
   latest: RuntimeLifecycleSignal | null;
+  captureResult: boolean;
 }
 
 interface ParsedLifecycleMessage {
@@ -51,6 +54,7 @@ interface ParsedLifecycleMessage {
   state: RuntimeLifecycleState;
   event: string;
   turnId: string | null;
+  result?: { text: string; truncated: boolean };
 }
 
 export interface RuntimeGatewayOptions {
@@ -126,7 +130,8 @@ export class RuntimeGateway {
 
   registerSession(
     terminalSessionId: string,
-    provider: Exclude<ProviderId, "terminal">
+    provider: Exclude<ProviderId, "terminal">,
+    captureResult = false
   ): RuntimeSessionCapability {
     if (!this.endpoint || (!this.server && !this.windowsTransport?.isRunning)) {
       throw new Error("Agent runtime gateway must be started before launching agents.");
@@ -144,7 +149,8 @@ export class RuntimeGateway {
       provider,
       tokenDigest: digest(capabilityToken),
       activeTurnId: null,
-      latest: null
+      latest: null,
+      captureResult
     });
     return { address: this.endpoint, terminalSessionId, provider, capabilityToken };
   }
@@ -222,6 +228,7 @@ export class RuntimeGateway {
       && timingSafeEqual(supplied, lease.tokenDigest);
     supplied.fill(0);
     if (!valid) throw new Error("Runtime capability is invalid.");
+    if (message.result && !lease.captureResult) throw new Error("Result capture is not enabled for this session.");
 
     if (message.turnId && isTurnStart(message.event)) {
       lease.activeTurnId = message.turnId;
@@ -235,7 +242,8 @@ export class RuntimeGateway {
     const signal: RuntimeLifecycleSignal = {
       state: message.state,
       event: message.event,
-      turnId: message.turnId
+      turnId: message.turnId,
+      ...(message.result === undefined ? {} : { result: message.result })
     };
     lease.latest = signal;
     this.onSignal?.(message.terminalSessionId, signal);
@@ -247,7 +255,9 @@ function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
   const keys = Object.keys(value).sort();
   const expected = [
     "capabilityToken", "event", "provider", "state", "terminalSessionId", "turnId", "type", "v"
-  ].sort();
+  ];
+  if (value.result !== undefined) expected.push("result");
+  expected.sort();
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
     throw new Error("Runtime message has an invalid schema.");
   }
@@ -269,6 +279,12 @@ function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
     || value.event.length > 80
     || (value.turnId !== null && (typeof value.turnId !== "string" || value.turnId.length > 160))
   ) throw new Error("Runtime message fields are invalid.");
+  if (value.result !== undefined && (
+    value.state !== "idle" || value.event !== "Stop" || !isRecord(value.result)
+    || Object.keys(value.result).sort().join(",") !== "text,truncated"
+    || typeof value.result.text !== "string" || value.result.text.length > MAX_RESULT_CHARS
+    || typeof value.result.truncated !== "boolean"
+  )) throw new Error("Runtime result is invalid.");
   return value as unknown as ParsedLifecycleMessage;
 }
 

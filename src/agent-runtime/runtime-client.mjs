@@ -8,7 +8,7 @@ import {
 
 const CONNECT_TIMEOUT_MS = 1_000;
 
-export async function reportLifecycle({ state, event, turnId = null }) {
+export async function reportLifecycle({ state, event, turnId = null, result }) {
   if (!RUNTIME_STATES.includes(state)) return false;
   if (typeof event !== "string" || event.length === 0 || event.length > 80) return false;
   const address = process.env[AGENT_RUNTIME_ENV.address];
@@ -25,7 +25,8 @@ export async function reportLifecycle({ state, event, turnId = null }) {
     capabilityToken,
     state,
     event,
-    turnId: normalizedId(turnId)
+    turnId: normalizedId(turnId),
+    ...(result === undefined ? {} : { result })
   };
   const payload = Buffer.from(`${JSON.stringify(message)}\n`, "utf8");
   if (payload.length > MAX_RUNTIME_MESSAGE_BYTES) return false;

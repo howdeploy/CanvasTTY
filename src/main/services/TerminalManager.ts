@@ -29,7 +29,7 @@ import type {
   AgentRuntimeLaunchCoordinator,
   PreparedAgentRuntimePtyLaunch
 } from "./agent-runtime/AgentRuntimeBridge.ts";
-import { AGENT_RUNTIME_ENV } from "../../agent-runtime/runtime-protocol.mjs";
+import { AGENT_RUNTIME_ENV, CAPTURE_RESULT_ENV } from "../../agent-runtime/runtime-protocol.mjs";
 import { mergeOpenCodeLaunchEnvironment } from "./agent-runtime/ProviderRuntimeLaunch.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
@@ -68,6 +68,7 @@ interface ManagedSession {
   lifecycle: ProviderLifecycleParser | null;
   awaitingInitialResize: boolean;
   resumeOnLaunch: boolean;
+  captureResult: boolean;
 }
 
 export interface ProviderLifecycleSignal {
@@ -148,6 +149,16 @@ export class TerminalManager {
     return [...this.sessions.values()].map((session) => snapshot(session));
   }
 
+  listMetadata(): SessionMetadata[] {
+    return [...this.sessions.values()].map((session) => structuredClone(session.metadata));
+  }
+
+  geometry(id: string): { cols: number; rows: number } {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error("Terminal session does not exist.");
+    return { cols: session.cols, rows: session.rows };
+  }
+
   readBuffer(id: string): TerminalBufferSnapshot {
     const session = this.sessions.get(id);
     if (!session) throw new Error("Terminal session does not exist.");
@@ -157,8 +168,11 @@ export class TerminalManager {
     };
   }
 
-  create(request: CreateSessionRequest): SessionSnapshot {
+  create(request: CreateSessionRequest, control: { captureResult?: boolean } = {}): SessionSnapshot {
     assertCreateRequest(request);
+    if (control.captureResult && request.provider !== "codex") {
+      throw new Error("Result capture requires a Codex session.");
+    }
     assertDirectory(request.cwd);
 
     const id = randomUUID();
@@ -181,7 +195,8 @@ export class TerminalManager {
       && this.providerClis.get(request.provider).state === "available";
     const launched = awaitMeasuredGrid
       ? { process: null, agentBrowser: null, agentRuntime: null, failure: null }
-      : this.spawnProcess(id, request.provider, request.profile, request.cwd);
+      : this.spawnProcess(id, request.provider, request.profile, request.cwd,
+        INITIAL_TERMINAL_COLS, INITIAL_TERMINAL_ROWS, false, control.captureResult);
     if (launched.failure) applyLaunchFailure(metadata, launched.failure);
 
     const session: ManagedSession = {
@@ -201,7 +216,8 @@ export class TerminalManager {
         ? createProviderLifecycleParser(request.provider, request.cwd)
         : null,
       awaitingInitialResize: awaitMeasuredGrid,
-      resumeOnLaunch: false
+      resumeOnLaunch: false,
+      captureResult: control.captureResult === true
     };
     this.sessions.set(id, session);
     if (launched.process) this.bindProcess(id, session, launched.process);
@@ -243,7 +259,9 @@ export class TerminalManager {
       session.metadata.profile,
       session.metadata.cwd,
       session.cols,
-      session.rows
+      session.rows,
+      false,
+      session.captureResult
     );
     session.process = launched.process;
     session.agentBrowser = launched.agentBrowser;
@@ -268,11 +286,15 @@ export class TerminalManager {
   }
 
   input(id: string, data: string): void {
-    if (typeof data !== "string" || data.length === 0) return;
+    this.inputChecked(id, data);
+  }
+
+  inputChecked(id: string, data: string): boolean {
+    if (typeof data !== "string" || data.length === 0) return false;
     const session = this.sessions.get(id);
-    if (!session || session.metadata.exitCode !== null || !session.process) return;
+    if (!session || session.metadata.exitCode !== null || !session.process) return false;
     const process = session.process;
-    tryPtyOperation(() => process.write(data));
+    return tryPtyOperation(() => process.write(data));
   }
 
   resize(id: string, cols: number, rows: number): void {
@@ -446,7 +468,8 @@ export class TerminalManager {
         ? createProviderLifecycleParser(descriptor.provider, descriptor.cwd)
         : null,
       awaitingInitialResize: awaitMeasuredGrid,
-      resumeOnLaunch: awaitMeasuredGrid && descriptor.provider !== "terminal"
+      resumeOnLaunch: awaitMeasuredGrid && descriptor.provider !== "terminal",
+      captureResult: false
     };
     this.sessions.set(descriptor.id, session);
     if (process) this.bindProcess(descriptor.id, session, process);
@@ -488,7 +511,8 @@ export class TerminalManager {
         session.metadata.cwd,
         session.cols,
         session.rows,
-        resumePrevious
+        resumePrevious,
+        session.captureResult
       );
       session.process = launched.process;
       session.agentBrowser = launched.agentBrowser;
@@ -521,7 +545,8 @@ export class TerminalManager {
     cwd: string,
     cols = INITIAL_TERMINAL_COLS,
     rows = INITIAL_TERMINAL_ROWS,
-    resumePrevious = false
+    resumePrevious = false,
+    captureResult = false
   ): {
     process: IPty | null;
     agentBrowser: PreparedAgentBrowserPtyLaunch | null;
@@ -534,7 +559,8 @@ export class TerminalManager {
     }
     const agentRuntime = provider === "terminal"
       ? null
-      : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd }) ?? null;
+      : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd,
+        ...(captureResult ? { captureResult: true } : {}) }) ?? null;
     let agentBrowser: PreparedAgentBrowserPtyLaunch | null = null;
     try {
       agentBrowser = provider === "terminal" || provider === "grok"
@@ -547,6 +573,8 @@ export class TerminalManager {
         ? mergeOpenCodeLaunchEnvironment(browserEnvironment, runtimeEnvironment)
         : { ...browserEnvironment, ...runtimeEnvironment };
       const providerArgs = [...(agentRuntime?.args ?? []), ...(agentBrowser?.args ?? [])];
+      // Stable terminal observations for the CLI controller; leave ordinary launches unchanged.
+      if (captureResult && provider === "codex") providerArgs.push("-c", "tui.animations=false");
       const launch = resolveTerminalLaunch(provider, profile, providerArgs, {
         environment: { ...baseEnvironment, ...providerEnvironment },
         ...(providerCli ? { providerCli } : {}),
@@ -631,7 +659,8 @@ export function terminalEnvironment(
 ): Record<string, string> {
   const reserved = new Set<string>([
     ...Object.values(AGENT_BROWSER_ENV),
-    ...Object.values(AGENT_RUNTIME_ENV)
+    ...Object.values(AGENT_RUNTIME_ENV),
+    CAPTURE_RESULT_ENV
   ]);
   const environment = Object.fromEntries(
     Object.entries(source).filter((entry): entry is [string, string] => (

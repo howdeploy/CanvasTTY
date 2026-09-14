@@ -64,20 +64,20 @@ replaces the owner of every native surface at once. Rejected.
 | Item | What was taken |
 |---|---|
 | Default-session permission denial | Main denies browser permission requests, checks, and device permissions on the default session; the built-in browser keeps its own partition policy |
-| Packaged hardening | Node-options and CLI-inspect fuses closed, embedded asar integrity validated; see the fuse ADR for the `runAsNode` exception |
+| Packaged hardening | Node-options and CLI-inspect fuses closed, embedded asar integrity validation requested where Electron implements it (macOS 16+, Windows 30+); see the fuse ADR for the `runAsNode` exception |
 | Secret-scan precision | Identifier-embedded key prefixes no longer produce false positives |
-| Renderer crash recovery | Main logs the reason and reloads the startup surface instead of leaving a blank window; sessions and services stay alive |
+| Renderer crash recovery | Main logs the reason and exit code and reloads the application surface instead of leaving a blank window; terminal services and live sessions keep running across the recovery |
 | Scrollback search | `Ctrl+Shift+F` in a focused terminal card opens an in-card search row; Escape returns focus so keystrokes never leak into the PTY |
 | Fit to content | Canvas control and palette command framing the HOME zone and every window, clamped to the existing zoom range; no keyboard chord |
 | Directional focus | `Alt+Arrow` moves focus to the nearest window strictly ahead in that direction |
 | Provider titles | A non-customized card header shows the title the provider sets through OSC 0/2, falling back to the path display; display only |
 | Palette path search | Palette entries match on the session path in addition to label and provider |
-| Inspect to agent | Browser card Inspect control plus one structured line written into the newest running agent session, with stale references refused |
+| Inspect to agent | Browser card Inspect control observes up to 20 elements and lists all of them, so every observed element is reachable; one structured line written into the newest running agent session, with stale references refused and awaiting-decision sessions skipped |
 | Attention queue | HOME queue of sessions needing approval or failed, derived only from session snapshots |
-| Attention notification | Persistent attention ring and one OS notification per transition into approval or failure, with a persisted setting |
-| Visibility-gated output | Cards below the summary threshold stop receiving streamed output; the missed suffix is replayed exactly once on return |
+| Attention notification | Persistent attention ring and one OS notification per genuine transition into approval or failure; repeated snapshots and already-seen restore-time failures stay silent, while a failure the user triggers by restarting notifies; persisted setting |
+| Visibility-gated output | Cards below the summary threshold stop receiving streamed output; the missed output is replayed once on return, and a stretch longer than the bounded history is reported instead of looking continuous |
 | Focused-card WebGL | One WebGL context, only for the focused terminal card, with DOM-renderer fallback |
-| Marquee selection | `Shift`+drag on empty canvas selects intersecting windows; see the marquee ADR |
+| Marquee selection | `Shift`+drag on empty canvas selects intersecting terminal cards; see the marquee ADR |
 | Self-update surface | One settings row with explicit idle, checking, download, ready, and unavailable states |
 
 ### Dropped, with the existing upstream owner

@@ -7,7 +7,7 @@
 - Node.js and npm.
 - A native compiler toolchain supported by `node-pty` on your platform.
 - A graphical desktop session capable of running Electron.
-- Optional agent CLIs — `codex`, `claude`, `qwen`, `kimi`, `opencode`, `hermes`, or `grok` — installed and available in `PATH` for the launchers you intend to use.
+- Optional agent CLIs — `codex`, `claude`, `qwen`, `kimi`, `opencode`, `hermes`, `grok`, `omp`, or `pi` — installed and available in `PATH` for the launchers you intend to use.
 
 CanvasTTY does not install or authenticate agent CLIs for you. Complete each provider's own login flow before expecting its sessions or subscription limits to work.
 
@@ -20,16 +20,18 @@ npm run dev
 
 `npm install` also prepares Electron and rebuilds the native `node-pty` module. The development command starts the real Electron application, not a browser-only mock.
 
+Packaged builds update from the row in **Settings → General**. That row reports one state at a time: the installed version when idle, a check in progress, **Update available** with the new version, **Downloading update** with a percent when the feed reports one, and **Update ready** with **Install and restart** once the download has finished. Downloading and installing are separate explicit actions, so **Install and restart** appears only after the download. A development build reports updates as unavailable instead of failing.
+
 ## First session
 
 1. Open **Terminal** on Home to start a shell immediately in the last project directory.
-2. Open **Codex**, **Claude**, **Kimi**, **OpenCode**, **Hermes**, or **Grok Build** to choose a project folder and launch profile for that fixed provider.
+2. Open **Codex**, **Claude**, **Kimi**, **OpenCode**, **Hermes**, **Grok Build**, **OMP**, or **Pi** to choose a project folder and launch profile for that fixed provider.
 3. Open **Browser** on Home to create or restore the built-in browser card. Agent sessions launched by CanvasTTY can use its open tabs while **Settings → Browser → Agent access** is enabled.
 4. Move or resize the live terminal and browser on the same canvas.
 5. Zoom out to use semantic summaries as navigation targets; zoom back in to interact with xterm or the native browser page.
 6. Return to Home to inspect real sessions, connected browser agents, and any provider quota windows that their adapters expose.
 
-The **YOLO** profile disables provider safety prompts where the provider supports such a mode. For OpenCode, CanvasTTY applies a launch-only inline `permission: "allow"` override while preserving the rest of the merged OpenCode configuration. Hermes receives its native `--yolo` flag, while Grok Build receives its native `--always-approve` flag for that launch. CanvasTTY presents an explicit danger confirmation; use it only in a directory you are willing to let the agent modify.
+The **YOLO** profile disables provider safety prompts where the provider supports such a mode. For OpenCode, CanvasTTY applies a launch-only inline `permission: "allow"` override while preserving the rest of the merged OpenCode configuration. Hermes receives its native `--yolo` flag, while Grok Build receives its native `--always-approve` flag for that launch. OMP receives its native `--auto-approve` flag and Pi receives `--approve`; Pi has no permission system, so its only prompt is project trust, which is why its flag differs in kind from the others. CanvasTTY presents an explicit danger confirmation; use it only in a directory you are willing to let the agent modify.
 
 ## Terminal input and controls
 
@@ -40,6 +42,10 @@ The **YOLO** profile disables provider safety prompts where the provider support
 - Terminal scrolling and canvas navigation have independent wheel-direction settings. Canvas inversion applies to both pan axes and to ordinary wheel zoom.
 - `Shift+Enter` sends a modified Enter sequence to insert a line break in compatible agent prompts without submitting. `Enter` keeps its normal PTY behavior.
 - With terminal text selected, `Ctrl+C`/`Ctrl+Shift+C` or `Cmd+C` copies it. Paste with `Ctrl+Shift+V`, `Cmd+V`, or `Shift+Insert`. Plain `Ctrl+C` without a selection remains the PTY interrupt.
+- With a terminal card focused, `Ctrl+Shift+F` opens the card's scrollback search row: input, match counter, previous/next, and close. `Enter` moves to the next match, `Shift+Enter` to the previous, and `Escape` closes the row and returns focus to the terminal, so keystrokes never leak into the PTY. The row is unavailable in semantic summary mode.
+- `Alt+ArrowUp`/`Alt+ArrowDown`/`Alt+ArrowLeft`/`Alt+ArrowRight` (`Option` on macOS) moves focus to the nearest window in that direction across terminal cards, the built-in browser, and plugin canvases. A candidate must be strictly ahead in that direction, and ties break on perpendicular distance. The gesture is inert while renaming a window or capturing a shortcut, and it leaves `Ctrl+K` and `Ctrl+,` untouched.
+- `Shift`+drag on empty canvas draws a marquee and selects every terminal card it intersects (plugin canvases, the built-in browser, and sticky notes are not tested); dragging any selected terminal then moves the whole selection by the same delta. A press that does not travel stays a plain click. Marquee is additive to the existing pointer navigation, so plain empty-canvas drag still pans as before.
+- **Fit to content**, next to the canvas Home and zoom buttons, frames the HOME zone and every window with a margin, clamped to the canvas zoom range of `0.2x`–`1.35x`; on an empty canvas it goes HOME. The same command is offered in the canvas palette. There is no keyboard chord for it.
 
 ## Browser controls and activity
 
@@ -79,6 +85,6 @@ A working CLI session and a readable subscription-quota API are separate capabil
 
 ### A terminal exists but is not marked working
 
-CanvasTTY shows live `idle`/`working`/`needs_approval` for Codex, Claude Code, Qwen Code, Kimi Code, OpenCode, Hermes, and Grok Build from provider lifecycle hooks. An agent stays `unavailable` until its first machine-readable signal; terminal text and PTY existence are not activity telemetry.
+CanvasTTY shows live `idle`/`working`/`needs_approval` for Codex, Claude Code, Qwen Code, Kimi Code, OpenCode, Hermes, and Grok Build from provider lifecycle hooks. An agent stays `unavailable` until its first machine-readable signal; terminal text and PTY existence are not activity telemetry. OMP and Pi report no lifecycle events at all, so their cards show **Status unavailable** for the whole session. That is expected behaviour, not a fault, and no status will arrive later.
 
 Next: read the [browser and audit-log guide](browser.md), [author a widget](widget-authoring.md), or study [metrics and telemetry](metrics-and-telemetry.md).

@@ -7,7 +7,7 @@
 - Node.js 与 npm。
 - 当前平台上 `node-pty` 支持的原生编译工具链。
 - 能运行 Electron 的图形桌面环境。
-- 可选：安装 `codex`、`claude`、`qwen`、`kimi`、`opencode`、`hermes` 或 `grok` 智能体 CLI 并加入 `PATH`，只装你打算使用的启动器对应的即可。
+- 可选：安装 `codex`、`claude`、`qwen`、`kimi`、`opencode`、`hermes`、`grok`、`omp` 或 `pi` 智能体 CLI 并加入 `PATH`，只装你打算使用的启动器对应的即可。
 
 CanvasTTY 不会替你安装或登录智能体 CLI。想让某个服务商的会话或订阅限额可用，请先完成该服务商自己的登录流程。
 
@@ -20,16 +20,18 @@ npm run dev
 
 `npm install` 还会准备 Electron 并重新编译原生的 `node-pty` 模块。开发命令启动的是真正的 Electron 应用，不是只能在浏览器里跑的模拟界面。
 
+打包后的构建通过 **设置 → 通用** 中的更新行完成自更新。该行一次只显示一种状态：闲置时显示已安装版本，检查进行中，**有可用更新** 并附上新版本号，**正在下载更新** 并在源提供进度时附上百分比，以及下载完成后显示 **更新已就绪** 和 **安装并重启**。下载和安装是两个独立的显式操作，因此 **安装并重启** 只在下载完成后出现。开发构建会把更新报告为不可用，而不是报错。
+
 ## 第一个会话
 
 1. 在 Home 页点击 **Terminal**，立即在上次使用的项目目录里打开一个 shell。
-2. 点击 **Codex**、**Claude**、**Kimi**、**OpenCode**、**Hermes** 或 **Grok Build**，为对应的固定服务商选择项目目录和启动配置。
+2. 点击 **Codex**、**Claude**、**Kimi**、**OpenCode**、**Hermes**、**Grok Build**、**OMP** 或 **Pi**，为对应的固定服务商选择项目目录和启动配置。
 3. 在 Home 打开 **Browser**，创建或恢复内置浏览器卡片。启用 **设置 → 浏览器 → 智能体访问** 后，由 CanvasTTY 启动的智能体会话可以使用已打开的标签页。
 4. 在同一画布上移动实时终端和浏览器，或调整它们的大小。
 5. 缩小画布后借助语义摘要导航；放大后继续使用 xterm 或原生浏览器页面。
 6. 回到 Home，查看真实会话、已连接的浏览器智能体以及适配器提供的服务商配额窗口。
 
-在服务商支持的情况下，**YOLO** 配置会关闭其安全确认提示。对于 OpenCode，CanvasTTY 只在本次启动中添加 inline `permission: "allow"` override，并保留其余合并后的 OpenCode 配置；Hermes 接收原生 `--yolo`，Grok Build 接收原生 `--always-approve`，且都只作用于本次启动。CanvasTTY 会弹出明确的危险确认；只在你愿意让智能体改动的目录中使用该配置。
+在服务商支持的情况下，**YOLO** 配置会关闭其安全确认提示。对于 OpenCode，CanvasTTY 只在本次启动中添加 inline `permission: "allow"` override，并保留其余合并后的 OpenCode 配置；Hermes 接收原生 `--yolo`，Grok Build 接收原生 `--always-approve`，且都只作用于本次启动。OMP 接收原生 `--auto-approve`，Pi 接收 `--approve`：Pi 本身没有权限系统，它唯一的提示是项目信任，因此其参数与其他服务商在性质上不同。CanvasTTY 会弹出明确的危险确认；只在你愿意让智能体改动的目录中使用该配置。
 
 ## 终端输入与控制
 
@@ -40,6 +42,10 @@ npm run dev
 - 终端滚动与画布导航的滚轮方向可以独立设置。Canvas inversion 同时作用于两个 pan 轴和普通 wheel zoom。
 - `Shift+Enter` 会发送带修饰符的 Enter，在兼容的智能体 prompt 中插入换行而不提交；普通 `Enter` 保持原有 PTY 行为。
 - 选中终端文字后，使用 `Ctrl+C`/`Ctrl+Shift+C` 或 `Cmd+C` 复制；使用 `Ctrl+Shift+V`、`Cmd+V` 或 `Shift+Insert` 粘贴。没有选中文字时，普通 `Ctrl+C` 仍是 PTY 中断。
+- 终端卡片获得焦点时，`Ctrl+Shift+F` 会打开该卡片的滚动缓冲区搜索行：输入框、匹配计数、上一处和下一处按钮，以及关闭。`Enter` 跳到下一处匹配，`Shift+Enter` 跳到上一处，`Escape` 关闭该行并把焦点交还终端，因此按键不会泄漏到 PTY。语义摘要模式下该行不可用。
+- `Alt+ArrowUp`/`Alt+ArrowDown`/`Alt+ArrowLeft`/`Alt+ArrowRight`（macOS 为 `Option`）会把焦点移到该方向上最近的窗口，涵盖终端卡片、内置浏览器和插件画布。候选窗口必须在该方向上严格靠前，距离相同时按垂直距离判定。重命名窗口或捕获快捷键期间该手势不生效，也不会干扰 `Ctrl+K` 与 `Ctrl+,`。
+- 在空白画布上 `Shift`+拖拽会画出选框，并选中与之相交的所有终端卡片（plugin canvas、内置浏览器与便签不会被检查）；随后拖拽任一已选中的终端，会按相同位移整体移动选区。没有产生位移的按下仍是普通单击。选框只是对现有指针导航的补充：在空白画布上普通拖拽仍然和以前一样执行平移。
+- 画布 Home 与缩放按钮旁边的 **Fit to content** 会带边距地框住 HOME 区域和每个窗口，并夹在画布缩放范围 `0.2x`–`1.35x` 内；画布为空时则回到 HOME。画布命令面板中也提供同一命令。它没有键盘快捷键。
 
 ## 浏览器控制与活动
 
@@ -79,6 +85,6 @@ npm run dev
 
 ### 终端已打开，却没有标记为“工作中”
 
-CanvasTTY 根据 provider lifecycle hook，为 Codex、Claude Code、Qwen Code、Kimi Code、OpenCode、Hermes 与 Grok Build 显示实时 `idle`、`working`、`needs_approval`。智能体在首个机器可读 signal 前保持 `unavailable`；PTY 存在和终端文本本身都不构成活动遥测。
+CanvasTTY 根据 provider lifecycle hook，为 Codex、Claude Code、Qwen Code、Kimi Code、OpenCode、Hermes 与 Grok Build 显示实时 `idle`、`working`、`needs_approval`。智能体在首个机器可读 signal 前保持 `unavailable`；PTY 存在和终端文本本身都不构成活动遥测。OMP 与 Pi 完全不上报生命周期事件，因此它们的卡片整个会话都会显示 **Status unavailable**。这是预期行为，而不是故障，之后也不会有状态到来。
 
 下一步：阅读[浏览器与审计日志](browser.zh-CN.md)、[编写小组件](widget-authoring.zh-CN.md)，或查看[指标与遥测](metrics-and-telemetry.zh-CN.md)。

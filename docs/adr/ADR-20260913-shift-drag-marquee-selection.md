@@ -1,7 +1,7 @@
 # ADR: Additive Marquee Selection on Empty Canvas
 
 **Date:** 2026-09-13
-**Scope / Component:** empty-canvas pointer navigation, multi-window selection, and group movement
+**Scope / Component:** empty-canvas pointer navigation, multi-card terminal selection, and group movement
 **Risk/Strictness Profile:** Production
 **Status:** Accepted
 **Amends:** [ADR: Use Intent-Aware Canvas Navigation](./ADR-20260808-intent-aware-canvas-navigation.md)
@@ -15,7 +15,7 @@ record.
 
 ## Context and Problem Statement
 
-The canvas now needs to move several windows as one group. Upstream has exactly one selection at a
+The canvas now needs to move several terminal cards as one group. Upstream has exactly one selection at a
 time (`activeSessionId`), and the accepted navigation ADR deliberately keeps logical focus and
 selection separate while stating that it "does not restrict future multi-select" (Invariant 11).
 
@@ -96,14 +96,15 @@ The modifier exclusivity is what preserves the additive property:
 
 The marquee rect is the axis-aligned rectangle between press and current pointer position, rendered
 as an absolutely positioned overlay with `pointer-events: none`, and converted to world space to
-test intersection with rendered session bounds. Every intersecting window joins the selection; an
-empty intersection clears it.
+test intersection with rendered terminal-card bounds. Every intersecting terminal card joins the
+selection; plugin canvases, the built-in browser, and sticky notes are not tested and never join
+it; an empty intersection clears it.
 
 A press that does not travel past the existing canvas drag threshold goes to the ordinary click
 path with no selection change and no click suppression. A travelled marquee suppresses the
 follow-up click so the press cannot also focus or activate whatever is under the pointer.
 
-Dragging any window that is part of a multi-window selection moves the whole selection by one
+Dragging any terminal card that is part of a multi-card selection moves the whole selection by one
 delta. The pressed card's own drag does not also run, so the movement is applied once. The group
 preview is transient pointer state; the committed bounds are written through the normal
 `onSessionBoundsChange` path.
@@ -118,13 +119,15 @@ focus, the camera, the PTY, or any persisted session field.
 3. Focus and selection remain independent; multi-select does not focus windows.
 4. A press without travel is a plain click and changes neither selection nor focus.
 5. A travelled marquee suppresses exactly one follow-up click.
-6. A group drag applies one delta to every selected window; the pressed card does not apply a second.
+6. A group drag applies one delta to every selected terminal card; the pressed card does not apply a second.
 7. No pointer gesture introduces a keyboard chord, a persisted setting, or a PTY-visible event.
+8. The marquee tests terminal-card bounds only: plugin canvases, the built-in browser, and sticky
+   notes are never tested for intersection and never join the selection.
 
 ## Consequences and Mitigations
 
-- Multi-window movement is available without changing any existing navigation gesture.
-- Windows can now be selected outside the single active session. Surfaces that still key off the
+- Group movement of terminal cards is available without changing any existing navigation gesture.
+- Terminal cards can now be selected outside the single active session. Surfaces that still key off the
   single active session (focus, title bar, palette targeting) are unaffected by design; the
   selection is additional state, not a replacement focus model.
 - Group movement commits bounds for every member, so a large selection writes more bounds per drop.
@@ -135,14 +138,31 @@ focus, the camera, the PTY, or any persisted session field.
 
 ## Validation and Confidence
 
-The gesture resolution, modifier exclusivity, threshold behavior, world-space intersection, click
-suppression, and single-delta group movement are all fixed in unit coverage over the pointer
-controller, and the marquee overlay is a pure function of pointer state.
+The gesture contract now has unit coverage in
+[`tests/canvas-selection-gestures.test.mjs`](../../tests/canvas-selection-gestures.test.mjs), which drives the pure
+[`canvasSelectionGesture.ts`](../../src/renderer/src/features/workspace/canvasSelectionGesture.ts) module: press
+resolution (a primary press on empty canvas clears the selection, `Shift` alone starts a marquee,
+`Shift` with `Alt`, `Ctrl`, or `Meta` falls back to the pan, and a press on a widget starts
+neither), group-drag gating (only a pressed card whose session id is part of a selection larger than
+one, and never a card control, search field, or resize handle), the travel gate (a drag below the
+canvas threshold stays a click and commits no delta, while a real travel commits one `dx/zoom`,
+`dy/zoom` delta to the group), pointer-id mismatch handling, and the marquee rect's
+direction-agnostic conversion to world space through the camera. The suite also asserts source
+contracts: the terminal card exposes `data-session-id`, the marquee selection never calls
+`onSelectSession` or `onClearCanvasSelection`, and a group drag does not capture the pointer at press
+time.
 
-Confidence is high: the decision reuses the existing drag threshold, camera geometry, and bounds
-commit path, and adds no new persisted state. The residual risk is gesture discoverability, which
-is a hint-surface concern (the canvas help already lists `Shift + drag`) rather than a contract
-risk.
+That suite does not cover the rendered `.canvas-marquee` overlay or its CSS, real-Electron pointer
+capture and client-to-viewport geometry, the click suppression that races the renderer's
+`setTimeout(0)` reset, live session bounds through `boundsIntersect` (upstream minimap geometry
+covers that separately), or the card-selector exclusion of plugin canvases, the built-in browser, and
+sticky notes. The `commitGroupDrag` → `onSessionBoundsChange` commit path is not driven end to end.
+
+Confidence is high for the resolution rules and the geometry the suite drives directly, and medium
+for the untested rendering and interaction boundary above. The decision reuses the existing drag
+threshold, camera geometry, and bounds commit path, and adds no new persisted state. The residual
+risk is gesture discoverability, which is a hint-surface concern (the canvas help already lists
+`Shift + drag`) rather than a contract risk.
 
 The decision is falsified if a plain empty-canvas primary drag stops panning, if a marquee press
 also focuses what it covers, if a group drag applies two deltas, or if a non-shift drag can start a

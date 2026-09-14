@@ -73,8 +73,16 @@ electronFuses:
   enableEmbeddedAsarIntegrityValidation: true
 ```
 
-`runAsNode` is deliberately left enabled. `onlyLoadAppFromAsar` is likewise left off, so the helper
-`.mjs` files remain loadable from `resourcesPath`, outside the application asar. The distributable
+`enableEmbeddedAsarIntegrityValidation` is honored by Electron only on macOS 16 or newer and Windows
+30 or newer, so the bundled value is unconditional but the check itself does not run on the shipped
+Linux AppImage and deb targets.
+
+`runAsNode` is deliberately left enabled. `onlyLoadAppFromAsar` is likewise left off: that fuse only
+narrows Electron's search order for application code, and the bundled helpers are spawned as
+separate `ELECTRON_RUN_AS_NODE` child processes that load no application bundle, so they are
+unaffected either way. The recorded reason for leaving it off is therefore not helper loadability —
+it is that no packaged build has exercised the flip. The real consequence is that the embedded asar
+integrity check can be bypassed through the app-code search path. The distributable
 stays an explicit allow-list (`out/**`, `package.json`, `LICENSE`), so no source tree, docs, local
 agent context, settings, logs, or credentials ship inside the package, and the shipped helper
 bundles are the only JavaScript reachable outside the asar.
@@ -93,7 +101,9 @@ runtime under the user's privileges — the same capability the agent integratio
 
 1. Environment-provided Node options, `NODE_EXTRA_CA_CERTS`, and CLI inspect arguments are ignored
    by the packaged binary.
-2. The embedded asar is validated when `app.asar` is loaded.
+2. Where Electron implements the check (macOS 16+, Windows 30+), the embedded asar is validated when
+   `app.asar` is loaded; the shipped Linux AppImage and deb targets carry the fuse without that
+   validation.
 3. `runAsNode` stays enabled only while the helper contract requires it.
 4. Helper launches use the packaged executable; helper environment is restricted to the exact
    keys the integration allows, of which `ELECTRON_RUN_AS_NODE` is the only permitted one.
@@ -112,13 +122,17 @@ runtime under the user's privileges — the same capability the agent integratio
   it is not a temporary exception to be revisited without a replacement helper mechanism.
 - A packaged binary can be re-executed as Node by anything that already controls the app's launch
   environment. The mitigations are the packaging allow-list (nothing writable or interesting ships
-  inside the package), asar integrity validation on the application bundle, and the fact that the
-  app runs with the user's own privileges rather than elevated ones.
+  inside the package), embedded asar integrity validation where Electron honors it (macOS 16+ and
+  Windows 30+), and the fact that the app runs with the user's own privileges rather than elevated
+  ones.
 - `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS`, and `--inspect` can no longer be injected through the
   environment, which removes the cheapest paths from an environment-only attacker to arbitrary code
   inside the app process.
-- Because `onlyLoadAppFromAsar` stays off, the helper `.mjs` files must remain part of the
-  distributable allow-list. Adding a new helper without adding it to packaging is a shipping bug.
+- Because `onlyLoadAppFromAsar` stays off, Electron may still load application code outside
+  `app.asar`, so the embedded asar integrity check can be bypassed through the app-code search path.
+- The helper `.mjs` files remain part of the distributable allow-list because they are spawned as
+  separate `ELECTRON_RUN_AS_NODE` child processes, not because the fuse affects them. Adding a new
+  helper without adding it to packaging is a shipping bug.
 
 ## Validation and Confidence
 

@@ -16,11 +16,12 @@ import type {
   RadialLauncherItemId,
   SessionBounds,
   SessionSnapshot,
+  Size,
   StickyNote
 } from "../../../../shared/contracts";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
-import { displayCanvasNavigationBinding } from "../../lib/shortcuts";
+import { displayCanvasNavigationBinding, isRenameInputTarget, isShortcutCaptureTarget } from "../../lib/shortcuts";
 import { BrowserCard } from "../browser/BrowserCard";
 import type { LimitsLoadState } from "../home/homeModel";
 import { homeGridPixelSize, homeLayoutFitsGrid } from "../home/homeLayout";
@@ -35,6 +36,7 @@ import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasMinimap } from "./CanvasMinimap";
 import { CanvasRegionCard } from "./CanvasRegionCard";
 import { CanvasRegionMenu } from "./CanvasRegionMenu";
+import { cameraFittingContent } from "./canvasCameraGeometry";
 import {
   clampCanvasMenuPosition,
   routeCanvasContextMenu,
@@ -55,10 +57,14 @@ import {
 } from "./canvasStacking";
 import {
   browserCanvasWidgetId,
+  canvasWidgetInDirection,
   canvasWidgetTarget,
   pluginCanvasWidgetId,
-  terminalCanvasWidgetId
+  terminalCanvasWidgetId,
+  type CanvasFocusCandidate,
+  type CanvasFocusDirection
 } from "./canvasWidgetFocus";
+import { boundsIntersect } from "./minimapGeometry";
 import { useCanvasPointerNavigation } from "./useCanvasPointerNavigation";
 import { useCanvasWheelNavigation } from "./useCanvasWheelNavigation";
 import { useCanvasWidgetFocus } from "./useCanvasWidgetFocus";
@@ -69,6 +75,16 @@ const CANVAS_OVERLAY_PLACEMENTS: CanvasOverlayPlacement[] = [
   "bottom-left",
   "bottom-right"
 ];
+
+/** Alt+arrow moves canvas focus; never a canvas-navigation binding (those are modifier+mouse or wheel). */
+const CANVAS_FOCUS_ARROWS: Readonly<Record<string, CanvasFocusDirection | undefined>> = {
+  ArrowUp: "up",
+  ArrowDown: "down",
+  ArrowLeft: "left",
+  ArrowRight: "right"
+};
+
+const EMPTY_MARQUEE_SELECTION: ReadonlySet<string> = new Set<string>();
 
 type CanvasMenuState = {
   kind: CanvasContextMenuKind;
@@ -181,6 +197,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const pendingRadialContextMenu = useRef<CanvasMenuState | null>(null);
   const [noteEditRequest, setNoteEditRequest] = useState<{ id: string; version: number } | null>(null);
   const [regionMovePreview, setRegionMovePreview] = useState<RegionMovePreview | null>(null);
+  const [marqueeSelection, setMarqueeSelection] = useState<ReadonlySet<string>>(EMPTY_MARQUEE_SELECTION);
   const cameraRef = useRef(camera);
   cameraRef.current = camera;
   const commitCamera = useCallback((next: CameraState): void => {
@@ -266,6 +283,42 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   }, [renderablePluginIds, renderedBrowserCanvas, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
   const browserOccluded = renderedBrowserCanvas !== null
     && canvasLayerIsOccluded(browserLayerId, layerOrder, boundsByLayer);
+  // Every window on the canvas, in the order they are rendered: terminals, plugin canvases, browser, notes.
+  const allWindowBounds: SessionBounds[] = [
+    ...renderedSessions,
+    ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)),
+    ...(renderedBrowserCanvas ? [renderedBrowserCanvas] : []),
+    ...renderedStickyNotes
+  ];
+  const focusCandidates: CanvasFocusCandidate[] = [
+    ...renderedSessions.map((session) => ({ id: terminalCanvasWidgetId(session.id), bounds: session })),
+    ...renderedPluginCanvas
+      .filter((instance) => renderablePluginIds.has(instance.id))
+      .map((instance) => ({ id: pluginCanvasWidgetId(instance.id), bounds: instance })),
+    ...(renderedBrowserCanvas ? [{ id: browserCanvasWidgetId, bounds: renderedBrowserCanvas }] : [])
+  ];
+
+  const selectMarquee = useCallback((bounds: SessionBounds | null): void => {
+    if (bounds === null) {
+      setMarqueeSelection(EMPTY_MARQUEE_SELECTION);
+      return;
+    }
+    const ids = renderedSessions
+      .filter((session) => boundsIntersect(bounds, session))
+      .map((session) => session.id);
+    setMarqueeSelection(new Set(ids));
+    if (ids.length === 0) onClearCanvasSelection();
+    else onSelectSession(ids[ids.length - 1]);
+  }, [onClearCanvasSelection, onSelectSession, renderedSessions]);
+
+  const commitGroupDrag = useCallback((draggedId: string, delta: Point): void => {
+    const members = renderedSessions.filter((session) => (
+      session.id === draggedId || marqueeSelection.has(session.id)
+    ));
+    for (const session of members) {
+      onSessionBoundsChange(session.id, translateBounds(session, delta));
+    }
+  }, [marqueeSelection, onSessionBoundsChange, renderedSessions]);
 
   const focusController = useCanvasWidgetFocus({
     viewport,
@@ -298,7 +351,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     settings,
     cameraRef,
     canvasOverrideActiveRef: wheelNavigation.canvasOverrideActiveRef,
-    commitCamera
+    commitCamera,
+    selectedSessionIds: marqueeSelection,
+    onMarqueeSelection: selectMarquee,
+    onGroupDrag: commitGroupDrag
   });
   const widgetFocus = focusController.state;
   const routeWidgetWheelToCanvas = wheelNavigation.routeWidgetWheelToCanvas;
@@ -409,6 +465,54 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     if (!settings.radialLauncherEnabled) closeRadialLauncher();
   }, [closeRadialLauncher, settings.radialLauncherEnabled]);
 
+  const canvasViewportSize = useCallback((): Size => {
+    const bounds = viewport.current?.getBoundingClientRect();
+    return { width: bounds?.width ?? 1360, height: bounds?.height ?? 820 };
+  }, []);
+
+  /** Frames the HOME zone and every window; an empty canvas just goes HOME. */
+  const fitCanvas = useCallback((): void => {
+    const fitted = cameraFittingContent([homeBounds, ...allWindowBounds], canvasViewportSize());
+    if (fitted === null) {
+      onGoHome();
+      return;
+    }
+    commitCamera(fitted);
+  }, [allWindowBounds, canvasViewportSize, commitCamera, homeBounds, onGoHome]);
+
+  const focusDirection = useCallback((direction: CanvasFocusDirection): void => {
+    const target = canvasWidgetInDirection(
+      focusCandidates,
+      focusController.state.id,
+      direction,
+      viewportCenterWorldPoint()
+    );
+    if (target === null) return;
+    const session = renderedSessions.find((candidate) => terminalCanvasWidgetId(candidate.id) === target);
+    if (session) {
+      raiseLayer(terminalLayerId(session.id));
+      focusController.focus(target, "explicit");
+      onFocusSession(session);
+      return;
+    }
+    const instance = renderedPluginCanvas.find((candidate) => pluginCanvasWidgetId(candidate.id) === target);
+    if (instance) {
+      raiseLayer(pluginLayerId(instance.id));
+      focusController.focus(target, "explicit");
+      onFocusPluginCanvas(instance.id);
+      return;
+    }
+    raiseLayer(browserLayerId);
+    focusController.focus(target, "explicit");
+    onFocusBrowser();
+  }, [focusCandidates, focusController, onFocusBrowser, onFocusPluginCanvas, onFocusSession,
+    renderedPluginCanvas, renderedSessions, raiseLayer, viewportCenterWorldPoint]);
+
+  const fitCanvasRef = useRef(fitCanvas);
+  fitCanvasRef.current = fitCanvas;
+  const focusDirectionRef = useRef(focusDirection);
+  focusDirectionRef.current = focusDirection;
+
   useEffect(() => {
     if (homeEditing || !browserViewVisible) {
       setContextMenu(null);
@@ -418,6 +522,17 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       return;
     }
     const handleShortcut = (event: KeyboardEvent): void => {
+      // Alt+arrow is a canvas gesture of its own; the Ctrl/Cmd chords below stay untouched.
+      const direction = event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        ? CANVAS_FOCUS_ARROWS[event.key]
+        : undefined;
+      if (direction && !event.repeat
+        && !isShortcutCaptureTarget(event.target) && !isRenameInputTarget(event.target)) {
+        event.preventDefault();
+        event.stopPropagation();
+        focusDirectionRef.current(direction);
+        return;
+      }
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
       if (event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -435,13 +550,6 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     window.addEventListener("keydown", handleShortcut, true);
     return () => window.removeEventListener("keydown", handleShortcut, true);
   }, [browserViewVisible, homeEditing, onOpenSettings]);
-
-  const allWindowBounds: SessionBounds[] = [
-    ...renderedSessions,
-    ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)),
-    ...(renderedBrowserCanvas ? [renderedBrowserCanvas] : []),
-    ...renderedStickyNotes
-  ];
 
   return (
     <div
@@ -472,8 +580,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       onPointerOutCapture={focusController.handlePointerOut}
       onPointerDown={pointerNavigation.handlePointerDown}
       onPointerMove={pointerNavigation.handlePointerMove}
+      onPointerMoveCapture={pointerNavigation.handlePointerMoveCapture}
       onPointerUp={pointerNavigation.handlePointerEnd}
+      onPointerUpCapture={pointerNavigation.handlePointerEndCapture}
       onPointerCancel={pointerNavigation.handlePointerEnd}
+      onPointerCancelCapture={pointerNavigation.handlePointerEndCapture}
       onPointerLeave={pointerNavigation.handlePointerLeave}
       onContextMenu={(event) => {
         if (suppressNextContextMenu.current) {
@@ -574,7 +685,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           {renderedSessions.map((session) => (
             <TerminalCard
               key={session.id}
-              session={session}
+              session={marqueeSelection.has(session.id) && pointerNavigation.groupNudge
+                ? { ...session, ...translateBounds(session, pointerNavigation.groupNudge) }
+                : session}
               locale={settings.locale}
               palette={settings.palette}
               zoom={camera.zoom}
@@ -586,6 +699,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               focused={widgetFocus.id === terminalCanvasWidgetId(session.id)}
               focusChangeSource={widgetFocus.source}
               selected={activeSessionId === session.id}
+              groupSelected={marqueeSelection.has(session.id)}
               renaming={renamingSessionId === session.id}
               snapTargets={[
                 homeBounds,
@@ -661,6 +775,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               browser={browser}
               bounds={renderedBrowserCanvas}
               locale={settings.locale}
+              sessions={sessions}
               zoom={camera.zoom}
               camera={camera}
               visible={browserViewVisible && !homeEditing && contextMenu === null
@@ -717,6 +832,19 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           ))}
         </div>
       </div>
+
+      {pointerNavigation.marquee && (
+        <div
+          className="canvas-marquee"
+          aria-hidden="true"
+          style={{
+            left: pointerNavigation.marquee.left,
+            top: pointerNavigation.marquee.top,
+            width: pointerNavigation.marquee.width,
+            height: pointerNavigation.marquee.height
+          }}
+        />
+      )}
 
       {homeEditing && (
         <div className="home-editor-toolbar" data-interactive="true">
@@ -831,6 +959,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             setRegionEditor({ mode: "create", focus: "title", position: centerMenuPosition(), worldPoint: viewportCenterWorldPoint() });
           }}
           onCreateNote={() => createNote(viewportCenterWorldPoint())}
+          onFitCanvas={fitCanvas}
           onOpenBrowser={() => onOpenBrowser(viewportCenterWorldPoint())}
           onOpenSettings={onOpenSettings}
           onClose={() => setCommandPaletteOpen(false)}
@@ -850,6 +979,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             {settings.canvasControlsPlacement === placement && (
               <div className="canvas-controls" data-interactive="true">
                 <button type="button" onClick={onGoHome} title={t(settings.locale, "home")}><UiIcon name="home" size={17} /></button>
+                <button type="button" onClick={fitCanvas} title={t(settings.locale, "fitCanvas")} aria-label={t(settings.locale, "fitCanvas")}><UiIcon name="maximize" size={17} /></button>
                 <button type="button" onClick={() => wheelNavigation.zoomBy(0.82)} title={t(settings.locale, "zoomOut")}><UiIcon name="zoom-out" size={17} /></button>
                 <button type="button" onClick={() => wheelNavigation.zoomBy(1.22)} title={t(settings.locale, "zoomIn")}><UiIcon name="zoom-in" size={17} /></button>
               </div>
@@ -858,6 +988,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               <aside className="shortcut-hints" aria-label={t(settings.locale, "keyboardShortcuts")}>
                 <div><kbd>{settings.shortcuts.home}</kbd><span>{t(settings.locale, "homeShortcut")}</span></div>
                 <div><kbd>{settings.shortcuts.renameWindow}</kbd><span>{t(settings.locale, "renameWindow")}</span></div>
+                <div><kbd>{window.canvasTTY.window.isMacOS ? "Option+↑↓←→" : "Alt+↑↓←→"}</kbd><span>{t(settings.locale, "focusWindowHint")}</span></div>
+                <div><kbd>Shift + drag</kbd><span>{t(settings.locale, "marqueeSelectionHint")}</span></div>
                 {settings.canvasWheelCaptureMode === "key" && settings.canvasWheelOverride !== null && (
                   <div><kbd>{displayCanvasNavigationBinding(settings.canvasWheelOverride, window.canvasTTY.window.isMacOS)}</kbd>
                     <span>{t(settings.locale, "canvasWheelOverrideHint")}</span></div>

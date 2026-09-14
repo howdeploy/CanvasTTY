@@ -58,6 +58,15 @@ export function shouldRestartExitedTerminal(event: TerminalKeyEvent, exited: boo
     && !event.altKey;
 }
 
+export function shouldSearchTerminalOutput(event: TerminalKeyEvent): boolean {
+  return event.type === "keydown"
+    && matchesPhysicalOrLayoutKey(event, "KeyF", "f")
+    && event.ctrlKey
+    && event.shiftKey
+    && !event.metaKey
+    && !event.altKey;
+}
+
 function matchesPhysicalOrLayoutKey(event: TerminalKeyEvent, code: string, key: string): boolean {
   return event.code === code || event.key.toLowerCase() === key;
 }

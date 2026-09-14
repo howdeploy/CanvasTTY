@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject, RefObject } from "react";
-import type { AppSettings, CameraState, Point } from "../../../../shared/contracts";
+import type { AppSettings, CameraState, Point, SessionBounds } from "../../../../shared/contracts";
 import {
   canvasNavigationMouseButtonFromDomButton,
   isCanvasNavigationBindingActive
@@ -21,22 +21,56 @@ interface NativePanState {
   startCamera: CameraState;
 }
 
+/** Viewport-local marquee rectangle, ready for absolute positioning. */
+export interface CanvasMarqueeRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface MarqueeState {
+  pointerId: number;
+  start: Point;
+  current: Point;
+  moved: boolean;
+}
+
+interface GroupDragState {
+  pointerId: number;
+  draggedId: string;
+  startClient: Point;
+}
+
+/** Client pixels a gesture must travel before it counts as a drag, not a click. */
+const CANVAS_DRAG_THRESHOLD = 3;
+
 interface UseCanvasPointerNavigationOptions {
   viewport: RefObject<HTMLDivElement | null>;
   settings: AppSettings;
   cameraRef: MutableRefObject<CameraState>;
   canvasOverrideActiveRef: RefObject<boolean>;
   commitCamera(camera: CameraState): void;
+  /** Session ids currently marquee-selected; a drag on one of them moves the group. */
+  selectedSessionIds: ReadonlySet<string>;
+  /** Replaces the marquee group with the sessions intersecting the world rectangle; null clears it. */
+  onMarqueeSelection(bounds: SessionBounds | null): void;
+  /** Commits a group move: the pointer offset in world units. */
+  onGroupDrag(draggedId: string, delta: Point): void;
 }
 
 export interface CanvasPointerNavigationController {
   panning: boolean;
+  marquee: CanvasMarqueeRect | null;
+  groupNudge: Point | null;
   handlePointerDownCapture(event: React.PointerEvent<HTMLDivElement>): boolean;
   handleClickCapture(event: React.MouseEvent<HTMLDivElement>): boolean;
   handleAuxClickCapture(event: React.MouseEvent<HTMLDivElement>): boolean;
   handlePointerDown(event: React.PointerEvent<HTMLDivElement>): void;
   handlePointerMove(event: React.PointerEvent<HTMLDivElement>): void;
+  handlePointerMoveCapture(event: React.PointerEvent<HTMLDivElement>): void;
   handlePointerEnd(event: React.PointerEvent<HTMLDivElement>): void;
+  handlePointerEndCapture(event: React.PointerEvent<HTMLDivElement>): void;
   handlePointerLeave(): void;
 }
 
@@ -45,7 +79,10 @@ export function useCanvasPointerNavigation({
   settings,
   cameraRef,
   canvasOverrideActiveRef,
-  commitCamera
+  commitCamera,
+  selectedSessionIds,
+  onMarqueeSelection,
+  onGroupDrag
 }: UseCanvasPointerNavigationOptions): CanvasPointerNavigationController {
   const panState = useRef<PanState | null>(null);
   const nativePanState = useRef<NativePanState | null>(null);
@@ -53,6 +90,16 @@ export function useCanvasPointerNavigation({
   const [panning, setPanning] = useState(false);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const selectedSessionIdsRef = useRef(selectedSessionIds);
+  selectedSessionIdsRef.current = selectedSessionIds;
+  const onMarqueeSelectionRef = useRef(onMarqueeSelection);
+  onMarqueeSelectionRef.current = onMarqueeSelection;
+  const onGroupDragRef = useRef(onGroupDrag);
+  onGroupDragRef.current = onGroupDrag;
+  const marqueeState = useRef<MarqueeState | null>(null);
+  const [marquee, setMarquee] = useState<CanvasMarqueeRect | null>(null);
+  const groupDrag = useRef<GroupDragState | null>(null);
+  const [groupNudge, setGroupNudge] = useState<Point | null>(null);
   const edgePointer = useRef<Point | null>(null);
   const edgeFrame = useRef<number | null>(null);
   const edgeLastTime = useRef(0);
@@ -91,8 +138,101 @@ export function useCanvasPointerNavigation({
     if (panState.current) window.canvasTTY.canvasNavigation.setPointerGestureActive(false);
     panState.current = null;
     nativePanState.current = null;
+    marqueeState.current = null;
+    setMarquee(null);
+    groupDrag.current = null;
+    setGroupNudge(null);
     setPanning(false);
   }, [viewport]);
+
+  const localPoint = useCallback((clientX: number, clientY: number): Point | null => {
+    const bounds = viewport.current?.getBoundingClientRect();
+    if (!bounds) return null;
+    return { x: clientX - bounds.left, y: clientY - bounds.top };
+  }, [viewport]);
+
+  const worldRectFromLocal = useCallback((start: Point, end: Point): SessionBounds => {
+    const camera = cameraRef.current;
+    const left = (Math.min(start.x, end.x) - camera.x) / camera.zoom;
+    const top = (Math.min(start.y, end.y) - camera.y) / camera.zoom;
+    return {
+      position: { x: left, y: top },
+      size: {
+        width: Math.abs(end.x - start.x) / camera.zoom,
+        height: Math.abs(end.y - start.y) / camera.zoom
+      }
+    };
+  }, [cameraRef]);
+
+  const startMarquee = useCallback((event: React.PointerEvent<HTMLDivElement>): boolean => {
+    const local = localPoint(event.clientX, event.clientY);
+    if (!local) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    marqueeState.current = { pointerId: event.pointerId, start: local, current: local, moved: false };
+    setMarquee({ left: local.x, top: local.y, width: 0, height: 0 });
+    return true;
+  }, [localPoint]);
+
+  const updateMarquee = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
+    const state = marqueeState.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    const local = localPoint(event.clientX, event.clientY);
+    if (!local) return;
+    const moved = state.moved
+      || Math.abs(local.x - state.start.x) > CANVAS_DRAG_THRESHOLD
+      || Math.abs(local.y - state.start.y) > CANVAS_DRAG_THRESHOLD;
+    marqueeState.current = { ...state, current: local, moved };
+    setMarquee({
+      left: Math.min(state.start.x, local.x),
+      top: Math.min(state.start.y, local.y),
+      width: Math.abs(local.x - state.start.x),
+      height: Math.abs(local.y - state.start.y)
+    });
+  }, [localPoint]);
+
+  const finishMarquee = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
+    const state = marqueeState.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    marqueeState.current = null;
+    const element = viewport.current;
+    if (element?.hasPointerCapture(state.pointerId)) element.releasePointerCapture(state.pointerId);
+    setMarquee(null);
+    // A press without travel stays a plain click, so focus handling is untouched.
+    if (!state.moved) return;
+    suppressClick.current = true;
+    window.setTimeout(() => { suppressClick.current = false; }, 0);
+    onMarqueeSelectionRef.current(worldRectFromLocal(state.start, state.current));
+  }, [viewport, worldRectFromLocal]);
+
+  const updateGroupDrag = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
+    const state = groupDrag.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    const camera = cameraRef.current;
+    setGroupNudge({
+      x: (event.clientX - state.startClient.x) / camera.zoom,
+      y: (event.clientY - state.startClient.y) / camera.zoom
+    });
+  }, [cameraRef]);
+
+  const finishGroupDrag = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
+    const state = groupDrag.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    groupDrag.current = null;
+    const element = viewport.current;
+    if (element?.hasPointerCapture(state.pointerId)) element.releasePointerCapture(state.pointerId);
+    setGroupNudge(null);
+    const camera = cameraRef.current;
+    const delta = {
+      x: (event.clientX - state.startClient.x) / camera.zoom,
+      y: (event.clientY - state.startClient.y) / camera.zoom
+    };
+    if (delta.x === 0 && delta.y === 0) return;
+    suppressClick.current = true;
+    window.setTimeout(() => { suppressClick.current = false; }, 0);
+    onGroupDragRef.current(state.draggedId, delta);
+  }, [cameraRef, viewport]);
 
   useEffect(() => {
     window.addEventListener("blur", resetPan);
@@ -202,7 +342,8 @@ export function useCanvasPointerNavigation({
   const edgePanStep = useCallback((time: number): void => {
     edgeFrame.current = null;
     const pointer = edgePointer.current;
-    if (!pointer || panState.current || nativePanState.current || !settingsRef.current.edgePan) return;
+    if (!pointer || panState.current || nativePanState.current || marqueeState.current || groupDrag.current
+      || !settingsRef.current.edgePan) return;
     const bounds = viewport.current?.getBoundingClientRect();
     if (!bounds) return;
     const hovered = document.elementFromPoint(pointer.x, pointer.y);
@@ -221,11 +362,48 @@ export function useCanvasPointerNavigation({
     edgeFrame.current = requestAnimationFrame(edgePanStep);
   }, [cameraRef, commitCamera, viewport]);
 
+  const startGroupDrag = useCallback((event: React.PointerEvent<HTMLDivElement>, sessionId: string): boolean => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    groupDrag.current = {
+      pointerId: event.pointerId,
+      draggedId: sessionId,
+      startClient: { x: event.clientX, y: event.clientY }
+    };
+    setGroupNudge({ x: 0, y: 0 });
+    return true;
+  }, []);
+
   const handlePointerDownCapture = useCallback((event: React.PointerEvent<HTMLDivElement>): boolean => {
     if (event.button === 1 || isMousePanBinding(event)) return startPan(event, true);
+    const card = (event.target as HTMLElement).closest<HTMLElement>(".terminal-card");
+    const sessionId = card?.dataset.sessionId ?? null;
+    if (card && sessionId !== null && event.button === 0 && !event.altKey
+      && selectedSessionIdsRef.current.size > 1 && selectedSessionIdsRef.current.has(sessionId)) {
+      // The whole group moves together, so the card's own drag must not also run.
+      return startGroupDrag(event, sessionId);
+    }
+    if (event.button === 0 && card === null && !isCanvasWidgetTarget(event.target)) {
+      if (event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) return startMarquee(event);
+      onMarqueeSelectionRef.current(null);
+    }
     if (!canvasOverrideActiveRef.current || !isCanvasWidgetTarget(event.target)) return false;
     return startPan(event, true);
-  }, [canvasOverrideActiveRef, isMousePanBinding, startPan]);
+  }, [canvasOverrideActiveRef, isMousePanBinding, startGroupDrag, startMarquee, startPan]);
+
+  const handlePointerMoveCapture = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
+    if (marqueeState.current?.pointerId === event.pointerId) {
+      updateMarquee(event);
+      return;
+    }
+    if (groupDrag.current?.pointerId === event.pointerId) updateGroupDrag(event);
+  }, [updateGroupDrag, updateMarquee]);
+
+  const handlePointerEndCapture = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
+    finishGroupDrag(event);
+    finishMarquee(event);
+  }, [finishGroupDrag, finishMarquee]);
 
   const handleClickCapture = useCallback((event: React.MouseEvent<HTMLDivElement>): boolean => {
     if (!suppressClick.current) return false;
@@ -266,12 +444,16 @@ export function useCanvasPointerNavigation({
 
   return {
     panning,
+    marquee,
+    groupNudge,
     handlePointerDownCapture,
     handleClickCapture,
     handleAuxClickCapture,
     handlePointerDown: startPan,
     handlePointerMove,
+    handlePointerMoveCapture,
     handlePointerEnd,
+    handlePointerEndCapture,
     handlePointerLeave
   };
 }

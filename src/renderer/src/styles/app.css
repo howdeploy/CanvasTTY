@@ -1024,9 +1024,16 @@ button { border: 0; }
 .attention-queue__item span { overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .attention-queue__empty { color: rgba(255,255,255,.5); font-size: 11px; font-weight: 700; }
 
-.browser-inspect { position: absolute; z-index: 24; top: calc(var(--card-header-height) + 6px); right: 10px; width: 296px; max-height: 320px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 6px; padding: 8px; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; color: white; background: rgba(28,30,40,.97); box-shadow: var(--shadow-md); }
+/* A flex column, not a fixed row template: message, preview and list are mutually
+   optional, and a fixed template gave the flex row to whichever child landed in it,
+   so the list could paint over a message. Only the list grows and scrolls. */
+.browser-inspect { position: absolute; z-index: 24; top: calc(var(--card-header-height) + 6px); right: 10px; width: 296px; max-height: 320px; display: flex; flex-direction: column; gap: 6px; padding: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; color: white; background: rgba(28,30,40,.97); box-shadow: var(--shadow-md); }
+.browser-inspect > * { flex: 0 0 auto; }
 .browser-inspect__title { color: rgba(255,255,255,.62); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
-.browser-inspect__list { display: grid; gap: 3px; overflow-y: auto; }
+/* The exact line Send will type: monospace so page text cannot disguise itself as chrome,
+   wrapped rather than clipped, and bounded so a long line cannot push the list away. */
+.browser-inspect__preview { max-height: 96px; margin: 0; padding: 7px 8px; overflow: auto; border-radius: 8px; color: rgba(255,255,255,.72); background: rgba(255,255,255,.06); font: 700 10px/1.45 var(--font-mono); overflow-wrap: anywhere; white-space: pre-wrap; }
+.browser-inspect__list { flex: 1 1 auto; min-height: 0; display: grid; align-content: start; gap: 3px; overflow-y: auto; }
 .browser-inspect__item { display: grid; gap: 2px; padding: 5px 6px; border-radius: 7px; color: white; background: rgba(255,255,255,.05); cursor: pointer; text-align: left; }
 .browser-inspect__item[aria-selected="true"] { background: color-mix(in srgb, var(--primary) 42%, transparent); }
 .browser-inspect__item strong { overflow: hidden; font-size: 12px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }

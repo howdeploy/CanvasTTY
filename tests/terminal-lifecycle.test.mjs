@@ -147,7 +147,7 @@ test("renaming is inline and does not join the xterm mount dependencies", async 
   assert.match(source, /autoFocus/);
   assert.match(source, /terminalRef\.current\?\.blur\(\)/);
   assert.doesNotMatch(source, /requestAnimationFrame\(\(\) => \{\s*renameInput/);
-  assert.match(source, /session\.titleCustomized \? session\.title : compactPath\(session\.cwd\)/);
+  assert.match(source, /session\.titleCustomized \? session\.title : oscTitle \?\? compactPath\(session\.cwd\)/);
 });
 
 test("late input and resize events are guarded after PTY exit", async () => {

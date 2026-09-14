@@ -238,6 +238,7 @@ export class BrowserAutomationService {
     );
     const viewportWidth = metrics.cssLayoutViewport?.clientWidth ?? Number.MAX_SAFE_INTEGER;
     const viewportHeight = metrics.cssLayoutViewport?.clientHeight ?? Number.MAX_SAFE_INTEGER;
+    if (viewportWidth <= 0 || viewportHeight <= 0) throw viewportUnavailable();
     const visible: Array<{ node: CdpAxNode; bounds: BrowserElementBounds }> = [];
     for (const node of nodes) {
       throwIfAborted(options.signal);
@@ -361,6 +362,8 @@ export class BrowserAutomationService {
     try {
       let image = await session.contents.capturePage();
       throwIfAborted(signal);
+      const capturedSize = image.getSize();
+      if (image.isEmpty() || capturedSize.width <= 0 || capturedSize.height <= 0) throw viewportUnavailable();
       const sensitiveAfter = await this.sensitiveBoundsForScreenshot(session);
       const sensitiveBounds = mergeSensitiveBounds(sensitiveBefore, sensitiveAfter);
       image = await this.redactSensitivePixels(session, image, sensitiveBounds);
@@ -385,6 +388,7 @@ export class BrowserAutomationService {
       if (bytes.byteLength > BROWSER_SCREENSHOT_MAX_BINARY_BYTES) {
         throw new BrowserKernelError("PAYLOAD_TOO_LARGE", "Browser screenshot cannot fit the 512 KB bridge result limit.");
       }
+      if (bytes.byteLength === 0) throw viewportUnavailable();
       const size = image.getSize();
       return {
         untrustedWebContent: true,
@@ -1297,6 +1301,12 @@ export function redactBitmapPixels(
       bitmap.fill(0, (y * bitmapWidth + left) * 4, (y * bitmapWidth + right) * 4);
     }
   }
+}
+
+function viewportUnavailable(): BrowserKernelError {
+  return new BrowserKernelError("VIEWPORT_UNAVAILABLE", "Browser view has no drawable surface. Bring its Browser card into view and retry.", {
+    retryable: true
+  });
 }
 
 function screenshotRedactionUnavailable(message: string, cause?: unknown): BrowserKernelError {

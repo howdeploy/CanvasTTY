@@ -490,6 +490,7 @@ function agentErrorMessage(code: BrowserErrorCode): string {
     BRIDGE_UNAVAILABLE: "Browser bridge is unavailable.",
     TAB_NOT_FOUND: "Browser tab was not found.",
     TAB_CLOSED: "Browser tab was closed.",
+    VIEWPORT_UNAVAILABLE: "Browser view has no drawable surface. Bring its Browser card into view and retry.",
     STALE_REF: "Browser page changed; observe it again.",
     INVALID_URL: "Browser URL is invalid.",
     NAVIGATION_BLOCKED: "Browser navigation was blocked by policy.",

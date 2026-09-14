@@ -694,6 +694,7 @@ export type BrowserErrorCode =
   | "BRIDGE_UNAVAILABLE"
   | "TAB_NOT_FOUND"
   | "TAB_CLOSED"
+  | "VIEWPORT_UNAVAILABLE"
   | "STALE_REF"
   | "INVALID_URL"
   | "NAVIGATION_BLOCKED"

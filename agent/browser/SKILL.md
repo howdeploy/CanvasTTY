@@ -43,6 +43,7 @@ Element refs belong to one tab, frame, and document revision. Do not copy a ref 
 - `BROWSER_IN_USE`: the card belongs to another agent. Create a separate card; do not repeatedly try its tabs or refs.
 - `BROWSER_NOT_FOUND`: list cards again and use a current `browserId`.
 - `TAB_NOT_FOUND` or `TAB_CLOSED`: list tabs in your card and select a live tab.
+- `VIEWPORT_UNAVAILABLE`: bring the Browser card into view and re-observe before retrying. A zero-size view or empty capture is not evidence that the page has no controls. Do not loop on screenshots while the card remains unavailable.
 - `RATE_LIMITED` or bridge busy: reduce parallel browser calls and retry once.
 - `PAYLOAD_TOO_LARGE`: request a smaller page chunk or omit the screenshot and use semantic page reading.
 - `TIMEOUT` or `BROWSER_CRASHED`: inspect current tabs/state before deciding whether a retry is safe.

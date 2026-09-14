@@ -4,7 +4,6 @@ import type {
   BrowserCanvasFreezeFrameEvent,
   BrowserCanvasState,
   BrowserDownloadSnapshot,
-  BrowserElementRef,
   BrowserObservation,
   BrowserObservedElement,
   BrowserResult,

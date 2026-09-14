@@ -3,27 +3,35 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const homeZonePath = new URL("../src/renderer/src/features/home/HomeZone.tsx", import.meta.url);
+const failureDetailsPath = new URL("../src/renderer/src/features/home/SessionFailureDetails.tsx", import.meta.url);
 const appStylesPath = new URL("../src/renderer/src/styles/app.css", import.meta.url);
 
 test("Home exposes failed session details from the error mark with a Copy action", async () => {
-  const source = await readFile(homeZonePath, "utf8");
+  const [home, component] = await Promise.all([
+    readFile(homeZonePath, "utf8"),
+    readFile(failureDetailsPath, "utf8")
+  ]);
 
-  assert.match(source, /session\.failureDetails \?\? `\$\{t\(locale, "failureOutputUnavailable"\)\}\$\{session\.exitCode \?\? "unknown"\}`/);
-  assert.match(source, /className="usage-row__failure-tooltip"/);
-  assert.match(source, /className="usage-row__failure-trigger"/);
-  assert.match(source, /<UiIcon name="error" size=\{24\} \/>/);
-  assert.match(source, /window\.canvasTTY\.clipboard\.writeText\(details\)/);
-  assert.match(source, /<UiIcon name="copy" size=\{16\} \/>/);
+  assert.match(home, /const failureDetails = sessionFailureDetails\(session, locale\);/);
+  assert.match(home, /<SessionFailureDetails details=\{failureDetails\} locale=\{locale\} \/>/);
+  assert.match(component, /session\.failureDetails \?\? `\$\{t\(locale, "failureOutputUnavailable"\)\}\$\{session\.exitCode \?\? "unknown"\}`/);
+  assert.match(component, /className="usage-row__failure-tooltip"/);
+  assert.match(component, /className="usage-row__failure-trigger"/);
+  assert.match(component, /<UiIcon name="error" size=\{24\} \/>/);
+  assert.match(component, /window\.canvasTTY\.clipboard\.writeText\(details\)/);
+  assert.match(component, /<UiIcon name="copy" size=\{16\} \/>/);
 });
 
 test("Home opens failure details from hover or keyboard focus in a top-layer popover", async () => {
-  const source = await readFile(homeZonePath, "utf8");
-  const styles = await readFile(appStylesPath, "utf8");
+  const [component, styles] = await Promise.all([
+    readFile(failureDetailsPath, "utf8"),
+    readFile(appStylesPath, "utf8")
+  ]);
 
-  assert.match(source, /popover="manual"/);
-  assert.match(source, /onMouseEnter=\{openTooltip\}/);
-  assert.match(source, /onFocus=\{openTooltip\}/);
-  assert.match(source, /tooltip\.showPopover\(\)/);
+  assert.match(component, /popover="manual"/);
+  assert.match(component, /onMouseEnter=\{openTooltip\}/);
+  assert.match(component, /onFocus=\{openTooltip\}/);
+  assert.match(component, /tooltip\.showPopover\(\)/);
   assert.match(styles, /\.usage-row__failure-tooltip \{ position: fixed;/);
   assert.match(styles, /\.usage-row__failure-tooltip:popover-open \{ display: grid; \}/);
 });

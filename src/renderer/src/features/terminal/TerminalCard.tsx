@@ -569,7 +569,7 @@ export function TerminalCard({
   const searchCount = `${searchMatches.current}/${searchMatches.total}`;
   return (
     <article
-      className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""}`}
+      className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""} ${session.status === "needs_approval" || session.status === "failed" ? "terminal-card--attention" : ""}`}
       data-interactive="true"
       data-canvas-layer-id={`terminal:${session.id}`}
       data-canvas-widget-id={terminalCanvasWidgetId(session.id)}

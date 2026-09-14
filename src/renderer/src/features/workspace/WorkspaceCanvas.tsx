@@ -23,9 +23,13 @@ import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 import { displayCanvasNavigationBinding, isRenameInputTarget, isShortcutCaptureTarget } from "../../lib/shortcuts";
 import { BrowserCard } from "../browser/BrowserCard";
+import { attentionSessions } from "../home/attentionQueue";
 import type { LimitsLoadState } from "../home/homeModel";
 import { homeGridPixelSize, homeLayoutFitsGrid } from "../home/homeLayout";
 import { HomeZone } from "../home/HomeZone";
+import { SessionFailureDetails, sessionFailureDetails } from "../home/SessionFailureDetails";
+import { sessionStatusLabel } from "../../lib/sessionStatus";
+import { sessionStatusTone } from "../../lib/sessionStatusTone";
 import { RadialLauncher } from "../launcher/QuickRadialMenu";
 import { StickyNoteCard } from "../notes/StickyNoteCard";
 import { stickyNoteAtPoint } from "../notes/stickyNoteBounds";
@@ -306,14 +310,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     const ids = renderedSessions
       .filter((session) => boundsIntersect(bounds, session))
       .map((session) => session.id);
-    setMarqueeSelection(new Set(ids));
-    if (ids.length === 0) onClearCanvasSelection();
-    else onSelectSession(ids[ids.length - 1]);
-  }, [onClearCanvasSelection, onSelectSession, renderedSessions]);
+    // Presentation-only: the marquee never moves logical input focus or the active
+    // session, and a group drag is read from the selection alone.
+    setMarqueeSelection(ids.length === 0 ? EMPTY_MARQUEE_SELECTION : new Set(ids));
+  }, [renderedSessions]);
 
-  const commitGroupDrag = useCallback((draggedId: string, delta: Point): void => {
+  const commitGroupDrag = useCallback((sessionId: string, delta: Point): void => {
     const members = renderedSessions.filter((session) => (
-      session.id === draggedId || marqueeSelection.has(session.id)
+      session.id === sessionId || marqueeSelection.has(session.id)
     ));
     for (const session of members) {
       onSessionBoundsChange(session.id, translateBounds(session, delta));
@@ -339,6 +343,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       settings.homeLayout.map((placement) => placement.widgetId).join(",")
     ].join("|")
   });
+  // One owner for "bring this session to the front": the HOME session rows and the attention queue
+  // must both raise the card's layer, focus it, and apply the layer raise through onFocusSession.
+  const focusSessionFromHome = useCallback((session: SessionSnapshot): void => {
+    raiseLayer(terminalLayerId(session.id));
+    focusController.focus(terminalCanvasWidgetId(session.id), "explicit");
+    onFocusSession(session);
+  }, [focusController, onFocusSession, raiseLayer]);
+  const attention = useMemo(() => attentionSessions(renderedSessions), [renderedSessions]);
   const wheelNavigation = useCanvasWheelNavigation({
     viewport,
     settings,
@@ -659,11 +671,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             }
             onOpenBrowser();
           }}
-          onFocusSession={(session) => {
-            raiseLayer(terminalLayerId(session.id));
-            focusController.focus(terminalCanvasWidgetId(session.id), "explicit");
-            onFocusSession(session);
-          }}
+          onFocusSession={focusSessionFromHome}
           onRequestMedia={onRequestMedia}
           onRemoveMedia={onRemoveMedia}
           onLayoutChange={onHomeLayoutChange}
@@ -969,6 +977,35 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       <div className="canvas-overlays">
         {CANVAS_OVERLAY_PLACEMENTS.map((placement) => (
           <div className={`canvas-overlay-slot canvas-overlay-slot--${placement}`} key={placement}>
+            {/* The canvas scene is transformed and therefore its own stacking context, so anything
+                inside it paints under this layer and scales with the camera. The queue is a
+                screen-anchored HUD: it belongs here, and as the first child of the reversed column
+                it stacks below whatever else shares this corner. */}
+            {placement === "bottom-right" && (
+              <section className="attention-queue" aria-label={t(settings.locale, "needsAttention")}>
+                <span className="attention-queue__title">{t(settings.locale, "needsAttention")}</span>
+                {attention.length === 0 ? (
+                  <span className="attention-queue__empty">{t(settings.locale, "needsAttentionEmpty")}</span>
+                ) : attention.map((session) => {
+                  const failureDetails = sessionFailureDetails(session, settings.locale);
+                  return (
+                    <div style={{ position: "relative" }} key={session.id}>
+                      <button
+                        className="attention-queue__item"
+                        data-session-tone={sessionStatusTone(session.status)}
+                        type="button"
+                        title={failureDetails ? undefined : session.title}
+                        onClick={() => focusSessionFromHome(session)}
+                      >
+                        <span>{session.title}</span>
+                        <span>{sessionStatusLabel(settings.locale, session.status, session.provider)}</span>
+                      </button>
+                      {failureDetails && <SessionFailureDetails details={failureDetails} locale={settings.locale} />}
+                    </div>
+                  );
+                })}
+              </section>
+            )}
             {settings.minimapPlacement === placement && (
               <CanvasMinimap viewport={viewport} camera={camera} homeBounds={homeBounds}
                 canvasRegions={renderedCanvasRegions} sessions={renderedSessions} stickyNotes={renderedStickyNotes}

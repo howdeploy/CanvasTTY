@@ -31,7 +31,7 @@ test("browser native input participates in selection and independent logical foc
   assert.match(service, /if \(pointerType === "down"\) \{[\s\S]*?contents\.focus\(\);[\s\S]*?this\.setInputFocused\(true\)/);
   assert.match(card, /window\.canvasTTY\.browser\.onCanvasPointer/);
   assert.match(card, /browser-card--selected/);
-  assert.match(workspace, /selected=\{browserSelected\}/);
+  assert.match(workspace, /selected=\{browserSelected && selectedBrowserId === entry\.id\}/);
   assert.match(workspace, /focusActivation=\{settings\.focusActivation\}/);
   assert.match(workspace, /focusController\.focusBrowser/);
   assert.match(focusHook, /HOVER_FOCUS_DELAYS\[settingsRef\.current\.hoverFocusSpeed\]/);

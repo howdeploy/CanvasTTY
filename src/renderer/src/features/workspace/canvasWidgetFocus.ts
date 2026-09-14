@@ -1,4 +1,5 @@
 export const browserCanvasWidgetId = "browser";
+export function browserWindowWidgetId(id: string): string { return id === "default" ? browserCanvasWidgetId : `browser:${id}`; }
 
 export interface CanvasWidgetTarget {
   isWidget: boolean;

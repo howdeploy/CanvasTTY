@@ -152,8 +152,8 @@ test("canvas windows use click-to-front stacking and Browser occlusion", async (
   const workspace = await readFile(workspacePath, "utf8");
   assert.match(workspace, /closest<HTMLElement>\("\[data-canvas-layer-id\]"\)/);
   assert.match(workspace, /raiseLayer\(layerId\)/);
-  assert.match(workspace, /canvasLayerIsOccluded\(browserLayerId/);
-  assert.match(workspace, /!browserOccluded/);
+  assert.match(workspace, /canvasLayerIsOccluded\(layerId, layerOrder, boundsByLayer\)/);
+  assert.match(workspace, /!occluded/);
 });
 
 test("region members follow the region during the gesture and commit only at release", async () => {

@@ -20,6 +20,7 @@ const SHUTDOWN_DRAIN_TIMEOUT_MS = 5_000;
 const RESULT_AUDIT_TIMEOUT_MS = 1_000;
 
 const MUTATIONS = new Set<BrowserCommand["type"]>([
+  "browser_new_window", "browser_activate_window",
   "browser_new_tab", "browser_close_tab", "browser_activate_tab", "browser_navigate",
   "browser_back", "browser_forward", "browser_reload", "browser_click", "browser_hover",
   "browser_type", "browser_select", "browser_press", "browser_scroll", "browser_drag",
@@ -118,7 +119,7 @@ export class BrowserCommandDispatcher {
       );
     }
     const task = async () => this.run(actor, command, sequence, signal);
-    const queueKey = commandTabId(command) ?? "__browser__";
+    const queueKey = commandTabId(command) ?? `__browser__:${command.browserId ?? "default"}`;
     const result = mutation
       ? (this.queueDepth.get(queueKey) ?? 0) >= MAX_MUTATION_QUEUE_DEPTH
         ? this.run(
@@ -434,7 +435,7 @@ function isCommandType(value: unknown): value is BrowserCommand["type"] {
   return typeof value === "string" && (
     MUTATIONS.has(value as BrowserCommand["type"])
     || new Set<BrowserCommand["type"]>([
-      "browser_list_tabs", "browser_observe", "browser_read_page", "browser_screenshot",
+      "browser_list_windows", "browser_list_tabs", "browser_observe", "browser_read_page", "browser_screenshot",
       "browser_wait_for", "browser_download_wait", "browser_get_activity"
     ]).has(value as BrowserCommand["type"])
   );

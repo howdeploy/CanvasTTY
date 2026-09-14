@@ -6,13 +6,13 @@ CanvasTTY `1.0.2` exposes its built-in browser from HOME as a trusted canvas app
 
 ## Open and use the browser
 
-1. Open **Browser** on HOME. CanvasTTY creates or restores the browser card on the canvas.
+1. Open **Browser** on HOME to create a Browser card. Repeat to open another independent card; each has its own tab bar and active page.
 2. Use the trusted tab bar and address field for HTTP(S) navigation or search. Back, forward, reload, new-tab, close-tab, and close-all controls stay outside the remote page.
 3. Move or resize the card like a terminal. Zooming out below semantic scale replaces the native page with a stable summary; at live scale the page keeps rendering while the camera or card moves.
 4. Clicking the live page selects it and restores keyboard focus. The configured single/double-click mode controls only camera focusing. **Settings → Controls → Focus on hover** applies the same delay to terminals and the browser. Clicking empty canvas clears the active application.
 5. The downloads panel shows recent progress. JavaScript alert/confirm/prompt dialogs are suspended until the trusted CanvasTTY dialog answers them.
 
-Hiding the browser card does not close its tabs. **Close all** removes the tabs after confirmation. **Settings → Browser → Restore tabs** controls whether safe URLs return after restart.
+Moving, resizing or hiding one Browser card does not affect the others. Card positions and their separate tab sets restore after restart. Existing single-card layouts migrate to the default card. Hiding a Browser card does not close its tabs. **Close all** removes the tabs after confirmation. **Settings → Browser → Restore tabs** controls whether safe URLs return after restart.
 
 ## Browser settings
 
@@ -34,6 +34,14 @@ Only agent sessions launched by CanvasTTY receive a per-launch browser connectio
 The tool surface covers tabs, navigation, observation/read, screenshot, click/hover/type/select/press, scroll/drag, waits, dialogs, downloads, and the calling agent's activity. It does not expose cookies, saved passwords, authorization headers, local/session storage, arbitrary JavaScript, filesystem or shell access, raw CDP, a TCP listener, or a remote-debugging port.
 
 Agent mutations are ordered FIFO per tab, deduplicated by request ID, revision-checked before side effects, rate-limited, bounded by timeouts, and blocked when their required audit attempt cannot be written. Reads can run concurrently; different tabs keep independent mutation lanes.
+
+## Parallel agents
+
+Use `browser_new_window` to create a dedicated card, then include its returned `browserId` on every tool call. `browser_list_windows` lists card IDs and ownership; `browser_activate_window` selects an available card for the calling agent only. An agent cannot read or control another agent's claimed card by supplying its browser or tab ID. The user can still interact with all cards. Claims are released after a disconnected agent's in-flight requests finish; cards remain available and claims do not persist across an app restart.
+
+Tab selection, viewport reporting, downloads and canvas input are routed to the addressed card. Commands in different cards can run concurrently. Browser cards share the existing Chromium login/cookie profile, so they are not account or website-session isolation. Clearing browser data remains a workspace-wide action.
+
+`browser_list_tabs` is scoped to the agent's selected card and returns an empty snapshot before a card is selected. `browser_new_tab` can create a dedicated card on first use. Existing plugins continue opening URLs through the user's current card; the HOME Browser action creates an additional card. The workspace supports up to 16 cards, each retaining the existing tab limit.
 
 ## Website and file boundaries
 

@@ -33,6 +33,8 @@ import {
 } from "./WindowsPipeHostTransport.ts";
 
 const DEFAULT_CAPABILITY_TTL_MS = 60_000;
+const MAX_TRANSPORT_RESTART_ATTEMPTS = 3;
+const TRANSPORT_RESTART_BASE_DELAY_MS = 500;
 
 export const WINDOWS_AGENT_GATEWAY_UNAVAILABLE =
   "Agent browser access on Windows requires the packaged current-user-only named-pipe host.";
@@ -97,7 +99,12 @@ export class AgentGateway {
   private windowsTransport: WindowsPipeHostTransport | null = null;
   private endpoint: string | null = null;
   private ownedRuntimeDirectory: string | null = null;
-  private expiryTimer: NodeJS.Timeout | null = null;
+  private expiryTimer: NodeJS.Timeout | undefined;
+  private startPromise: Promise<string> | null = null;
+  private restartTimer: NodeJS.Timeout | undefined;
+  private restartAttempts = 0;
+  private restartToken = 0;
+  private recovering = false;
   private enabled = true;
 
   constructor(browser: BrowserCoreLike, options: AgentGatewayOptions = {}) {
@@ -124,6 +131,7 @@ export class AgentGateway {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
     if (enabled) return;
+    this.cancelTransportRestart();
     for (const lease of this.leases.values()) {
       if (!lease.used) lease.rejectAuthenticated(new Error("Agent browser access was disabled."));
       clearLeaseSecrets(lease);
@@ -134,34 +142,59 @@ export class AgentGateway {
 
   async start(): Promise<string> {
     if (this.endpoint && (this.server || this.windowsTransport?.isRunning)) return this.address;
-    if (this.platform === "win32") {
-      if (!this.windowsHostPath) throw new Error(WINDOWS_AGENT_GATEWAY_UNAVAILABLE);
-      const transport = this.windowsPipeHostFactory({
-        hostPath: this.windowsHostPath,
-        platform: this.platform,
-        parentPid: process.pid
-      });
-      this.windowsTransport = transport;
-      transport.on("fatal", () => {
-        if (this.windowsTransport !== transport) return;
-        this.endpoint = null;
-        if (this.expiryTimer) clearInterval(this.expiryTimer);
-        this.expiryTimer = null;
-        for (const state of [...this.acceptedConnections]) this.disconnect(state, "closed");
-      });
-      try {
-        const endpoint = await transport.start((socket) => this.accept(socket));
-        this.endpoint = endpoint;
-        this.expiryTimer = setInterval(() => this.expireConnections(), 1_000);
-        this.expiryTimer.unref();
-        return endpoint;
-      } catch (error) {
+    return await this.beginStart();
+  }
+
+  private beginStart(): Promise<string> {
+    // Concurrent callers share one bring-up so a failed start cannot leave two transports behind.
+    if (this.startPromise) return this.startPromise;
+    // An explicit bring-up supersedes a retry that was still waiting for its backoff.
+    clearTimeout(this.restartTimer);
+    this.restartTimer = undefined;
+    const starting = this.startOnce();
+    this.startPromise = starting;
+    const settle = () => {
+      if (this.startPromise === starting) this.startPromise = null;
+    };
+    void starting.then(() => {
+      settle();
+      this.recovering = false;
+      this.restartAttempts = 0;
+    }, settle);
+    return starting;
+  }
+
+  private async startWindowsTransport(): Promise<string> {
+    if (!this.windowsHostPath) throw new Error(WINDOWS_AGENT_GATEWAY_UNAVAILABLE);
+    const transport = this.windowsPipeHostFactory({
+      hostPath: this.windowsHostPath,
+      platform: this.platform,
+      parentPid: process.pid
+    });
+    this.windowsTransport = transport;
+    transport.on("fatal", () => this.handleTransportFatal(transport));
+    try {
+      const endpoint = await transport.start((socket) => this.accept(socket));
+      if (this.windowsTransport !== transport) {
+        // close() or a replacement landed while the host was coming up: the child is real
+        // now, so this is the only place that can still shut it down.
         await transport.close();
-        if (this.windowsTransport === transport) this.windowsTransport = null;
-        this.endpoint = null;
-        throw error;
+        throw new Error("Windows agent pipe host was superseded during startup.");
       }
+      this.endpoint = endpoint;
+      this.expiryTimer = setInterval(() => this.expireConnections(), 1_000);
+      this.expiryTimer.unref();
+      return endpoint;
+    } catch (error) {
+      await transport.close();
+      if (this.windowsTransport === transport) this.windowsTransport = null;
+      this.endpoint = null;
+      throw error;
     }
+  }
+
+  private async startOnce(): Promise<string> {
+    if (this.platform === "win32") return await this.startWindowsTransport();
 
     const { endpoint, ownedRuntimeDirectory } = await createEndpoint(
       this.requestedRuntimeDirectory
@@ -195,6 +228,9 @@ export class AgentGateway {
       !this.endpoint
       || (!this.server && !this.windowsTransport?.isRunning)
     ) {
+      if (this.recovering) {
+        throw new Error("Agent gateway is restarting after a host failure.");
+      }
       throw new Error("Agent gateway must be started before launching agents.");
     }
     if (!input.terminalSessionId || !input.cwd) throw new Error("Agent launch identity is incomplete.");
@@ -255,8 +291,9 @@ export class AgentGateway {
   }
 
   async close(): Promise<void> {
-    if (this.expiryTimer) clearInterval(this.expiryTimer);
-    this.expiryTimer = null;
+    this.cancelTransportRestart();
+    clearInterval(this.expiryTimer);
+    this.expiryTimer = undefined;
     for (const state of [...this.acceptedConnections]) this.disconnect(state, "closed");
     for (const lease of this.leases.values()) {
       if (!lease.used) lease.rejectAuthenticated(new Error("Agent gateway closed before authentication."));
@@ -275,6 +312,66 @@ export class AgentGateway {
     if (server) await closeServer(server);
     if (windowsTransport) await windowsTransport.close();
     if (endpoint) await cleanupEndpoint(endpoint, ownedRuntimeDirectory, this.platform);
+  }
+
+  private handleTransportFatal(transport: WindowsPipeHostTransport): void {
+    // A transport that was already replaced must not disturb its successor.
+    if (this.windowsTransport !== transport) return;
+    this.windowsTransport = null;
+    this.endpoint = null;
+    clearInterval(this.expiryTimer);
+    this.expiryTimer = undefined;
+    for (const state of [...this.acceptedConnections]) this.disconnect(state, "closed");
+    // A failing first start() rejects to its caller instead of retrying behind it.
+    if (this.startPromise || !this.enabled) return;
+    this.recovering = true;
+    this.scheduleTransportRestart();
+  }
+
+  private scheduleTransportRestart(): void {
+    if (!this.enabled || this.restartTimer) return;
+    if (this.restartAttempts >= MAX_TRANSPORT_RESTART_ATTEMPTS) {
+      // Attempts exhausted: no timer, no endpoint, no further retry.
+      this.recovering = false;
+      return;
+    }
+    const delay = TRANSPORT_RESTART_BASE_DELAY_MS * 2 ** this.restartAttempts;
+    this.restartAttempts += 1;
+    const token = this.restartToken;
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = undefined;
+      void this.restartTransport(token);
+    }, delay);
+    this.restartTimer.unref();
+  }
+
+  private async restartTransport(token: number): Promise<void> {
+    if (token !== this.restartToken || !this.enabled) return;
+    try {
+      const endpoint = await this.beginStart();
+      if (token !== this.restartToken) {
+        // close() or setEnabled(false) landed mid-attempt: leave nothing alive behind it.
+        if (this.endpoint === endpoint) this.endpoint = null;
+        clearInterval(this.expiryTimer);
+        this.expiryTimer = undefined;
+        const transport = this.windowsTransport;
+        this.windowsTransport = null;
+        if (transport) await transport.close();
+        return;
+      }
+      this.recovering = false;
+      this.restartAttempts = 0;
+    } catch {
+      if (token === this.restartToken && this.enabled) this.scheduleTransportRestart();
+    }
+  }
+
+  private cancelTransportRestart(): void {
+    this.restartToken += 1;
+    clearTimeout(this.restartTimer);
+    this.restartTimer = undefined;
+    this.restartAttempts = 0;
+    this.recovering = false;
   }
 
   private accept(socket: AgentGatewaySocket): void {

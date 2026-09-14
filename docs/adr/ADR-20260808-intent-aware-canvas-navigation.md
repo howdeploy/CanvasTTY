@@ -5,6 +5,7 @@
 **Risk/Strictness Profile:** Production
 **Status:** Accepted
 **Related:** [ADR: Preserve Native Browser Wheel Continuity](./ADR-20260808-native-browser-wheel-continuity.md)
+**Amended by:** [ADR: Additive Marquee Selection on Empty Canvas](./ADR-20260913-shift-drag-marquee-selection.md)
 **Implementation:** [`canvasNavigation`](../../src/shared/canvasNavigation.ts), [`SettingsStore`](../../src/main/services/SettingsStore.ts), [`CanvasNavigationOverride`](../../src/main/services/CanvasNavigationOverride.ts), and [`WorkspaceCanvas`](../../src/renderer/src/features/workspace/WorkspaceCanvas.tsx)
 
 ## Context and Problem Statement
@@ -129,6 +130,7 @@ and actually scrollable HOME lists opt in. This leaves selection free to become 
 |---|---|---|
 | Empty canvas | Canvas | Canvas |
 | Non-focusable or unfocused widget | Canvas | Widget unless normal canvas hit testing applies |
+| Widget publishing `data-canvas-wheel-priority="local"` (the HOME session list) | Widget, focused or not | Widget unless normal canvas hit testing applies |
 | Focused widget, Off | Widget | Widget |
 | Focused widget, On | Canvas | Widget |
 | Focused widget, Key released | Widget | Widget |
@@ -183,6 +185,14 @@ insert/remove operations across navigation and destruction.
 5. Pinch and `Cmd/Ctrl + scroll` perform focal zoom whenever the canvas owns the event.
 6. Wheel-only capture never owns pointer drag; full override owns wheel and drag.
 7. Only the focused, focusable widget may interrupt canvas wheel input without an override.
+   **Exception recorded 2026-09-14:** an element that publishes `data-canvas-wheel-priority="local"`
+   owns the wheel with no focus precondition. `HomeZone.tsx:297` publishes that attribute on the HOME
+   session list unconditionally, `isPriorityLocalCanvasWheelTarget` (`canvasWidgetFocus.ts:51-54`)
+   reports such a target as focus-owned, and `useCanvasWheelNavigation.ts` feeds that result into
+   `overFocusedWidget`, so the wheel over that list stays local even when nothing was focused. The
+   UI contract records the same exception in its HOME session-list line (`docs/UI_CONTRACT.md:11`)
+   and in its canvas wheel bullet. The priority-local row of the ownership table above carries this
+   rule; the rows before it describe the focus-based policy this invariant states.
 8. Ownership is decided before cancellation; camera pan may be frame-coalesced.
 9. Pan preserves both axes and native momentum and adds no inertia.
 10. Modifier-only bindings preserve ordinary application shortcuts.

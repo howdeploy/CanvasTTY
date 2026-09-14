@@ -186,6 +186,13 @@ export function App(): React.JSX.Element {
   const [camera, setCamera] = useState<CameraState>(() => homeCamera(DEFAULT_HOME_GRID_SIZE));
   const isHomeCamera = useRef(true);
   const browserCanvasRef = useRef<BrowserCanvasState | null>(null);
+  /**
+   * Latest settings, kept in step synchronously by the mutators below. A canvas gesture
+   * can commit several windows in one tick; deriving each write from the render-captured
+   * `settings` would map the same base array every time and keep only the last one.
+   */
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const pluginBrowserOpenQueueRef = useRef(new PluginBrowserOpenQueue());
   const [launchProvider, setLaunchProvider] = useState<AgentProviderId | null>(null);
   const [launchPosition, setLaunchPosition] = useState<Point | null>(null);
@@ -425,12 +432,13 @@ export function App(): React.JSX.Element {
   }, []);
 
   const changePluginCanvasBounds = useCallback((id: string, bounds: SessionBounds): void => {
-    const pluginCanvas = settings.pluginCanvas.map((instance) => instance.id === id
+    const pluginCanvas = settingsRef.current.pluginCanvas.map((instance) => instance.id === id
       ? { ...instance, position: bounds.position, size: bounds.size }
       : instance);
+    settingsRef.current = { ...settingsRef.current, pluginCanvas };
     setSettings((current) => ({ ...current, pluginCanvas }));
     void saveSettings({ pluginCanvas });
-  }, [saveSettings, settings.pluginCanvas]);
+  }, [saveSettings]);
 
   const changeBrowserBounds = useCallback((browserCanvas: BrowserCanvasState): void => {
     browserCanvasRef.current = browserCanvas;
@@ -439,51 +447,57 @@ export function App(): React.JSX.Element {
   }, [saveSettings]);
 
   const createCanvasRegion = useCallback((region: CanvasRegion): void => {
-    const canvasRegions = [...settings.canvasRegions, region];
+    const canvasRegions = [...settingsRef.current.canvasRegions, region];
+    settingsRef.current = { ...settingsRef.current, canvasRegions };
     setSettings((current) => ({ ...current, canvasRegions }));
     void saveSettings({ canvasRegions });
-  }, [saveSettings, settings.canvasRegions]);
+  }, [saveSettings]);
 
   const changeCanvasRegion = useCallback((region: CanvasRegion): void => {
-    const canvasRegions = settings.canvasRegions.map((candidate) => candidate.id === region.id ? region : candidate);
+    const canvasRegions = settingsRef.current.canvasRegions.map((candidate) => candidate.id === region.id ? region : candidate);
+    settingsRef.current = { ...settingsRef.current, canvasRegions };
     setSettings((current) => ({ ...current, canvasRegions }));
     void saveSettings({ canvasRegions });
-  }, [saveSettings, settings.canvasRegions]);
+  }, [saveSettings]);
 
   const createStickyNote = useCallback((note: StickyNote): void => {
-    const stickyNotes = [...settings.stickyNotes, note];
+    const stickyNotes = [...settingsRef.current.stickyNotes, note];
+    settingsRef.current = { ...settingsRef.current, stickyNotes };
     setSettings((current) => ({ ...current, stickyNotes }));
     void saveSettings({ stickyNotes });
-  }, [saveSettings, settings.stickyNotes]);
+  }, [saveSettings]);
 
   const changeStickyNoteBounds = useCallback((id: string, bounds: SessionBounds): void => {
-    const stickyNotes = settings.stickyNotes.map((note) => note.id === id
+    const stickyNotes = settingsRef.current.stickyNotes.map((note) => note.id === id
       ? { ...note, position: bounds.position, size: bounds.size }
       : note);
+    settingsRef.current = { ...settingsRef.current, stickyNotes };
     setSettings((current) => ({ ...current, stickyNotes }));
     void saveSettings({ stickyNotes });
-  }, [saveSettings, settings.stickyNotes]);
+  }, [saveSettings]);
 
   const changeStickyNoteText = useCallback((id: string, text: string): void => {
-    const stickyNotes = settings.stickyNotes.map((note) => note.id === id ? { ...note, text } : note);
+    const stickyNotes = settingsRef.current.stickyNotes.map((note) => note.id === id ? { ...note, text } : note);
+    settingsRef.current = { ...settingsRef.current, stickyNotes };
     setSettings((current) => ({ ...current, stickyNotes }));
     void saveSettings({ stickyNotes });
-  }, [saveSettings, settings.stickyNotes]);
+  }, [saveSettings]);
 
   const deleteStickyNote = useCallback((id: string): void => {
-    const stickyNotes = settings.stickyNotes.filter((note) => note.id !== id);
+    const stickyNotes = settingsRef.current.stickyNotes.filter((note) => note.id !== id);
+    settingsRef.current = { ...settingsRef.current, stickyNotes };
     setSettings((current) => ({ ...current, stickyNotes }));
     void saveSettings({ stickyNotes });
-  }, [saveSettings, settings.stickyNotes]);
+  }, [saveSettings]);
 
   const changeCanvasRegionBounds = useCallback((
     id: string,
     bounds: SessionBounds,
     interaction: "move" | "resize"
   ): void => {
-    const previous = settings.canvasRegions.find((region) => region.id === id);
+    const previous = settingsRef.current.canvasRegions.find((region) => region.id === id);
     if (!previous) return;
-    const canvasRegions = settings.canvasRegions.map((region) => region.id === id
+    const canvasRegions = settingsRef.current.canvasRegions.map((region) => region.id === id
       ? { ...region, position: bounds.position, size: bounds.size }
       : region);
     const patch: Partial<AppSettings> = { canvasRegions };
@@ -500,15 +514,16 @@ export function App(): React.JSX.Element {
           window.canvasTTY.terminal.setBounds(session.id, moved);
           return { ...session, ...moved };
         });
-        const pluginCanvas = settings.pluginCanvas.map((instance) => {
+        const pluginCanvas = settingsRef.current.pluginCanvas.map((instance) => {
           if (!boundsInsideRegion(instance, previous)) return instance;
           const moved = translateBounds(instance, delta);
           return { ...instance, ...moved };
         });
-        const browserCanvas = settings.browserCanvas && boundsInsideRegion(settings.browserCanvas, previous)
-          ? translateBounds(settings.browserCanvas, delta)
-          : settings.browserCanvas;
-        const stickyNotes = settings.stickyNotes.map((note) => boundsInsideRegion(note, previous)
+        const currentBrowser = settingsRef.current.browserCanvas;
+        const browserCanvas = currentBrowser && boundsInsideRegion(currentBrowser, previous)
+          ? translateBounds(currentBrowser, delta)
+          : currentBrowser;
+        const stickyNotes = settingsRef.current.stickyNotes.map((note) => boundsInsideRegion(note, previous)
           ? { ...note, ...translateBounds(note, delta) }
           : note);
         setSessions(movedSessions);
@@ -519,19 +534,21 @@ export function App(): React.JSX.Element {
       }
     }
 
+    settingsRef.current = { ...settingsRef.current, ...patch };
     setSettings((current) => ({ ...current, ...patch }));
     void saveSettings(patch);
-  }, [saveSettings, sessions, settings.browserCanvas, settings.canvasRegions, settings.pluginCanvas, settings.stickyNotes]);
+  }, [saveSettings, sessions]);
 
   const deleteCanvasRegion = useCallback((id: string): void => {
-    const canvasRegions = settings.canvasRegions.filter((region) => region.id !== id);
+    const canvasRegions = settingsRef.current.canvasRegions.filter((region) => region.id !== id);
+    settingsRef.current = { ...settingsRef.current, canvasRegions };
     setSettings((current) => ({ ...current, canvasRegions }));
     void saveSettings({ canvasRegions });
-  }, [saveSettings, settings.canvasRegions]);
+  }, [saveSettings]);
 
   const disposePluginCanvas = useCallback((id: string): void => {
-    void saveSettings({ pluginCanvas: settings.pluginCanvas.filter((instance) => instance.id !== id) });
-  }, [saveSettings, settings.pluginCanvas]);
+    void saveSettings({ pluginCanvas: settingsRef.current.pluginCanvas.filter((instance) => instance.id !== id) });
+  }, [saveSettings]);
 
   const focusPluginCanvas = useCallback((id: string): void => {
     const instance = settings.pluginCanvas.find((candidate) => candidate.id === id);

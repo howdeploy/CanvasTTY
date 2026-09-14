@@ -1,3 +1,5 @@
+import { matchesPhysicalOrLayoutKey } from "../../lib/shortcuts.ts";
+
 interface TerminalKeyEvent {
   type: string;
   key: string;
@@ -65,8 +67,4 @@ export function shouldSearchTerminalOutput(event: TerminalKeyEvent): boolean {
     && event.shiftKey
     && !event.metaKey
     && !event.altKey;
-}
-
-function matchesPhysicalOrLayoutKey(event: TerminalKeyEvent, code: string, key: string): boolean {
-  return event.code === code || event.key.toLowerCase() === key;
 }

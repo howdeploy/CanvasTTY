@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   displayCanvasNavigationBinding,
+  matchesPhysicalOrLayoutKey,
   matchesPointerShortcut,
   matchesShortcut,
   shortcutFromKeyboardEvent,
@@ -50,6 +51,19 @@ test("ignores modifier-only and unsupported keys", () => {
 test("matches shortcuts without casing drift", () => {
   assert.equal(matchesShortcut(keyEvent("h", { ctrlKey: true }), "Ctrl+H"), true);
   assert.equal(matchesShortcut(keyEvent("h", { ctrlKey: true }), "Alt+H"), false);
+});
+
+test("a shortcut survives a non-Latin layout by preferring the physical key", () => {
+  // Russian layout: the physical K key reports `key: "л"`. Recording and matching must
+  // still agree on the same chord, otherwise no letter shortcut can be bound at all.
+  const cyrillic = keyEvent("л", { code: "KeyK", ctrlKey: true });
+  assert.equal(shortcutFromKeyboardEvent(cyrillic), "Ctrl+K");
+  assert.equal(matchesShortcut(cyrillic, "Ctrl+K"), true);
+  assert.equal(matchesPhysicalOrLayoutKey({ key: "л", code: "KeyK" }, "KeyK", "k"), true);
+  assert.equal(matchesPhysicalOrLayoutKey({ key: "б", code: "Comma" }, "Comma", ","), true);
+  // The `key` fallback still covers events that carry no usable code, so a mismatch in
+  // both the code and the reported key is the only real negative.
+  assert.equal(matchesPhysicalOrLayoutKey({ key: "л", code: "KeyX" }, "KeyK", "k"), false);
 });
 
 test("displays platform-neutral canvas navigation bindings with macOS key names", () => {

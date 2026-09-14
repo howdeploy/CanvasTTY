@@ -51,7 +51,15 @@ button { border: 0; }
 .workspace--canvas-override * { cursor: grab !important; }
 .workspace--panning,
 .workspace--panning * { cursor: grabbing !important; }
-.workspace__scene { position: absolute; inset: 0; width: 1px; height: 1px; transform-origin: 0 0; will-change: transform; }
+/* The scene deliberately has NO will-change in the resting state: promoting it
+   would make Chromium reuse a raster cached at the old scale, so text and icons
+   would be upscaled bitmaps while the camera zooms. The hint is therefore scoped
+   to the two moments where compositing actually pays off - an active pan and an
+   active zoom - and dropped once the gesture settles, which lets the scene be
+   re-rasterized at the new scale. */
+.workspace__scene { position: absolute; inset: 0; width: 1px; height: 1px; transform-origin: 0 0; }
+.workspace--panning .workspace__scene,
+.workspace--zooming .workspace__scene { will-change: transform; }
 .workspace__regions { position: absolute; left: 0; top: 0; }
 .workspace__windows { position: absolute; left: 0; top: 0; }
 .workspace__windows--hidden { visibility: hidden; pointer-events: none; }
@@ -325,7 +333,7 @@ button { border: 0; }
 .canvas-command-palette__empty { margin: 0; padding: 2.5em 1em; color: var(--text-muted-on-dark); text-align: center; }
 
 .sticky-note-card { position: absolute; left: 0; top: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--yellow) 62%, var(--surface)); border-radius: 14px; color: var(--text-dark); background: var(--yellow); box-shadow: var(--shadow-lg); font-size: calc(13px * var(--ui-scale, 1)); }
-.sticky-note-card:focus-within { box-shadow: 0 0 0 3px var(--primary), var(--shadow-lg); }
+.sticky-note-card:focus-within, .sticky-note-card--selected { box-shadow: 0 0 0 3px var(--primary), var(--shadow-lg); }
 .sticky-note-card__header { height: 3.15em; padding: 0 .5em 0 .9em; display: flex; align-items: center; justify-content: space-between; gap: .75em; color: var(--text-dark); background: color-mix(in srgb, var(--yellow) 76%, var(--secondary)); cursor: move; touch-action: none; }
 .sticky-note-card__header > span { display: flex; align-items: center; gap: .55em; font: 850 .8em/1 var(--font-mono); text-transform: uppercase; }
 .sticky-note-card__close { width: 2.15em; height: 2.15em; flex: 0 0 auto; display: grid; place-items: center; border-radius: .54em; color: color-mix(in srgb, var(--text-dark) 72%, transparent); background: color-mix(in srgb, var(--text-dark) 6%, transparent); cursor: pointer; transition: color .15s ease, background .15s ease; }
@@ -377,6 +385,7 @@ button { border: 0; }
 .terminal-card__resize-handle--sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
 .terminal-card__resize-handle--nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
 .plugin-canvas-card { --card-header-height: calc(54px * var(--ui-scale, 1)); position: absolute; left: 0; top: 0; width: 680px; height: 440px; overflow: hidden; border: 1px solid rgba(255,255,255,.08); border-radius: 17px; background: var(--surface); box-shadow: var(--shadow-lg); }
+.plugin-canvas-card--selected { box-shadow: 0 0 0 3px var(--primary), var(--shadow-lg); }
 .plugin-canvas-card__header { height: var(--card-header-height); padding: 0 calc(11px * var(--ui-scale, 1)) 0 calc(16px * var(--ui-scale, 1)); display: flex; align-items: center; justify-content: space-between; gap: calc(12px * var(--ui-scale, 1)); color: white; background: var(--surface-soft); cursor: move; font-size: calc(13px * var(--ui-scale, 1)); touch-action: none; }
 .plugin-canvas-card__header > span { min-width: 0; display: flex; flex-direction: column; gap: .23em; }
 .plugin-canvas-card__header strong, .plugin-canvas-card__header small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

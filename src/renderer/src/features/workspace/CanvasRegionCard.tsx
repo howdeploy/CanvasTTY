@@ -65,6 +65,8 @@ export function CanvasRegionCard({
   const drag = (event: React.PointerEvent<HTMLButtonElement>): void => {
     const state = dragState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a drag.
+    if (event.buttons === 0) return;
     const rawPosition = {
       x: state.startBounds.position.x + (event.clientX - state.startClient.x) / zoom,
       y: state.startBounds.position.y + (event.clientY - state.startClient.y) / zoom
@@ -86,6 +88,14 @@ export function CanvasRegionCard({
     onMovePreview(region.id, null);
   };
 
+  // Cancelling drops the local bounds and the shared preview; the committed region props
+  // then re-seed `liveBounds`, so the next gesture starts from the persisted position.
+  const cancelDrag = (event: React.PointerEvent<HTMLButtonElement>): void => {
+    if (dragState.current?.pointerId !== event.pointerId) return;
+    dragState.current = null;
+    onMovePreview(region.id, null);
+  };
+
   const startResize = (event: React.PointerEvent<HTMLDivElement>, direction: ResizeDirection): void => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -102,6 +112,8 @@ export function CanvasRegionCard({
   const resize = (event: React.PointerEvent<HTMLDivElement>): void => {
     const state = resizeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a resize.
+    if (event.buttons === 0) return;
     event.preventDefault();
     event.stopPropagation();
     const deltaX = (event.clientX - state.startClient.x) / zoom;
@@ -131,6 +143,14 @@ export function CanvasRegionCard({
     onBoundsChange(region.id, liveBounds.current, "resize");
   };
 
+  // Resize previews nothing outside the card, so the region props alone cannot pull the
+  // local bounds back: restore them from the last persisted bounds explicitly.
+  const cancelResize = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (resizeState.current?.pointerId !== event.pointerId) return;
+    resizeState.current = null;
+    applyBounds({ position: region.position, size: region.size });
+  };
+
   return (
     <article
       className="canvas-region"
@@ -149,7 +169,8 @@ export function CanvasRegionCard({
         onPointerDown={startDrag}
         onPointerMove={drag}
         onPointerUp={endDrag}
-        onPointerCancel={endDrag}
+        onPointerCancel={cancelDrag}
+        onLostPointerCapture={cancelDrag}
       >{region.title}</button>
       {RESIZE_DIRECTIONS.map((direction) => (
         <div
@@ -160,7 +181,8 @@ export function CanvasRegionCard({
           onPointerDown={(event) => startResize(event, direction)}
           onPointerMove={resize}
           onPointerUp={endResize}
-          onPointerCancel={endResize}
+          onPointerCancel={cancelResize}
+          onLostPointerCapture={cancelResize}
         />
       ))}
     </article>

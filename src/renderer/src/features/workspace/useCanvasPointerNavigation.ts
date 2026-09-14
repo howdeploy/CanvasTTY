@@ -6,13 +6,13 @@ import {
   isCanvasNavigationBindingActive
 } from "../../../../shared/canvasNavigation";
 import {
-  TERMINAL_CARD_CONTROL_SELECTOR,
+  CANVAS_CARD_CONTROL_SELECTOR,
   advanceCanvasGroupDrag,
   beginCanvasGroupDrag,
+  canvasGroupDragDelta,
   canvasMarqueeRect,
   canvasPressIntent,
   canvasWorldRect,
-  endCanvasGroupDrag,
   pastCanvasDragThreshold,
   type CanvasGroupDragState,
   type CanvasMarqueeRect
@@ -46,12 +46,14 @@ interface UseCanvasPointerNavigationOptions {
   cameraRef: MutableRefObject<CameraState>;
   canvasOverrideActiveRef: RefObject<boolean>;
   commitCamera(camera: CameraState): void;
-  /** Session ids currently marquee-selected; a drag on one of them moves the group. */
-  selectedSessionIds: ReadonlySet<string>;
-  /** Replaces the marquee group with the sessions intersecting the world rectangle; null clears it. */
+  /** Canvas layer ids currently marquee-selected; a drag on one of them moves the group. */
+  selectedLayerIds: ReadonlySet<string>;
+  /** Replaces the marquee group with the layers intersecting the world rectangle; null clears it. */
   onMarqueeSelection(bounds: SessionBounds | null): void;
-  /** Commits a group move: the pointer offset in world units. */
-  onGroupDrag(sessionId: string, delta: Point): void;
+  /** Freezes the commit basis of a travelled group move; called once, when the press activates. */
+  onGroupDragStart(layerId: string): void;
+  /** Commits a group move: the pointer offset in world units, applied from the pressed layer. */
+  onGroupDrag(layerId: string, delta: Point): void;
 }
 
 export interface CanvasPointerNavigationController {
@@ -66,6 +68,8 @@ export interface CanvasPointerNavigationController {
   handlePointerMoveCapture(event: React.PointerEvent<HTMLDivElement>): void;
   handlePointerEnd(event: React.PointerEvent<HTMLDivElement>): void;
   handlePointerEndCapture(event: React.PointerEvent<HTMLDivElement>): void;
+  /** Aborts the in-flight pan, marquee, or group move without committing anything. */
+  handlePointerCancel(): void;
   handlePointerLeave(): void;
 }
 
@@ -75,8 +79,9 @@ export function useCanvasPointerNavigation({
   cameraRef,
   canvasOverrideActiveRef,
   commitCamera,
-  selectedSessionIds,
+  selectedLayerIds,
   onMarqueeSelection,
+  onGroupDragStart,
   onGroupDrag
 }: UseCanvasPointerNavigationOptions): CanvasPointerNavigationController {
   const panState = useRef<PanState | null>(null);
@@ -85,10 +90,12 @@ export function useCanvasPointerNavigation({
   const [panning, setPanning] = useState(false);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
-  const selectedSessionIdsRef = useRef(selectedSessionIds);
-  selectedSessionIdsRef.current = selectedSessionIds;
+  const selectedLayerIdsRef = useRef(selectedLayerIds);
+  selectedLayerIdsRef.current = selectedLayerIds;
   const onMarqueeSelectionRef = useRef(onMarqueeSelection);
   onMarqueeSelectionRef.current = onMarqueeSelection;
+  const onGroupDragStartRef = useRef(onGroupDragStart);
+  onGroupDragStartRef.current = onGroupDragStart;
   const onGroupDragRef = useRef(onGroupDrag);
   onGroupDragRef.current = onGroupDrag;
   const marqueeState = useRef<MarqueeState | null>(null);
@@ -126,8 +133,15 @@ export function useCanvasPointerNavigation({
     setPanning(false);
   }, [viewport]);
 
-  const resetPan = useCallback((): void => {
-    const pointerId = panState.current?.pointerId;
+  /**
+   * Aborts every in-flight gesture without committing: nothing is written back, so a
+   * cancelled pan, marquee, or group move leaves the camera, the selection, and the
+   * committed bounds untouched. Shared by cancel events and window blur.
+   */
+  const cancelPointerGesture = useCallback((): void => {
+    const pointerId = panState.current?.pointerId
+      ?? marqueeState.current?.pointerId
+      ?? groupDrag.current?.pointerId;
     const element = viewport.current;
     if (pointerId !== undefined && element?.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
     if (panState.current) window.canvasTTY.canvasNavigation.setPointerGestureActive(false);
@@ -185,17 +199,23 @@ export function useCanvasPointerNavigation({
     const state = groupDrag.current;
     if (!state || state.pointerId !== event.pointerId) return;
     const advanced = advanceCanvasGroupDrag(state, event);
-    if (advanced === state) return;
-    groupDrag.current = advanced;
-    // The group now owns the gesture: it takes pointer capture and stops feeding
-    // the pressed card's own drag, so the movement is applied exactly once.
+    // Under the threshold the press is still a click: the card keeps its own drag.
+    if (!advanced.active) return;
+    // The transition is the only one-time work: the group takes pointer capture and
+    // freezes the basis it will commit from, so the preview cannot feed back into it.
+    if (advanced !== state) {
+      groupDrag.current = advanced;
+      const element = viewport.current;
+      if (element && !element.hasPointerCapture(event.pointerId)) element.setPointerCapture(event.pointerId);
+      onGroupDragStartRef.current(advanced.layerId);
+    }
+    // Every owned move, not just the transition: the pressed card's handlers must never
+    // see the gesture, and stopPropagation is event-local — it cannot undo a handler
+    // that already ran on an earlier move.
     event.stopPropagation();
-    const element = viewport.current;
-    if (element && !element.hasPointerCapture(event.pointerId)) element.setPointerCapture(event.pointerId);
-    setGroupNudge({
-      x: (event.clientX - advanced.startClient.x) / cameraRef.current.zoom,
-      y: (event.clientY - advanced.startClient.y) / cameraRef.current.zoom
-    });
+    const delta = canvasGroupDragDelta(advanced, { x: event.clientX, y: event.clientY }, cameraRef.current.zoom);
+    if (!delta) return;
+    setGroupNudge(delta);
   }, [cameraRef, viewport]);
 
   const finishGroupDrag = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
@@ -209,17 +229,17 @@ export function useCanvasPointerNavigation({
     const element = viewport.current;
     if (element?.hasPointerCapture(state.pointerId)) element.releasePointerCapture(state.pointerId);
     setGroupNudge(null);
-    const delta = endCanvasGroupDrag(state, { x: event.clientX, y: event.clientY }, cameraRef.current.zoom);
+    const delta = canvasGroupDragDelta(state, { x: event.clientX, y: event.clientY }, cameraRef.current.zoom);
     if (delta === null) return;
     suppressClick.current = true;
     window.setTimeout(() => { suppressClick.current = false; }, 0);
-    onGroupDragRef.current(state.sessionId, delta);
+    onGroupDragRef.current(state.layerId, delta);
   }, [cameraRef, viewport]);
 
   useEffect(() => {
-    window.addEventListener("blur", resetPan);
-    return () => window.removeEventListener("blur", resetPan);
-  }, [resetPan]);
+    window.addEventListener("blur", cancelPointerGesture);
+    return () => window.removeEventListener("blur", cancelPointerGesture);
+  }, [cancelPointerGesture]);
 
   useEffect(() => () => {
     if (edgeFrame.current !== null) cancelAnimationFrame(edgeFrame.current);
@@ -344,12 +364,12 @@ export function useCanvasPointerNavigation({
     edgeFrame.current = requestAnimationFrame(edgePanStep);
   }, [cameraRef, commitCamera, viewport]);
 
-  const startGroupDrag = useCallback((event: React.PointerEvent<HTMLDivElement>, sessionId: string): boolean => {
+  const startGroupDrag = useCallback((event: React.PointerEvent<HTMLDivElement>, layerId: string): boolean => {
     // Deliberately non-preempting: the press still reaches the card, so focus, the
     // click path, and the card's own controls behave normally until it travels.
     groupDrag.current = beginCanvasGroupDrag(
       event.pointerId,
-      sessionId,
+      layerId,
       { x: event.clientX, y: event.clientY }
     );
     return true;
@@ -358,7 +378,8 @@ export function useCanvasPointerNavigation({
   const handlePointerDownCapture = useCallback((event: React.PointerEvent<HTMLDivElement>): boolean => {
     if (event.button === 1 || isMousePanBinding(event)) return startPan(event, true);
     const target = event.target as HTMLElement;
-    const card = target.closest<HTMLElement>(".terminal-card");
+    // One selector for every card kind: each of the four card roots publishes `data-canvas-layer-id`.
+    const card = target.closest<HTMLElement>("[data-canvas-layer-id]");
     const widgetTarget = isCanvasWidgetTarget(event.target);
     const intent = canvasPressIntent({
       button: event.button,
@@ -366,12 +387,12 @@ export function useCanvasPointerNavigation({
       altKey: event.altKey,
       ctrlKey: event.ctrlKey,
       metaKey: event.metaKey,
-      cardSessionId: card?.dataset.sessionId ?? null,
-      onCardControl: target.closest(TERMINAL_CARD_CONTROL_SELECTOR) !== null,
+      cardLayerId: card?.dataset.canvasLayerId ?? null,
+      onCardControl: target.closest(CANVAS_CARD_CONTROL_SELECTOR) !== null,
       onCanvasWidget: widgetTarget,
-      selection: selectedSessionIdsRef.current
+      selection: selectedLayerIdsRef.current
     });
-    if (intent.kind === "group-drag") return startGroupDrag(event, intent.sessionId);
+    if (intent.kind === "group-drag") return startGroupDrag(event, intent.layerId);
     if (intent.kind === "marquee") return startMarquee(event);
     if (intent.kind === "clear-selection") onMarqueeSelectionRef.current(null);
     if (!canvasOverrideActiveRef.current || !widgetTarget) return false;
@@ -440,6 +461,7 @@ export function useCanvasPointerNavigation({
     handlePointerMoveCapture,
     handlePointerEnd,
     handlePointerEndCapture,
+    handlePointerCancel: cancelPointerGesture,
     handlePointerLeave
   };
 }

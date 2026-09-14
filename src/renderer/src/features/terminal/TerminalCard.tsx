@@ -81,6 +81,10 @@ interface ResizeState extends DragState {
 const RESIZE_DIRECTIONS: ResizeDirection[] = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
 const TERMINAL_FOCUS_IN = "\u001b[I";
 const TERMINAL_FOCUS_OUT = "\u001b[O";
+// The WebGL canvas backing store is layout x devicePixelRatio and xterm 6 has no
+// DPR option, so above 1x its raster would be upscaled by the scene transform.
+// The DOM renderer measures the same font metrics, so the swap needs no fit().
+const WEBGL_MAX_SCALE = 1;
 
 const SEARCH_DECORATIONS = {
   matchBackground: "#7b7899",
@@ -370,10 +374,11 @@ export function TerminalCard({
 
   useEffect(() => {
     // One WebGL context per card: only the focused/frontmost terminal owns one,
-    // every other card keeps the DOM renderer.
-    if (focused && !summaryMode) enableWebgl();
+    // every other card keeps the DOM renderer. Above WEBGL_MAX_SCALE the canvas
+    // raster would be an upscale, so the DOM renderer takes over instead.
+    if (focused && !summaryMode && zoom <= WEBGL_MAX_SCALE) enableWebgl();
     else disableWebgl();
-  }, [focused, summaryMode]);
+  }, [focused, summaryMode, zoom]);
 
   useEffect(() => {
     // Gate the main-process output stream: in summary mode the card is a cheap
@@ -433,6 +438,8 @@ export function TerminalCard({
   const drag = (event: React.PointerEvent<HTMLElement>): void => {
     const state = dragState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a drag.
+    if (event.buttons === 0) return;
     const rawPosition = {
       x: state.startBounds.position.x + (event.clientX - state.startClient.x) / zoom,
       y: state.startBounds.position.y + (event.clientY - state.startClient.y) / zoom
@@ -447,6 +454,16 @@ export function TerminalCard({
     if (!dragState.current || dragState.current.pointerId !== event.pointerId) return;
     dragState.current = null;
     onBoundsChange(session.id, liveBounds.current);
+  };
+
+  // A group drag takes pointer capture without a pointerup; drop local state so a
+  // later hover cannot act on it.
+  const cancelDrag = (): void => {
+    dragState.current = null;
+  };
+
+  const cancelResize = (): void => {
+    resizeState.current = null;
   };
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>, direction: ResizeDirection): void => {
@@ -464,6 +481,8 @@ export function TerminalCard({
   const resizeCard = (event: React.PointerEvent<HTMLDivElement>): void => {
     const state = resizeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a resize.
+    if (event.buttons === 0) return;
     event.preventDefault();
     event.stopPropagation();
     const deltaX = (event.clientX - state.startClient.x) / zoom;
@@ -631,6 +650,7 @@ export function TerminalCard({
         onPointerMove={drag}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onLostPointerCapture={cancelDrag}
       >
         <div className="terminal-card__identity">
           <ProviderIcon provider={session.provider} size="small" />
@@ -763,6 +783,7 @@ export function TerminalCard({
           onPointerMove={resizeCard}
           onPointerUp={endResize}
           onPointerCancel={endResize}
+          onLostPointerCapture={cancelResize}
         />
       ))}
     </article>

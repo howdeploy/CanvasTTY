@@ -2,19 +2,27 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  CANVAS_CARD_CONTROL_SELECTOR,
   CANVAS_DRAG_THRESHOLD,
   advanceCanvasGroupDrag,
   beginCanvasGroupDrag,
+  browserLayerId,
+  canvasGroupDragDelta,
   canvasMarqueeRect,
   canvasPressIntent,
   canvasWorldRect,
-  endCanvasGroupDrag,
-  pastCanvasDragThreshold
+  noteLayerId,
+  parseCanvasLayerId,
+  pastCanvasDragThreshold,
+  pluginLayerId,
+  terminalLayerId
 } from "../src/renderer/src/features/workspace/canvasSelectionGesture.ts";
 
 const pointerNavigationPath = new URL("../src/renderer/src/features/workspace/useCanvasPointerNavigation.ts", import.meta.url);
 const workspacePath = new URL("../src/renderer/src/features/workspace/WorkspaceCanvas.tsx", import.meta.url);
-const terminalCardPath = new URL("../src/renderer/src/features/terminal/TerminalCard.tsx", import.meta.url);
+
+/** Every window kind, each named the way its own card root names it. */
+const everyLayerId = [terminalLayerId("a"), pluginLayerId("p"), browserLayerId, noteLayerId("n")];
 
 /** A primary press on empty canvas, overridden per test. */
 function press(overrides = {}) {
@@ -24,12 +32,20 @@ function press(overrides = {}) {
     altKey: false,
     ctrlKey: false,
     metaKey: false,
-    cardSessionId: null,
+    cardLayerId: null,
     onCardControl: false,
     onCanvasWidget: false,
     selection: new Set(),
     ...overrides
   };
+}
+
+/** Does the exported control selector cover this element? Simple tag and class parts only. */
+function selectorCovers({ tag, className = "" }) {
+  return CANVAS_CARD_CONTROL_SELECTOR.split(",").some((part) => {
+    const selector = part.trim();
+    return selector.startsWith(".") ? className === selector.slice(1) : tag === selector;
+  });
 }
 
 /** The source of one `const name = useCallback(...)` up to the next declaration in the hook. */
@@ -56,26 +72,66 @@ test("shift on empty canvas starts a marquee and every other modifier combinatio
 });
 
 test("a press on a card is a group drag only when the card is one of several selected", () => {
-  const selection = new Set(["a", "b", "c"]);
-  assert.deepEqual(
-    canvasPressIntent(press({ cardSessionId: "b", selection })),
-    { kind: "group-drag", sessionId: "b" }
-  );
-  assert.deepEqual(canvasPressIntent(press({ cardSessionId: "b", selection: new Set(["b"]) })), { kind: "none" });
-  assert.deepEqual(canvasPressIntent(press({ cardSessionId: "d", selection })), { kind: "none" });
-  assert.deepEqual(canvasPressIntent(press({ cardSessionId: "b" })), { kind: "none" });
+  const selection = new Set(everyLayerId);
+  for (const layerId of everyLayerId) {
+    assert.deepEqual(
+      canvasPressIntent(press({ cardLayerId: layerId, selection })),
+      { kind: "group-drag", layerId },
+      `a selected ${layerId} must anchor a group drag`
+    );
+  }
+  const [terminal, plugin] = everyLayerId;
+  assert.deepEqual(canvasPressIntent(press({ cardLayerId: terminal, selection: new Set([terminal]) })), { kind: "none" });
+  assert.deepEqual(canvasPressIntent(press({ cardLayerId: "terminal:elsewhere", selection })), { kind: "none" });
+  assert.deepEqual(canvasPressIntent(press({ cardLayerId: terminal })), { kind: "none" });
+  assert.deepEqual(canvasPressIntent(press({ cardLayerId: plugin, selection: new Set([terminal, "terminal:x"]) })), { kind: "none" });
 });
 
 test("a press on a card control, the search input, or a resize handle reaches that surface", () => {
-  const selection = new Set(["a", "b"]);
-  for (const cardSessionId of ["a", "b"]) {
+  const selection = new Set(everyLayerId);
+  for (const cardLayerId of everyLayerId) {
     assert.deepEqual(
-      canvasPressIntent(press({ cardSessionId, selection, onCardControl: true })),
+      canvasPressIntent(press({ cardLayerId, selection, onCardControl: true })),
       { kind: "none" },
-      `control press on ${cardSessionId} must not start a group drag`
+      `control press on ${cardLayerId} must not start a group drag`
     );
+    assert.deepEqual(canvasPressIntent(press({ cardLayerId, selection, altKey: true })), { kind: "none" });
   }
-  assert.deepEqual(canvasPressIntent(press({ cardSessionId: "b", selection, altKey: true })), { kind: "none" });
+});
+
+test("the note editor is a control, so a textarea press never anchors a group drag", () => {
+  const note = noteLayerId("n");
+  const selection = new Set([note, terminalLayerId("a")]);
+  // The note editor is a textarea: the widened selector must own that press.
+  assert.equal(selectorCovers({ tag: "textarea" }), true);
+  assert.equal(selectorCovers({ tag: "div" }), false, "a plain card body is not a control");
+  for (const control of [{ tag: "button" }, { tag: "input" }, { className: "terminal-card__resize-handle" }]) {
+    assert.equal(selectorCovers(control), true, `${control.tag ?? control.className} must stay a control`);
+  }
+  assert.deepEqual(
+    canvasPressIntent(press({ cardLayerId: note, selection, onCardControl: true })),
+    { kind: "none" }
+  );
+  assert.deepEqual(
+    canvasPressIntent(press({ cardLayerId: note, selection })),
+    { kind: "group-drag", layerId: note }
+  );
+});
+
+test("a layer id round-trips every window kind and nothing else parses", () => {
+  const cases = [
+    [terminalLayerId("s-1"), { kind: "terminal", targetId: "s-1" }],
+    [pluginLayerId("p-1"), { kind: "plugin", targetId: "p-1" }],
+    [browserLayerId, { kind: "browser", targetId: null }],
+    [noteLayerId("n-1"), { kind: "note", targetId: "n-1" }]
+  ];
+  for (const [layerId, expected] of cases) {
+    assert.deepEqual(parseCanvasLayerId(layerId), expected, `${layerId} must resolve to its own kind`);
+  }
+  assert.deepEqual(parseCanvasLayerId(terminalLayerId("s:1")), { kind: "terminal", targetId: "s:1" });
+  for (const junk of ["", "terminal", "terminal:", "plugin:", "note:", ":a", "session:a", "browser:1", "Browser"]) {
+    assert.equal(parseCanvasLayerId(junk), null, `"${junk}" is not a layer id`);
+  }
 });
 
 test("the shared drag threshold is a travel gate, not a direction test", () => {
@@ -90,19 +146,32 @@ test("the shared drag threshold is a travel gate, not a direction test", () => {
 });
 
 test("a group drag stays inactive under the threshold and commits nothing on release", () => {
-  const drag = beginCanvasGroupDrag(7, "b", { x: 200, y: 200 });
+  const drag = beginCanvasGroupDrag(7, terminalLayerId("b"), { x: 200, y: 200 });
   assert.equal(drag.active, false);
 
   const jitter = advanceCanvasGroupDrag(drag, { pointerId: 7, clientX: 202, clientY: 201 });
   assert.equal(jitter.active, false, "a jitter press must not become a drag");
-  assert.equal(endCanvasGroupDrag(jitter, { x: 202, y: 201 }, 0.2), null, "a jitter press must not move the group");
+  assert.equal(canvasGroupDragDelta(jitter, { x: 202, y: 201 }, 0.2), null, "a jitter press must not move the group");
 
   const travelled = advanceCanvasGroupDrag(jitter, { pointerId: 7, clientX: 260, clientY: 200 });
   assert.equal(travelled.active, true);
-  assert.deepEqual(endCanvasGroupDrag(travelled, { x: 260, y: 200 }, 0.2), { x: 300, y: 0 });
+  assert.deepEqual(canvasGroupDragDelta(travelled, { x: 260, y: 200 }, 0.2), { x: 300, y: 0 });
 
   // Pointer identity is part of the state: another pointer cannot advance or finish it.
   assert.equal(advanceCanvasGroupDrag(drag, { pointerId: 9, clientX: 900, clientY: 900 }), drag);
+});
+
+test("an active group drag previews a fresh world delta on every move, not only the first", () => {
+  const drag = beginCanvasGroupDrag(5, terminalLayerId("a"), { x: 400, y: 300 });
+  assert.equal(canvasGroupDragDelta(drag, { x: 460, y: 300 }, 1), null, "an untravelled press has no delta");
+
+  const travelled = advanceCanvasGroupDrag(drag, { pointerId: 5, clientX: 460, clientY: 300 });
+  assert.equal(travelled.active, true);
+  const first = canvasGroupDragDelta(travelled, { x: 460, y: 300 }, 1);
+  const second = canvasGroupDragDelta(travelled, { x: 520, y: 340 }, 1);
+  assert.deepEqual(first, { x: 60, y: 0 });
+  assert.deepEqual(second, { x: 120, y: 40 });
+  assert.notDeepEqual(second, first, "a later move must advance the preview, not repeat the first delta");
 });
 
 test("the marquee rectangle is viewport-local and direction-agnostic", () => {
@@ -122,16 +191,6 @@ test("the marquee rectangle converts to world space through the camera", () => {
   });
 });
 
-test("the terminal card publishes the session id the group-drag guard reads", async () => {
-  const [card, pointerNavigation] = await Promise.all([
-    readFile(terminalCardPath, "utf8"),
-    readFile(pointerNavigationPath, "utf8")
-  ]);
-  assert.match(card, /data-session-id=\{session\.id\}/);
-  assert.match(pointerNavigation, /\.closest<HTMLElement>\("\.terminal-card"\)/);
-  assert.match(pointerNavigation, /card\?\.dataset\.sessionId \?\? null/);
-});
-
 test("the marquee selection never moves logical input focus or the active session", async () => {
   const workspace = await readFile(workspacePath, "utf8");
   const body = hookBody(workspace, "selectMarquee");
@@ -146,8 +205,6 @@ test("a group drag press does not preempt the card and only claims the gesture p
   assert.doesNotMatch(start, /preventDefault|stopPropagation|setPointerCapture/);
   assert.match(start, /beginCanvasGroupDrag\(/);
   assert.match(pointerNavigation, /advanceCanvasGroupDrag\(state, event\)/);
-  assert.match(pointerNavigation, /endCanvasGroupDrag\(state, /);
-  assert.match(pointerNavigation, /onCardControl: target\.closest\(TERMINAL_CARD_CONTROL_SELECTOR\) !== null/);
 });
 
 test("a travelled group drag commits one delta once and suppresses exactly one follow-up click", async () => {

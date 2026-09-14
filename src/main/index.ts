@@ -103,6 +103,12 @@ let servicesReady = false;
 let startupRunning = false;
 let shutdownRunning = false;
 let shutdownComplete = false;
+// Set the instant the shell window's close is requested — before the window is
+// destroyed — and cleared when a new one is created. Electron aborts the
+// navigations that race that close (ERR_ABORTED / ERR_FAILED / "Object has been
+// destroyed"); a startup step that sees this flag must stop quietly, because
+// the user asked for a quit and there is no failure left to report.
+let mainWindowClosing = false;
 // Deduplicates attention notifications: the last status already announced per
 // session, so a burst of snapshots notifies once per transition. Cleared when
 // the session is removed (its removal event), never used as a status source.
@@ -131,6 +137,8 @@ async function createWindow(): Promise<BrowserWindow> {
     }
   });
   mainWindow = window;
+  // A fresh window is not closing; the previous one's flag must not leak in.
+  mainWindowClosing = false;
 
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => {
@@ -162,12 +170,37 @@ async function createWindow(): Promise<BrowserWindow> {
     browserService?.cancelCanvasNavigationGesture();
   });
 
-  await window.loadURL(startupPageUrl({ locale: app.getLocale(), isMacOS: process.platform === "darwin" }));
-
+  // Both handlers are registered before the startup page load: a close landing
+  // inside that load has to be visible to the load's own catch below, and the
+  // dead window must not stay in `mainWindow` until the load settles.
+  window.on("close", () => {
+    mainWindowClosing = true;
+  });
   window.on("closed", () => {
+    mainWindowClosing = true;
     if (mainWindow === window) mainWindow = null;
   });
+
+  try {
+    await window.loadURL(startupPageUrl({ locale: app.getLocale(), isMacOS: process.platform === "darwin" }));
+  } catch (error) {
+    // A close during this load aborts the navigation (ERR_ABORTED / ERR_FAILED).
+    // That is a quit, not a failed startup, so it must not reach the caller's
+    // failure handling; a real error on a live window still propagates.
+    if (!shellWindowGone(window)) throw error;
+    console.warn("CanvasTTY startup page load stopped: its window is gone, the application is closing.", error);
+  }
   return window;
+}
+
+/**
+ * True when the shell window is on its way out: its close was requested (the
+ * "close" event fires before destruction) or the window/webContents is already
+ * destroyed. Startup work that races this must stop quietly instead of
+ * reporting the aborted navigation as a startup failure.
+ */
+function shellWindowGone(window: BrowserWindow): boolean {
+  return mainWindowClosing || window.isDestroyed() || window.webContents.isDestroyed();
 }
 
 async function initializeServices(): Promise<void> {
@@ -405,10 +438,22 @@ async function initializeServices(): Promise<void> {
  * crash recovery both go through here, so they can never drift apart.
  */
 async function loadApplicationSurface(window: BrowserWindow): Promise<void> {
-  if (process.env.ELECTRON_RENDERER_URL) {
-    await window.loadURL(process.env.ELECTRON_RENDERER_URL);
-  } else {
-    await window.loadFile(join(__dirname, "../renderer/index.html"));
+  // Both callers can race a window the user closed first (startup is long,
+  // crash recovery runs asynchronously): loading into a destroyed window only
+  // produces ERR_FAILED / "Object has been destroyed", which is not a failure.
+  if (window.isDestroyed() || window.webContents.isDestroyed()) return;
+  try {
+    if (process.env.ELECTRON_RENDERER_URL) {
+      await window.loadURL(process.env.ELECTRON_RENDERER_URL);
+    } else {
+      await window.loadFile(join(__dirname, "../renderer/index.html"));
+    }
+  } catch (error) {
+    // The close landed while the surface was loading: same reasoning as above,
+    // and a throw here would be reported as a failed startup (or drown the
+    // crash-recovery warning) for a quit the user asked for.
+    if (!shellWindowGone(window)) throw error;
+    console.warn("CanvasTTY application surface load stopped: its window is gone, the application is closing.", error);
   }
 }
 
@@ -456,7 +501,9 @@ function parseProviderSmokeTargets(value: string): ProviderSmokeTarget[] {
 }
 
 async function startApplication(): Promise<void> {
-  if (startupRunning) return;
+  // A quit already under way owns the process: starting (or restarting) into it
+  // would build services for a window the user just closed.
+  if (startupRunning || shutdownRunning || shutdownComplete) return;
   startupRunning = true;
   let window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
 
@@ -468,11 +515,23 @@ async function startApplication(): Promise<void> {
       app.quit();
       return;
     }
+    // Closing the window cancels the rest of startup: the user decided to quit,
+    // and every remaining step targets that window. The window is visible from
+    // the first moment, so this close can land inside any startup await.
+    if (shutdownRunning || shutdownComplete || shellWindowGone(window)) return;
     if (!servicesReady) await initializeServices();
+    if (shutdownRunning || shutdownComplete || shellWindowGone(window)) return;
     initializeUpdater();
     await loadApplication(window);
   } catch (error) {
-    if (window) await showStartupFailure(window, error);
+    // A load aborted by that same close surfaces here as ERR_FAILED or
+    // "Object has been destroyed" — a normal exit, not a startup failure.
+    const startupWindow = window ?? mainWindow;
+    if (shutdownRunning || shutdownComplete || (startupWindow !== null && shellWindowGone(startupWindow))) {
+      console.warn("CanvasTTY startup stopped: its window is gone, the application is closing.", error);
+      return;
+    }
+    if (startupWindow) await showStartupFailure(startupWindow, error);
     else {
       const detail = error instanceof Error ? error.stack ?? error.message : String(error);
       console.error("CanvasTTY could not create its startup window.", error);
@@ -519,16 +578,27 @@ function buildProviderCliRegistry(): ProviderCliRegistry {
 
 async function showStartupFailure(window: BrowserWindow, error: unknown): Promise<void> {
   const detail = error instanceof Error ? error.stack ?? error.message : String(error);
-  console.error("CanvasTTY startup failed.", error);
   if (window.isDestroyed()) {
+    console.error("CanvasTTY startup failed.", error);
     dialog.showErrorBox("CanvasTTY startup failed", detail);
     return;
   }
 
   try {
     await window.loadURL(startupPageUrl({ locale: app.getLocale(), isMacOS: process.platform === "darwin", error: detail }));
+    // Reported only once the diagnostic is really on screen: a close that aborts
+    // this very load would otherwise log a failure the user never saw, which is
+    // the same false signal as the dialog it replaced.
+    console.error("CanvasTTY startup failed.", error);
     window.show();
   } catch {
+    // The window went away while the failure page was loading: there is nobody
+    // left to read the dialog, so it must not become the last thing on screen.
+    if (shellWindowGone(window)) {
+      console.warn("CanvasTTY startup failure page stopped: its window is gone, the application is closing.");
+      return;
+    }
+    console.error("CanvasTTY startup failed.", error);
     dialog.showErrorBox("CanvasTTY startup failed", detail);
   }
 }
@@ -638,6 +708,25 @@ if (hasSingleInstanceLock) {
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) void startApplication();
+  });
+
+  // The rejected second launch exits silently (the lock is never released), so
+  // raising the running window has to happen here — otherwise the user clicks
+  // the app again and nothing at all appears to happen.
+  app.on("second-instance", () => {
+    const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    if (!window) {
+      // No shell window to raise: still starting (it shows its window anyway) or
+      // closed on macOS, where the app outlives it — rebuild through the same
+      // path as "activate".
+      if (app.isReady()) void startApplication();
+      return;
+    }
+    if (window.isMinimized()) window.restore();
+    // macOS leaves a background app behind the active one on focus() alone.
+    if (process.platform === "darwin") app.focus({ steal: true });
+    window.show();
+    window.focus();
   });
 }
 

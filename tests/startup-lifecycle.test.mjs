@@ -13,8 +13,14 @@ test("main process acquires the single-instance lock before readiness", async ()
   assert.notEqual(lock, -1);
   assert.notEqual(ready, -1);
   assert.ok(lock < ready);
-  assert.doesNotMatch(source, /app\.on\("second-instance"/);
-  assert.doesNotMatch(source, /focusMainWindow/);
+  // R4: a rejected second launch raises the window of the running instance
+  // instead of exiting silently.
+  const handlerStart = source.indexOf('app.on("second-instance"');
+  assert.notEqual(handlerStart, -1);
+  const secondInstance = source.slice(handlerStart, source.indexOf('app.on("before-quit"'));
+  assert.match(secondInstance, /\.restore\(\)/);
+  assert.match(secondInstance, /\.show\(\)/);
+  assert.match(secondInstance, /\.focus\(\)/);
 });
 
 test("background plugin requests never activate the desktop window", async () => {

@@ -463,7 +463,9 @@ button { border: 0; }
    overflow and radius cannot clip, so the corners are rounded in the main
    process through View.setBorderRadius at the matching scale. The freeze frame
    below is a plain <img>, so the card's radius clips it as before. */
-.browser-card__viewport { position: absolute; inset: calc(var(--card-header-height) + 86px) 0 0; overflow: hidden; background: #272934; }
+/* Native child views intercept input above DOM z-index, including rounded
+   cutouts. Reserve the entire 12px corner handle, not just the 8px edge. */
+.browser-card__viewport { position: absolute; inset: calc(var(--card-header-height) + 86px) 12px 12px; overflow: hidden; background: #272934; }
 .browser-card__freeze-frame { width: 100%; height: 100%; display: block; object-fit: fill; pointer-events: none; user-select: none; }
 .browser-card__summary { position: absolute; inset: var(--card-header-height) 0 0; z-index: 10; width: 100%; height: calc(100% - var(--card-header-height)); display: none; align-items: center; justify-content: center; overflow: hidden; padding: 24px; color: white; background: #272934; cursor: zoom-in; }
 .browser-card__summary[data-focus-activation="off"] { cursor: pointer; }

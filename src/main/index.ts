@@ -21,6 +21,7 @@ import { BrowserAuditStore } from "./services/browser/BrowserAuditStore";
 import { CanvasNavigationInputController } from "./services/CanvasNavigationOverride";
 import { activeCanvasWheelBinding } from "../shared/canvasNavigation";
 import { runBrowserElectronSmoke } from "./services/browser/BrowserElectronSmoke";
+import { runBrowserGeometrySmoke } from "./services/browser/BrowserGeometrySmoke";
 import {
   runProviderElectronSmoke,
   type ProviderSmokeTarget
@@ -389,6 +390,12 @@ async function loadApplication(window: BrowserWindow): Promise<void> {
     );
     console.log("CANVASTTY_SMOKE_READY");
     app.quit();
+  }
+  const geometrySmokeUrl = process.env.CANVASTTY_BROWSER_GEOMETRY_URL;
+  if (geometrySmokeUrl && browserService) {
+    try { await runBrowserGeometrySmoke(window, browserService, geometrySmokeUrl); }
+    catch (error) { console.error(error); app.exit(1); }
+    return;
   }
   const browserSmokeUrl = process.env.CANVASTTY_BROWSER_SMOKE_URL;
   if (browserSmokeUrl && browserService) {

@@ -528,7 +528,7 @@ export function BrowserCard({
         className="browser-card__viewport"
         data-browser-canvas-wheel-owner={freezeFrameVisible ? "canvas" : undefined}
       >
-        {freezeFrameDataUrl && (
+        {surface === "native" && freezeFrameVisible && freezeFrameDataUrl && (
           <img
             className="browser-card__freeze-frame"
             src={freezeFrameDataUrl}

@@ -67,6 +67,7 @@ export class BrowserCanvasGestureController {
   private capturePromise: Promise<void> | null = null;
   private captureQueued = false;
   private captureAfterSequence = false;
+  private sequenceActive = false;
   private freezeActive = false;
   private freezeTabId: string | null = null;
   private freezeEventGeneration = 0;
@@ -180,6 +181,12 @@ export class BrowserCanvasGestureController {
     const transition = this.ownerSequence.begin(point, this.now());
     this.scheduleEnd();
     if (transition.started) {
+      this.sequenceActive = true;
+      // A pending asynchronous capture may observe the hidden view or the
+      // 4 DIP sink after the surface sync below. Keep the last complete frame
+      // for this gesture and capture again only after native restoration.
+      this.invalidateCapture();
+      this.captureAfterSequence = true;
       const proposedSink = preserveNativeTarget
         ? createBrowserCanvasNativeWheelSink(tab.id, viewport, point)
         : null;
@@ -187,7 +194,6 @@ export class BrowserCanvasGestureController {
       this.nativeSink = proposedSink && sinkTab?.canvasSinkViewport.preserve(proposedSink.viewport)
         ? proposedSink
         : null;
-      this.refreshFrame();
     }
     this.host.requestSurfaceSync();
   }
@@ -202,6 +208,7 @@ export class BrowserCanvasGestureController {
     const wasFrozen = this.freezeActive;
     const nativeSinkTabId = this.nativeSink?.tabId ?? null;
     this.ownerSequence.end();
+    this.sequenceActive = false;
     this.pageSequence.reset();
     this.nativeSink = null;
     if (sync && !this.host.isDisposed()) this.host.requestSurfaceSync();
@@ -233,12 +240,15 @@ export class BrowserCanvasGestureController {
       return;
     }
     if (next.surface === "native" && (
-      previous.width !== next.width
+      previous.surface !== "native"
+      || previous.width !== next.width
       || previous.height !== next.height
       || previous.canvasScale !== next.canvasScale
     )) {
-      if (this.freezeActive) this.captureAfterSequence = true;
-      else this.refreshFrame();
+      this.invalidateCapture();
+      this.refreshFrame();
+    } else if (next.surface !== "native") {
+      this.invalidateCapture();
     }
   }
 
@@ -260,6 +270,10 @@ export class BrowserCanvasGestureController {
     const tab = this.host.getActiveTab();
     if (this.host.isDisposed() || !this.host.isVisible() || viewport.surface !== "native" || !tab) return;
     if (tab.view.webContents.isDestroyed()) return;
+    if (this.sequenceActive || this.freezeActive || this.nativeSink) {
+      this.captureAfterSequence = true;
+      return;
+    }
     if (this.capturePromise) {
       this.captureQueued = true;
       return;

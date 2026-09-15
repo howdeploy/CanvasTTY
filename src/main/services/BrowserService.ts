@@ -483,8 +483,10 @@ export class BrowserService {
     if (normalized.surface === "hidden") {
       this.canvasPointers.cancelNavigationGesture();
     }
-    this.canvasGestures.viewportChanged(previous, normalized);
     this.syncViews();
+    // capturePage must see the new native bounds and page scale, not the
+    // previous layout. Gesture bookkeeping and capture invalidation are sync.
+    this.canvasGestures.viewportChanged(previous, normalized);
   }
 
   setCanvasNavigationActive(active: boolean): void {

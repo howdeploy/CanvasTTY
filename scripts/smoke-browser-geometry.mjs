@@ -1,0 +1,58 @@
+import { spawn, execFile } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import electron from "electron";
+
+if (process.env.CANVASTTY_GEOMETRY_DISPOSABLE_DESKTOP !== "1") throw new Error("This test moves the OS pointer. Run only on an explicitly disposable desktop.");
+const project = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const artifacts = resolve(process.env.CANVASTTY_GEOMETRY_ARTIFACTS || "geometry-artifacts");
+await mkdir(artifacts, { recursive: true });
+const local = await mkdtemp(join(process.platform === "win32" ? tmpdir() : "/tmp", "ctg-"));
+const server = createServer((_request, response) => {
+  response.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" });
+  response.end(`<!doctype html><title>Native geometry fixture</title><style>
+  html { overflow: scroll; } body { margin:0; width:2400px; height:2400px; background:repeating-conic-gradient(#263849 0% 25%,#385167 0% 50%) 0/80px 80px; }
+  ::-webkit-scrollbar {width:16px;height:16px} ::-webkit-scrollbar-track {background:#00ffff} ::-webkit-scrollbar-thumb {background:#ff00ff}
+  #marker {position:fixed;left:25px;top:25px;background:#00ffff;border:18px solid #ff00ff;padding:12px;color:black;font:18px sans-serif}
+  </style><div id="marker">REAL NATIVE PAGE<br><output></output></div><script>
+  const update=()=>document.querySelector('output').textContent=innerWidth+' × '+innerHeight+' / '+scrollX+','+scrollY;
+  addEventListener('resize',update);addEventListener('scroll',update);update();
+  </script>`);
+});
+await new Promise((done) => server.listen(0, "127.0.0.1", done));
+const origin = `http://127.0.0.1:${server.address().port}`;
+let failed = false;
+try {
+  if (process.platform === "darwin") {
+    process.env.CANVASTTY_GEOMETRY_MAC_INPUT = join(local, "native-input");
+    await promisify(execFile)("xcrun", ["swiftc", join(project, "scripts/browser-geometry-input.swift"), "-o", process.env.CANVASTTY_GEOMETRY_MAC_INPUT]);
+  }
+  const cases = process.env.CANVASTTY_GEOMETRY_BASELINE === "1" ? [[1, 1]] : [[1, 1], [2, 1], [1, 1.5], [2, 1.5]];
+  for (const [cards, uiScale] of cases) {
+    const name = `cards-${cards}-ui-${uiScale}`;
+    const userData = join(local, name), out = join(artifacts, name);
+    await mkdir(userData, { recursive: true }); await mkdir(out, { recursive: true });
+    await writeFile(join(userData, "settings.json"), JSON.stringify({ uiScale, locale: "en", snapToGrid: false, browserShowAgentPresence: false, browserAgentAccess: false, agentLifecycleHooksEnabled: false }));
+    const args = [project, `--user-data-dir=${userData}`];
+    if (process.platform === "linux") args.push("--no-sandbox", `--ozone-platform=${process.env.CANVASTTY_GEOMETRY_BACKEND === "wayland" ? "wayland" : "x11"}`);
+    const env = { ...process.env, CANVASTTY_BROWSER_GEOMETRY_URL: origin,
+      CANVASTTY_GEOMETRY_CARDS: String(cards), CANVASTTY_GEOMETRY_UI_SCALE: String(uiScale),
+      CANVASTTY_GEOMETRY_ARTIFACTS: out, CANVASTTY_GEOMETRY_INPUT: join(project, "scripts/browser-geometry-input.mjs") };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const child = spawn(electron, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    let log = "";
+    child.stdout.on("data", (chunk) => { log += chunk; }); child.stderr.on("data", (chunk) => { log += chunk; });
+    const timer = setTimeout(() => { log += "\nGEOMETRY TIMEOUT\n"; child.kill(); }, 240000);
+    const code = await new Promise((done, reject) => { child.once("exit", done); child.once("error", reject); });
+    clearTimeout(timer); await writeFile(join(out, "electron.log"), log);
+    const ok = code === 0 && log.includes("CANVASTTY_BROWSER_GEOMETRY_READY");
+    failed ||= !ok;
+    console.log(`${name}: ${ok ? "PASS" : "FAIL"}; artifacts ${out}`);
+  }
+} finally { server.closeAllConnections(); await new Promise((done) => server.close(done)); }
+// Retain reports and isolated profiles for diagnosis; never touch user profiles.
+process.exitCode = failed ? 1 : 0;

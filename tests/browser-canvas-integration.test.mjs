@@ -52,10 +52,8 @@ test("native Browser layout remains a BrowserService responsibility", async () =
   assert.match(service, /if \(this\.clipTabId !== active\.id\)/);
   assert.match(service, /this\.applyPageScale\(active\)/);
   assert.match(service, /contents\.setZoomFactor\(pageScale\)/);
-  // The page slot must stay declared by the card: anchored below the header and
-  // carrying the page background. The horizontal insets are deliberately not
-  // pinned - the page area is flush with the card edges and its corners are
-  // rounded in the main process instead.
+  // Actual OS hit testing of these native/DOM regions is covered by the
+  // disposable-desktop geometry smoke, including the full corner handles.
   assert.match(styles, /\.browser-card__viewport \{[^}]*inset: calc\(var\(--card-header-height\) \+ 86px\) [^;]*;[^}]*background: #272934;/);
 });
 

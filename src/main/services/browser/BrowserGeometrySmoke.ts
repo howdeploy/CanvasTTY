@@ -237,8 +237,21 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       await page.executeJavaScript("scrollTo(200,300)");
       runtime.canvasGestures.refreshFrame(); await pause(300);
       const visible = clipBrowserViewportBounds(before, owner.getContentBounds())!;
-      runtime.canvasGestures.beginOwnerSequence({ x: visible.x + visible.width / 2, y: visible.y + visible.height / 2 }, true);
+      const freezePoint = { x: visible.x + visible.width / 2, y: visible.y + visible.height / 2 };
+      runtime.canvasGestures.beginOwnerSequence(freezePoint, true);
       assert.ok(runtime.canvasGestures.isFreezeActive);
+      const heartbeat = setInterval(() => runtime.canvasGestures.beginOwnerSequence(freezePoint, true), 80);
+      let freezeScreenshot;
+      try {
+        await wait('!!document.querySelector(".browser-card__freeze-frame")?.complete');
+        const frame = await evaluate('(() => {const el=document.querySelector(".browser-card__freeze-frame");return {width:el.naturalWidth,height:el.naturalHeight,radius:getComputedStyle(el.parentElement).borderRadius};})()');
+        assert.ok(frame.width > 4, "freeze frame contains a full page, not the native wheel sink");
+        assert.ok(Math.abs(frame.width / frame.height - before.width / before.height) * before.height <= 2,
+          `stable freeze frame matches the native viewport aspect: ${JSON.stringify({ frame, viewport: before })}`);
+        assert.equal(frame.radius, "17px", "DOM freeze clipping matches the native page corners");
+        freezeScreenshot = await screenshot("freeze-frame");
+        assert.ok(runtime.canvasGestures.isFreezeActive, "captured the active frozen composition");
+      } finally { clearInterval(heartbeat); }
       service.setViewport({ ...before, x: -30, width: before.width + 80, canvasScale: 0.75 });
       await pause(300);
       runtime.canvasGestures.endSequence(); await pause(400);
@@ -252,7 +265,7 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       assert.equal(runtime.canvasGestures.activeNativeSink, null);
       assert.equal(runtime.clipView.getVisible(), false, "hiding during a gesture must remove the native sink");
       service.setViewport(before); await pause(200);
-      return { scrollPreserved: scroll, restored: runtime.tabs.get(runtime.activeTabId)!.view.getBounds() };
+      return { scrollPreserved: scroll, freezeScreenshot, restored: runtime.tabs.get(runtime.activeTabId)!.view.getBounds() };
     });
     const selectedService = () => services().reverse().find((candidate) => {
       const viewport = (candidate as unknown as GeometryRuntime).viewport;

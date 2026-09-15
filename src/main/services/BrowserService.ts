@@ -61,7 +61,7 @@ const MAX_DOWNLOAD_HISTORY = 100;
 const MAX_FAVICON_BYTES = 256 * 1024;
 const HUMAN_ACTOR: BrowserActor = { kind: "human", connectionId: "canvastty-renderer" };
 
-// Mirrors the `.browser-card { border-radius: 17px }` declaration in src/renderer/src/styles/app.css: the
+// Mirrors the `.browser-card__viewport { border-radius: 17px }` declaration in src/renderer/src/styles/app.css: the
 // stylesheet owns this visual property, so the two have to stay in sync by hand.
 const CARD_CORNER_RADIUS = 17;
 // normalizeBrowserViewportBounds clamps canvasScale to 0.5..3; this bound only guards a bogus payload.

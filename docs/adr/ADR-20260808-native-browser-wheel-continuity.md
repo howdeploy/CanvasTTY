@@ -4,6 +4,14 @@
 **Scope / Component:** native Browser wheel ownership, cross-surface hit testing, frozen rendering, and pointer routing
 **Risk/Strictness Profile:** Production
 **Status:** Accepted
+
+**Main intake clarification (2026-09-15):** the historical macOS/Windows observations below do
+not establish Linux acceptance. The maintainer reports resize, scaling, movement, and clipping
+regressions in the combined Linux DEV build; see the
+[PR #34 review](https://github.com/howdeploy/CanvasTTY/pull/34#pullrequestreview-5209192918) and
+[PR #40 follow-up](https://github.com/howdeploy/CanvasTTY/pull/40#issuecomment-5679224145).
+This documentation intake does not resolve those defects or claim new interactive validation.
+
 **Related:** [ADR: Use Intent-Aware Canvas Navigation](./ADR-20260808-intent-aware-canvas-navigation.md)
 **Implementation:** [`BrowserCanvasGestureController`](../../src/main/services/browser/BrowserCanvasGestureController.ts), [`BrowserCanvasPointerRouter`](../../src/main/services/browser/BrowserCanvasPointerRouter.ts), [`BrowserCanvasFreeze`](../../src/main/services/browser/BrowserCanvasFreeze.ts), [`BrowserCanvasSinkViewport`](../../src/main/services/browser/BrowserCanvasSinkViewport.ts), [`browser` preload](../../src/preload/browser.ts), and [`BrowserCard`](../../src/renderer/src/features/browser/BrowserCard.tsx)
 
@@ -237,13 +245,35 @@ frames, freeze IPC, and non-empty capture.
 Live macOS testing confirmed the final causal chain and result: focused page scroll works;
 Browser-to-canvas and canvas-to-Browser pan remain continuous; pinch/Command-scroll zoom remains
 canvas-owned; and zoom through the placeholder threshold does not terminate the sequence. This is
-high confidence for macOS. Windows Precision Touchpad and Linux/libinput use the same contracts but
-have not received the same live release matrix, so confidence for those platforms is medium until
+high confidence for macOS. The integration smoke boundary now also passes on Windows: the focus-aware
+physical wheel assertion in `npm run smoke:browser` requires a focused Browser in `off` capture to
+scroll the page under a plain wheel with zero canvas relays, and requires both a `Ctrl`-modified
+wheel and a wheel sent while the Browser is unfocused to stay canvas-owned. CI runs that smoke only
+on ubuntu, so this was its first Windows execution. An independent live Windows run using genuine OS
+wheel input reproduced the same three directions from outside the process: a focused-Browser plain
+wheel moved the page (`scrollY` 0 -> 478.5) with the canvas camera transform unchanged, a wheel over
+empty canvas changed the camera, and a wheel over an unfocused Browser card changed the camera with
+the page untouched. Windows confidence is therefore raised only for plain-wheel page ownership and
+the modified-wheel path under a focused or unfocused Browser. Precision touchpad and pen input,
+nested iframes, momentum latching, and the 4 DIP sink were not separately exercised on Windows, and
+Linux/libinput likewise has no live release matrix, so those paths remain medium confidence until
 that matrix is completed.
 
 The decision is falsified if a canvas-owned sequence stops at a native boundary, a page-owned
 sequence changes canvas camera, a native sink changes page layout or scroll state, a stale frame
 appears for another tab, or native and frozen surfaces are simultaneously absent after reset.
+
+## Evidence Updates
+
+**2026-09-14 — the 250 ms contract-test claim is unsupported.** The Decision Outcome above states
+that "a contract test fixes its local idle value to the main-process 250 ms constant". No such test
+exists: a search across all 101 files in `tests/` finds no reference to `preload/browser` or to any
+preload-side wheel idle constant, and the only pinned idle value is the main-process one,
+`BROWSER_CANVAS_WHEEL_IDLE_MS` at `tests/browser-canvas-freeze.test.mjs:20`. The preload literal was
+therefore unpinned and could drift from the main-process constant with no failing test. The value is
+now carried instead of duplicated: the main-process ownership reply includes `idleMs`
+(`BrowserCanvasWheel.ts`), and `src/preload/browser.ts` mirrors it from that reply, asking main per
+event when a reply carries no usable value. The paragraph above is left as the historical record.
 
 ## References
 

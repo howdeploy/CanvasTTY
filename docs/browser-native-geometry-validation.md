@@ -12,7 +12,9 @@ The accepted main at `dd27b8a9e5b655337af8f33fda1a5e9bd8f52381` places the
 native page flush with the side and bottom edges of the Browser card. Those
 regions also contain the 8 px edge and 12 px corner resize handles. Native views
 intercept input above DOM stacking, including their rounded cutouts. The fix
-reserves a 12 px side/bottom gutter for the complete corner targets.
+reserves a 12 px side/bottom gutter for the complete corner targets. Browser
+corner targets are stacked above the overlapping edge strips, so pixel rounding
+at low zoom cannot turn a diagonal grab into an edge-only resize.
 
 The capture fixes address these cases:
 
@@ -28,6 +30,8 @@ The capture fixes address these cases:
 The renderer displays a freeze image only during its active native-page freeze.
 Hiding a card first cancels the native wheel sink, then hides the native surface.
 A cached image is not displayed behind summary mode or other placeholder UI.
+The inset freeze viewport uses the same 17 px logical corner radius as the
+native page and has a dedicated active-freeze desktop screenshot check.
 The freeze image intentionally scales with the card during a gesture; live page
 layout resumes at the current viewport when the gesture ends.
 

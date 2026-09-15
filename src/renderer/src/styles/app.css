@@ -458,14 +458,17 @@ button { border: 0; }
 .browser-card__downloads > span:last-child { position: absolute; right: -2px; top: -3px; min-width: 15px; height: 15px; padding: 0 4px; display: grid; place-items: center; border-radius: 8px; color: #242631; background: var(--primary); font: 900 8px/1 var(--font-mono); }
 .browser-card__downloads--active .ui-icon { animation: browser-download 1.2s ease-in-out infinite alternate; }
 @keyframes browser-download { to { transform: translateY(4px); } }
-/* Flush to the card edges: the 8px band read as a split frame around the page.
-   The native page area is a separate composited surface that the card's own
-   overflow and radius cannot clip, so the corners are rounded in the main
-   process through View.setBorderRadius at the matching scale. The freeze frame
-   below is a plain <img>, so the card's radius clips it as before. */
 /* Native child views intercept input above DOM z-index, including rounded
-   cutouts. Reserve the entire 12px corner handle, not just the 8px edge. */
-.browser-card__viewport { position: absolute; inset: calc(var(--card-header-height) + 86px) 12px 12px; overflow: hidden; background: #272934; }
+   cutouts. Reserve the entire 12px corner handle, not just the 8px edge.
+   The inset DOM freeze frame needs its own radius matching View.setBorderRadius;
+   the outer card's clipping no longer reaches the inset page corners. */
+.browser-card__viewport { position: absolute; inset: calc(var(--card-header-height) + 86px) 12px 12px; overflow: hidden; border-radius: 17px; background: #272934; }
+/* Corner targets overlap the edge strips. Keep diagonals above those strips
+   when low zoom rounds a physical pointer onto their shared pixels. */
+.browser-card .terminal-card__resize-handle--ne,
+.browser-card .terminal-card__resize-handle--se,
+.browser-card .terminal-card__resize-handle--sw,
+.browser-card .terminal-card__resize-handle--nw { z-index: 21; }
 .browser-card__freeze-frame { width: 100%; height: 100%; display: block; object-fit: fill; pointer-events: none; user-select: none; }
 .browser-card__summary { position: absolute; inset: var(--card-header-height) 0 0; z-index: 10; width: 100%; height: calc(100% - var(--card-header-height)); display: none; align-items: center; justify-content: center; overflow: hidden; padding: 24px; color: white; background: #272934; cursor: zoom-in; }
 .browser-card__summary[data-focus-activation="off"] { cursor: pointer; }

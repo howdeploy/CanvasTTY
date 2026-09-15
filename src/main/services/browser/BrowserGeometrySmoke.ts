@@ -108,6 +108,9 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
   };
   try {
     owner.maximize(); owner.show(); owner.focus();
+    // Wayland deliberately does not expose global window positions. Fullscreen
+    // gives the isolated compositor a known origin for OS pointer delivery.
+    if (process.env.CANVASTTY_GEOMETRY_BACKEND === "wayland") owner.setFullScreen(true);
     await wait('!!document.querySelector(\'button[aria-label="Browser"]\')');
     const count = Number(process.env.CANVASTTY_GEOMETRY_CARDS ?? "1");
     for (let i = 0; i < count; i++) {
@@ -146,10 +149,10 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
         for (const direction of ["n", "ne", "e", "se", "s", "sw", "w", "nw"]) {
           const name = `${label}/card-${index}/${direction}`;
           const source = `document.querySelectorAll(".browser-card")[${index}]`;
-          const handle = await evaluate(`(() => { const el=${source};const r=el.querySelector(".terminal-card__resize-handle--${direction}").getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height}; })()`);
+          const handle = await evaluate(`(() => { const el=${source};const node=el.querySelector(".terminal-card__resize-handle--${direction}");const r=node.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,occluded:document.elementFromPoint(x,y)!==node,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height}; })()`);
           const content = owner.getContentBounds();
-          if (handle.x < 15 || handle.y < 50 || handle.x > content.width - 20 || handle.y > content.height - 20) {
-            rows.push({ name, status: "untested", reason: "handle outside visible desktop/workspace" }); continue;
+          if (handle.occluded || handle.x < 15 || handle.y < 50 || handle.x > content.width - 20 || handle.y > content.height - 20) {
+            rows.push({ name, status: "untested", reason: handle.occluded ? "handle covered by a canvas overlay or another card" : "handle outside visible desktop/workspace" }); continue;
           }
           await check(name, async () => {
             await evaluate("window.geometryDown=[]");
@@ -211,6 +214,9 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
         await contents.executeJavaScript("scrollTo(200,300)");
         service.setInputFocused(focused);
         await pause(400);
+        // Chromium quantizes scroll offsets at fractional zoom. Compare with
+        // the observed offset, not the requested integer scrollTo arguments.
+        const scrollBefore = await contents.executeJavaScript("({x:scrollX,y:scrollY})");
         const clip = clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds())!;
         const point = toScreen(clip.x + clip.width / 2, clip.y + clip.height / 2);
         const before = await scene();
@@ -219,14 +225,14 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
         const page = await contents.executeJavaScript("({x:scrollX,y:scrollY})");
         const after = await scene();
         if (focused) {
-          assert.ok(page.y > 300, JSON.stringify(page));
+          assert.ok(page.y > scrollBefore.y, JSON.stringify({ scrollBefore, page }));
           assert.equal(after, before, "focused page scrolling must not move the canvas");
         } else {
-          assert.deepEqual(page, { x: 200, y: 300 }, "canvas wheel ownership preserves page scroll");
+          assert.deepEqual(page, scrollBefore, "canvas wheel ownership preserves page scroll");
           assert.notEqual(after, before, "OS wheel over the unfocused page moves the canvas");
         }
         await geometry();
-        return { page, before, after };
+        return { scrollBefore, page, before, after };
       });
     }
     await check("native-alt-navigation-drag", async () => {

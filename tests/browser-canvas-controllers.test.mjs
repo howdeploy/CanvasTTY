@@ -25,6 +25,7 @@ function gestureHarness(capturePage) {
   let now = 1_000;
   let focused = false;
   let captureMode = "off";
+  let canCaptureFrame = true;
   let overrides = { wheelActive: false, navigationActive: false };
   let viewport = {
     x: 100,
@@ -61,6 +62,7 @@ function gestureHarness(capturePage) {
     getTab: (tabId) => tabId === tab.id ? tab : undefined,
     isVisible: () => true,
     isDisposed: () => false,
+    canCaptureFrame: () => canCaptureFrame,
     getOverrideState: () => overrides,
     getCursorScreenPoint: () => ({ x: 140, y: 180 }),
     requestSurfaceSync: () => trace.push("surface:sync"),
@@ -84,6 +86,7 @@ function gestureHarness(capturePage) {
       controller.setCaptureMode(captureMode);
     },
     setOverrides(value) { overrides = value; },
+    setCanCaptureFrame(value) { canCaptureFrame = value; },
     setViewport(value) {
       const previous = viewport;
       viewport = { ...viewport, ...value };
@@ -219,6 +222,20 @@ test("returning from summary mode refreshes the frame even at the same dimension
   harness.setViewport({ surface: "placeholder" });
   harness.setViewport({ surface: "native" });
   assert.equal(capture.requests.length, 1);
+});
+
+test("offscreen resize defers capture until the full native view is visible again", async () => {
+  const capture = deferredCapture();
+  const harness = gestureHarness(capture.capturePage);
+  harness.setCanCaptureFrame(false);
+  harness.setViewport({ width: 920, x: -1000 });
+  assert.equal(capture.requests.length, 0, "a hidden clip still has the old native bounds");
+  harness.setCanCaptureFrame(true);
+  harness.setViewport({ x: 100 });
+  assert.equal(capture.requests.length, 1, "position-only reappearance refreshes the deferred frame");
+  capture.resolve(0, "visible resized page");
+  await flushCaptures();
+  assert.deepEqual(capturedFrames(harness), ["visible resized page"]);
 });
 
 function pointerHarness() {

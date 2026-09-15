@@ -40,6 +40,7 @@ export interface BrowserCanvasGestureHost {
   getTab(tabId: string): BrowserCanvasGestureTab | undefined;
   isVisible(): boolean;
   isDisposed(): boolean;
+  canCaptureFrame(): boolean;
   getOverrideState(): { wheelActive: boolean; navigationActive: boolean };
   getCursorScreenPoint(): Point;
   requestSurfaceSync(): void;
@@ -67,6 +68,7 @@ export class BrowserCanvasGestureController {
   private capturePromise: Promise<void> | null = null;
   private captureQueued = false;
   private captureAfterSequence = false;
+  private captureWhenVisible = false;
   private sequenceActive = false;
   private freezeActive = false;
   private freezeTabId: string | null = null;
@@ -249,6 +251,8 @@ export class BrowserCanvasGestureController {
       this.refreshFrame();
     } else if (next.surface !== "native") {
       this.invalidateCapture();
+    } else if (this.captureWhenVisible) {
+      this.refreshFrame();
     }
   }
 
@@ -274,6 +278,12 @@ export class BrowserCanvasGestureController {
       this.captureAfterSequence = true;
       return;
     }
+    if (!this.host.canCaptureFrame()) {
+      this.captureWhenVisible = true;
+      this.invalidateCapture();
+      return;
+    }
+    this.captureWhenVisible = false;
     if (this.capturePromise) {
       this.captureQueued = true;
       return;
@@ -282,6 +292,11 @@ export class BrowserCanvasGestureController {
     const capture = (async (): Promise<void> => {
       try {
         const image = await tab.view.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
+        if (!this.host.canCaptureFrame()) {
+          this.captureWhenVisible = true;
+          this.frameStore.failCapture(token);
+          return;
+        }
         const dataUrl = encodeBrowserCanvasFreezeFrame(image);
         if (!dataUrl) {
           this.frameStore.failCapture(token);

@@ -180,6 +180,7 @@ export class BrowserService {
       getTab: (tabId) => this.tabs.get(tabId),
       isVisible: () => this.visible,
       isDisposed: () => this.disposed,
+      canCaptureFrame: () => this.clipView.getVisible(),
       getOverrideState: () => ({
         wheelActive: this.canvasNavigationInput?.wheelActive ?? false,
         navigationActive: this.canvasNavigationInput?.active ?? false

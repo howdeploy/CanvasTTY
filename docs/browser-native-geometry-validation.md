@@ -14,11 +14,13 @@ regions also contain the 8 px edge and 12 px corner resize handles. Native views
 intercept input above DOM stacking, including their rounded cutouts. The fix
 reserves a 12 px side/bottom gutter for the complete corner targets.
 
-The capture fixes address three separate races:
+The capture fixes address these cases:
 
 - Apply native bounds and page zoom before requesting a new viewport capture.
 - Invalidate captures started for a previous size/zoom, and refresh when a
   placeholder becomes a native page again.
+- Defer capture while an offscreen card still has stale native bounds; refresh
+  when it reappears, including position-only viewport changes.
 - Keep the last complete frame throughout a canvas gesture. Do not start or
   commit captures which can observe the temporary 4 DIP wheel sink. Resume
   capture after native bounds and viewport emulation have been restored.
@@ -40,13 +42,14 @@ npm run build
 CANVASTTY_GEOMETRY_DISPOSABLE_DESKTOP=1 \
 CANVASTTY_GEOMETRY_BACKEND=x11 \
 xvfb-run -a -s '-screen 0 1920x1080x24' \
-sh -c 'openbox > /tmp/geometry-openbox.log 2>&1 & npm run smoke:browser:geometry'
+sh -c 'openbox --config-file scripts/browser-geometry-openbox.xml > /tmp/geometry-openbox.log 2>&1 & npm run smoke:browser:geometry'
 ```
 
 Linux requires Xvfb, Openbox, xdotool and ImageMagick. The Wayland workflow
-additionally starts Weston with its X11 backend and runs Electron with
+additionally starts Weston with its X11 backend and runs Electron fullscreen with
 `--ozone-platform=wayland`. This exercises an actual Wayland client in a nested
-compositor; it is not GNOME/KDE or a physical Wayland seat.
+compositor; it is not GNOME/KDE or a physical Wayland seat. The disposable Openbox process reserves Alt for the
+application; its window-move binding uses Super instead.
 
 Windows uses User32 pointer/wheel events and a desktop screenshot. macOS builds
 a small CoreGraphics input helper and uses `screencapture`. A desktop without
@@ -65,7 +68,8 @@ Every platform runs one/two cards at UI scale 1 and 1.5. The harness operates th
 actual zoom controls through values above/below the summary threshold and
 records the resulting zoom. For each visible handle it records all eight resize
 directions, trusted pointer target and measured size delta. A handle outside the
-desktop is recorded as **untested**, not passed.
+desktop or covered by a canvas overlay/another card is recorded as **untested**,
+not passed. The test does not click through the minimap or hide product overlays.
 
 Each `report.json` contains the commit, Electron version, platform/backend,
 display dimensions and scale factors, individual pass/fail/untested cases,

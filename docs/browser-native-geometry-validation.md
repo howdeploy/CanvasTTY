@@ -88,7 +88,10 @@ for the wheel/restore probes.
 Each `report.json` contains the commit, Electron version, platform/backend,
 display dimensions and scale factors, individual pass/fail/untested cases,
 native view and clipping-container bounds, page viewport/scroll offsets, and
-capture-order failures. The PNGs contain the desktop composition, not just the
+capture-order failures. Geometry is sampled after renderer frame barriers, so
+an in-flight cross-process resize is not mistaken for a settled layout. An
+initial OS click on empty canvas establishes compositor focus before handle
+measurements. The PNGs contain the desktop composition, not just the
 owner renderer. Cyan/magenta page fiducials guard against empty or owner-only
 screenshots. These assertions do not replace inspection of the images.
 

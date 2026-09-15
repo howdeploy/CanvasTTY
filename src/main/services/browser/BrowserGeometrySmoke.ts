@@ -101,16 +101,23 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
   };
   const geometry = async () => {
     const result = [];
+    // Read committed renderer frames after OS input, not an intermediate IPC
+    // resize whose native bounds arrived before the page's layout update.
+    await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     for (const runtime of runtimes()) {
-      if (runtime.viewport.surface !== "native" || runtime.canvasGestures.isFreezeActive) continue;
+      if (runtime.viewport.surface !== "native" || runtime.canvasGestures.isFreezeActive
+        || !runtime.clipView.getVisible() || !clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds())) continue;
       const tab = runtime.tabs.get(runtime.activeTabId)!;
+      const page = await Promise.race([
+        tab.view.webContents.executeJavaScript("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve({width:innerWidth,height:innerHeight,x:scrollX,y:scrollY,scrollWidth:document.documentElement.scrollWidth,scrollHeight:document.documentElement.scrollHeight}))))"),
+        pause(2000).then(() => { throw new Error("Visible native page did not commit a frame"); })
+      ]);
       const bounds = tab.view.getBounds();
       const clip = clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds());
       if (!clip) continue;
       assert.deepEqual(runtime.clipView.getBounds(), clip);
       assert.deepEqual(bounds, { x: runtime.viewport.x - clip.x, y: runtime.viewport.y - clip.y,
         width: runtime.viewport.width, height: runtime.viewport.height });
-      const page = await tab.view.webContents.executeJavaScript("({width:innerWidth,height:innerHeight,x:scrollX,y:scrollY,scrollWidth:document.documentElement.scrollWidth,scrollHeight:document.documentElement.scrollHeight})");
       const zoom = tab.view.webContents.getZoomFactor();
       assert.ok(Math.abs(page.width - bounds.width / zoom) <= 2, JSON.stringify({ page, bounds, zoom }));
       assert.ok(Math.abs(page.height - bounds.height / zoom) <= 2, JSON.stringify({ page, bounds, zoom }));
@@ -145,6 +152,12 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
     }
     await pause(800);
     assert.equal(owner.isVisible(), true);
+    // A compositor may consume the first physical click for activation even
+    // after owner.focus(). Activate on empty canvas before measuring handles.
+    const activation = await evaluate(`(() => { const r=document.querySelector(".workspace").getBoundingClientRect(); for (const y of [r.top+20,r.top+60,r.bottom-20]) for (const x of [r.left+r.width/2,r.left+40,r.right-40]) if(document.elementFromPoint(x,y)?.classList.contains("workspace")) return {x,y}; return null; })()`);
+    assert.ok(activation, "empty canvas activation point is available");
+    await drag(activation, 0, 0);
+    await pause(150);
     await evaluate(`window.geometryDown = []; document.addEventListener("pointerdown", e => window.geometryDown.push({trusted:e.isTrusted, target:e.target.className, x:e.clientX, y:e.clientY, screenX:e.screenX, screenY:e.screenY}), true)`);
     // Capture call-time native geometry: this detects the old capture-before-sync
     // ordering without pretending a bounds check alone proves the rendered frame.

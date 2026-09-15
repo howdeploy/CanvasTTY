@@ -26,5 +26,5 @@ if (process.platform === "linux") {
   else await run(process.env.CANVASTTY_GEOMETRY_MAC_INPUT, [kind, ...args]);
 } else if (process.platform === "win32") {
   await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-    fileURLToPath(new URL("./browser-geometry-input.ps1", import.meta.url)), kind, ...args]);
+    fileURLToPath(new URL("./browser-geometry-input.ps1", import.meta.url)), kind, ...args], { windowsHide: true });
 } else throw new Error(`Unsupported native test platform: ${process.platform}`);

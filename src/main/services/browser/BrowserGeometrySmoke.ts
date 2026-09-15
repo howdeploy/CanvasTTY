@@ -229,21 +229,29 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
         return { nativeViewsHidden: true };
       });
     }
-    // A small hosted desktop can put an enlarged card under trusted overlays.
-    // Zoom out through product controls to obtain a native surface for input.
-    for (let attempt = 0; attempt < 4; attempt++) {
-      if (runtimes().some((runtime) => runtime.viewport.surface === "native" && runtime.clipView.getVisible())) break;
-      await evaluate('document.querySelector(\'button[title="Zoom out"]\').click()');
-      await pause(300);
-    }
+    const ensureNativeSurface = async (): Promise<BrowserService> => {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const service = services().reverse().find((candidate) => {
+          const runtime = candidate as unknown as GeometryRuntime;
+          return runtime.viewport.surface === "native" && runtime.clipView.getVisible()
+            && !runtime.canvasGestures.isFreezeActive && clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds());
+        });
+        if (service) return service;
+        // Canvas-owned coarse wheels can cross into summary mode. Restore a
+        // native page before the next independent probe; enlarged cards under
+        // trusted overlays instead need a smaller zoom on hosted desktops.
+        const zoom = await evaluate('new DOMMatrixReadOnly(document.querySelector(".workspace__scene").style.transform).a');
+        const action = zoom < 0.5 ? "Zoom in" : "Zoom out";
+        await evaluate(`document.querySelector('button[title="${action}"]').click()`);
+        await pause(350);
+      }
+      throw new Error("No visible native page after restoring zoom for the next probe");
+    };
     // Exercise a real service freeze/restore while crossing a clipping boundary.
     // This is a controlled geometry test; physical wheel/gesture coverage is
     // reported separately in the matrix, not inferred from these calls.
     await check("freeze-resize-restore", async () => {
-      const service = services().reverse().find((candidate) => {
-        const viewport = (candidate as unknown as GeometryRuntime).viewport;
-        return viewport.surface === "native" && clipBrowserViewportBounds(viewport, owner.getContentBounds());
-      })!;
+      const service = await ensureNativeSurface();
       const runtime = service as unknown as GeometryRuntime;
       const before = { ...runtime.viewport };
       const page = runtime.tabs.get(runtime.activeTabId)!.view.webContents;
@@ -280,14 +288,10 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       service.setViewport(before); await pause(200);
       return { scrollPreserved: scroll, freezeScreenshot, restored: runtime.tabs.get(runtime.activeTabId)!.view.getBounds() };
     });
-    const selectedService = () => services().reverse().find((candidate) => {
-      const viewport = (candidate as unknown as GeometryRuntime).viewport;
-      return viewport.surface === "native" && clipBrowserViewportBounds(viewport, owner.getContentBounds());
-    })!;
     const scene = () => evaluate('document.querySelector(".workspace__scene").style.transform');
     for (const focused of [true, false]) {
       await check(`native-wheel/${focused ? "focused-page" : "unfocused-canvas"}`, async () => {
-        const service = selectedService(), runtime = service as unknown as GeometryRuntime;
+        const service = await ensureNativeSurface(), runtime = service as unknown as GeometryRuntime;
         runtime.canvasGestures.endSequence();
         const contents = runtime.tabs.get(runtime.activeTabId)!.view.webContents;
         await contents.executeJavaScript("scrollTo(200,300)");
@@ -318,7 +322,7 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       });
     }
     await check("repeated-sink-scroll-quantization", async () => {
-      const runtime = selectedService() as unknown as GeometryRuntime;
+      const runtime = await ensureNativeSurface() as unknown as GeometryRuntime;
       const contents = runtime.tabs.get(runtime.activeTabId)!.view.webContents;
       const before = await contents.executeJavaScript("({x:scrollX,y:scrollY})");
       for (let iteration = 0; iteration < 5; iteration++) {
@@ -335,7 +339,7 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       return { before, after, scale, restores: 5 };
     });
     await check("native-alt-navigation-drag", async () => {
-      const runtime = selectedService() as unknown as GeometryRuntime;
+      const runtime = await ensureNativeSurface() as unknown as GeometryRuntime;
       const clip = clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds())!;
       const start = toScreen(clip.x + clip.width / 2, clip.y + clip.height / 2);
       const end = toScreen(clip.x + clip.width / 2 + 30, clip.y + clip.height / 2 + 20);

@@ -83,7 +83,9 @@ not passed. A card whose native page is intentionally hidden by the existing
 canvas-overlay guard is also untested for native input/composition at that zoom.
 The test retains a diagnostic image and does not click through the minimap or
 hide product overlays. It uses the zoom controls to obtain a visible native page
-for the wheel/restore probes.
+for the wheel/restore probes. Each independent probe reacquires a native page:
+coarse canvas wheel input may itself cross below the summary threshold, in
+which case the test uses Zoom in before continuing.
 
 Each `report.json` contains the commit, Electron version, platform/backend,
 display dimensions and scale factors, individual pass/fail/untested cases,

@@ -1,4 +1,4 @@
-import type { SessionBounds } from "../../../../shared/contracts";
+import type { CameraState, SessionBounds } from "../../../../shared/contracts";
 
 export function reconcileCanvasLayerOrder(
   current: readonly string[],
@@ -41,4 +41,30 @@ export function boundsOverlap(left: SessionBounds, right: SessionBounds): boolea
     && left.position.x + left.size.width > right.position.x
     && left.position.y < right.position.y + right.size.height
     && left.position.y + left.size.height > right.position.y;
+}
+
+/**
+ * Screen rectangle a world rectangle covers: the exact inverse of `canvasWorldRect`
+ * (screen = world * zoom + camera). Needed because cards are world-anchored while the
+ * HUD lives in screen space, and the two must be compared in one space.
+ */
+export function canvasScreenRect(bounds: SessionBounds, camera: CameraState): SessionBounds {
+  return {
+    position: {
+      x: bounds.position.x * camera.zoom + camera.x,
+      y: bounds.position.y * camera.zoom + camera.y
+    },
+    size: {
+      width: bounds.size.width * camera.zoom,
+      height: bounds.size.height * camera.zoom
+    }
+  };
+}
+
+/** Value equality, so a re-measure that changed nothing can keep the previous state object as-is. */
+export function boundsEqual(left: SessionBounds, right: SessionBounds): boolean {
+  return left.position.x === right.position.x
+    && left.position.y === right.position.y
+    && left.size.width === right.size.width
+    && left.size.height === right.size.height;
 }

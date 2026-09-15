@@ -6,6 +6,8 @@ import kimiIcon from "../assets/providers/kimi.ico";
 import openCodeIcon from "../assets/providers/opencode.svg";
 import hermesIcon from "../assets/providers/hermes.png";
 import grokIcon from "../assets/providers/grok.png";
+import ompIcon from "../assets/providers/omp.svg";
+import piIcon from "../assets/providers/pi.svg";
 import qwenIcon from "../assets/providers/qwen.svg";
 
 interface ProviderIconProps {
@@ -20,7 +22,9 @@ const PROVIDER_ASSETS = {
   kimi: kimiIcon,
   opencode: openCodeIcon,
   hermes: hermesIcon,
-  grok: grokIcon
+  grok: grokIcon,
+  omp: ompIcon,
+  pi: piIcon
 } as const;
 
 export function ProviderIcon({ provider, size = "medium" }: ProviderIconProps): React.JSX.Element {

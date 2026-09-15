@@ -40,6 +40,8 @@ interface PluginCanvasCardProps {
   onWidgetFocus(): void;
   onWidgetHoverChange(active: boolean): void;
   onCanvasWheel(event: PluginCanvasWheelInput): void;
+  /** True while this card is part of the marquee selection. */
+  groupSelected?: boolean;
 }
 
 interface DragState {
@@ -74,7 +76,8 @@ export function PluginCanvasCard({
   captureCanvasWheelOverWidgets,
   onWidgetFocus,
   onWidgetHoverChange,
-  onCanvasWheel
+  onCanvasWheel,
+  groupSelected = false
 }: PluginCanvasCardProps): React.JSX.Element {
   const dragState = useRef<DragState | null>(null);
   const resizeState = useRef<ResizeState | null>(null);
@@ -116,6 +119,8 @@ export function PluginCanvasCard({
   const drag = (event: React.PointerEvent<HTMLElement>): void => {
     const state = dragState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a drag.
+    if (event.buttons === 0) return;
     const rawPosition = {
       x: state.startBounds.position.x + (event.clientX - state.startClient.x) / zoom,
       y: state.startBounds.position.y + (event.clientY - state.startClient.y) / zoom
@@ -130,6 +135,16 @@ export function PluginCanvasCard({
     if (dragState.current?.pointerId !== event.pointerId) return;
     dragState.current = null;
     onBoundsChange(instance.id, liveBounds.current);
+  };
+
+  // A group drag takes pointer capture without a pointerup; drop local state so a
+  // later hover cannot act on it.
+  const cancelDrag = (): void => {
+    dragState.current = null;
+  };
+
+  const cancelResize = (): void => {
+    resizeState.current = null;
   };
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>, direction: ResizeDirection): void => {
@@ -147,6 +162,8 @@ export function PluginCanvasCard({
   const resize = (event: React.PointerEvent<HTMLDivElement>): void => {
     const state = resizeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a resize.
+    if (event.buttons === 0) return;
     event.preventDefault();
     event.stopPropagation();
     const deltaX = (event.clientX - state.startClient.x) / zoom;
@@ -185,7 +202,7 @@ export function PluginCanvasCard({
 
   return (
     <article
-      className={`plugin-canvas-card ${summaryMode ? "plugin-canvas-card--summary" : ""}`}
+      className={`plugin-canvas-card ${summaryMode ? "plugin-canvas-card--summary" : ""} ${groupSelected ? "plugin-canvas-card--selected" : ""}`}
       data-interactive="true"
       data-canvas-layer-id={`plugin:${instance.id}`}
       data-canvas-widget-id={pluginCanvasWidgetId(instance.id)}
@@ -205,6 +222,7 @@ export function PluginCanvasCard({
         onPointerMove={drag}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onLostPointerCapture={cancelDrag}
       >
         <span><strong>{instance.title}</strong><small>{plugin.manifest.name}</small></span>
         <button type="button" onClick={() => onDispose(instance.id)} title={t(locale, "close")} aria-label={t(locale, "close")}>
@@ -245,6 +263,7 @@ export function PluginCanvasCard({
           onPointerMove={resize}
           onPointerUp={endResize}
           onPointerCancel={endResize}
+          onLostPointerCapture={cancelResize}
         />
       ))}
     </article>

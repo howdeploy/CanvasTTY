@@ -393,6 +393,18 @@ void StartClient(HANDLE pipe) {
     return;
   }
   std::scoped_lock lock(g_client_threads_mutex);
+  // A terminated std::thread keeps its HANDLE until join(), so without this the host would
+  // accumulate two thread handles per connection for its whole lifetime. Reap the signalled
+  // ones here, under the same mutex, before adding this connection's workers.
+  for (auto iterator = g_client_threads.begin(); iterator != g_client_threads.end();) {
+    const HANDLE thread_handle = static_cast<HANDLE>(iterator->native_handle());
+    if (WaitForSingleObject(thread_handle, 0) != WAIT_OBJECT_0) {
+      ++iterator;
+      continue;
+    }
+    iterator->join();
+    iterator = g_client_threads.erase(iterator);
+  }
   g_client_threads.emplace_back([connection]() { ReadClient(connection); });
   g_client_threads.emplace_back([connection]() { WriteClient(connection); });
 }

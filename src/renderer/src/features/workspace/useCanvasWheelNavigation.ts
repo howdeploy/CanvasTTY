@@ -39,9 +39,14 @@ export interface CanvasWheelNavigationController {
   canvasOverrideActive: boolean;
   canvasOverrideActiveRef: RefObject<boolean>;
   routeWidgetWheelToCanvas: boolean;
+  /** True from the first zooming step until 160 ms of silence. */
+  zooming: boolean;
   applyCanvasWheel(event: CanvasWheelInput): void;
   zoomBy(factor: number): void;
 }
+
+/** Trail after the last zoom step before the gesture is considered over. */
+const MARK_GESTURE_SETTLE_MS = 160;
 
 export function useCanvasWheelNavigation({
   viewport,
@@ -58,6 +63,19 @@ export function useCanvasWheelNavigation({
   settingsRef.current = settings;
   const panFrame = useRef<number | null>(null);
   const pendingPan = useRef<Point>({ x: 0, y: 0 });
+  const [zooming, setZooming] = useState(false);
+  const zoomSettleTimer = useRef<number | null>(null);
+
+  // Trailing edge only: every zoom step restarts the timer, so a continuous
+  // wheel or pinch keeps the gesture open and only silence closes it.
+  const markZoomGesture = useCallback((): void => {
+    setZooming(true);
+    if (zoomSettleTimer.current !== null) window.clearTimeout(zoomSettleTimer.current);
+    zoomSettleTimer.current = window.setTimeout(() => {
+      zoomSettleTimer.current = null;
+      setZooming(false);
+    }, MARK_GESTURE_SETTLE_MS);
+  }, []);
 
   const zoomAt = useCallback((clientX: number, clientY: number, nextZoom: number): void => {
     const bounds = viewport.current?.getBoundingClientRect();
@@ -67,12 +85,13 @@ export function useCanvasWheelNavigation({
     const localY = clientY - bounds.top;
     const worldX = (localX - camera.x) / camera.zoom;
     const worldY = (localY - camera.y) / camera.zoom;
+    markZoomGesture();
     commitCamera({
       zoom: nextZoom,
       x: localX - worldX * nextZoom,
       y: localY - worldY * nextZoom
     });
-  }, [cameraRef, commitCamera, viewport]);
+  }, [cameraRef, commitCamera, markZoomGesture, viewport]);
 
   const flushPan = useCallback((): void => {
     if (panFrame.current !== null) {
@@ -104,6 +123,7 @@ export function useCanvasWheelNavigation({
 
   useEffect(() => () => {
     if (panFrame.current !== null) cancelAnimationFrame(panFrame.current);
+    if (zoomSettleTimer.current !== null) window.clearTimeout(zoomSettleTimer.current);
   }, []);
 
   useEffect(() => window.canvasTTY.canvasNavigation.onOverrideState(({ wheelActive, navigationActive }) => {
@@ -190,9 +210,13 @@ export function useCanvasWheelNavigation({
     const element = viewport.current;
     if (!element) return;
     const handleWheel = (event: WheelEvent): void => {
-      const browserFreezeOwned = event.target instanceof Element
-        && event.target.closest('[data-browser-canvas-wheel-owner="canvas"]') !== null;
+      // A priority-local surface (Browser panels, HOME session list) keeps the
+      // wheel over its own scroll area, so the freeze marker on the card must
+      // not outrank it; explicit capture modes still claim the wheel below.
       const priorityLocalOwner = isPriorityLocalCanvasWheelTarget(event.target);
+      const browserFreezeOwned = !priorityLocalOwner
+        && event.target instanceof Element
+        && event.target.closest('[data-browser-canvas-wheel-owner="canvas"]') !== null;
       const ownedByCanvas = browserFreezeOwned || shouldCanvasOwnWheel({
         overFocusedWidget: priorityLocalOwner
           || isFocusedCanvasWidgetTarget(event.target, widgetFocusRef.current.id),
@@ -237,6 +261,7 @@ export function useCanvasWheelNavigation({
       wheelOverrideActive,
       navigationOverrideActive: canvasOverrideActive
     }),
+    zooming,
     applyCanvasWheel,
     zoomBy
   };

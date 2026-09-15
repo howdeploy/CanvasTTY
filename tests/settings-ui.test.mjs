@@ -154,6 +154,9 @@ test("canvas windows use click-to-front stacking and Browser occlusion", async (
   assert.match(workspace, /raiseLayer\(layerId\)/);
   assert.match(workspace, /canvasLayerIsOccluded\(layerId, layerOrder, boundsByLayer\)/);
   assert.match(workspace, /!occluded/);
+  // The HUD is a sibling of the transformed scene, so it needs its own screen-space term.
+  assert.match(workspace, /canvasScreenRect\(bounds, camera\)/);
+  assert.match(workspace, /!browserUnderOverlay/);
 });
 
 test("region members follow the region during the gesture and commit only at release", async () => {

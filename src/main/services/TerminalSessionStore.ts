@@ -18,7 +18,9 @@ const PROVIDERS = new Set<ProviderId>([
   "kimi",
   "opencode",
   "hermes",
-  "grok"
+  "grok",
+  "omp",
+  "pi"
 ]);
 
 export interface PersistedTerminalSession {

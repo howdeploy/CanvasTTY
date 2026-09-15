@@ -16,10 +16,12 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
   kimi: { id: "kimi", label: "Kimi", dangerKey: "dangerKimi" },
   opencode: { id: "opencode", label: "OpenCode", limitsLabel: "OpenCode Go", dangerKey: "dangerOpenCode" },
   hermes: { id: "hermes", label: "Hermes", dangerKey: "dangerHermes" },
-  grok: { id: "grok", label: "Grok Build", dangerKey: "dangerGrok" }
+  grok: { id: "grok", label: "Grok Build", dangerKey: "dangerGrok" },
+  omp: { id: "omp", label: "OMP", dangerKey: "dangerOmp" },
+  pi: { id: "pi", label: "Pi", dangerKey: "dangerPi" }
 };
 
-export const AGENT_PROVIDERS: AgentProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok"];
+export const AGENT_PROVIDERS: AgentProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"];
 export const LIMIT_PROVIDERS: LimitProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "grok"];
 
 export function resolveHomeLauncherProviders(

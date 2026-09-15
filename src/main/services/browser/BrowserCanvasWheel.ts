@@ -16,6 +16,13 @@ export interface BrowserWheelDecision {
   owner: BrowserWheelOwner;
 }
 
+// Wire shape of the synchronous ownership reply. The page preload mirrors `idleMs` from this
+// envelope because its sandboxed entry stays self-contained and cannot share the main-process
+// constant; the decision itself keeps its own form.
+export interface BrowserPageWheelReply extends BrowserWheelDecision {
+  idleMs: number;
+}
+
 export interface BrowserWheelOwnershipInput {
   surface: BrowserViewportSurface;
   focused: boolean;
@@ -48,6 +55,14 @@ export function browserWheelOwner(input: BrowserWheelOwnershipInput): BrowserWhe
     navigationOverrideActive: input.canvasOverrideActive,
     forceCanvas: input.surface !== "native" || input.ctrlKey || input.metaKey
   }) ? "canvas" : "page";
+}
+
+export function browserPageWheelReply(decision: BrowserWheelDecision): BrowserPageWheelReply {
+  return {
+    generation: decision.generation,
+    owner: decision.owner,
+    idleMs: BROWSER_CANVAS_WHEEL_IDLE_MS
+  };
 }
 
 export class BrowserPageWheelSequence {

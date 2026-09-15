@@ -238,6 +238,9 @@ export function PluginSettingsSection({
       setPreview(null);
       setSourceUrl("");
     } catch (reason) {
+      // The install token is single-use: the main process consumes it before doing any work, so a
+      // failed install leaves the held preview dead. Dropping it makes the next attempt re-inspect.
+      setPreview(null);
       setError(errorMessage(reason, t(locale, "pluginInstallFailed")));
     } finally {
       setBusy(false);
@@ -396,11 +399,6 @@ export function PluginSettingsSection({
         setShowcasePreviews((current) => ({ ...current, [fullName]: preview }));
       }
       await onInstallPlugin(preview.token, showcaseModules[fullName] ?? []);
-      setShowcasePreviews((current) => {
-        const next = { ...current };
-        delete next[fullName];
-        return next;
-      });
       setShowcaseManifests((current) => {
         const next = { ...current };
         delete next[fullName];
@@ -411,6 +409,13 @@ export function PluginSettingsSection({
     } catch (reason) {
       setError(errorMessage(reason, t(locale, "pluginInstallFailed")));
     } finally {
+      // The install token is single-use, consumed by the main process before any work, so the cached
+      // preview is dead on failure too; keeping it would replay an expired token on every retry.
+      setShowcasePreviews((current) => {
+        const next = { ...current };
+        delete next[fullName];
+        return next;
+      });
       setBusy(false);
     }
   };

@@ -2,6 +2,8 @@ import type { Point, Size } from "../../../shared/contracts.ts";
 
 export const BROWSER_CANVAS_FREEZE_GUARD_DIP = 4;
 export const BROWSER_CANVAS_NATIVE_WHEEL_SINK_SIZE_DIP = 4;
+// Sole owner of the wheel idle boundary: BrowserCanvasWheel hands this value to the page
+// preload in its ownership reply, and the preload keeps no copy of its own.
 export const BROWSER_CANVAS_WHEEL_IDLE_MS = 250;
 export const BROWSER_CANVAS_FREEZE_MAX_BYTES = Math.floor(1.5 * 1024 * 1024);
 

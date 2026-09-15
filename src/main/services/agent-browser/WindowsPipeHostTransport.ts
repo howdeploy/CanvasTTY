@@ -62,7 +62,7 @@ export class WindowsPipeHostTransport extends EventEmitter {
   private readonly options: Required<Pick<WindowsPipeHostTransportOptions, "parentPid" | "startupTimeoutMs" | "platform">>
     & Pick<WindowsPipeHostTransportOptions, "hostPath" | "spawnHost">;
   private readonly sockets = new Map<number, WindowsRelaySocket>();
-  private readonly decoder = new RelayFrameDecoder();
+  private decoder = new RelayFrameDecoder();
   private child: ChildProcessWithoutNullStreams | null = null;
   private endpoint: string | null = null;
   private started = false;
@@ -105,6 +105,9 @@ export class WindowsPipeHostTransport extends EventEmitter {
     this.accept = accept;
     this.closing = false;
     this.stderr = "";
+    // A failed session can leave a partial frame in the decoder buffer; a restarted
+    // host feeds an unrelated stream.
+    this.decoder = new RelayFrameDecoder();
     const spawnHost = this.options.spawnHost ?? spawn;
     const child = spawnHost(
       this.options.hostPath,
@@ -280,6 +283,9 @@ export class WindowsPipeHostTransport extends EventEmitter {
     this.closing = true;
     this.child?.stdin.destroy();
     this.child?.kill();
+    // A raised `closing` flag used to leave the transport half-closed: close() became a
+    // no-op and the stale child blocked the next start(). Finish the close here instead.
+    this.finishClose();
   }
 
   private finishClose(): void {

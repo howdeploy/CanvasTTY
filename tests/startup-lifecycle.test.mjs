@@ -1,9 +1,40 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { startupPageUrl } from "../src/main/startupPage.ts";
 
 const mainPath = new URL("../src/main/index.ts", import.meta.url);
+
+test("closing during service startup stops renderer loading without a failure dialog", async () => {
+  const source = await readFile(mainPath, "utf8");
+  const start = source.slice(source.indexOf("async function startApplication"), source.indexOf("function buildProviderCliRegistry"));
+  let loads = 0;
+  let failures = 0;
+  const context = {
+    startupRunning: false,
+    shutdownRunning: false,
+    shutdownComplete: false,
+    servicesReady: false,
+    mainWindow: { isDestroyed: () => false },
+    process: { env: {} },
+    shellWindowGone: () => false,
+    initializeServices: async () => { context.shutdownRunning = true; },
+    loadApplication: async () => { loads += 1; },
+    showStartupFailure: async () => { failures += 1; }
+  };
+  const startApplication = runInNewContext(`${stripTypeScriptTypes(start)}; startApplication`, context);
+  await startApplication();
+  assert.equal(loads, 0);
+  assert.equal(failures, 0);
+  assert.equal(context.startupRunning, false);
+
+  context.shutdownRunning = false;
+  context.initializeServices = async () => { throw new Error("real startup error"); };
+  await startApplication();
+  assert.equal(failures, 1, "a real error on a live window still reaches the failure page");
+});
 
 test("main process acquires the single-instance lock before readiness", async () => {
   const source = await readFile(mainPath, "utf8");
@@ -13,8 +44,14 @@ test("main process acquires the single-instance lock before readiness", async ()
   assert.notEqual(lock, -1);
   assert.notEqual(ready, -1);
   assert.ok(lock < ready);
-  assert.doesNotMatch(source, /app\.on\("second-instance"/);
-  assert.doesNotMatch(source, /focusMainWindow/);
+  // R4: a rejected second launch raises the window of the running instance
+  // instead of exiting silently.
+  const handlerStart = source.indexOf('app.on("second-instance"');
+  assert.notEqual(handlerStart, -1);
+  const secondInstance = source.slice(handlerStart, source.indexOf('app.on("before-quit"'));
+  assert.match(secondInstance, /\.restore\(\)/);
+  assert.match(secondInstance, /\.show\(\)/);
+  assert.match(secondInstance, /\.focus\(\)/);
 });
 
 test("background plugin requests never activate the desktop window", async () => {

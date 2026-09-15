@@ -9,6 +9,7 @@ import { BrowserCommandDispatcher, type BrowserAuditWriter } from "./BrowserComm
 import { BrowserKernelError } from "./BrowserErrors.ts";
 import { sanitizeAgentResult } from "./BrowserCore.ts";
 import { DEFAULT_BROWSER_URL, isSafeBrowserUrl } from "./BrowserPolicyService.ts";
+import { browserPageWheelReply, type BrowserPageWheelReply } from "./BrowserCanvasWheel.ts";
 
 export const DEFAULT_BROWSER_ID = "default";
 export const MAX_BROWSER_WINDOWS = 16;
@@ -213,7 +214,7 @@ export class BrowserWorkspace {
     for (const entry of this.windows.values()) if (focused || entry.id === browserId) entry.service.setInputFocused(focused && entry.id === browserId);
   }
   setViewport(bounds: BrowserViewportBounds, browserId = this.humanCurrent): void { this.windows.get(browserId)?.service.setViewport(bounds); }
-  decidePageWheel(sender: WebContents, input: unknown) { return this.byContents(sender)?.service.decidePageWheel(sender, input) ?? { generation: 0, owner: "page" as const }; }
+  decidePageWheel(sender: WebContents, input: unknown): BrowserPageWheelReply { return this.byContents(sender)?.service.decidePageWheel(sender, input) ?? browserPageWheelReply({ generation: 0, owner: "page" }); }
   handlePageWheel(sender: WebContents, input: unknown): void { this.byContents(sender)?.service.handlePageWheel(sender, input); }
   beginRendererWheelSequence(input: unknown): void { for (const entry of this.windows.values()) entry.service.beginRendererWheelSequence(input); }
   setCanvasWheelCaptureMode(mode: CanvasWheelCaptureMode): void { for (const entry of this.windows.values()) entry.service.setCanvasWheelCaptureMode(mode); }

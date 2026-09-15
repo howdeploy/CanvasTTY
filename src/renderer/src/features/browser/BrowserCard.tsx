@@ -44,6 +44,8 @@ interface BrowserCardProps {
   onWidgetHoverChange(active: boolean): void;
   onClose(): void;
   onError(message: string): void;
+  /** True while this card is part of the marquee selection. */
+  groupSelected?: boolean;
 }
 
 interface DragState {
@@ -83,7 +85,8 @@ export function BrowserCard({
   onWidgetFocus,
   onWidgetHoverChange,
   onClose,
-  onError
+  onError,
+  groupSelected = false
 }: BrowserCardProps): React.JSX.Element {
   const dragState = useRef<DragState | null>(null);
   const resizeState = useRef<ResizeState | null>(null);
@@ -247,6 +250,8 @@ export function BrowserCard({
   const drag = (event: React.PointerEvent<HTMLElement>): void => {
     const state = dragState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a drag.
+    if (event.buttons === 0) return;
     const rawPosition = {
       x: state.startBounds.position.x + (event.clientX - state.startClient.x) / zoom,
       y: state.startBounds.position.y + (event.clientY - state.startClient.y) / zoom
@@ -261,6 +266,16 @@ export function BrowserCard({
     if (dragState.current?.pointerId !== event.pointerId) return;
     dragState.current = null;
     onBoundsChange(liveBounds.current);
+  };
+
+  // A group drag takes pointer capture without a pointerup; drop local state so a
+  // later hover cannot act on it.
+  const cancelDrag = (): void => {
+    dragState.current = null;
+  };
+
+  const cancelResize = (): void => {
+    resizeState.current = null;
   };
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>, direction: ResizeDirection): void => {
@@ -278,6 +293,8 @@ export function BrowserCard({
   const resize = (event: React.PointerEvent<HTMLDivElement>): void => {
     const state = resizeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a resize.
+    if (event.buttons === 0) return;
     event.preventDefault();
     event.stopPropagation();
     const deltaX = (event.clientX - state.startClient.x) / zoom;
@@ -374,7 +391,7 @@ export function BrowserCard({
 
   return (
     <article
-      className={`browser-card ${summaryMode ? "browser-card--summary" : ""} ${selected ? "browser-card--selected" : ""}`}
+      className={`browser-card ${summaryMode ? "browser-card--summary" : ""} ${selected || groupSelected ? "browser-card--selected" : ""}`}
       data-interactive="true"
       data-canvas-layer-id={browserWindowWidgetId(browserId)}
       data-canvas-widget-id={browserWindowWidgetId(browserId)}
@@ -407,6 +424,7 @@ export function BrowserCard({
         onPointerMove={drag}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onLostPointerCapture={cancelDrag}
       >
         <span className="browser-card__title">
           <UiIcon name="browser" size="1.69em" />
@@ -560,7 +578,7 @@ export function BrowserCard({
       )}
 
       {panel === "downloads" && (
-        <section className="browser-card__popover browser-card__download-panel" data-browser-action="true" data-wheel-owner="local">
+        <section className="browser-card__popover browser-card__download-panel" data-browser-action="true" data-wheel-owner="local" data-canvas-wheel-priority="local">
           <header>
             <strong>{t(locale, "browserDownloads")}</strong>
             <button type="button" onClick={() => setPanel(null)} aria-label={t(locale, "close")}><UiIcon name="close" size={14} /></button>
@@ -607,6 +625,7 @@ export function BrowserCard({
           onPointerMove={resize}
           onPointerUp={endResize}
           onPointerCancel={endResize}
+          onLostPointerCapture={cancelResize}
         />
       ))}
     </article>

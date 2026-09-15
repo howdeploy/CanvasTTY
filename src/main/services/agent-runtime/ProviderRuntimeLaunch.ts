@@ -148,7 +148,10 @@ export class ProviderRuntimeLaunchAdapters {
   ): PreparedProviderRuntimeLaunch {
     const pluginRegistrations = this.options.pluginHooks?.list(provider) ?? [];
     const pluginCommands = this.pluginHookCommands(provider, pluginRegistrations);
-    const hasHooks = coreHooksEnabled || pluginCommands.length > 0 || (provider === "opencode" && pluginRegistrations.length > 0);
+    // omp and pi have no hook adapter. Without this they would fall through to the Grok
+    // overlay at the end of this method and write Grok hook configuration for them.
+    const hasHooks = provider !== "omp" && provider !== "pi"
+      && (coreHooksEnabled || pluginCommands.length > 0 || (provider === "opencode" && pluginRegistrations.length > 0));
     const environment = hasHooks
       ? {
         ...(pluginRegistrations.length > 0 ? {
@@ -462,7 +465,10 @@ const PLUGIN_HOOK_TRIGGERS: Record<AgentProvider, Partial<Record<PluginAgentHook
     stop: [{ event: "Stop" }, { event: "StopFailure" }, { event: "StopCancelled" }],
     "session-end": [{ event: "SessionEnd" }]
   },
-  opencode: {}
+  opencode: {},
+  // omp and pi expose no lifecycle hooks, so no plugin events map onto them.
+  omp: {},
+  pi: {}
 };
 
 export function claudeLifecycleArgs(

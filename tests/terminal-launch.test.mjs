@@ -72,13 +72,21 @@ test("restored agent windows use each provider's native continue mode", () => {
     "--last"
   ]);
 
-  for (const provider of ["claude", "qwen", "kimi", "opencode", "hermes", "grok"]) {
+  for (const provider of ["claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]) {
     const launch = resolveTerminalLaunch(provider, "normal", ["--bridge"], {
       providerCli: available(provider, `/resolved/${provider}`),
       resumePrevious: true
     });
     assert.deepEqual(launch.args, ["--bridge", "--continue"]);
   }
+});
+
+test("OMP and Pi use their documented dangerous flags instead of the legacy default", () => {
+  const omp = resolveTerminalLaunch("omp", "yolo", [], { providerCli: available("omp", "/resolved/omp") });
+  assert.deepEqual(omp.args, ["--auto-approve"]);
+
+  const pi = resolveTerminalLaunch("pi", "yolo", [], { providerCli: available("pi", "/resolved/pi") });
+  assert.deepEqual(pi.args, ["--approve"]);
 });
 
 test("OpenCode merges YOLO config with the registry child environment", () => {

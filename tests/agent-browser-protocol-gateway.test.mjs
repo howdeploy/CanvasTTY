@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -300,6 +300,43 @@ test("AgentGateway supports Windows only when the secure native pipe host is sup
 
   await assert.rejects(gateway.start(), /current-user-only named-pipe host/i);
   assert.throws(() => gateway.address, /has not started/i);
+});
+
+test("AgentGateway restarts a failed Windows host and cancels recovery when disabled", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const transports = [];
+  const gateway = new AgentGateway(core(), {
+    platform: "win32",
+    windowsHostPath: "/fake/host.exe",
+    windowsPipeHostFactory: () => {
+      const transport = new EventEmitter();
+      const address = `pipe-${transports.length}`;
+      transport.isRunning = false;
+      transport.start = async () => {
+        transport.isRunning = true;
+        return address;
+      };
+      transport.close = async () => { transport.isRunning = false; };
+      transports.push(transport);
+      return transport;
+    }
+  });
+  t.after(() => gateway.close());
+
+  assert.equal(await gateway.start(), "pipe-0");
+  transports[0].isRunning = false;
+  transports[0].emit("fatal", new Error("host exited"));
+  t.mock.timers.tick(499);
+  assert.equal(transports.length, 1);
+  t.mock.timers.tick(1);
+  await new Promise(setImmediate);
+  assert.equal(gateway.address, "pipe-1");
+
+  transports[1].isRunning = false;
+  transports[1].emit("fatal", new Error("host exited again"));
+  gateway.setEnabled(false);
+  t.mock.timers.tick(10_000);
+  assert.equal(transports.length, 2);
 });
 
 test("AgentGateway idempotently authenticates live helpers and rotates reconnect capability", POSIX_GATEWAY_TEST, async (t) => {

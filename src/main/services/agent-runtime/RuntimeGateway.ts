@@ -17,7 +17,7 @@ import {
 } from "../agent-browser/WindowsPipeHostTransport.ts";
 
 const AGENT_PROVIDERS = new Set<ProviderId>([
-  "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok"
+  "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"
 ]);
 const MAX_RUNTIME_SESSIONS = 32;
 

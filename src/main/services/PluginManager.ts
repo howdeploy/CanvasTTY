@@ -73,7 +73,7 @@ const MAX_RUNTIME_HOOK_REGISTRY_BYTES = 1024 * 1024;
 const MAX_PLUGIN_ICON_BYTES = 512 * 1024;
 const PLUGIN_INPUT_BRIDGE_URL = "canvastty-plugin://host/input-bridge.js";
 const AGENT_PROVIDERS = new Set<AgentProviderId>([
-  "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok"
+  "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"
 ]);
 const PLUGIN_HOOK_EVENTS = new Set<PluginAgentHookEvent>([
   "session-start",
@@ -322,6 +322,13 @@ export class PluginManager {
       preview.manifest,
       selectedModules ?? preview.manifest.modules?.filter((module) => module.defaultSelected).map((module) => module.id)
     );
+    // An explicitly requested selection must be covered by the previewed manifest: normalize drops
+    // unknown and duplicate ids, which would install a smaller package than the caller asked for.
+    // Default and persisted selections keep the lenient normalization.
+    if (selectedModules && modules.length !== selectedModules.length) {
+      await rm(directory, { recursive: true, force: true });
+      throw new Error("Plugin module selection is invalid.");
+    }
     const destination = join(this.pluginRoot, preview.manifest.id);
     if (this.plugins.has(preview.manifest.id)) {
       await rm(directory, { recursive: true, force: true });

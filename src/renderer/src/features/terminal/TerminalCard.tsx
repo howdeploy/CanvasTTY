@@ -51,6 +51,7 @@ interface TerminalCardProps {
   focused: boolean;
   focusChangeSource: "explicit" | "hover";
   selected: boolean;
+  groupSelected?: boolean;
   renaming: boolean;
   snapTargets: readonly SessionBounds[];
   onActivate(session: SessionSnapshot): void;
@@ -90,6 +91,7 @@ export function TerminalCard({
   focused,
   focusChangeSource,
   selected,
+  groupSelected,
   renaming,
   snapTargets,
   onActivate,
@@ -315,6 +317,8 @@ export function TerminalCard({
   const drag = (event: React.PointerEvent<HTMLElement>): void => {
     const state = dragState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a drag.
+    if (event.buttons === 0) return;
     const rawPosition = {
       x: state.startBounds.position.x + (event.clientX - state.startClient.x) / zoom,
       y: state.startBounds.position.y + (event.clientY - state.startClient.y) / zoom
@@ -329,6 +333,16 @@ export function TerminalCard({
     if (!dragState.current || dragState.current.pointerId !== event.pointerId) return;
     dragState.current = null;
     onBoundsChange(session.id, liveBounds.current);
+  };
+
+  // A group drag takes pointer capture without a pointerup; drop local state so a
+  // later hover cannot act on it.
+  const cancelDrag = (): void => {
+    dragState.current = null;
+  };
+
+  const cancelResize = (): void => {
+    resizeState.current = null;
   };
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>, direction: ResizeDirection): void => {
@@ -346,6 +360,8 @@ export function TerminalCard({
   const resizeCard = (event: React.PointerEvent<HTMLDivElement>): void => {
     const state = resizeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a resize.
+    if (event.buttons === 0) return;
     event.preventDefault();
     event.stopPropagation();
     const deltaX = (event.clientX - state.startClient.x) / zoom;
@@ -421,7 +437,7 @@ export function TerminalCard({
 
   return (
     <article
-      className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected ? "terminal-card--selected" : ""}`}
+      className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""}`}
       data-interactive="true"
       data-canvas-layer-id={`terminal:${session.id}`}
       data-canvas-widget-id={terminalCanvasWidgetId(session.id)}
@@ -474,6 +490,7 @@ export function TerminalCard({
         onPointerMove={drag}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onLostPointerCapture={cancelDrag}
       >
         <div className="terminal-card__identity">
           <ProviderIcon provider={session.provider} size="small" />
@@ -545,6 +562,7 @@ export function TerminalCard({
           onPointerMove={resizeCard}
           onPointerUp={endResize}
           onPointerCancel={endResize}
+          onLostPointerCapture={cancelResize}
         />
       ))}
     </article>

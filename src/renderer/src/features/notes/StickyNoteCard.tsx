@@ -20,6 +20,8 @@ interface StickyNoteCardProps {
   onBoundsChange(id: string, bounds: SessionBounds): void;
   onTextChange(id: string, text: string): void;
   onClose(id: string): void;
+  /** True while this card is part of the marquee selection. */
+  groupSelected?: boolean;
 }
 
 interface DragState {
@@ -45,7 +47,8 @@ export function StickyNoteCard({
   snapTargets,
   onBoundsChange,
   onTextChange,
-  onClose
+  onClose,
+  groupSelected = false
 }: StickyNoteCardProps): React.JSX.Element {
   const editor = useRef<HTMLTextAreaElement>(null);
   const dragState = useRef<DragState | null>(null);
@@ -128,6 +131,8 @@ export function StickyNoteCard({
   const drag = (event: React.PointerEvent<HTMLElement>): void => {
     const state = dragState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a drag.
+    if (event.buttons === 0) return;
     const rawPosition = {
       x: state.startBounds.position.x + (event.clientX - state.startClient.x) / zoom,
       y: state.startBounds.position.y + (event.clientY - state.startClient.y) / zoom
@@ -146,6 +151,16 @@ export function StickyNoteCard({
     onBoundsChange(note.id, liveBounds.current);
   };
 
+  // A group drag takes pointer capture without a pointerup; drop local state so a
+  // later hover cannot act on it.
+  const cancelDrag = (): void => {
+    dragState.current = null;
+  };
+
+  const cancelResize = (): void => {
+    resizeState.current = null;
+  };
+
   const startResize = (event: React.PointerEvent<HTMLDivElement>, direction: ResizeDirection): void => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -162,6 +177,8 @@ export function StickyNoteCard({
   const resize = (event: React.PointerEvent<HTMLDivElement>): void => {
     const state = resizeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A buttonless move is a hover, not a resize.
+    if (event.buttons === 0) return;
     event.preventDefault();
     event.stopPropagation();
     const deltaX = (event.clientX - state.startClient.x) / zoom;
@@ -198,7 +215,7 @@ export function StickyNoteCard({
 
   return (
     <article
-      className="sticky-note-card"
+      className={`sticky-note-card ${groupSelected ? "sticky-note-card--selected" : ""}`}
       data-interactive="true"
       data-sticky-note-id={note.id}
       data-canvas-layer-id={`note:${note.id}`}
@@ -216,6 +233,7 @@ export function StickyNoteCard({
         onPointerMove={drag}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onLostPointerCapture={cancelDrag}
       >
         <span><UiIcon name="sticky-note" size="1.15em" />{t(locale, "stickyNote")}</span>
         <button
@@ -250,6 +268,7 @@ export function StickyNoteCard({
           onPointerMove={resize}
           onPointerUp={endResize}
           onPointerCancel={endResize}
+          onLostPointerCapture={cancelResize}
         />
       ))}
     </article>

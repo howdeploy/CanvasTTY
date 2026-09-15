@@ -39,7 +39,7 @@ import { BrowserCanvasGestureController } from "./browser/BrowserCanvasGestureCo
 import { BrowserCanvasPointerRouter } from "./browser/BrowserCanvasPointerRouter.ts";
 import { BrowserCanvasSinkViewportController } from "./browser/BrowserCanvasSinkViewport.ts";
 import { BrowserAuditStore } from "./browser/BrowserAuditStore.ts";
-import type { BrowserWheelDecision } from "./browser/BrowserCanvasWheel.ts";
+import { browserPageWheelReply, type BrowserPageWheelReply } from "./browser/BrowserCanvasWheel.ts";
 import { clipBrowserViewportBounds, normalizeBrowserViewportBounds } from "./browser/BrowserViewport.ts";
 import { BrowserCore, type BrowserCoreHost, type BrowserCoreTab } from "./browser/BrowserCore.ts";
 import { BrowserKernelError } from "./browser/BrowserErrors.ts";
@@ -60,6 +60,18 @@ const browserPreloads = new WeakMap<Session, { id: string; users: number }>();
 const MAX_DOWNLOAD_HISTORY = 100;
 const MAX_FAVICON_BYTES = 256 * 1024;
 const HUMAN_ACTOR: BrowserActor = { kind: "human", connectionId: "canvastty-renderer" };
+
+// Mirrors the `.browser-card { border-radius: 17px }` declaration in src/renderer/src/styles/app.css: the
+// stylesheet owns this visual property, so the two have to stay in sync by hand.
+const CARD_CORNER_RADIUS = 17;
+// normalizeBrowserViewportBounds clamps canvasScale to 0.5..3; this bound only guards a bogus payload.
+const MAX_PAGE_CORNER_RADIUS = CARD_CORNER_RADIUS * 3;
+
+/** Card corner radius in device-independent pixels at the current canvas scale. */
+function pageCornerRadius(canvasScale: number | undefined): number {
+  const scale = typeof canvasScale === "number" && Number.isFinite(canvasScale) ? canvasScale : 1;
+  return Math.max(0, Math.min(MAX_PAGE_CORNER_RADIUS, Math.round(CARD_CORNER_RADIUS * scale)));
+}
 
 interface BrowserTab {
   id: string;
@@ -320,8 +332,8 @@ export class BrowserService {
     this.canvasGestures.setCaptureMode(mode);
   }
 
-  decidePageWheel(sender: WebContents, input: unknown): BrowserWheelDecision {
-    return this.canvasGestures.decidePageWheel(sender, input);
+  decidePageWheel(sender: WebContents, input: unknown): BrowserPageWheelReply {
+    return browserPageWheelReply(this.canvasGestures.decidePageWheel(sender, input));
   }
 
   handlePageWheel(sender: WebContents, input: unknown): void {
@@ -1083,6 +1095,9 @@ export class BrowserService {
         this.mountClipTab(owner, active);
         this.clipView.setBounds(canvasSurface.layout.clip);
         active.view.setBounds(canvasSurface.layout.view);
+        // The sink is a 4 DIP wheel receiver; rounding it would be a visual regression and could
+        // break the wheel-continuity invariant (docs/adr/ADR-20260808-native-browser-wheel-continuity.md).
+        active.view.setBorderRadius(0);
         active.view.setVisible(true);
         this.clipView.setVisible(true);
       } else {
@@ -1107,6 +1122,7 @@ export class BrowserService {
       width: this.viewport.width,
       height: this.viewport.height
     });
+    active.view.setBorderRadius(pageCornerRadius(this.viewport.canvasScale));
     active.view.setVisible(true);
     this.clipView.setVisible(true);
     this.syncPresenceOverlay({ owner, tabId: active.id, left, top, right, bottom });
@@ -1146,6 +1162,8 @@ export class BrowserService {
     this.pointerTabId = null;
     for (const tab of this.tabs.values()) {
       tab.view.setVisible(false);
+      // A hidden view must not carry stale corner geometry into its next show.
+      tab.view.setBorderRadius(0);
     }
     this.clipView.setVisible(false);
   }

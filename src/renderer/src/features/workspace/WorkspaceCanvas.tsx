@@ -21,7 +21,7 @@ import type {
 } from "../../../../shared/contracts";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
-import { displayCanvasNavigationBinding } from "../../lib/shortcuts";
+import { displayCanvasNavigationBinding, matchesPhysicalOrLayoutKey } from "../../lib/shortcuts";
 import { BrowserCard } from "../browser/BrowserCard";
 import type { LimitsLoadState } from "../home/homeModel";
 import { homeGridPixelSize, homeLayoutFitsGrid } from "../home/homeLayout";
@@ -49,9 +49,12 @@ import {
   translateBounds
 } from "./canvasRegions";
 import {
+  boundsEqual,
+  boundsOverlap,
   bringCanvasLayerToFront,
   canvasLayerIsOccluded,
   canvasLayerZIndex,
+  canvasScreenRect,
   reconcileCanvasLayerOrder
 } from "./canvasStacking";
 import {
@@ -60,6 +63,14 @@ import {
   pluginCanvasWidgetId,
   terminalCanvasWidgetId
 } from "./canvasWidgetFocus";
+import { boundsIntersect } from "./minimapGeometry";
+import {
+  noteLayerId,
+  parseCanvasLayerId,
+  pluginLayerId,
+  terminalLayerId
+} from "./canvasSelectionGesture";
+import { snapMove } from "./snap";
 import { useCanvasPointerNavigation } from "./useCanvasPointerNavigation";
 import { useCanvasWheelNavigation } from "./useCanvasWheelNavigation";
 import { useCanvasWidgetFocus } from "./useCanvasWidgetFocus";
@@ -71,6 +82,15 @@ const CANVAS_OVERLAY_PLACEMENTS: CanvasOverlayPlacement[] = [
   "bottom-right"
 ];
 
+const EMPTY_MARQUEE_SELECTION: ReadonlySet<string> = new Set<string>();
+
+/** A group drag's commit basis, frozen once when the press activates: the pressed layer's start
+ * bounds plus every member's, so nothing the gesture itself previews can feed back into it. */
+type GroupDragBasis = {
+  layerId: string;
+  anchor: SessionBounds;
+  members: ReadonlyMap<string, SessionBounds>;
+};
 type CanvasMenuState = {
   kind: CanvasContextMenuKind;
   position: Point;
@@ -183,6 +203,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const pendingRadialContextMenu = useRef<CanvasMenuState | null>(null);
   const [noteEditRequest, setNoteEditRequest] = useState<{ id: string; version: number } | null>(null);
   const [regionMovePreview, setRegionMovePreview] = useState<RegionMovePreview | null>(null);
+  const [marqueeSelection, setMarqueeSelection] = useState<ReadonlySet<string>>(EMPTY_MARQUEE_SELECTION);
+  const overlays = useRef<HTMLDivElement>(null);
+  const [overlayRects, setOverlayRects] = useState<SessionBounds[]>([]);
   const cameraRef = useRef(camera);
   cameraRef.current = camera;
   const commitCamera = useCallback((next: CameraState): void => {
@@ -208,6 +231,22 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       };
     });
   }, [sessions, settings.browserCanvas, settings.browserCanvases, settings.canvasRegions, settings.pluginCanvas, settings.stickyNotes]);
+
+  // A press can lose its pointer (window blur, leaving Edit HOME) before it reaches a
+  // pointer-up, so the scene drops any live preview instead of leaving it stuck.
+  const clearRegionMovePreview = useCallback((): void => {
+    setRegionMovePreview(null);
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("blur", clearRegionMovePreview);
+    return () => window.removeEventListener("blur", clearRegionMovePreview);
+  }, [clearRegionMovePreview]);
+
+  useEffect(() => {
+    if (homeEditing) clearRegionMovePreview();
+  }, [clearRegionMovePreview, homeEditing]);
+
   const previewDelta = regionMovePreview ? {
     x: regionMovePreview.currentBounds.position.x - regionMovePreview.startBounds.position.x,
     y: regionMovePreview.currentBounds.position.y - regionMovePreview.startBounds.position.y
@@ -263,6 +302,83 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     for (const note of renderedStickyNotes) result.set(noteLayerId(note.id), note);
     return result;
   }, [renderablePluginIds, renderedBrowserCanvases, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
+  // Every window on the canvas, in the order they are rendered: terminals, plugin canvases, browser, notes.
+  const allWindowBounds: SessionBounds[] = [
+    ...renderedSessions,
+    ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)),
+    ...renderedBrowserCanvases,
+    ...renderedStickyNotes
+  ];
+
+  const homeBounds: SessionBounds = {
+    position: { x: 0, y: 0 },
+    size: homeGridPixelSize(settings.homeGridSize)
+  };
+
+  const selectMarquee = useCallback((bounds: SessionBounds | null): void => {
+    if (bounds === null) {
+      setMarqueeSelection(EMPTY_MARQUEE_SELECTION);
+      return;
+    }
+    // Every rendered layer, not just terminals: the selection holds `data-canvas-layer-id` values.
+    const ids = [...boundsByLayer]
+      .filter(([, layerBounds]) => boundsIntersect(bounds, layerBounds))
+      .map(([layerId]) => layerId);
+    // Presentation-only: the marquee never moves logical input focus or the active
+    // session, and a group drag is read from the selection alone.
+    setMarqueeSelection(ids.length === 0 ? EMPTY_MARQUEE_SELECTION : new Set(ids));
+  }, [boundsByLayer]);
+
+  const groupDragBasis = useRef<GroupDragBasis | null>(null);
+
+  const beginGroupDrag = useCallback((layerId: string): void => {
+    const anchor = boundsByLayer.get(layerId);
+    if (!anchor) return;
+    // Frozen here, once: the preview moves the rendered bounds, so the commit must not
+    // read them back, and a layer that appears mid-gesture is not part of this drag.
+    const members = new Map<string, SessionBounds>();
+    for (const memberLayerId of [layerId, ...marqueeSelection]) {
+      const memberBounds = boundsByLayer.get(memberLayerId);
+      if (memberBounds) members.set(memberLayerId, memberBounds);
+    }
+    groupDragBasis.current = { layerId, anchor, members };
+  }, [boundsByLayer, marqueeSelection]);
+
+  const commitGroupDrag = useCallback((layerId: string, delta: Point): void => {
+    const basis = groupDragBasis.current;
+    groupDragBasis.current = null;
+    if (!basis || basis.layerId !== layerId) return;
+    const { anchor, members } = basis;
+    // The pressed card is the only one that snaps: one `snapMove` call yields a rigid
+    // world delta applied to every member, so relative offsets survive. Members are
+    // excluded from the targets, otherwise a card would snap onto its own neighbours.
+    const targets = [
+      homeBounds,
+      ...renderedCanvasRegions.map((candidate) => ({ position: candidate.position, size: candidate.size })),
+      ...[...boundsByLayer]
+        .filter(([candidateLayerId]) => !members.has(candidateLayerId))
+        .map(([, candidateBounds]) => candidateBounds)
+    ];
+    const movedAnchor = translateBounds(anchor, delta);
+    const anchorPosition = settings.snapToGrid
+      ? snapMove(movedAnchor.position, anchor.size, targets)
+      : movedAnchor.position;
+    const rigid = {
+      x: anchorPosition.x - anchor.position.x,
+      y: anchorPosition.y - anchor.position.y
+    };
+    for (const [memberLayerId, memberBounds] of members) {
+      const moved = translateBounds(memberBounds, rigid);
+      const ref = parseCanvasLayerId(memberLayerId);
+      if (!ref) continue;
+      // Commit each window by its own identity, including individual Browser cards.
+      if (ref.kind === "terminal" && ref.targetId !== null) onSessionBoundsChange(ref.targetId, moved);
+      else if (ref.kind === "plugin" && ref.targetId !== null) onPluginCanvasBoundsChange(ref.targetId, moved);
+      else if (ref.kind === "note" && ref.targetId !== null) onStickyNoteBoundsChange(ref.targetId, moved);
+      else if (ref.kind === "browser") onBrowserBoundsChange(ref.targetId ?? "default", moved);
+    }
+  }, [boundsByLayer, homeBounds, onBrowserBoundsChange, onPluginCanvasBoundsChange,
+    onSessionBoundsChange, onStickyNoteBoundsChange, renderedCanvasRegions, settings.snapToGrid]);
 
   const focusController = useCanvasWidgetFocus({
     viewport,
@@ -284,6 +400,43 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       settings.homeLayout.map((placement) => placement.widgetId).join(",")
     ].join("|")
   });
+  // The page area is a native child view, so it composites above every DOM layer including this
+  // HUD; the page can only yield by hiding. Slot boxes are measured instead of their children:
+  // they are content-sized, which keeps this effect keyed to what can move or resize a slot and
+  // not to every row inside the dynamic panels.
+  useEffect(() => {
+    const root = overlays.current;
+    if (!root) return;
+    const slots = [...root.querySelectorAll<HTMLElement>(".canvas-overlay-slot")];
+    const measure = (): void => {
+      const rootRect = root.getBoundingClientRect();
+      const next = slots.map((slot) => {
+        const rect = slot.getBoundingClientRect();
+        return {
+          position: { x: rect.left - rootRect.left, y: rect.top - rootRect.top },
+          size: { width: rect.width, height: rect.height }
+        };
+      });
+      // Compared by value: a re-render that leaves the layout alone must not publish new state,
+      // otherwise the observer and the state update could ping-pong forever.
+      setOverlayRects((current) => (
+        next.length === current.length && next.every((rect, index) => boundsEqual(rect, current[index]))
+          ? current
+          : next
+      ));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    for (const slot of slots) observer.observe(slot);
+    return () => observer.disconnect();
+  }, [
+    settings.canvasControlsPlacement,
+    settings.minimapPlacement,
+    settings.shortcutHintsPlacement,
+    settings.showShortcutHints,
+    settings.uiScale
+  ]);
   const wheelNavigation = useCanvasWheelNavigation({
     viewport,
     settings,
@@ -296,15 +449,21 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     settings,
     cameraRef,
     canvasOverrideActiveRef: wheelNavigation.canvasOverrideActiveRef,
-    commitCamera
+    commitCamera,
+    selectedLayerIds: marqueeSelection,
+    onMarqueeSelection: selectMarquee,
+    onGroupDragStart: beginGroupDrag,
+    onGroupDrag: commitGroupDrag
   });
+  // Live preview of a travelled group drag: every selected layer of every kind moves together.
+  const withGroupNudge = <T extends SessionBounds>(layerId: string, item: T): T => (
+    marqueeSelection.has(layerId) && pointerNavigation.groupNudge
+      ? { ...item, ...translateBounds(item, pointerNavigation.groupNudge) }
+      : item
+  );
   const widgetFocus = focusController.state;
   const routeWidgetWheelToCanvas = wheelNavigation.routeWidgetWheelToCanvas;
   const canvasOverrideActive = wheelNavigation.canvasOverrideActive;
-  const homeBounds: SessionBounds = {
-    position: { x: 0, y: 0 },
-    size: homeGridPixelSize(settings.homeGridSize)
-  };
   const homeLayoutValid = homeLayoutFitsGrid(settings.homeLayout, settings.homeGridSize);
   const editedRegion = regionEditor?.mode === "edit"
     ? settings.canvasRegions.find((region) => region.id === regionEditor.regionId) ?? null
@@ -417,12 +576,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     }
     const handleShortcut = (event: KeyboardEvent): void => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-      if (event.key.toLowerCase() === "k") {
+      // Matched on the physical key: these chords must work on a non-Latin layout, where
+      // the K key reports `key: "л"` and `event.key` alone would never match.
+      if (matchesPhysicalOrLayoutKey(event, "KeyK", "k")) {
         event.preventDefault();
         setContextMenu(null);
         setRegionEditor(null);
         setCommandPaletteOpen((current) => !current);
-      } else if (event.key === ",") {
+      } else if (matchesPhysicalOrLayoutKey(event, "Comma", ",")) {
         event.preventDefault();
         setContextMenu(null);
         setRegionEditor(null);
@@ -434,17 +595,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     return () => window.removeEventListener("keydown", handleShortcut, true);
   }, [browserViewVisible, homeEditing, onOpenSettings]);
 
-  const allWindowBounds: SessionBounds[] = [
-    ...renderedSessions,
-    ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)),
-    ...renderedBrowserCanvases,
-    ...renderedStickyNotes
-  ];
-
   return (
     <div
       ref={viewport}
-      className={`workspace pattern-${settings.pattern} ${pointerNavigation.panning ? "workspace--panning" : ""} ${canvasOverrideActive ? "workspace--canvas-override" : ""}`}
+      className={`workspace pattern-${settings.pattern} ${pointerNavigation.panning ? "workspace--panning" : ""} ${wheelNavigation.zooming ? "workspace--zooming" : ""} ${canvasOverrideActive ? "workspace--canvas-override" : ""}`}
       onPointerDownCapture={(event) => {
         if (openRadialLauncher(event)) return;
         const element = event.target as HTMLElement;
@@ -470,8 +624,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       onPointerOutCapture={focusController.handlePointerOut}
       onPointerDown={pointerNavigation.handlePointerDown}
       onPointerMove={pointerNavigation.handlePointerMove}
+      onPointerMoveCapture={pointerNavigation.handlePointerMoveCapture}
       onPointerUp={pointerNavigation.handlePointerEnd}
-      onPointerCancel={pointerNavigation.handlePointerEnd}
+      onPointerUpCapture={pointerNavigation.handlePointerEndCapture}
+      onPointerCancel={pointerNavigation.handlePointerCancel}
+      onPointerCancelCapture={pointerNavigation.handlePointerCancel}
       onPointerLeave={pointerNavigation.handlePointerLeave}
       onContextMenu={(event) => {
         if (suppressNextContextMenu.current) {
@@ -566,7 +723,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           {renderedSessions.map((session) => (
             <TerminalCard
               key={session.id}
-              session={session}
+              session={withGroupNudge(terminalLayerId(session.id), session)}
               locale={settings.locale}
               palette={settings.palette}
               zoom={camera.zoom}
@@ -578,6 +735,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               focused={widgetFocus.id === terminalCanvasWidgetId(session.id)}
               focusChangeSource={widgetFocus.source}
               selected={activeSessionId === session.id}
+              groupSelected={marqueeSelection.has(terminalLayerId(session.id))}
               renaming={renamingSessionId === session.id}
               snapTargets={[
                 homeBounds,
@@ -610,7 +768,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             return (
               <PluginCanvasCard
                 key={instance.id}
-                instance={instance}
+                instance={withGroupNudge(pluginLayerId(instance.id), instance)}
                 plugin={plugin}
                 contribution={contribution}
                 locale={settings.locale}
@@ -645,6 +803,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                   else focusController.cancelHover(pluginCanvasWidgetId(instance.id));
                 }}
                 onCanvasWheel={wheelNavigation.applyCanvasWheel}
+                groupSelected={marqueeSelection.has(pluginLayerId(instance.id))}
               />
             );
           })}
@@ -653,18 +812,21 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             const snapshot = windowState?.snapshot ?? (entry.id === "default" ? browser : null);
             if (!snapshot) return null;
             const layerId = browserLayerId(entry.id);
+            const bounds = withGroupNudge(layerId, entry);
+            const browserScreenRect = canvasScreenRect(bounds, camera);
+            const browserUnderOverlay = overlayRects.some((rect) => boundsOverlap(browserScreenRect, rect));
             const occluded = canvasLayerIsOccluded(layerId, layerOrder, boundsByLayer);
             return <BrowserCard
               key={entry.id}
               browserId={entry.id}
               title={windowState?.title ?? t(settings.locale, "browser")}
               browser={snapshot}
-              bounds={entry}
+              bounds={bounds}
               locale={settings.locale}
               zoom={camera.zoom}
               camera={camera}
               visible={browserViewVisible && !homeEditing && contextMenu === null
-                && regionEditor === null && !commandPaletteOpen && radialLauncher === null && !occluded}
+                && regionEditor === null && !commandPaletteOpen && radialLauncher === null && !occluded && !browserUnderOverlay}
               stackIndex={canvasLayerZIndex(layerOrder, layerId)}
               uiScale={settings.uiScale}
               snapEnabled={settings.snapToGrid}
@@ -679,13 +841,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               onWidgetFocus={() => { raiseLayer(layerId); focusController.focusBrowser(entry.id); }}
               onWidgetHoverChange={(active) => focusController.hoverBrowser(active, entry.id)}
               onClose={() => onCloseBrowser(entry.id)}
+              groupSelected={marqueeSelection.has(layerId)}
               onError={onPluginError}
             />;
           })}
           {renderedStickyNotes.map((note) => (
             <StickyNoteCard
               key={note.id}
-              note={note}
+              note={withGroupNudge(noteLayerId(note.id), note)}
               locale={settings.locale}
               zoom={camera.zoom}
               stackIndex={canvasLayerZIndex(layerOrder, noteLayerId(note.id))}
@@ -699,10 +862,24 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               onBoundsChange={onStickyNoteBoundsChange}
               onTextChange={onStickyNoteTextChange}
               onClose={onDeleteStickyNote}
+              groupSelected={marqueeSelection.has(noteLayerId(note.id))}
             />
           ))}
         </div>
       </div>
+
+      {pointerNavigation.marquee && (
+        <div
+          className="canvas-marquee"
+          aria-hidden="true"
+          style={{
+            left: pointerNavigation.marquee.left,
+            top: pointerNavigation.marquee.top,
+            width: pointerNavigation.marquee.width,
+            height: pointerNavigation.marquee.height
+          }}
+        />
+      )}
 
       {homeEditing && (
         <div className="home-editor-toolbar" data-interactive="true">
@@ -823,7 +1000,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         />
       )}
 
-      <div className="canvas-overlays">
+      <div className="canvas-overlays" ref={overlays}>
         {CANVAS_OVERLAY_PLACEMENTS.map((placement) => (
           <div className={`canvas-overlay-slot canvas-overlay-slot--${placement}`} key={placement}>
             {settings.minimapPlacement === placement && (
@@ -878,18 +1055,6 @@ function containedBounds<T extends SessionBounds & { id: string }>(
 }
 
 const browserLayerId = browserWindowWidgetId;
-
-function terminalLayerId(id: string): string {
-  return `terminal:${id}`;
-}
-
-function pluginLayerId(id: string): string {
-  return `plugin:${id}`;
-}
-
-function noteLayerId(id: string): string {
-  return `note:${id}`;
-}
 
 function shouldKeepCanvasContextMenu(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest(

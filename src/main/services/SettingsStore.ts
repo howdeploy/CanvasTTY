@@ -63,13 +63,16 @@ const SESSION_ROW_COLOR_MODES = new Set<SessionRowColorMode>(["monochrome", "sta
 const CANVAS_COLORS = new Set<CanvasColorId>(["sage", "lilac", "night", "sand", "mist", "rose", "slate"]);
 const PATTERNS = new Set<CanvasPatternId>(["dots", "grid", "waves", "diagonal", "rings", "none"]);
 const MEDIA_FITS = new Set<MediaFit>(["cover", "contain"]);
-const SETTINGS_VERSION = 14;
+const SETTINGS_VERSION = 15;
 const GROK_LAUNCHER_SETTINGS_VERSION = 3;
 const EXPANDED_LIMIT_SETTINGS_VERSION = 5;
 const QWEN_SETTINGS_VERSION = 6;
+const PROVIDER_ADDITIONS_SETTINGS_VERSION = 15;
+// Providers appended to the persisted HOME dock for operators whose profile predates them.
+const ADDED_AGENT_PROVIDERS: AgentProviderId[] = ["omp", "pi"];
 const LEGACY_AGENT_PROVIDERS: AgentProviderId[] = ["codex", "claude", "kimi", "opencode", "hermes"];
 const PRE_QWEN_AGENT_PROVIDERS: AgentProviderId[] = [...LEGACY_AGENT_PROVIDERS, "grok"];
-const AGENT_PROVIDERS = new Set<AgentProviderId>(["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok"]);
+const AGENT_PROVIDERS = new Set<AgentProviderId>(["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]);
 const LEGACY_LIMIT_PROVIDERS: LimitProviderId[] = ["codex", "claude", "kimi"];
 const PRE_QWEN_LIMIT_PROVIDERS: LimitProviderId[] = [...LEGACY_LIMIT_PROVIDERS, "opencode", "grok"];
 const LIMIT_PROVIDERS: LimitProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "grok"];
@@ -127,6 +130,9 @@ export class SettingsStore {
         );
       const needsQwenLimitMigration = persistedVersion < QWEN_SETTINGS_VERSION
         && isPreQwenDefaultSelection(persistedLimitProviders, PRE_QWEN_LIMIT_PROVIDERS);
+      const needsProviderAdditionsMigration = persistedVersion < PROVIDER_ADDITIONS_SETTINGS_VERSION
+        && persistedLauncherProviders !== null
+        && ADDED_AGENT_PROVIDERS.some((provider) => !persistedLauncherProviders.includes(provider));
       this.hasPersistedLegacyWheelCapture = Object.hasOwn(source, "zoomOverApplications");
       const needsMigration = !("browserCanvases" in source)
         || !("useScrollWheelToZoom" in source)
@@ -167,6 +173,24 @@ export class SettingsStore {
       }
       if (needsQwenLimitMigration) {
         migratedCandidate = { ...migratedCandidate, homeLimitProviders: [...LIMIT_PROVIDERS] };
+      }
+      if (needsProviderAdditionsMigration) {
+        // Append to whatever the earlier launcher migrations produced, so a pre-Grok or
+        // pre-Qwen profile keeps their additions too. Only the providers this build adds
+        // are appended: a curated dock keeps its order, and the agents the operator
+        // deliberately turned off stay off.
+        const current = Array.isArray(migratedCandidate.homeLauncherProviders)
+          ? migratedCandidate.homeLauncherProviders as string[]
+          : null;
+        const added = current
+          ? ADDED_AGENT_PROVIDERS.filter((provider) => !current.includes(provider))
+          : [];
+        if (current && added.length > 0) {
+          migratedCandidate = {
+            ...migratedCandidate,
+            homeLauncherProviders: [...current, ...added]
+          };
+        }
       }
       this.value = normalizeSettings(migratedCandidate, {
         ...this.value,

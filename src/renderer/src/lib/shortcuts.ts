@@ -7,15 +7,30 @@ import {
 
 interface ShortcutEvent {
   key: string;
+  /** Physical key, when the caller has it. `key` follows the layout, `code` does not. */
+  code?: string;
   altKey: boolean;
   ctrlKey: boolean;
   metaKey: boolean;
   shiftKey: boolean;
 }
 
+/**
+ * Matches a physical key regardless of the active layout. On a Russian layout the K key
+ * reports `key: "л"` while `code` stays `KeyK`, so a chord matched on `key` alone is dead
+ * for anyone not typing Latin.
+ */
+export function matchesPhysicalOrLayoutKey(
+  event: { key: string; code?: string },
+  code: string,
+  key: string
+): boolean {
+  return event.code === code || event.key.toLowerCase() === key;
+}
+
 export function shortcutFromKeyboardEvent(event: ShortcutEvent): string | null {
   if (canvasNavigationModifierFromKey(event.key) !== null) return null;
-  const key = normalizeCanvasNavigationInputKey(event.key);
+  const key = normalizeCanvasNavigationInputKey(event.key, event.code);
   if (!key) return null;
 
   return [...activeCanvasNavigationModifiers(event), key].join("+");

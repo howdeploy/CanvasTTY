@@ -484,9 +484,8 @@ export class BrowserService {
     if (normalized.surface === "hidden") {
       this.canvasPointers.cancelNavigationGesture();
     }
-    this.syncViews();
-    // capturePage must see the new native bounds and page scale, not the
-    // previous layout. Gesture bookkeeping and capture invalidation are sync.
+    // The controller ends hidden-surface gestures before sync, and requests
+    // resized captures only after sync has applied the native bounds and zoom.
     this.canvasGestures.viewportChanged(previous, normalized);
   }
 

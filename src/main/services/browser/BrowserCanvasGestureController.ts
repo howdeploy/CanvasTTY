@@ -239,8 +239,13 @@ export class BrowserCanvasGestureController {
       this.inputFocused = false;
       this.endSequence(false);
       this.invalidateCapture();
+      // End the sink before syncing: a latched gesture would otherwise mount
+      // its native 4 DIP receiver even after the card has been hidden.
+      this.host.requestSurfaceSync();
       return;
     }
+    // Resized-frame captures must observe the synchronized bounds and zoom.
+    this.host.requestSurfaceSync();
     if (next.surface === "native" && (
       previous.surface !== "native"
       || previous.width !== next.width

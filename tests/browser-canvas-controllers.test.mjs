@@ -238,6 +238,28 @@ test("offscreen resize defers capture until the full native view is visible agai
   assert.deepEqual(capturedFrames(harness), ["visible resized page"]);
 });
 
+test("viewport transitions synchronize native layout before requesting a resized frame", () => {
+  const harness = gestureHarness(() => {
+    harness.trace.push("capture");
+    return new Promise(() => {});
+  });
+  harness.setViewport({ width: 920 });
+  assert.deepEqual(harness.trace, ["surface:sync", "capture"]);
+});
+
+test("hiding a viewport ends its native wheel sink before synchronizing the hidden surface", (t) => {
+  const harness = gestureHarness();
+  t.after(() => harness.controller.endSequence(false));
+  harness.controller.beginOwnerSequence({ x: 140, y: 160 }, true);
+  harness.controller.surfaceDecision("tab-1", { x: 100, y: 100, width: 800, height: 600 }, { width: 1200, height: 900 });
+  harness.trace.length = 0;
+  harness.setViewport({ surface: "hidden" });
+  assert.equal(harness.controller.activeNativeSink, null);
+  assert.deepEqual(harness.trace.map((entry) => Array.isArray(entry) ? entry[0] : entry), [
+    "pointer:cancel", "sink:restore", "freeze", "surface:sync"
+  ]);
+});
+
 function pointerHarness() {
   const cursors = [];
   const ownerEvents = [];

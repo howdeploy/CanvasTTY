@@ -14,18 +14,77 @@ jobs:
         include:
           - os: ubuntu-latest
             backend: baseline-x11
+            cards: 1
+            uiScale: 1
           - os: ubuntu-latest
             backend: x11
+            cards: 1
+            uiScale: 1
+          - os: ubuntu-latest
+            backend: x11
+            cards: 2
+            uiScale: 1
+          - os: ubuntu-latest
+            backend: x11
+            cards: 1
+            uiScale: 1.25
+          - os: ubuntu-latest
+            backend: x11
+            cards: 2
+            uiScale: 1.25
           - os: ubuntu-latest
             backend: wayland
+            cards: 1
+            uiScale: 1
+          - os: ubuntu-latest
+            backend: wayland
+            cards: 2
+            uiScale: 1
+          - os: ubuntu-latest
+            backend: wayland
+            cards: 1
+            uiScale: 1.25
+          - os: ubuntu-latest
+            backend: wayland
+            cards: 2
+            uiScale: 1.25
           - os: windows-latest
             backend: windows
+            cards: 1
+            uiScale: 1
+          - os: windows-latest
+            backend: windows
+            cards: 2
+            uiScale: 1
+          - os: windows-latest
+            backend: windows
+            cards: 1
+            uiScale: 1.25
+          - os: windows-latest
+            backend: windows
+            cards: 2
+            uiScale: 1.25
           - os: macos-latest
             backend: macos
+            cards: 1
+            uiScale: 1
+          - os: macos-latest
+            backend: macos
+            cards: 2
+            uiScale: 1
+          - os: macos-latest
+            backend: macos
+            cards: 1
+            uiScale: 1.25
+          - os: macos-latest
+            backend: macos
+            cards: 2
+            uiScale: 1.25
     runs-on: ${{ matrix.os }}
     env:
       CANVASTTY_GEOMETRY_DISPOSABLE_DESKTOP: '1'
       CANVASTTY_GEOMETRY_BACKEND: ${{ matrix.backend }}
+      CANVASTTY_GEOMETRY_CASE: ${{ matrix.cards }},${{ matrix.uiScale }}
       CANVASTTY_GEOMETRY_COMMIT: ${{ github.sha }}
       CANVASTTY_GEOMETRY_ARTIFACTS: ${{ github.workspace }}/geometry-artifacts
     steps:
@@ -38,7 +97,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-        if: matrix.backend == 'x11'
+        if: matrix.backend == 'x11' && matrix.cards == 1 && matrix.uiScale == 1
       - run: npm run build
       - name: Install isolated Linux desktop tools
         if: runner.os == 'Linux'
@@ -103,7 +162,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: browser-geometry-${{ matrix.backend }}
+          name: browser-geometry-${{ matrix.backend }}-${{ matrix.cards }}-${{ matrix.uiScale }}
           path: |
             geometry-artifacts/**/report.json
             geometry-artifacts/**/electron.log

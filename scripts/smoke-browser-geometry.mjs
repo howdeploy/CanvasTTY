@@ -32,7 +32,10 @@ try {
     process.env.CANVASTTY_GEOMETRY_MAC_INPUT = join(local, "native-input");
     await promisify(execFile)("xcrun", ["swiftc", join(project, "scripts/browser-geometry-input.swift"), "-o", process.env.CANVASTTY_GEOMETRY_MAC_INPUT]);
   }
-  const cases = process.env.CANVASTTY_GEOMETRY_BASELINE === "1" ? [[1, 1]] : [[1, 1], [2, 1], [1, 1.25], [2, 1.25]];
+  const selectedCase = process.env.CANVASTTY_GEOMETRY_CASE?.split(",").map(Number);
+  if (selectedCase && (selectedCase.length !== 2 || ![1, 2].includes(selectedCase[0]) || ![1, 1.25].includes(selectedCase[1]))) throw new Error("Invalid geometry case");
+  const cases = process.env.CANVASTTY_GEOMETRY_BASELINE === "1" ? [[1, 1]]
+    : selectedCase ? [selectedCase] : [[1, 1], [2, 1], [1, 1.25], [2, 1.25]];
   for (const [cards, uiScale] of cases) {
     const name = `cards-${cards}-ui-${uiScale}`;
     const userData = join(local, name), out = join(artifacts, name);
@@ -45,6 +48,7 @@ try {
       CANVASTTY_GEOMETRY_CARDS: String(cards), CANVASTTY_GEOMETRY_UI_SCALE: String(uiScale),
       CANVASTTY_GEOMETRY_ARTIFACTS: out, CANVASTTY_GEOMETRY_INPUT: join(project, "scripts/browser-geometry-input.mjs") };
     delete env.ELECTRON_RUN_AS_NODE;
+    console.log(`Starting ${name}`);
     const child = spawn(electron, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let log = "";
     const stream = createWriteStream(join(out, "electron.log"));

@@ -44,7 +44,7 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
   // Do not make the geometry matrix depend on a public search engine loading.
   if (workspace.primaryInstance && workspace.executeHuman) {
     const execute = workspace.executeHuman.bind(workspace);
-    workspace.executeHuman = (command, signal) => execute(command.type === "browser_new_window" && !command.url
+    workspace.executeHuman = (command, signal) => execute(String(command.type) === "browser_new_window" && !command.url
       ? { ...command, url: origin } : command, signal);
   } else {
     const open = workspace.open.bind(workspace);
@@ -133,8 +133,15 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       console.log(`BROWSER_GEOMETRY_OPEN_CARD ${i + 1}`);
       await evaluate('document.querySelector(\'button[aria-label="Browser"]\').click()');
       await wait(`document.querySelectorAll(".browser-card").length === ${i + 1}`);
-      const snapshot = workspace.getState();
-      await workspace.navigate(snapshot.activeTabId!, `${origin}/?card=${i}`);
+      let ready = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const snapshot = workspace.getState();
+        const tab = snapshot.tabs.find((candidate) => candidate.id === snapshot.activeTabId);
+        if (tab?.status === "ready" && tab.url.startsWith(origin)) { ready = true; break; }
+        await pause(50);
+      }
+      assert.ok(ready, `card ${i + 1} loaded the loopback fixture`);
+      console.log(`BROWSER_GEOMETRY_CARD_READY ${i + 1}`);
     }
     await pause(800);
     assert.equal(owner.isVisible(), true);
@@ -218,6 +225,12 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       await geometry();
       const scroll = await page.executeJavaScript("({x:scrollX,y:scrollY})");
       assert.deepEqual(scroll, { x: 200, y: 300 });
+      service.setViewport(before); await pause(200);
+      const restoredClip = clipBrowserViewportBounds(before, owner.getContentBounds())!;
+      runtime.canvasGestures.beginOwnerSequence({ x: restoredClip.x + restoredClip.width / 2, y: restoredClip.y + restoredClip.height / 2 }, true);
+      service.setViewport({ ...before, surface: "hidden" });
+      assert.equal(runtime.canvasGestures.activeNativeSink, null);
+      assert.equal(runtime.clipView.getVisible(), false, "hiding during a gesture must remove the native sink");
       service.setViewport(before); await pause(200);
       return { scrollPreserved: scroll, restored: runtime.tabs.get(runtime.activeTabId)!.view.getBounds() };
     });

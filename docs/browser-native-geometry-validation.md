@@ -26,6 +26,7 @@ The capture fixes address these cases:
   capture after native bounds and viewport emulation have been restored.
 
 The renderer displays a freeze image only during its active native-page freeze.
+Hiding a card first cancels the native wheel sink, then hides the native surface.
 A cached image is not displayed behind summary mode or other placeholder UI.
 The freeze image intentionally scales with the card during a gesture; live page
 layout resumes at the current viewport when the gesture ends.
@@ -58,6 +59,7 @@ a small CoreGraphics input helper and uses `screencapture`. A desktop without
 input/screen-capture permission must fail the delivery/image assertions; an
 empty image or a missing trusted pointer event is not a pass.
 
+Each card-count/UI-scale combination has its own CI job and artifact.
 The opt-in `Browser native geometry` workflow runs on pushes to the dedicated
 `ci/browser-native-geometry` branch or by manual dispatch. Its baseline job
 checks out the accepted main and overlays only the identical harness and its

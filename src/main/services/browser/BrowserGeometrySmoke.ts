@@ -84,7 +84,7 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
     await nativeInput("drag", [a.x, a.y, b.x, b.y]);
     await pause(100);
   };
-  const screenshot = async (name: string) => {
+  const screenshot = async (name: string, expectNative = true) => {
     const path = join(root, `${name}.png`);
     await run(process.execPath, [process.env.CANVASTTY_GEOMETRY_INPUT!, "screenshot", path],
       { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, timeout: 15000 });
@@ -96,7 +96,7 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       if (bitmap[i] > 220 && bitmap[i + 1] > 220 && bitmap[i + 2] < 30) cyan++;
       if (bitmap[i] > 220 && bitmap[i + 1] < 30 && bitmap[i + 2] > 220) magenta++;
     }
-    assert.ok(cyan > 50 && magenta > 50, `native page fiducials must be visible in desktop composition: cyan=${cyan}, magenta=${magenta}`);
+    if (expectNative) assert.ok(cyan > 50 && magenta > 50, `native page fiducials must be visible in desktop composition: cyan=${cyan}, magenta=${magenta}`);
     return { file: `${name}.png`, size: image.getSize(), cyan, magenta };
   };
   const geometry = async () => {
@@ -145,7 +145,7 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
     }
     await pause(800);
     assert.equal(owner.isVisible(), true);
-    await evaluate(`window.geometryDown = []; document.addEventListener("pointerdown", e => window.geometryDown.push({trusted:e.isTrusted, target:e.target.className}), true)`);
+    await evaluate(`window.geometryDown = []; document.addEventListener("pointerdown", e => window.geometryDown.push({trusted:e.isTrusted, target:e.target.className, x:e.clientX, y:e.clientY, screenX:e.screenX, screenY:e.screenY}), true)`);
     // Capture call-time native geometry: this detects the old capture-before-sync
     // ordering without pretending a bounds check alone proves the rendered frame.
     for (const runtime of runtimes()) {
@@ -168,15 +168,26 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       await pause(350);
       const zoom = await evaluate('new DOMMatrixReadOnly(document.querySelector(".workspace__scene").style.transform).a');
       const label = `zoom-${Number(zoom).toFixed(3)}`;
-      await check(`${label}/native-geometry`, geometry);
+      const hasNativePage = () => runtimes().some((runtime) => runtime.viewport.surface === "native"
+        && runtime.clipView.getVisible() && clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds()));
+      if (hasNativePage()) await check(`${label}/native-geometry`, geometry);
+      else rows.push({ name: `${label}/native-geometry`, status: "untested", reason: "no native page: summary, occlusion, or trusted canvas overlay guard" });
       const cards = await evaluate('[...document.querySelectorAll(".browser-card")].map(el=>({id:el.dataset.browserId??"default",rect:el.getBoundingClientRect().toJSON()}))');
       // Full edge matrix at initial zoom, just above/below summary, and enlarged
       // zoom. Intermediate steps still check native geometry and composition.
-      for (let index = 0; [0, 3, 4, 9].includes(zoomStep) && index < cards.length; index++) {
+      for (let index = 0; [0, 1, 2, 3, 4, 9].includes(zoomStep) && index < cards.length; index++) {
+        const cardRuntime = (workspace.windows?.get(cards[index].id)?.service ?? (!workspace.windows ? input : undefined)) as GeometryRuntime | undefined;
         for (const direction of ["n", "ne", "e", "se", "s", "sw", "w", "nw"]) {
           const name = `${label}/card-${index}/${direction}`;
+          if (zoom >= 0.5 && !cardRuntime?.clipView.getVisible()) {
+            rows.push({ name, status: "untested", reason: "native page is hidden by the existing canvas visibility guard" }); continue;
+          }
           const source = `document.querySelectorAll(".browser-card")[${index}]`;
-          const handle = await evaluate(`(() => { const el=${source};const node=el.querySelector(".terminal-card__resize-handle--${direction}");const r=node.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,occluded:document.elementFromPoint(x,y)!==node,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height}; })()`);
+          // Use the inner part of a corner: its center can round onto the
+          // card's clipped border at small zoom, especially on macOS.
+          const fx = direction.length === 2 ? (direction.includes("e") ? 0.25 : 0.75) : 0.5;
+          const fy = direction.length === 2 ? (direction.includes("s") ? 0.25 : 0.75) : 0.5;
+          const handle = await evaluate(`(() => { const el=${source};const node=el.querySelector(".terminal-card__resize-handle--${direction}");const r=node.getBoundingClientRect();const x=r.x+r.width*${fx},y=r.y+r.height*${fy};return {x,y,occluded:document.elementFromPoint(x,y)!==node,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height}; })()`);
           const content = owner.getContentBounds();
           if (handle.occluded || handle.x < 15 || handle.y < 50 || handle.x > content.width - 20 || handle.y > content.height - 20) {
             rows.push({ name, status: "untested", reason: handle.occluded ? "handle covered by a canvas overlay or another card" : "handle outside visible desktop/workspace" }); continue;
@@ -191,17 +202,26 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
             assert.ok(delivered.some((event: {trusted:boolean;target:string}) => event.trusted && event.target.includes(`resize-handle--${direction}`)), JSON.stringify({ delivered, handle }));
             assert.ok(Math.abs((dx ? after.width - handle.width : after.height - handle.height) - 10) < 3, JSON.stringify({ handle, after }));
             await geometry();
-            const restore = await evaluate(`(() => {const r=${source}.querySelector(".terminal-card__resize-handle--${direction}").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+            const restore = await evaluate(`(() => {const r=${source}.querySelector(".terminal-card__resize-handle--${direction}").getBoundingClientRect();return {x:r.x+r.width*${fx},y:r.y+r.height*${fy}};})()`);
             await drag(restore, -dx, -dy);
             return { delivered, deltaWidth: after.width - handle.width, deltaHeight: after.height - handle.height };
           });
         }
       }
-      if (zoom >= 0.5) await check(`${label}/desktop-composition`, () => screenshot(label));
+      if (zoom >= 0.5 && hasNativePage()) await check(`${label}/desktop-composition`, () => screenshot(label));
+      else if (zoom >= 0.5) rows.push({ name: `${label}/desktop-composition`, status: "untested",
+        reason: "native page intentionally hidden by the existing overlay/occlusion guard", detail: await screenshot(label, false) });
       else await check(`${label}/summary-hidden`, async () => {
         for (const runtime of runtimes()) assert.equal(runtime.clipView.getVisible(), false);
         return { nativeViewsHidden: true };
       });
+    }
+    // A small hosted desktop can put an enlarged card under trusted overlays.
+    // Zoom out through product controls to obtain a native surface for input.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (runtimes().some((runtime) => runtime.viewport.surface === "native" && runtime.clipView.getVisible())) break;
+      await evaluate('document.querySelector(\'button[title="Zoom out"]\').click()');
+      await pause(300);
     }
     // Exercise a real service freeze/restore while crossing a clipping boundary.
     // This is a controlled geometry test; physical wheel/gesture coverage is
@@ -261,13 +281,33 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
           assert.ok(page.y > scrollBefore.y, JSON.stringify({ scrollBefore, page }));
           assert.equal(after, before, "focused page scrolling must not move the canvas");
         } else {
-          assert.deepEqual(page, scrollBefore, "canvas wheel ownership preserves page scroll");
+          const scale = contents.getZoomFactor();
+          assert.ok(Math.abs(page.x - scrollBefore.x) * scale <= 1.01
+            && Math.abs(page.y - scrollBefore.y) * scale <= 1.01,
+          `canvas wheel ownership preserves scroll within one native DIP: ${JSON.stringify({ scrollBefore, page, scale })}`);
           assert.notEqual(after, before, "OS wheel over the unfocused page moves the canvas");
         }
         await geometry();
         return { scrollBefore, page, before, after };
       });
     }
+    await check("repeated-sink-scroll-quantization", async () => {
+      const runtime = selectedService() as unknown as GeometryRuntime;
+      const contents = runtime.tabs.get(runtime.activeTabId)!.view.webContents;
+      const before = await contents.executeJavaScript("({x:scrollX,y:scrollY})");
+      for (let iteration = 0; iteration < 5; iteration++) {
+        const clip = clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds())!;
+        runtime.canvasGestures.beginOwnerSequence({ x: clip.x + clip.width / 2, y: clip.y + clip.height / 2 }, true);
+        await pause(40);
+        runtime.canvasGestures.endSequence();
+        await pause(80);
+      }
+      const after = await contents.executeJavaScript("({x:scrollX,y:scrollY})");
+      const scale = contents.getZoomFactor();
+      assert.ok(Math.abs(after.x - before.x) * scale <= 1.01 && Math.abs(after.y - before.y) * scale <= 1.01,
+        `scroll quantization must not accumulate across restores: ${JSON.stringify({ before, after, scale })}`);
+      return { before, after, scale, restores: 5 };
+    });
     await check("native-alt-navigation-drag", async () => {
       const runtime = selectedService() as unknown as GeometryRuntime;
       const clip = clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds())!;

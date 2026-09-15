@@ -400,7 +400,12 @@ async function loadApplication(window: BrowserWindow): Promise<void> {
   const geometrySmokeUrl = process.env.CANVASTTY_BROWSER_GEOMETRY_URL;
   if (geometrySmokeUrl && browserService) {
     try { await runBrowserGeometrySmoke(window, browserService, geometrySmokeUrl); }
-    catch (error) { console.error(error); app.exit(1); }
+    catch (error) {
+      console.error(error);
+      // Release child WebContentsViews before forcing the failed fixture out.
+      await browserService.dispose().catch((cleanupError) => console.error(cleanupError));
+      app.exit(1);
+    }
     return;
   }
   const browserSmokeUrl = process.env.CANVASTTY_BROWSER_SMOKE_URL;

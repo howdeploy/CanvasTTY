@@ -71,11 +71,15 @@ unchanged. The baseline has one card because multiple cards are the new feature.
 Every platform runs one/two cards at UI scale 1 and 1.25. The harness operates the
 actual zoom controls through values above/below the summary threshold and
 records the resulting zoom. All eight resize directions are exercised at the
-initial, just-above-summary, summary, and enlarged zoom; intermediate steps
+initial, intermediate, just-above-summary, summary, and enlarged zoom; intermediate steps
 still check native geometry and desktop composition. Each visible target records
 its trusted pointer event and measured size delta. A handle outside the
 desktop or covered by a canvas overlay/another card is recorded as **untested**,
-not passed. The test does not click through the minimap or hide product overlays.
+not passed. A card whose native page is intentionally hidden by the existing
+canvas-overlay guard is also untested for native input/composition at that zoom.
+The test retains a diagnostic image and does not click through the minimap or
+hide product overlays. It uses the zoom controls to obtain a visible native page
+for the wheel/restore probes.
 
 Each `report.json` contains the commit, Electron version, platform/backend,
 display dimensions and scale factors, individual pass/fail/untested cases,
@@ -87,6 +91,9 @@ screenshots. These assertions do not replace inspection of the images.
 Controlled service-level checks cover clipping, freeze/sink restoration and
 page-scroll preservation after resize/zoom. Separate OS-input cases exercise
 focused page scrolling, unfocused canvas scrolling and Alt navigation dragging.
+Scroll comparisons allow one native DIP of Chromium zoom/emulation quantization;
+raw offsets and scale are retained. Five consecutive sink restores must also
+stay within that total bound, rather than accumulating drift.
 
 ## Manual acceptance still required
 

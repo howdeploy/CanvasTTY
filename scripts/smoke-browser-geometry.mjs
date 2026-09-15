@@ -54,9 +54,13 @@ try {
     const stream = createWriteStream(join(out, "electron.log"));
     const consume = (chunk) => { log += chunk; stream.write(chunk); };
     child.stdout.on("data", consume); child.stderr.on("data", consume);
-    const timer = setTimeout(() => { log += "\nGEOMETRY TIMEOUT\n"; child.kill(); }, 600000);
+    let forceTimer;
+    const timer = setTimeout(() => {
+      consume("\nGEOMETRY TIMEOUT\n"); child.kill();
+      forceTimer = setTimeout(() => child.kill("SIGKILL"), 3000);
+    }, 600000);
     const code = await new Promise((done, reject) => { child.once("exit", done); child.once("error", reject); });
-    clearTimeout(timer); await new Promise((done) => stream.end(done));
+    clearTimeout(timer); clearTimeout(forceTimer); await new Promise((done) => stream.end(done));
     let ok = code === 0 && log.includes("CANVASTTY_BROWSER_GEOMETRY_READY");
     const rows = log.split("\n").filter((line) => line.startsWith("BROWSER_GEOMETRY_CHECK "))
       .map((line) => JSON.parse(line.slice("BROWSER_GEOMETRY_CHECK ".length)));

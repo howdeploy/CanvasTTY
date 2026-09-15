@@ -1095,7 +1095,7 @@ export class BrowserService {
       if (this.presenceWindow && !this.presenceWindow.isDestroyed()) this.presenceWindow.hide();
       if (canvasSurface.kind === "sink") {
         this.mountClipTab(owner, active);
-        this.clipView.setBounds(canvasSurface.layout.clip);
+        this.setNativeClipBounds(canvasSurface.layout.clip);
         active.view.setBounds(canvasSurface.layout.view);
         // The sink is a 4 DIP wheel receiver; rounding it would be a visual regression and could
         // break the wheel-continuity invariant (docs/adr/ADR-20260808-native-browser-wheel-continuity.md).
@@ -1103,7 +1103,9 @@ export class BrowserService {
         active.view.setVisible(true);
         this.clipView.setVisible(true);
       } else {
+        const wasVisible = this.clipView.getVisible();
         this.clipView.setVisible(false);
+        if (wasVisible) this.repaintExposedOwner();
       }
       return;
     }
@@ -1116,7 +1118,7 @@ export class BrowserService {
     }
 
     this.mountClipTab(owner, active);
-    this.clipView.setBounds({ x: left, y: top, width: right - left, height: bottom - top });
+    this.setNativeClipBounds({ x: left, y: top, width: right - left, height: bottom - top });
     this.applyPageScale(active);
     active.view.setBounds({
       x: this.viewport.x - left,
@@ -1133,6 +1135,23 @@ export class BrowserService {
   private invalidateCanvasSequence(sync = true): void {
     this.canvasGestures.endSequence(sync);
     this.canvasGestures.invalidateCapture();
+  }
+
+  private setNativeClipBounds(bounds: Electron.Rectangle): void {
+    const previous = this.clipView.getBounds();
+    const wasVisible = this.clipView.getVisible();
+    this.clipView.setBounds(bounds);
+    if (wasVisible && (previous.x !== bounds.x || previous.y !== bounds.y
+      || previous.width !== bounds.width || previous.height !== bounds.height)) this.repaintExposedOwner();
+  }
+
+  private repaintExposedOwner(): void {
+    const owner = this.getOwner();
+    if (!owner || owner.isDestroyed() || !owner.isVisible() || owner.webContents.isDestroyed()) return;
+    // Moving/shrinking a native child does not reliably repaint the newly
+    // exposed DOM texture on macOS. Request that paint explicitly, including
+    // the freeze image revealed when a full page becomes a 4 DIP wheel sink.
+    owner.webContents.invalidate();
   }
 
   private mountClipTab(owner: BrowserWindow, active: BrowserTab): void {
@@ -1161,6 +1180,7 @@ export class BrowserService {
   }
 
   private hideClipView(): void {
+    const wasVisible = this.clipView.getVisible();
     this.pointerTabId = null;
     for (const tab of this.tabs.values()) {
       tab.view.setVisible(false);
@@ -1168,6 +1188,7 @@ export class BrowserService {
       tab.view.setBorderRadius(0);
     }
     this.clipView.setVisible(false);
+    if (wasVisible) this.repaintExposedOwner();
   }
 
   private observeOwner(owner: BrowserWindow): void {

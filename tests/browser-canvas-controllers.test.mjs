@@ -269,6 +269,7 @@ function pointerHarness() {
   let nativeSink = null;
   let freezeActive = false;
   let frozenTabId = null;
+  let viewport = { x: 200, y: 150, width: 600, height: 400, surface: "native", showAgentPresence: false };
   const contents = {
     isDestroyed: () => false,
     focus: () => undefined,
@@ -286,7 +287,7 @@ function pointerHarness() {
   };
   const router = new BrowserCanvasPointerRouter({
     getOwner: () => owner,
-    getViewport: () => ({ x: 200, y: 150, width: 600, height: 400, surface: "native", showAgentPresence: false }),
+    getViewport: () => viewport,
     getTab: (tabId) => tabId === tab.id ? tab : undefined,
     getTabs: () => [tab],
     getNativeWheelSink: () => nativeSink,
@@ -306,6 +307,7 @@ function pointerHarness() {
     browserEvents,
     navigationEvents,
     setNavigationOverrideActive(value) { navigationOverrideActive = value; },
+    setViewport(value) { viewport = { ...viewport, ...value }; },
     setNativeSink(value) { nativeSink = value; },
     setFreeze(value, tabId = "tab-1") {
       freezeActive = value;
@@ -321,6 +323,21 @@ function nativeEvent() {
     prevented: () => prevented
   };
 }
+
+test("native navigation uses screen coordinates for a clipped, zoomed page", () => {
+  const harness = pointerHarness();
+  harness.setViewport({ x: -699, y: 200, width: 800, canvasScale: 1.124 });
+  harness.setNavigationOverrideActive(true);
+  harness.router.setNavigationActive(true);
+  const down = nativeEvent();
+  harness.router.handleBrowserMouse(harness.tab, harness.owner, down.event, {
+    type: "mouseDown", button: "left", x: 657.5, y: 44.5,
+    globalX: 140, globalY: 350, modifiers: ["alt"]
+  });
+  assert.deepEqual(harness.navigationEvents.at(-1), {
+    tabId: "tab-1", type: "down", clientX: 40, clientY: 250
+  });
+});
 
 test("BrowserCanvasPointerRouter latches full-override drag and cursor across surfaces", () => {
   const harness = pointerHarness();

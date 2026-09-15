@@ -44,6 +44,7 @@ try {
     const args = [project, `--user-data-dir=${userData}`];
     if (process.platform === "linux") args.push("--no-sandbox", `--ozone-platform=${process.env.CANVASTTY_GEOMETRY_BACKEND === "wayland" ? "wayland" : "x11"}`);
     const env = { ...process.env, CANVASTTY_BROWSER_GEOMETRY_URL: origin,
+      CANVASTTY_GEOMETRY_NODE: process.execPath,
       CANVASTTY_GEOMETRY_USER_DATA: userData,
       CANVASTTY_GEOMETRY_CARDS: String(cards), CANVASTTY_GEOMETRY_UI_SCALE: String(uiScale),
       CANVASTTY_GEOMETRY_ARTIFACTS: out, CANVASTTY_GEOMETRY_INPUT: join(project, "scripts/browser-geometry-input.mjs") };

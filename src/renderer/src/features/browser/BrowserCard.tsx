@@ -528,7 +528,10 @@ export function BrowserCard({
         className="browser-card__viewport"
         data-browser-canvas-wheel-owner={freezeFrameVisible ? "canvas" : undefined}
       >
-        {surface === "native" && freezeFrameVisible && freezeFrameDataUrl && (
+        {/* Decode and paint the cached frame behind the native child before
+            a gesture exposes it. Mounting it at sink activation can reveal an
+            unpainted owner surface on macOS. */}
+        {surface === "native" && freezeFrameDataUrl && (
           <img
             className="browser-card__freeze-frame"
             src={freezeFrameDataUrl}

@@ -20,6 +20,7 @@ interface GeometryRuntime {
   activeTabId: string;
   tabs: Map<string, { view: WebContentsView }>;
   canvasGestures: BrowserCanvasGestureController;
+  canvasNavigationInput?: { readonly active: boolean } | null;
 }
 interface GeometryWorkspace {
   getState(): BrowserSnapshot;
@@ -71,8 +72,8 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
     console.log(`BROWSER_GEOMETRY_CHECK ${JSON.stringify(rows.at(-1))}`);
   };
   const nativeInput = async (kind: string, values: number[] = []) => {
-    const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
-    await run(process.execPath, [process.env.CANVASTTY_GEOMETRY_INPUT!, kind, ...values.map(String)], { env, timeout: 15000 });
+    await run(process.env.CANVASTTY_GEOMETRY_NODE!, [process.env.CANVASTTY_GEOMETRY_INPUT!, kind, ...values.map(String)],
+      { env: process.env, timeout: 15000, windowsHide: true });
   };
   const toScreen = (x: number, y: number) => {
     const bounds = owner.getContentBounds();
@@ -86,8 +87,8 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
   };
   const screenshot = async (name: string, expectNative = true) => {
     const path = join(root, `${name}.png`);
-    await run(process.execPath, [process.env.CANVASTTY_GEOMETRY_INPUT!, "screenshot", path],
-      { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, timeout: 15000 });
+    await run(process.env.CANVASTTY_GEOMETRY_NODE!, [process.env.CANVASTTY_GEOMETRY_INPUT!, "screenshot", path],
+      { env: process.env, timeout: 15000, windowsHide: true });
     const image = nativeImage.createFromBuffer(await readFile(path));
     assert.ok(!image.isEmpty(), "desktop screenshot is not empty");
     const bitmap = image.toBitmap();
@@ -264,13 +265,27 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       const heartbeat = setInterval(() => runtime.canvasGestures.beginOwnerSequence(freezePoint, true), 80);
       let freezeScreenshot;
       try {
-        await wait('!!document.querySelector(".browser-card__freeze-frame")?.complete');
-        const frame = await evaluate('(() => {const el=document.querySelector(".browser-card__freeze-frame");return {width:el.naturalWidth,height:el.naturalHeight,radius:getComputedStyle(el.parentElement).borderRadius};})()');
+        const frameSelector = '.browser-card__viewport[data-browser-canvas-wheel-owner="canvas"] .browser-card__freeze-frame';
+        await wait(`!!document.querySelector(${JSON.stringify(frameSelector)})?.complete`);
+        const frame = await evaluate(`(() => {const el=document.querySelector(${JSON.stringify(frameSelector)});return {width:el.naturalWidth,height:el.naturalHeight,radius:getComputedStyle(el.parentElement).borderRadius};})()`);
         assert.ok(frame.width > 4, "freeze frame contains a full page, not the native wheel sink");
         assert.ok(Math.abs(frame.width / frame.height - before.width / before.height) * before.height <= 2,
           `stable freeze frame matches the native viewport aspect: ${JSON.stringify({ frame, viewport: before })}`);
         assert.equal(frame.radius, "17px", "DOM freeze clipping matches the native page corners");
-        freezeScreenshot = await screenshot("freeze-frame");
+        try {
+          freezeScreenshot = await screenshot("freeze-frame");
+        } catch (error) {
+          const diagnostic = await evaluate(`(() => {const el=document.querySelector(${JSON.stringify(frameSelector)});const viewport=el.parentElement;return {src:el.src,rect:el.getBoundingClientRect().toJSON(),viewport:viewport.getBoundingClientRect().toJSON(),display:getComputedStyle(el).display,visibility:getComputedStyle(el).visibility,opacity:getComputedStyle(el).opacity};})()`);
+          await writeFile(join(root, "freeze-content.png"), nativeImage.createFromDataURL(diagnostic.src).toPNG());
+          delete diagnostic.src;
+          const renderer = await owner.webContents.capturePage(undefined, { stayHidden: false, stayAwake: true });
+          await writeFile(join(root, "freeze-renderer.png"), renderer.toPNG());
+          await screenshot("freeze-after-renderer-capture", false);
+          await writeFile(join(root, "freeze-diagnostic.json"), JSON.stringify({ ...diagnostic,
+            viewport: runtime.viewport, clip: runtime.clipView.getBounds(), view: runtime.tabs.get(runtime.activeTabId)!.view.getBounds(),
+            freezeActive: runtime.canvasGestures.isFreezeActive, ownerVisible: owner.isVisible(), ownerFocused: owner.isFocused() }, null, 2));
+          throw error;
+        }
         assert.ok(runtime.canvasGestures.isFreezeActive, "captured the active frozen composition");
       } finally { clearInterval(heartbeat); }
       service.setViewport({ ...before, x: -30, width: before.width + 80, canvasScale: 0.75 });
@@ -300,6 +315,7 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
         // Chromium quantizes scroll offsets at fractional zoom. Compare with
         // the observed offset, not the requested integer scrollTo arguments.
         const scrollBefore = await contents.executeJavaScript("({x:scrollX,y:scrollY})");
+        const scaleBefore = contents.getZoomFactor();
         const clip = clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds())!;
         const point = toScreen(clip.x + clip.width / 2, clip.y + clip.height / 2);
         const before = await scene();
@@ -312,13 +328,16 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
           assert.equal(after, before, "focused page scrolling must not move the canvas");
         } else {
           const scale = contents.getZoomFactor();
-          assert.ok(Math.abs(page.x - scrollBefore.x) * scale <= 1.01
-            && Math.abs(page.y - scrollBefore.y) * scale <= 1.01,
-          `canvas wheel ownership preserves scroll within one native DIP: ${JSON.stringify({ scrollBefore, page, scale })}`);
+          // A zoom-changing wheel quantizes at both scales; a fixed-scale
+          // restore has only the one-DIP allowance tested again below.
+          const tolerance = Math.abs(scale - scaleBefore) > 0.001 ? 1 / scaleBefore + 1 / scale : 1 / scale;
+          assert.ok(Math.abs(page.x - scrollBefore.x) <= tolerance + 0.01
+            && Math.abs(page.y - scrollBefore.y) <= tolerance + 0.01,
+          `canvas wheel ownership preserves scroll within zoom quantization: ${JSON.stringify({ scrollBefore, page, scaleBefore, scale, tolerance })}`);
           assert.notEqual(after, before, "OS wheel over the unfocused page moves the canvas");
         }
         await geometry();
-        return { scrollBefore, page, before, after };
+        return { scrollBefore, page, scaleBefore, scaleAfter: contents.getZoomFactor(), before, after };
       });
     }
     await check("repeated-sink-scroll-quantization", async () => {
@@ -340,16 +359,37 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
     });
     await check("native-alt-navigation-drag", async () => {
       const runtime = await ensureNativeSurface() as unknown as GeometryRuntime;
+      const page = runtime.tabs.get(runtime.activeTabId)!.view.webContents;
+      // View restoration can leave no keyboard target on Windows. Establish
+      // focus before pressing Alt, rather than letting mouseDown focus the page
+      // after the modifier keyDown has already gone to another window.
+      owner.focus();
+      page.focus();
+      await pause(150);
+      assert.ok(owner.isFocused() && page.isFocused(), "native page owns keyboard focus before Alt");
       const clip = clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds())!;
       const start = toScreen(clip.x + clip.width / 2, clip.y + clip.height / 2);
       const end = toScreen(clip.x + clip.width / 2 + 30, clip.y + clip.height / 2 + 20);
       const before = await scene();
-      await nativeInput("alt-drag", [start.x, start.y, end.x, end.y]);
+      const trace: Record<string, unknown>[] = [];
+      const observed = [owner.webContents, runtime.tabs.get(runtime.activeTabId)!.view.webContents].map((contents, index) => {
+        const keyboard = (_event: Electron.Event, input: Electron.Input) => trace.push({ source: index ? "page" : "canvas", kind: input.type,
+          key: input.key, alt: input.alt, navigationActive: runtime.canvasNavigationInput?.active });
+        const mouse = (_event: Electron.Event, input: Electron.MouseInputEvent) => trace.push({ source: index ? "page" : "canvas", kind: input.type,
+          x: input.x, y: input.y, globalX: input.globalX, globalY: input.globalY, modifiers: input.modifiers,
+          navigationActive: runtime.canvasNavigationInput?.active });
+        contents.on("before-input-event", keyboard); contents.on("before-mouse-event", mouse);
+        return () => { contents.removeListener("before-input-event", keyboard); contents.removeListener("before-mouse-event", mouse); };
+      });
+      try { await nativeInput("alt-drag", [start.x, start.y, end.x, end.y]); }
+      finally { for (const stop of observed) stop(); }
       await pause(400);
       const after = await scene();
-      assert.notEqual(after, before, "OS Alt+drag over the native page reaches canvas navigation");
+      assert.ok(trace.some((event) => event.kind === "keyDown" && event.key === "Alt" && event.alt === true),
+        `OS modifier keyDown reached the test window: ${JSON.stringify(trace)}`);
+      assert.notEqual(after, before, `OS Alt+drag over the native page reaches canvas navigation: ${JSON.stringify(trace)}`);
       await geometry();
-      return { before, after };
+      return { before, after, trace };
     });
     for (const direction of ["n", "ne", "e", "se", "s", "sw", "w", "nw"]) {
       if (!rows.some((row) => row.status === "pass" && String(row.name).endsWith(`/${direction}`))) {

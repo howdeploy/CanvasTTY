@@ -164,7 +164,7 @@ jobs:
         with:
           name: browser-geometry-${{ matrix.backend }}-${{ matrix.cards }}-${{ matrix.uiScale }}
           path: |
-            geometry-artifacts/**/report.json
+            geometry-artifacts/**/*.json
             geometry-artifacts/**/electron.log
             geometry-artifacts/**/*.png
             weston.log

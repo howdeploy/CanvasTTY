@@ -27,7 +27,13 @@ The capture fixes address these cases:
   commit captures which can observe the temporary 4 DIP wheel sink. Resume
   capture after native bounds and viewport emulation have been restored.
 
-The renderer displays a freeze image only during its active native-page freeze.
+When a native child moves, shrinks to its wheel sink, or hides, the owner
+renderer is explicitly invalidated so newly exposed DOM content is repainted.
+Native navigation uses screen coordinates relative to the owner, keeping
+clipped/zoomed page coordinates out of the canvas drag calculation.
+
+The renderer keeps the cached frame decoded and painted behind the native page
+before a gesture exposes it, avoiding an empty first frozen frame on macOS.
 Hiding a card first cancels the native wheel sink, then hides the native surface.
 A cached image is not displayed behind summary mode or other placeholder UI.
 The inset freeze viewport uses the same 17 px logical corner radius as the
@@ -100,8 +106,9 @@ screenshots. These assertions do not replace inspection of the images.
 Controlled service-level checks cover clipping, freeze/sink restoration and
 page-scroll preservation after resize/zoom. Separate OS-input cases exercise
 focused page scrolling, unfocused canvas scrolling and Alt navigation dragging.
-Scroll comparisons allow one native DIP of Chromium zoom/emulation quantization;
-raw offsets and scale are retained. Five consecutive sink restores must also
+Fixed-scale scroll comparisons allow one native DIP of Chromium emulation
+quantization. A zoom-changing wheel may quantize at both its start and end
+scales; the bound is one DIP at each scale, with raw offsets/scales retained. Five consecutive sink restores must also
 stay within that total bound, rather than accumulating drift.
 
 ## Manual acceptance still required

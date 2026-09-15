@@ -33,4 +33,8 @@ for step in 1...6 {
     post(.leftMouseDragged, CGPoint(x: start.x + (end.x - start.x) * fraction, y: start.y + (end.y - start.y) * fraction))
 }
 post(.leftMouseUp, end)
+// CGEvent.post queues delivery; keep the source alive through button release
+// so a following drag cannot inherit the previous target's pointer capture.
+Thread.sleep(forTimeInterval: 0.1)
 if operation == "alt-drag" { CGEvent(keyboardEventSource: nil, virtualKey: 58, keyDown: false)?.post(tap: .cghidEventTap) }
+Thread.sleep(forTimeInterval: 0.08)

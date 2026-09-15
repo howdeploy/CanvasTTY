@@ -31,7 +31,10 @@ if ($Operation -eq "screenshot") {
   $x = [int]$A; $y = [int]$B; $endX = [int]$C; $endY = [int]$D
   [GeometryMouse]::SetCursorPos($x, $y) | Out-Null
   Start-Sleep -Milliseconds 80
-  if ($Operation -eq "alt-drag") { [GeometryMouse]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero) }
+  if ($Operation -eq "alt-drag") {
+    [GeometryMouse]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 100
+  }
   [GeometryMouse]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
   try {
     for ($i = 1; $i -le 6; $i++) {

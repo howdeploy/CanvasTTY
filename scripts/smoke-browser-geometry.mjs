@@ -1,6 +1,6 @@
 import { spawn, execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ const artifacts = resolve(process.env.CANVASTTY_GEOMETRY_ARTIFACTS || "geometry-
 await mkdir(artifacts, { recursive: true });
 const local = await mkdtemp(join(process.platform === "win32" ? tmpdir() : "/tmp", "ctg-"));
 const server = createServer((_request, response) => {
-  response.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" });
+  response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
   response.end(`<!doctype html><title>Native geometry fixture</title><style>
   html { overflow: scroll; } body { margin:0; width:2400px; height:2400px; background:repeating-conic-gradient(#263849 0% 25%,#385167 0% 50%) 0/80px 80px; }
   ::-webkit-scrollbar {width:16px;height:16px} ::-webkit-scrollbar-track {background:#00ffff} ::-webkit-scrollbar-thumb {background:#ff00ff}
@@ -46,10 +46,22 @@ try {
     const child = spawn(electron, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let log = "";
     child.stdout.on("data", (chunk) => { log += chunk; }); child.stderr.on("data", (chunk) => { log += chunk; });
-    const timer = setTimeout(() => { log += "\nGEOMETRY TIMEOUT\n"; child.kill(); }, 240000);
+    const timer = setTimeout(() => { log += "\nGEOMETRY TIMEOUT\n"; child.kill(); }, 600000);
     const code = await new Promise((done, reject) => { child.once("exit", done); child.once("error", reject); });
     clearTimeout(timer); await writeFile(join(out, "electron.log"), log);
-    const ok = code === 0 && log.includes("CANVASTTY_BROWSER_GEOMETRY_READY");
+    let ok = code === 0 && log.includes("CANVASTTY_BROWSER_GEOMETRY_READY");
+    const rows = log.split("\n").filter((line) => line.startsWith("BROWSER_GEOMETRY_CHECK "))
+      .map((line) => JSON.parse(line.slice("BROWSER_GEOMETRY_CHECK ".length)));
+    console.log(JSON.stringify({ case: name, code, timedOut: log.includes("GEOMETRY TIMEOUT"),
+      passed: rows.filter((row) => row.status === "pass").length,
+      failed: rows.filter((row) => row.status === "fail").slice(0, 8) }));
+    if (process.env.CANVASTTY_GEOMETRY_BASELINE === "1") {
+      const report = await readFile(join(out, "report.json"), "utf8").then(JSON.parse).catch(() => null);
+      ok = !!report && !log.includes("GEOMETRY TIMEOUT")
+        && report.rows.some((row) => row.status === "fail" && /\/card-0\/(s|e|w)$/.test(row.name) && row.message.includes('delivered'))
+        && report.failures.some((failure) => failure.includes("capture with unsynchronized native geometry"));
+      console.log(`Accepted-main negative control: ${ok ? "expected native overlap and capture-order regressions reproduced" : "incomplete reproduction"}`);
+    }
     failed ||= !ok;
     console.log(`${name}: ${ok ? "PASS" : "FAIL"}; artifacts ${out}`);
   }

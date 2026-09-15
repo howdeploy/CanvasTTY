@@ -177,13 +177,17 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
     // This is a controlled geometry test; physical wheel/gesture coverage is
     // reported separately in the matrix, not inferred from these calls.
     await check("freeze-resize-restore", async () => {
-      const service = services().find((candidate) => (candidate as unknown as GeometryRuntime).viewport.surface === "native")!;
+      const service = services().reverse().find((candidate) => {
+        const viewport = (candidate as unknown as GeometryRuntime).viewport;
+        return viewport.surface === "native" && clipBrowserViewportBounds(viewport, owner.getContentBounds());
+      })!;
       const runtime = service as unknown as GeometryRuntime;
       const before = { ...runtime.viewport };
       const page = runtime.tabs.get(runtime.activeTabId)!.view.webContents;
       await page.executeJavaScript("scrollTo(200,300)");
       runtime.canvasGestures.refreshFrame(); await pause(300);
-      runtime.canvasGestures.beginOwnerSequence({ x: before.x + 25, y: before.y + 25 }, true);
+      const visible = clipBrowserViewportBounds(before, owner.getContentBounds())!;
+      runtime.canvasGestures.beginOwnerSequence({ x: visible.x + visible.width / 2, y: visible.y + visible.height / 2 }, true);
       assert.ok(runtime.canvasGestures.isFreezeActive);
       service.setViewport({ ...before, x: -30, width: before.width + 80, canvasScale: 0.75 });
       await pause(300);
@@ -193,6 +197,50 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       assert.deepEqual(scroll, { x: 200, y: 300 });
       service.setViewport(before); await pause(200);
       return { scrollPreserved: scroll, restored: runtime.tabs.get(runtime.activeTabId)!.view.getBounds() };
+    });
+    const selectedService = () => services().reverse().find((candidate) => {
+      const viewport = (candidate as unknown as GeometryRuntime).viewport;
+      return viewport.surface === "native" && clipBrowserViewportBounds(viewport, owner.getContentBounds());
+    })!;
+    const scene = () => evaluate('document.querySelector(".workspace__scene").style.transform');
+    for (const focused of [true, false]) {
+      await check(`native-wheel/${focused ? "focused-page" : "unfocused-canvas"}`, async () => {
+        const service = selectedService(), runtime = service as unknown as GeometryRuntime;
+        runtime.canvasGestures.endSequence();
+        const contents = runtime.tabs.get(runtime.activeTabId)!.view.webContents;
+        await contents.executeJavaScript("scrollTo(200,300)");
+        service.setInputFocused(focused);
+        await pause(400);
+        const clip = clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds())!;
+        const point = toScreen(clip.x + clip.width / 2, clip.y + clip.height / 2);
+        const before = await scene();
+        await nativeInput("scroll", [point.x, point.y, 0, 0]);
+        await pause(600);
+        const page = await contents.executeJavaScript("({x:scrollX,y:scrollY})");
+        const after = await scene();
+        if (focused) {
+          assert.ok(page.y > 300, JSON.stringify(page));
+          assert.equal(after, before, "focused page scrolling must not move the canvas");
+        } else {
+          assert.deepEqual(page, { x: 200, y: 300 }, "canvas wheel ownership preserves page scroll");
+          assert.notEqual(after, before, "OS wheel over the unfocused page moves the canvas");
+        }
+        await geometry();
+        return { page, before, after };
+      });
+    }
+    await check("native-alt-navigation-drag", async () => {
+      const runtime = selectedService() as unknown as GeometryRuntime;
+      const clip = clipBrowserViewportBounds(runtime.viewport, owner.getContentBounds())!;
+      const start = toScreen(clip.x + clip.width / 2, clip.y + clip.height / 2);
+      const end = toScreen(clip.x + clip.width / 2 + 30, clip.y + clip.height / 2 + 20);
+      const before = await scene();
+      await nativeInput("alt-drag", [start.x, start.y, end.x, end.y]);
+      await pause(400);
+      const after = await scene();
+      assert.notEqual(after, before, "OS Alt+drag over the native page reaches canvas navigation");
+      await geometry();
+      return { before, after };
     });
     for (const direction of ["n", "ne", "e", "se", "s", "sw", "w", "nw"]) {
       if (!rows.some((row) => row.status === "pass" && String(row.name).endsWith(`/${direction}`))) {
@@ -206,8 +254,8 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       backend: process.env.CANVASTTY_GEOMETRY_BACKEND, commit: process.env.CANVASTTY_GEOMETRY_COMMIT,
       uiScale: process.env.CANVASTTY_GEOMETRY_UI_SCALE, cards: process.env.CANVASTTY_GEOMETRY_CARDS,
       visibleWindow: owner.isVisible(), displays: screen.getAllDisplays().map(({size,scaleFactor})=>({size,scaleFactor})),
-      input: "OS synthetic mouse; renderer pointerdown.isTrusted asserted",
-      untested: ["physical mouse hardware", "physical touchpad and momentum", "focused/unfocused wheel and navigation override delivery"],
+      input: "OS synthetic mouse/wheel/Alt; renderer pointerdown.isTrusted asserted",
+      untested: ["physical mouse hardware", "physical touchpad and momentum", "mixed-DPI multi-monitor transitions", "GNOME/KDE Wayland compositors"],
       rows, failures };
     await writeFile(join(root, "report.json"), JSON.stringify(report, null, 2));
   }

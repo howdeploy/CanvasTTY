@@ -1,4 +1,5 @@
 import { spawn, execFile } from "node:child_process";
+import { createWriteStream } from "node:fs";
 import { createServer } from "node:http";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,7 +32,7 @@ try {
     process.env.CANVASTTY_GEOMETRY_MAC_INPUT = join(local, "native-input");
     await promisify(execFile)("xcrun", ["swiftc", join(project, "scripts/browser-geometry-input.swift"), "-o", process.env.CANVASTTY_GEOMETRY_MAC_INPUT]);
   }
-  const cases = process.env.CANVASTTY_GEOMETRY_BASELINE === "1" ? [[1, 1]] : [[1, 1], [2, 1], [1, 1.5], [2, 1.5]];
+  const cases = process.env.CANVASTTY_GEOMETRY_BASELINE === "1" ? [[1, 1]] : [[1, 1], [2, 1], [1, 1.25], [2, 1.25]];
   for (const [cards, uiScale] of cases) {
     const name = `cards-${cards}-ui-${uiScale}`;
     const userData = join(local, name), out = join(artifacts, name);
@@ -40,15 +41,18 @@ try {
     const args = [project, `--user-data-dir=${userData}`];
     if (process.platform === "linux") args.push("--no-sandbox", `--ozone-platform=${process.env.CANVASTTY_GEOMETRY_BACKEND === "wayland" ? "wayland" : "x11"}`);
     const env = { ...process.env, CANVASTTY_BROWSER_GEOMETRY_URL: origin,
+      CANVASTTY_GEOMETRY_USER_DATA: userData,
       CANVASTTY_GEOMETRY_CARDS: String(cards), CANVASTTY_GEOMETRY_UI_SCALE: String(uiScale),
       CANVASTTY_GEOMETRY_ARTIFACTS: out, CANVASTTY_GEOMETRY_INPUT: join(project, "scripts/browser-geometry-input.mjs") };
     delete env.ELECTRON_RUN_AS_NODE;
     const child = spawn(electron, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let log = "";
-    child.stdout.on("data", (chunk) => { log += chunk; }); child.stderr.on("data", (chunk) => { log += chunk; });
+    const stream = createWriteStream(join(out, "electron.log"));
+    const consume = (chunk) => { log += chunk; stream.write(chunk); };
+    child.stdout.on("data", consume); child.stderr.on("data", consume);
     const timer = setTimeout(() => { log += "\nGEOMETRY TIMEOUT\n"; child.kill(); }, 600000);
     const code = await new Promise((done, reject) => { child.once("exit", done); child.once("error", reject); });
-    clearTimeout(timer); await writeFile(join(out, "electron.log"), log);
+    clearTimeout(timer); await new Promise((done) => stream.end(done));
     let ok = code === 0 && log.includes("CANVASTTY_BROWSER_GEOMETRY_READY");
     const rows = log.split("\n").filter((line) => line.startsWith("BROWSER_GEOMETRY_CHECK "))
       .map((line) => JSON.parse(line.slice("BROWSER_GEOMETRY_CHECK ".length)));

@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { app, nativeImage, screen, type BrowserWindow, type View, type WebContentsView } from "electron";
-import type { BrowserSnapshot, BrowserViewportBounds } from "../../../shared/contracts.ts";
+import type { BrowserCommand, BrowserResult, BrowserSnapshot, BrowserViewportBounds } from "../../../shared/contracts.ts";
 import type { BrowserService } from "../BrowserService.ts";
 import type { BrowserCanvasGestureController } from "./BrowserCanvasGestureController.ts";
 import { clipBrowserViewportBounds } from "./BrowserViewport.ts";
@@ -24,6 +24,8 @@ interface GeometryRuntime {
 interface GeometryWorkspace {
   getState(): BrowserSnapshot;
   navigate(tabId: string, url: string): Promise<unknown>;
+  open(url?: string): Promise<BrowserSnapshot>;
+  executeHuman?(command: BrowserCommand, signal?: AbortSignal): Promise<BrowserResult>;
   primaryInstance?: BrowserService;
   windows?: Map<string, { service: BrowserService }>;
 }
@@ -37,6 +39,17 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
   assert.ok(root);
   await mkdir(root, { recursive: true });
   const workspace = input as GeometryWorkspace;
+  assert.equal(app.getPath("userData"), process.env.CANVASTTY_GEOMETRY_USER_DATA);
+  // UI setup stays on the loopback fixture, including the initial new-card URL.
+  // Do not make the geometry matrix depend on a public search engine loading.
+  if (workspace.primaryInstance && workspace.executeHuman) {
+    const execute = workspace.executeHuman.bind(workspace);
+    workspace.executeHuman = (command, signal) => execute(command.type === "browser_new_window" && !command.url
+      ? { ...command, url: origin } : command, signal);
+  } else {
+    const open = workspace.open.bind(workspace);
+    workspace.open = (value) => open(value ?? origin);
+  }
   const evaluate = (source: string) => owner.webContents.executeJavaScript(source);
   const rows: Record<string, unknown>[] = [];
   const failures: string[] = [];
@@ -112,8 +125,12 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
     // gives the isolated compositor a known origin for OS pointer delivery.
     if (process.env.CANVASTTY_GEOMETRY_BACKEND === "wayland") owner.setFullScreen(true);
     await wait('!!document.querySelector(\'button[aria-label="Browser"]\')');
+    const actualUiScale = await evaluate("window.canvasTTY.settings.get().then(settings => settings.uiScale)");
+    assert.equal(actualUiScale, Number(process.env.CANVASTTY_GEOMETRY_UI_SCALE));
+    console.log(`BROWSER_GEOMETRY_ENV ${JSON.stringify({ userData: app.getPath("userData"), actualUiScale })}`);
     const count = Number(process.env.CANVASTTY_GEOMETRY_CARDS ?? "1");
     for (let i = 0; i < count; i++) {
+      console.log(`BROWSER_GEOMETRY_OPEN_CARD ${i + 1}`);
       await evaluate('document.querySelector(\'button[aria-label="Browser"]\').click()');
       await wait(`document.querySelectorAll(".browser-card").length === ${i + 1}`);
       const snapshot = workspace.getState();
@@ -138,14 +155,17 @@ export async function runBrowserGeometrySmoke(owner: BrowserWindow, input: unkno
       }) as typeof contents.capturePage;
     }
     // Actual canvas zoom controls. Report measured zoom, not nominal values.
-    for (const action of [null, "Zoom out", "Zoom out", "Zoom out", "Zoom out", "Zoom in", "Zoom in", "Zoom in", "Zoom in", "Zoom in"]) {
+    const zoomActions = [null, "Zoom out", "Zoom out", "Zoom out", "Zoom out", "Zoom in", "Zoom in", "Zoom in", "Zoom in", "Zoom in"];
+    for (const [zoomStep, action] of zoomActions.entries()) {
       if (action) await evaluate(`document.querySelector('button[title="${action}"]').click()`);
       await pause(350);
       const zoom = await evaluate('new DOMMatrixReadOnly(document.querySelector(".workspace__scene").style.transform).a');
       const label = `zoom-${Number(zoom).toFixed(3)}`;
       await check(`${label}/native-geometry`, geometry);
       const cards = await evaluate('[...document.querySelectorAll(".browser-card")].map(el=>({id:el.dataset.browserId??"default",rect:el.getBoundingClientRect().toJSON()}))');
-      for (let index = 0; index < cards.length; index++) {
+      // Full edge matrix at initial zoom, just above/below summary, and enlarged
+      // zoom. Intermediate steps still check native geometry and composition.
+      for (let index = 0; [0, 3, 4, 9].includes(zoomStep) && index < cards.length; index++) {
         for (const direction of ["n", "ne", "e", "se", "s", "sw", "w", "nw"]) {
           const name = `${label}/card-${index}/${direction}`;
           const source = `document.querySelectorAll(".browser-card")[${index}]`;

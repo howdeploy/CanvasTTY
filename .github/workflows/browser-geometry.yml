@@ -71,6 +71,10 @@ jobs:
           current = Path('src/main/index.ts').read_text()
           hook = current[current.index('  const geometrySmokeUrl ='):current.index(marker)]
           text = 'import { runBrowserGeometrySmoke } from "./services/browser/BrowserGeometrySmoke";\n' + text.replace(marker, hook + marker)
+          lock = 'const hasSingleInstanceLock = app.requestSingleInstanceLock();'
+          setup = current[current.index('// Geometry smoke isolates'):current.index(lock)]
+          assert text.count(lock) == 1
+          text = text.replace(lock, setup + lock)
           index.write_text(text)
           PY
           npm run build --prefix accepted-main

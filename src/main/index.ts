@@ -102,6 +102,12 @@ let shutdownComplete = false;
 // the user asked for a quit and there is no failure left to report.
 let mainWindowClosing = false;
 
+// Geometry smoke isolates settings, Chromium state and the instance lock before
+// any service starts. The installed application's path is never changed.
+if (process.env.CANVASTTY_GEOMETRY_DISPOSABLE_DESKTOP === "1"
+  && process.env.CANVASTTY_BROWSER_GEOMETRY_URL && process.env.CANVASTTY_GEOMETRY_USER_DATA) {
+  app.setPath("userData", process.env.CANVASTTY_GEOMETRY_USER_DATA);
+}
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 

@@ -34,7 +34,9 @@ layout resumes at the current viewport when the gesture ends.
 
 Use a disposable desktop: this command moves the OS pointer, presses/releases
 Alt and saves whole-desktop screenshots. It does not use the installed app or
-existing website profiles. Reports and random isolated profiles are retained.
+existing website profiles. The loaded profile path and actual UI scale are asserted at runtime. New-card
+navigation is redirected to the loopback fixture during setup. Reports and
+random isolated profiles are retained.
 
 ```sh
 npm ci
@@ -64,10 +66,12 @@ unchanged. The baseline has one card because multiple cards are the new feature.
 
 ## Recorded matrix
 
-Every platform runs one/two cards at UI scale 1 and 1.5. The harness operates the
+Every platform runs one/two cards at UI scale 1 and 1.25. The harness operates the
 actual zoom controls through values above/below the summary threshold and
-records the resulting zoom. For each visible handle it records all eight resize
-directions, trusted pointer target and measured size delta. A handle outside the
+records the resulting zoom. All eight resize directions are exercised at the
+initial, just-above-summary, summary, and enlarged zoom; intermediate steps
+still check native geometry and desktop composition. Each visible target records
+its trusted pointer event and measured size delta. A handle outside the
 desktop or covered by a canvas overlay/another card is recorded as **untested**,
 not passed. The test does not click through the minimap or hide product overlays.
 

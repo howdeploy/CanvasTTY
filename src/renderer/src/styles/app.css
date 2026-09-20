@@ -219,11 +219,8 @@ button { border: 0; }
 .usage-row__failure-copy { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; color: rgba(255,255,255,.78); background: rgba(255,255,255,.1); cursor: pointer; }
 .usage-row__failure-copy:hover, .usage-row__failure-copy:focus-visible { color: white; background: rgba(255,255,255,.2); }
 .usage-row > .ui-icon--working { animation: spin 1.7s linear infinite; }
-/* A full launcher set wraps into two rows. Each row fills the dock width, so a short last
-   row spreads instead of leaving a hole where the missing tile would have been. */
-.launcher-dock { padding: .62em; display: flex; flex-wrap: wrap; align-content: center; justify-content: center; gap: .62em; border: 0; border-radius: 1.23em; background: var(--home-launcher-dock); font-size: calc(13px * var(--ui-scale, 1)); }
+.launcher-dock { padding: .62em; display: grid; grid-template-columns: repeat(var(--launcher-columns, 2), minmax(0, 1fr)); gap: .62em; border: 0; border-radius: 1.23em; background: var(--home-launcher-dock); font-size: calc(13px * var(--ui-scale, 1)); }
 .launcher-button, .settings-button { display: grid; place-items: center; color: var(--home-launcher-text); background: var(--home-launcher-tile); cursor: pointer; transition: background .15s ease, filter .15s ease; }
-.launcher-dock > .launcher-button { flex: 1 1 calc((100% - (var(--launcher-columns, 2) - 1) * .62em) / var(--launcher-columns, 2)); min-width: 0; }
 .launcher-button { border-radius: .92em; }
 .settings-button { border-radius: 12px; }
 .launcher-dock .provider-icon--large { --provider-icon-art-size: 3.54em; width: 4.46em; height: 4.46em; }

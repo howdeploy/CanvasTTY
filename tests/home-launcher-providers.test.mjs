@@ -30,14 +30,10 @@ test("stale settings keep every current agent visible in the HOME launcher", () 
   assert.deepEqual(resolveHomeLauncherProviders({}), AGENT_PROVIDERS);
 });
 
-test("the HOME launcher keeps one row while it fits and wraps a full set into two", () => {
+test("the HOME launcher column count follows the buttons that are actually visible", () => {
   assert.equal(homeLauncherColumnCount([]), 2);
   assert.equal(homeLauncherColumnCount(["claude", "qwen", "kimi", "grok"]), 6);
-  // A full agent set used to force one overloaded row; it must wrap instead.
-  const total = AGENT_PROVIDERS.length + 2;
-  const columns = homeLauncherColumnCount(AGENT_PROVIDERS);
-  assert.ok(columns < total, "a full launcher set must wrap rather than form one row");
-  assert.equal(Math.ceil(total / columns), 2, "a full launcher set fits in exactly two rows");
+  assert.equal(homeLauncherColumnCount(AGENT_PROVIDERS), AGENT_PROVIDERS.length + 2);
 });
 
 test("the HOME launcher follows the persisted provider subset in canonical order", () => {

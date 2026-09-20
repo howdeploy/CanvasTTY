@@ -63,11 +63,6 @@ export function setHomeLimitProviderEnabled(
   return LIMIT_PROVIDERS.filter((candidate) => selected.has(candidate));
 }
 
-/** One row still reads as a dock up to this many tiles; a fuller set splits into two. */
-const LAUNCHER_SINGLE_ROW_LIMIT = 6;
-
 export function homeLauncherColumnCount(providers: readonly AgentProviderId[]): number {
-  // Terminal and Browser are always present alongside the selected agents.
-  const total = providers.length + 2;
-  return total <= LAUNCHER_SINGLE_ROW_LIMIT ? total : Math.ceil(total / 2);
+  return providers.length + 2;
 }

@@ -35,8 +35,6 @@ CanvasTTY `1.0.2` 已从 HOME 提供内置浏览器，它是可信的画布应�
 
 智能体 mutation 在每个标签页内按 FIFO 执行，按 request ID 去重，在产生副作用前检查 document revision，并受 rate limit 与 timeout 限制；若必需的审计 attempt 无法写入，该 mutation 会被阻止。read 可以并行执行，不同标签页使用独立 mutation lane。
 
-元素也可以由人工直接从卡片交给智能体。可信导航栏中的**检查元素**控件会通过智能体所用的同一条类型化 browser command 路径（`browser_observe`，limit 20）对活动页面观察一次，并列出全部元素，因此每个被观察到的元素都可访问：每行先显示该元素的可访问名称（缺失时依次回退为 role、reference），其下为 `role · reference`。**发送给智能体**只向最新的运行中智能体会话写入恰好一行——绝不会是终端，绝不会是已退出的会话，也绝不会是正在等待决定的 session：`[Browser inspect] <url|url=none> untrustedWebContent=true label="<名称|role|reference>" ref=<reference> bounds=<x,y WxH|unknown> documentRevision=<revision>`，以 carriage return 结尾。URL 不携带凭据、查询串或片段；页面提供的文本会被压平并加上 JSON 引号，同时标记 `untrustedWebContent=true`，因此页面无法注入第二行或伪造尾部。若某个 reference 的 tab 或 document revision 不再与活动标签页一致，面板会显示可见失败并拒绝发送，什么都不会写入；没有运行中的智能体会话时，面板会明确提示，同样不发送任何内容。面板打开期间原生页面会被隐藏，因此列表绝不会绘制在实时视图之下；卡片既有结构、面板与控制器保持不变。
-
 ## 网站与文件边界
 
 - 远程页面运行在 sandbox 中，启用 context isolation，不含 Node.js 或 CanvasTTY preload。

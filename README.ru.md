@@ -19,7 +19,7 @@ https://github.com/user-attachments/assets/444612f7-cda1-4fd6-8514-2f4fac9cc520
 
 | Десктоп | Интерфейс | Терминал | Провайдеры |
 |:--|:--|:--|:--|
-| **Electron**<br>electron-vite | **React**<br>TypeScript | **xterm.js**<br>node-pty | **Codex**<br>Claude · Kimi · OpenCode · Hermes · Grok Build · OMP · Pi |
+| **Electron**<br>electron-vite | **React**<br>TypeScript | **xterm.js**<br>node-pty | **Codex**<br>Claude · Kimi · OpenCode · Hermes · Grok Build |
 
 Интерфейс приложения сейчас поддерживает английский и русский языки. Документация также доступна на упрощённом китайском.
 
@@ -29,7 +29,7 @@ https://github.com/user-attachments/assets/444612f7-cda1-4fd6-8514-2f4fac9cc520
 
 ## Терминалы и CLI-провайдеры в Windows
 
-В Windows кнопка Terminal запускает встроенный Windows PowerShell в чистой сессии `-NoLogo -NoProfile`, а при его недоступности использует `pwsh` или `cmd.exe`. Перед передачей в `node-pty`/ConPTY CanvasTTY находит для Codex, Claude, Kimi, OpenCode, Hermes, Grok Build, OMP и Pi конкретный файл `.exe`, `.com`, `.cmd` или `.bat`: сначала в пользовательском `PATH`, затем в стандартных каталогах CLI.
+В Windows кнопка Terminal запускает встроенный Windows PowerShell в чистой сессии `-NoLogo -NoProfile`, а при его недоступности использует `pwsh` или `cmd.exe`. Перед передачей в `node-pty`/ConPTY CanvasTTY находит для Codex, Claude, Kimi, OpenCode, Hermes и Grok Build конкретный файл `.exe`, `.com`, `.cmd` или `.bat`: сначала в пользовательском `PATH`, затем в стандартных каталогах CLI.
 
 CanvasTTY не устанавливает CLI провайдеров. Если нужный CLI отсутствует, окно запуска сообщает, какой провайдер не найден и какие каталоги были проверены. Установите CLI и перезапустите CanvasTTY, чтобы desktop-процесс получил обновлённое окружение.
 

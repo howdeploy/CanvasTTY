@@ -5,6 +5,7 @@ import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import type {
   CreateSessionRequest,
+  LaunchRole,
   Point,
   ProviderId,
   SessionBounds,
@@ -30,6 +31,14 @@ import type {
   PreparedAgentRuntimePtyLaunch
 } from "./agent-runtime/AgentRuntimeBridge.ts";
 import { AGENT_RUNTIME_ENV, CAPTURE_ANSWER_ENV, CAPTURE_RESULT_ENV } from "../../agent-runtime/runtime-protocol.mjs";
+import {
+  CONTROL_CLI_ENV,
+  CONTROL_CONNECTION_ENV,
+  controlEnvironment,
+  isLaunchRole,
+  launchRole,
+  type ControlConnection
+} from "./agent-control/controlCapabilities.ts";
 import { mergeOpenCodeLaunchEnvironment } from "./agent-runtime/ProviderRuntimeLaunch.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
@@ -107,6 +116,9 @@ export class TerminalManager {
   private sessionStore: TerminalSessionStore | null = null;
   private sessionPersistenceEnabled = false;
   private suppressPersistence = false;
+  // The live agent-control descriptor, handed only to orchestrator-role sessions
+  // spawned while it is set; null while the endpoint is off.
+  private controlConnection: ControlConnection | null = null;
   // Set and cleared around a single synchronous session emit (see emitSession):
   // the main process reads it from its emit callback to tell a failure that is
   // merely re-derived state from one the user just caused.
@@ -199,6 +211,15 @@ export class TerminalManager {
     };
   }
 
+  /**
+   * Sessions launched with the orchestrator role while a connection is set get
+   * it in their environment; ordinary sessions never do. Existing sessions are
+   * not re-spawned, so their environment stays as it was at launch.
+   */
+  setControlConnection(connection: ControlConnection | null): void {
+    this.controlConnection = connection ? { ...connection } : null;
+  }
+
   create(request: CreateSessionRequest, control: { captureResult?: boolean } = {}): SessionSnapshot {
     assertCreateRequest(request);
     if (control.captureResult && request.provider !== "codex") {
@@ -207,11 +228,13 @@ export class TerminalManager {
     assertDirectory(request.cwd);
 
     const id = randomUUID();
+    const role = launchRole(request.role);
     const metadata: SessionMetadata = {
       id,
       revision: 0,
       provider: request.provider,
       profile: request.profile,
+      role,
       title: request.title?.trim() || defaultTitle(request.provider, request.cwd),
       titleCustomized: Boolean(request.title?.trim()),
       cwd: request.cwd,
@@ -227,7 +250,7 @@ export class TerminalManager {
     const launched = awaitMeasuredGrid
       ? { process: null, agentBrowser: null, agentRuntime: null, failure: null }
       : this.spawnProcess(id, request.provider, request.profile, request.cwd,
-        INITIAL_TERMINAL_COLS, INITIAL_TERMINAL_ROWS, false, control.captureResult);
+        INITIAL_TERMINAL_COLS, INITIAL_TERMINAL_ROWS, false, control.captureResult, role);
     if (launched.failure) applyLaunchFailure(metadata, launched.failure);
 
     const session: ManagedSession = {
@@ -292,7 +315,8 @@ export class TerminalManager {
       session.cols,
       session.rows,
       false,
-      session.captureResult
+      session.captureResult,
+      session.metadata.role
     );
     session.process = launched.process;
     session.agentBrowser = launched.agentBrowser;
@@ -487,6 +511,7 @@ export class TerminalManager {
       revision: 0,
       provider: descriptor.provider,
       profile: descriptor.profile,
+      role: descriptor.role,
       title: descriptor.title,
       titleCustomized: descriptor.titleCustomized,
       cwd: descriptor.cwd,
@@ -523,7 +548,9 @@ export class TerminalManager {
           descriptor.cwd,
           INITIAL_TERMINAL_COLS,
           INITIAL_TERMINAL_ROWS,
-          descriptor.provider !== "terminal"
+          descriptor.provider !== "terminal",
+          false,
+          descriptor.role
         );
         process = launched.process;
         agentBrowser = launched.agentBrowser;
@@ -604,7 +631,8 @@ export class TerminalManager {
         session.cols,
         session.rows,
         resumePrevious,
-        session.captureResult
+        session.captureResult,
+        session.metadata.role
       );
       session.process = launched.process;
       session.agentBrowser = launched.agentBrowser;
@@ -638,7 +666,8 @@ export class TerminalManager {
     cols = INITIAL_TERMINAL_COLS,
     rows = INITIAL_TERMINAL_ROWS,
     resumePrevious = false,
-    captureResult = false
+    captureResult = false,
+    role: LaunchRole = "agent"
   ): {
     process: IPty | null;
     agentBrowser: PreparedAgentBrowserPtyLaunch | null;
@@ -666,9 +695,13 @@ export class TerminalManager {
       const baseEnvironment = terminalEnvironment();
       const browserEnvironment = agentBrowser?.environment ?? {};
       const runtimeEnvironment = agentRuntime?.environment ?? {};
-      const providerEnvironment = provider === "opencode"
-        ? mergeOpenCodeLaunchEnvironment(browserEnvironment, runtimeEnvironment)
-        : { ...browserEnvironment, ...runtimeEnvironment };
+      const providerEnvironment = {
+        ...(provider === "opencode"
+          ? mergeOpenCodeLaunchEnvironment(browserEnvironment, runtimeEnvironment)
+          : { ...browserEnvironment, ...runtimeEnvironment }),
+        // Orchestrators alone learn where the control descriptor and CLI are.
+        ...controlEnvironment(role, this.controlConnection)
+      };
       const providerArgs = [...(agentRuntime?.args ?? []), ...(agentBrowser?.args ?? [])];
       // Stable terminal observations for the CLI controller; leave ordinary launches unchanged.
       if (captureResult && provider === "codex") providerArgs.push("-c", "tui.animations=false");
@@ -775,7 +808,10 @@ export function terminalEnvironment(
     ...Object.values(AGENT_BROWSER_ENV),
     ...Object.values(AGENT_RUNTIME_ENV),
     CAPTURE_RESULT_ENV,
-    CAPTURE_ANSWER_ENV
+    CAPTURE_ANSWER_ENV,
+    // An orchestrator that launches the app must not leak its own control grant.
+    CONTROL_CONNECTION_ENV,
+    CONTROL_CLI_ENV
   ]);
   const environment = Object.fromEntries(
     Object.entries(source).filter((entry): entry is [string, string] => (
@@ -813,6 +849,8 @@ function assertCreateRequest(request: CreateSessionRequest): void {
   const providers = new Set<ProviderId>(["terminal", "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]);
   if (!request || !providers.has(request.provider)) throw new Error("Unknown terminal provider.");
   if (request.profile !== "normal" && request.profile !== "yolo") throw new Error("Unknown launch profile.");
+  if (request.role !== undefined && !isLaunchRole(request.role)) throw new Error("Unknown launch role.");
+  if (request.role === "orchestrator" && request.provider === "terminal") throw new Error("A plain terminal cannot be an orchestrator.");
   if (typeof request.cwd !== "string" || request.cwd.length === 0) throw new Error("Project folder is required.");
   if (!isPoint(request.position)) throw new Error("Session position is invalid.");
 }

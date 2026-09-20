@@ -4,7 +4,7 @@ CanvasTTY can expose an opt-in local control endpoint so an orchestrator can cre
 
 ## Enable and connect
 
-Start the app with `--agent-control`, or set `CANVASTTY_AGENT_CONTROL=1` for that invocation. From a source checkout:
+Turn on Settings → Agents → "Agent orchestration endpoint" (`agentControlEnabled`, off by default; it starts and stops the endpoint without a restart). A session launched from the desktop with the **Orchestrator** role receives `CANVASTTY_CONTROL_CONNECTION` (the live descriptor) and `CANVASTTY_CONTROL_CLI` (the bundled CLI path) in its environment; ordinary sessions never do. For CI smoke, start the app with `--agent-control` or set `CANVASTTY_AGENT_CONTROL=1` for that invocation to force the endpoint on regardless of the setting. From a source checkout:
 
 ```sh
 CANVASTTY_AGENT_CONTROL=1 npm run dev

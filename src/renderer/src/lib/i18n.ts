@@ -567,7 +567,15 @@ const ru = {
   failureDiagnostics: "Вывод терминала",
   failureDiagnosticsHint: "Последние строки вывода; они могут не относиться к причине ошибки.",
   closeErrorDetails: "Закрыть детали ошибки",
-  copiedErrorDetails: "Скопировано"
+  copiedErrorDetails: "Скопировано",
+  launchRole: "Роль",
+  roleAgent: "Агент",
+  roleOrchestrator: "Оркестратор",
+  orchestratorRoleNote: "Запускается с тем же провайдером и выбранным профилем; в окружение получает CANVASTTY_CONTROL_CONNECTION и CANVASTTY_CONTROL_CLI, поэтому встроенный CLI canvastty-control управляет другими сессиями без настройки.",
+  orchestratorEndpointOff: "Эндпоинт оркестрации агентов выключен (Настройки → Агенты). Без него оркестратор не сможет создавать сессии и управлять ими.",
+  enableAgentControl: "Включить эндпоинт",
+  agentControlEnabled: "Эндпоинт оркестрации агентов",
+  agentControlEnabledDescription: "Локальный эндпоинт только для текущего пользователя, через который встроенный CLI canvastty-control и сессии с ролью «Оркестратор» создают сессии и управляют ими. По умолчанию выключен."
 } as const;
 
 const en: Record<keyof typeof ru, string> = {
@@ -1137,7 +1145,15 @@ const en: Record<keyof typeof ru, string> = {
   failureDiagnostics: "Terminal output",
   failureDiagnosticsHint: "Last lines of output; they may be unrelated to the cause.",
   closeErrorDetails: "Close error details",
-  copiedErrorDetails: "Copied"
+  copiedErrorDetails: "Copied",
+  launchRole: "Role",
+  roleAgent: "Agent",
+  roleOrchestrator: "Orchestrator",
+  orchestratorRoleNote: "Launched with this same provider and the selected profile; its environment carries CANVASTTY_CONTROL_CONNECTION and CANVASTTY_CONTROL_CLI, so the bundled canvastty-control CLI drives other sessions without setup.",
+  orchestratorEndpointOff: "The agent orchestration endpoint is off (Settings → Agents). Without it an orchestrator cannot create or drive sessions.",
+  enableAgentControl: "Enable endpoint",
+  agentControlEnabled: "Agent orchestration endpoint",
+  agentControlEnabledDescription: "Local, current-user-only endpoint through which the bundled canvastty-control CLI and Orchestrator sessions create and drive sessions. Off by default."
 };
 
 export type TranslationKey = keyof typeof ru;

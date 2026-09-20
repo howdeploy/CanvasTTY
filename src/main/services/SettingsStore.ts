@@ -156,6 +156,7 @@ export class SettingsStore {
         || !("canvasControlsPlacement" in source)
         || !("attentionQueueVisible" in source)
         || !("attentionQueuePlacement" in source)
+        || !("agentControlEnabled" in source)
         || !("restoreTerminalSessions" in source)
         || !("persistCanvasRegions" in source)
         || !("persistStickyNotes" in source)
@@ -320,7 +321,8 @@ function createDefaults(systemLocale: string, platform: CanvasNavigationPlatform
     browserRestoreTabs: true,
     attentionNotifications: true,
     attentionQueueVisible: true,
-    attentionQueuePlacement: "bottom-right"
+    attentionQueuePlacement: "bottom-right",
+    agentControlEnabled: false
   };
 }
 
@@ -505,7 +507,11 @@ export function normalizeSettings(
     attentionQueuePlacement: normalizeCanvasOverlayPlacement(
       source.attentionQueuePlacement,
       fallback.attentionQueuePlacement
-    )
+    ),
+    // Never inferred from anything else: only an explicit boolean turns the endpoint on.
+    agentControlEnabled: typeof source.agentControlEnabled === "boolean"
+      ? source.agentControlEnabled
+      : fallback.agentControlEnabled ?? false
   };
 }
 

@@ -247,6 +247,52 @@ test("disabled lifecycle and invalid parameters fail before launching a process"
   assert.equal(f.calls.length, 0);
 });
 
+test("every agent provider can be a worker, with Codex-only result capture and menus declared honestly", localSocket, async (t) => {
+  const f = await fixture(t);
+  const codex = await f.create();
+  assert.deepEqual(codex.capabilities, { result: true, menus: true });
+  assert.ok(f.calls.at(-1).args.includes("tui.animations=false"));
+
+  const claude = await f.request("create", { provider: "claude", profile: "yolo", cwd: f.root, title: "Claude worker" });
+  assert.deepEqual(claude.capabilities, { result: false, menus: false });
+  assert.equal(claude.session.provider, "claude");
+  assert.equal(claude.session.profile, "yolo");
+  assert.equal(claude.session.role, "agent");
+  assert.ok(!f.calls.at(-1).args.includes("tui.animations=false"));
+  assert.equal(CAPTURE_RESULT_ENV in f.calls.at(-1).options.env, false);
+
+  const listed = (await f.request("list")).sessions;
+  assert.deepEqual(listed.map((s) => [s.provider, s.capabilities]),
+    [["codex", { result: true, menus: true }], ["claude", { result: false, menus: false }]]);
+
+  const pty = f.calls.at(-1).pty;
+  pty.data("\x1b[2J\x1b[H› 1. Yes, proceed\r\n  2. No\r\nPress enter to confirm");
+  let screen;
+  for (let i = 0; i < 30 && !screen?.text.includes("Yes, proceed"); i++) {
+    await delay(5);
+    screen = await f.request("screen", { sessionId: claude.session.id });
+  }
+  assert.ok(screen.text.includes("Yes, proceed"), "fixture screen reached the observer");
+  assert.equal(screen.interaction, null, "non-Codex menus are never parsed");
+  await assert.rejects(f.request("choose", { sessionId: claude.session.id, choice: 1, revision: screen.revision }), (e) => e.code === "NOT_SUPPORTED");
+  await assert.rejects(f.request("dismiss", { sessionId: claude.session.id, revision: screen.revision }), (e) => e.code === "NOT_SUPPORTED");
+
+  // send needs only an idle/unavailable status without an active turn; the screen is the sole evidence.
+  const sent = await f.request("send", { sessionId: claude.session.id, text: "summarise the repository" });
+  assert.equal(sent.delivery, "written-to-pty");
+  assert.ok(pty.writes.at(-1).includes("summarise the repository"));
+  await assert.rejects(f.request("send", { sessionId: claude.session.id, text: "again" }), (e) => e.code === "BUSY");
+  f.signal(claude.session.id, "working");
+  f.signal(claude.session.id, "idle");
+  const result = await f.request("result", { sessionId: claude.session.id });
+  assert.equal(result.fresh, true);
+  assert.equal(result.turn.state, "no_result");
+
+  for (const provider of ["terminal", "shell", ""]) {
+    await assert.rejects(f.request("create", { provider, profile: "yolo", cwd: f.root }), (e) => e.code === "INVALID_PARAMS");
+  }
+});
+
 test("CLI rejects inapplicable flags and never sends malformed result revisions", async () => {
   assert.deepEqual(parseArguments(["create", "--cwd", "folder with spaces", "--yolo"]).options, { cwd: "folder with spaces", yolo: true });
   await assert.rejects(runCli(["status", "session", "--profile", "yolo"]), /does not apply/);

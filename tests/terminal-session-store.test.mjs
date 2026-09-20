@@ -12,6 +12,7 @@ const descriptor = {
   id: "7a511f56-89b8-4d62-9bf6-bd762bd73488",
   provider: "codex",
   profile: "normal",
+  role: "agent",
   title: "Canvas work",
   titleCustomized: true,
   cwd: process.cwd(),
@@ -48,4 +49,33 @@ test("invalid descriptors are removed and geometry is bounded", () => {
   });
   assert.equal(normalized.sessions.length, 2);
   assert.deepEqual(normalized.sessions[0].size, { width: 420, height: 1_100 });
+});
+
+test("records written before roles existed restore as agents; only an explicit orchestrator survives", async () => {
+  const { role: _role, ...legacy } = descriptor;
+  const normalized = normalizePersistedTerminalSessions({
+    version: 1,
+    sessions: [
+      legacy,
+      { ...descriptor, id: "orchestrator", role: "orchestrator" },
+      { ...descriptor, id: "bogus-role", role: "worker" },
+      { ...descriptor, id: "terminal", provider: "terminal", role: "orchestrator" }
+    ]
+  });
+  assert.deepEqual(normalized.sessions.map((session) => [session.id, session.role]), [
+    [descriptor.id, "agent"],
+    ["orchestrator", "orchestrator"],
+    ["bogus-role", "agent"],
+    ["terminal", "agent"]
+  ]);
+
+  const directory = await mkdtemp(join(tmpdir(), "canvastty-terminal-state-roles-"));
+  try {
+    const store = new TerminalSessionStore(directory);
+    await store.replace([legacy, { ...descriptor, id: "orchestrator", role: "orchestrator" }]);
+    const reloaded = await new TerminalSessionStore(directory).load();
+    assert.deepEqual(reloaded.map((session) => session.role), ["agent", "orchestrator"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

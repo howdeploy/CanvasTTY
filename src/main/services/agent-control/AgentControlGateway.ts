@@ -8,6 +8,7 @@ import type { CreateSessionRequest, SessionMetadata, SessionSnapshot, TerminalBu
 import { IPC } from "../../../shared/contracts.ts";
 import type { RuntimeLifecycleSignal } from "../agent-runtime/RuntimeGateway.ts";
 import { WindowsPipeHostTransport, type AgentGatewaySocket } from "../agent-browser/WindowsPipeHostTransport.ts";
+import { controlCapabilities, isControlProvider } from "./controlCapabilities.ts";
 
 const MAX_REQUEST_BYTES = 128 * 1024;
 const MAX_RESPONSE_BYTES = 256 * 1024;
@@ -241,7 +242,9 @@ export class AgentControlGateway {
     const params = request.params;
     if (request.method === "create") {
       fields(params, ["provider", "cwd", "title", "profile"]);
-      if (params.provider !== "codex" || !["normal", "yolo"].includes(String(params.profile))) throw new ControlError("INVALID_PARAMS", "Specify native Codex and an explicit normal or yolo launch profile.");
+      if (!isControlProvider(params.provider) || !["normal", "yolo"].includes(String(params.profile))) throw new ControlError("INVALID_PARAMS", "Specify an agent provider (codex, claude, qwen, kimi, opencode, hermes, grok, omp, pi) and an explicit normal or yolo launch profile.");
+      const provider = params.provider;
+      const capabilities = controlCapabilities(provider);
       const requestedCwd = string(params.cwd, 4096, "cwd");
       if (!isAbsolute(requestedCwd)) throw new ControlError("INVALID_PARAMS", "cwd must be absolute.");
       const cwd = await realpath(requestedCwd).catch(() => { throw new ControlError("INVALID_PARAMS", "Project directory does not exist."); });
@@ -249,8 +252,9 @@ export class AgentControlGateway {
       const title = params.title === undefined ? undefined : string(params.title, 80, "title");
       if (!this.options.lifecycleEnabled()) throw new ControlError("LIFECYCLE_DISABLED", "Enable agent lifecycle hooks before creating controlled sessions.");
       if (this.sessions.size >= MAX_SESSIONS) throw new ControlError("LIMIT_REACHED", "At most 32 controlled sessions are available per app instance.");
-      const session = this.options.terminals.create({ provider: "codex", profile: params.profile as "normal" | "yolo", cwd, title,
-        position: { x: 1600, y: this.options.terminals.listMetadata().length * 470 } }, { captureResult: true });
+      // Result capture is a Codex-only hook; the manager refuses it for anyone else.
+      const session = this.options.terminals.create({ provider, profile: params.profile as "normal" | "yolo", cwd, title,
+        position: { x: 1600, y: this.options.terminals.listMetadata().length * 470 } }, { captureResult: capabilities.result });
       const terminal = new xterm.Terminal({ ...this.options.terminals.geometry(session.id), scrollback: 200, allowProposedApi: true });
       const snapshot = this.options.terminals.readBuffer(session.id);
       const owned: OwnedSession = { owner, startedAt: session.startedAt, terminal,
@@ -258,13 +262,13 @@ export class AgentControlGateway {
         outputOffset: snapshot.outputOffset, resultRevision: 0, turn: null, completedTurn: null };
       this.sessions.set(session.id, owned);
       const { buffer: _buffer, ...metadata } = session;
-      return { session: metadata };
+      return { session: metadata, capabilities };
     }
     if (request.method === "list") {
       fields(params, []);
       return { sessions: this.options.terminals.listMetadata().filter((s) => {
         const owned = this.sessions.get(s.id); return owned?.owner === owner && owned.startedAt === s.startedAt;
-      }) };
+      }).map((s) => ({ ...s, capabilities: controlCapabilities(s.provider) })) };
     }
     fields(params, request.method === "send" ? ["sessionId", "text"] : request.method === "result" ? ["sessionId", "after"]
       : request.method === "choose" ? ["sessionId", "choice", "revision"]
@@ -285,8 +289,13 @@ export class AgentControlGateway {
     }
     await owned.ready;
     if (this.closed) throw new ControlError("CLOSED", "Agent control is shutting down.");
+    const capabilities = controlCapabilities(metadata.provider);
     const screen = viewport(owned.terminal);
-    if (request.method === "screen") return { sessionId: id, text: screen, revision: hash(screen), outputOffset: owned.outputOffset, interaction: codexChoices(screen) };
+    if (request.method === "screen") return { sessionId: id, text: screen, revision: hash(screen), outputOffset: owned.outputOffset,
+      interaction: capabilities.menus ? codexChoices(screen) : null };
+    if ((request.method === "choose" || request.method === "dismiss") && !capabilities.menus) {
+      throw new ControlError("NOT_SUPPORTED", `Menus are parsed for Codex only; resolve ${metadata.provider} prompts from the desktop and treat screen as the only evidence.`);
+    }
     if (this.busy.has(id)) throw new ControlError("BUSY", "A control operation is pending for this session.");
     this.busy.add(id);
     try {
@@ -323,7 +332,10 @@ export class AgentControlGateway {
       if (!this.options.lifecycleEnabled()) throw new ControlError("LIFECYCLE_DISABLED", "Agent lifecycle hooks are disabled.");
       if (/^[\s]*\//.test(text) || /[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(text)) throw new ControlError("INVALID_PARAMS", "send accepts task text, not slash commands or terminal control sequences.");
       if (owned.turn && ["queued", "working"].includes(owned.turn.state)) throw new ControlError("BUSY", "The previous submitted turn has not finished.");
-      if (!["idle", "unavailable"].includes(metadata.status) || !codexComposerReady(screen)) throw new ControlError("NOT_READY", "Codex is not at an empty task composer; inspect screen and resolve startup or approvals without changing its sandbox.");
+      // Only Codex's composer is recognised; for other providers the lifecycle
+      // status is the sole readiness gate and the screen the only evidence.
+      if (!["idle", "unavailable"].includes(metadata.status)) throw new ControlError("NOT_READY", "The session is not idle; inspect screen and wait for the current activity to finish.");
+      if (capabilities.menus && !codexComposerReady(screen)) throw new ControlError("NOT_READY", "Codex is not at an empty task composer; inspect screen and resolve startup or approvals without changing its sandbox.");
       const previousTurn = owned.turn;
       owned.turn = { id: request.id, state: "queued", sawWorking: false, nativeTurnId: null, interruptRequested: false, result: null };
       if (!this.options.terminals.inputChecked(id, `\x1b[200~${text}\x1b[201~\r`)) {

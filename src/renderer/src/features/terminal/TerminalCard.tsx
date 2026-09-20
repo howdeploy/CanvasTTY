@@ -711,6 +711,9 @@ export function TerminalCard({
               {visibleTitle}
             </strong>
           )}
+          {session.role === "orchestrator" && (
+            <span className="terminal-card__role" title={t(locale, "orchestratorRoleNote")}>{t(locale, "roleOrchestrator")}</span>
+          )}
         </div>
         <div className="terminal-card__actions">
           {!summaryMode && (

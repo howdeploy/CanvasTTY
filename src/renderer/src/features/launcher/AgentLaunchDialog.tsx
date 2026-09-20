@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import type {
   AgentProviderId,
   AppSettings,
-  LaunchProfileId
+  LaunchProfileId,
+  LaunchRole
 } from "../../../../shared/contracts";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { UiIcon } from "../../components/UiIcon";
@@ -15,7 +16,9 @@ interface AgentLaunchDialogProps {
   settings: AppSettings;
   onClose(): void;
   onAcknowledge(provider: AgentProviderId): Promise<void>;
-  onLaunch(provider: AgentProviderId, profile: LaunchProfileId, cwd: string): Promise<void>;
+  /** Persists `agentControlEnabled: true`; only ever called from the explicit button. */
+  onEnableAgentControl(): Promise<void>;
+  onLaunch(provider: AgentProviderId, profile: LaunchProfileId, cwd: string, role: LaunchRole): Promise<void>;
 }
 
 export function AgentLaunchDialog({
@@ -23,9 +26,11 @@ export function AgentLaunchDialog({
   settings,
   onClose,
   onAcknowledge,
+  onEnableAgentControl,
   onLaunch
 }: AgentLaunchDialogProps): React.JSX.Element | null {
   const [profile, setProfile] = useState<LaunchProfileId>("normal");
+  const [role, setRole] = useState<LaunchRole>("agent");
   const [cwd, setCwd] = useState(settings.lastDirectory);
   const [confirmDanger, setConfirmDanger] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -35,6 +40,7 @@ export function AgentLaunchDialog({
   useEffect(() => {
     if (!provider) return;
     setProfile("normal");
+    setRole("agent");
     setCwd(settings.lastDirectory);
     setConfirmDanger(false);
     setError(null);
@@ -53,6 +59,21 @@ export function AgentLaunchDialog({
 
   const acknowledged = settings.acknowledgedDangerousProfiles.includes(provider);
   const dangerKey = PROVIDERS[provider].dangerKey!;
+  // An orchestrator without the endpoint would be a plain session with a
+  // misleading badge, so the launch waits for the explicit enable button.
+  const endpointMissing = role === "orchestrator" && !settings.agentControlEnabled;
+
+  const enableEndpoint = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onEnableAgentControl();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t(locale, "settingsFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const chooseDirectory = async (): Promise<void> => {
     const selected = await window.canvasTTY.dialog.pickDirectory(cwd);
@@ -77,6 +98,7 @@ export function AgentLaunchDialog({
   };
 
   const submit = async (): Promise<void> => {
+    if (endpointMissing) return;
     if (profile === "yolo" && !acknowledged && !confirmDanger) {
       setConfirmDanger(true);
       return;
@@ -86,7 +108,7 @@ export function AgentLaunchDialog({
     setError(null);
     try {
       if (profile === "yolo" && !acknowledged) await onAcknowledge(provider);
-      await onLaunch(provider, profile, cwd);
+      await onLaunch(provider, profile, cwd, role);
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t(locale, "launchFailed"));
@@ -122,6 +144,11 @@ export function AgentLaunchDialog({
           </div>
         </div>
 
+        <div className="role-row" role="group" aria-label={t(locale, "launchRole")}>
+          <button className={role === "agent" ? "profile-button profile-button--active" : "profile-button"} type="button" aria-pressed={role === "agent"} onClick={() => setRole("agent")}>{t(locale, "roleAgent")}</button>
+          <button className={role === "orchestrator" ? "profile-button profile-button--active" : "profile-button"} type="button" aria-pressed={role === "orchestrator"} onClick={() => setRole("orchestrator")}>{t(locale, "roleOrchestrator")}</button>
+        </div>
+
         <div className="profile-row">
           <button className={profile === "normal" ? "profile-button profile-button--active" : "profile-button"} type="button" onClick={() => {
             setProfile("normal");
@@ -131,10 +158,24 @@ export function AgentLaunchDialog({
             setProfile("yolo");
             setConfirmDanger(false);
           }}>{t(locale, "yolo")}</button>
-          <button className="launch-submit" type="button" disabled={busy} onClick={() => void submit()}>
+          <button className="launch-submit" type="button" disabled={busy || endpointMissing} onClick={() => void submit()}>
             {busy ? <span className="launch-submit__busy" /> : <UiIcon name="arrow" size={38} />}
           </button>
         </div>
+
+        {role === "orchestrator" && (
+          <div className={`role-note ${endpointMissing ? "role-note--off" : ""}`}>
+            <span>{t(locale, "orchestratorRoleNote")}</span>
+            {endpointMissing && (
+              <>
+                <strong>{t(locale, "orchestratorEndpointOff")}</strong>
+                <button className="role-note__enable" type="button" disabled={busy} onClick={() => void enableEndpoint()}>
+                  {t(locale, "enableAgentControl")}
+                </button>
+              </>
+            )}
+          </div>
+        )}
 
         {profile === "yolo" && (
           <div className={`danger-note ${confirmDanger ? "danger-note--confirm" : ""}`}>

@@ -424,24 +424,51 @@ async function initializeServices(): Promise<void> {
   const terminalSessionStore = new TerminalSessionStore(userDataPath);
   terminalManager.configureSessionPersistence(terminalSessionStore, settings.get().restoreTerminalSessions);
   await terminalManager.restorePersistedSessions();
-  if (process.argv.includes("--agent-control") || process.env.CANVASTTY_AGENT_CONTROL === "1") {
+  // The agent-control endpoint follows Settings → Agents → "Agent orchestration
+  // endpoint"; the start flag / env var force it on for one launch (CI smoke)
+  // regardless of the setting. Start and stop are serialised so a quick toggle
+  // never races two gateways. Stopping disposes owned sessions' terminals
+  // (gateway.close) and withdraws the descriptor from future orchestrators.
+  const agentControlForced = process.argv.includes("--agent-control") || process.env.CANVASTTY_AGENT_CONTROL === "1";
+  const agentControlCliPath = app.isPackaged
+    ? join(process.resourcesPath, "agent-control", "canvastty-control.mjs")
+    : join(app.getAppPath(), "scripts", "canvastty-control.mjs");
+  const startAgentControl = async (): Promise<void> => {
+    if (agentControl || !terminalManager) return;
     const windowsHostPath = process.platform === "win32"
       ? app.isPackaged
         ? join(process.resourcesPath, "agent-browser", WINDOWS_PIPE_HOST_FILENAME)
         : join(app.getAppPath(), "build", "windows-agent-pipe-host", WINDOWS_PIPE_HOST_FILENAME)
       : undefined;
-    agentControl = new AgentControlGateway({ userDataPath, terminals: terminalManager,
+    const gateway = new AgentControlGateway({ userDataPath, terminals: terminalManager,
       lifecycleEnabled: () => Boolean(runtimeGateway) && settings.get().agentLifecycleHooksEnabled,
       windowsHostPath });
+    agentControl = gateway;
     try {
-      const connection = await agentControl.start();
+      const connection = await gateway.start();
+      terminalManager.setControlConnection({ connectionPath: connection, cliPath: agentControlCliPath });
       console.log(`CANVASTTY_AGENT_CONTROL_READY ${connection}`);
     } catch {
-      await agentControl.close().catch(() => undefined);
-      agentControl = null;
+      if (agentControl === gateway) agentControl = null;
+      await gateway.close().catch(() => undefined);
       console.warn("CanvasTTY agent control could not start; normal terminal operation is unchanged.");
     }
-  }
+  };
+  const stopAgentControl = async (): Promise<void> => {
+    const gateway = agentControl;
+    if (!gateway) return;
+    agentControl = null;
+    terminalManager?.setControlConnection(null);
+    await gateway.close().catch(() => undefined);
+  };
+  let agentControlTransition: Promise<void> = Promise.resolve();
+  const applyAgentControlSetting = (enabled: boolean): Promise<void> => {
+    agentControlTransition = agentControlTransition
+      .then(() => (enabled || agentControlForced ? startAgentControl() : stopAgentControl()))
+      .catch(() => undefined);
+    return agentControlTransition;
+  };
+  await applyAgentControlSetting(settings.get().agentControlEnabled);
   limitsService = new LimitsService(providerClis, app.getVersion());
   evenG2 = new EvenG2Controller({
     userDataPath, terminals: terminalManager,
@@ -494,6 +521,9 @@ async function initializeServices(): Promise<void> {
     applyBrowserSettings: async (next) => {
       agentRuntimeBridge?.setCoreHooksEnabled(next.agentLifecycleHooksEnabled);
       terminalManager?.setLifecycleHooksEnabled(next.agentLifecycleHooksEnabled);
+      // Awaited so the renderer's settings.update resolves with the endpoint live
+      // (the launch dialog enables it right before launching an orchestrator).
+      await applyAgentControlSetting(next.agentControlEnabled);
       agentBrowserBridge?.setEnabled(next.browserAgentAccess);
       browserService?.setRestoreTabs(next.browserRestoreTabs);
       browserService?.cancelCanvasNavigationGesture();

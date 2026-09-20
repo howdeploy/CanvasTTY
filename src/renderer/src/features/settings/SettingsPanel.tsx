@@ -562,6 +562,16 @@ export function SettingsPanel({
                 onSetPluginHookEnabled={onSetPluginHookEnabled}
               />
               <SettingGroup
+                label={t(locale, "agentControlEnabled")}
+                description={t(locale, "agentControlEnabledDescription")}
+              >
+                <Segmented
+                  value={settings.agentControlEnabled ? "on" : "off"}
+                  options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
+                  onChange={(value) => void onChange({ agentControlEnabled: value === "on" })}
+                />
+              </SettingGroup>
+              <SettingGroup
                 layout="stacked"
                 label={t(locale, "canvasLauncherItems")}
                 description={t(locale, "canvasLauncherItemsDescription")}

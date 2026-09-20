@@ -14,6 +14,7 @@ import type {
   HomeWidgetPlacement,
   InstalledPlugin,
   LaunchProfileId,
+  LaunchRole,
   LimitsSnapshot,
   Point,
   PluginContribution,
@@ -119,7 +120,8 @@ const FALLBACK_SETTINGS: AppSettings = {
   browserRestoreTabs: true,
   attentionNotifications: true,
   attentionQueueVisible: true,
-  attentionQueuePlacement: "bottom-right"
+  attentionQueuePlacement: "bottom-right",
+  agentControlEnabled: false
 };
 
 const EMPTY_BROWSER_SNAPSHOT: BrowserSnapshot = {
@@ -352,12 +354,13 @@ export function App(): React.JSX.Element {
     provider: ProviderId,
     profile: LaunchProfileId,
     cwd: string,
-    requestedCenter?: Point
+    requestedCenter?: Point,
+    role: LaunchRole = "agent"
   ): Promise<SessionSnapshot> => {
     const position = requestedCenter
       ? centeredWindowPosition(requestedCenter, { width: 700, height: 430 })
       : nextSessionPosition(sessions.length, settings.homeGridSize);
-    const session = await window.canvasTTY.terminal.create({ provider, profile, cwd, position });
+    const session = await window.canvasTTY.terminal.create({ provider, profile, cwd, position, role });
     setSessions((current) => upsertSnapshot(current, session));
     setActiveSessionId(session.id);
     await saveSettings({ lastDirectory: cwd });
@@ -389,9 +392,10 @@ export function App(): React.JSX.Element {
   const launchAgent = useCallback(async (
     provider: AgentProviderId,
     profile: LaunchProfileId,
-    cwd: string
+    cwd: string,
+    role: LaunchRole
   ): Promise<void> => {
-    await createSession(provider, profile, cwd, launchPosition ?? undefined);
+    await createSession(provider, profile, cwd, launchPosition ?? undefined, role);
     setLaunchPosition(null);
     showToast(`${t(settings.locale, "sessionStarted")}: ${provider}`);
   }, [createSession, launchPosition, settings.locale, showToast]);
@@ -1113,6 +1117,7 @@ export function App(): React.JSX.Element {
           setLaunchPosition(null);
         }}
         onAcknowledge={acknowledgeDanger}
+        onEnableAgentControl={() => persistSettings({ agentControlEnabled: true })}
         onLaunch={launchAgent}
       />
       <TerminalLinkDialog

@@ -635,6 +635,13 @@ export function App(): React.JSX.Element {
     });
   }, [openBrowser, settings.locale, showToast]);
 
+  useEffect(() => window.canvasTTY.evenG2.onOpenBrowser(requestId => {
+    void openBrowser().then(
+      () => window.canvasTTY.evenG2.completeOpenBrowser(requestId, true),
+      () => window.canvasTTY.evenG2.completeOpenBrowser(requestId, false)
+    );
+  }), [openBrowser]);
+
   const openBrowserFromUi = useCallback((position?: Point): void => {
     void openBrowser(undefined, position, true).catch((error: unknown) => {
       showToast(error instanceof Error ? error.message : t(settings.locale, "browserActionFailed"));

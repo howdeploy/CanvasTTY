@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#f4f3ed" />
+    <title>CanvasTTY · Even G2</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="app-header">
+        <div class="wordmark">
+          <span class="brand-mark" aria-hidden="true">&gt;_</span>
+          <div><b>CanvasTTY</b><small>EVEN G2 COMPANION</small></div>
+        </div>
+        <button class="connection-pill" id="open-connection">
+          <span class="status-dot" aria-hidden="true"></span
+          ><span id="connection">Подключение…</span>
+        </button>
+      </header>
+      <nav class="app-nav" aria-label="Разделы приложения">
+        <button data-panel="workspace" aria-pressed="true">Сессии</button>
+        <button data-panel="connection" aria-pressed="false">
+          Подключение
+        </button>
+        <button data-panel="settings" aria-pressed="false">Настройки</button>
+      </nav>
+      <section data-view="workspace" class="panel">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">ВАШЕ РАБОЧЕЕ МЕСТО</p>
+            <h1>Сессии на очках.</h1>
+          </div>
+          <time id="clock">—</time>
+        </div>
+        <div class="workspace-grid">
+          <aside class="sessions-column">
+            <section class="session-panel">
+              <div class="section-heading">
+                <h2>Терминалы</h2>
+                <button id="home" class="quiet">Home ↗</button>
+              </div>
+              <p id="summary" class="meta">Нет подключения</p>
+              <div id="sessions" class="session-list"></div>
+              <p id="session-empty" class="empty-state">
+                Подключите компьютер, чтобы увидеть доступные сессии.
+              </p>
+              <div class="launch">
+                <button data-new="codex">＋ Codex</button
+                ><button data-new="terminal">＋ Terminal</button>
+                <button data-new="claude">＋ Claude</button>
+                <button data-new="qwen">＋ Qwen Code</button>
+                <button data-new="kimi">＋ Kimi</button>
+                <button data-new="opencode">＋ OpenCode</button>
+                <button data-new="hermes">＋ Hermes</button>
+                <button data-new="grok">＋ Grok Build</button>
+                <button data-new="omp">＋ OMP</button>
+                <button data-new="pi">＋ Pi</button>
+              </div>
+            </section>
+            <section class="quota-panel">
+              <p class="eyebrow">ЛИМИТЫ АГЕНТОВ</p>
+              <div id="limits">Нет данных</div>
+            </section>
+          </aside>
+          <section class="answer-panel">
+            <div class="answer-heading">
+              <h2 id="title">Выберите сессию</h2>
+              <span id="phase" class="phase">—</span>
+            </div>
+            <pre id="answer">Ответ появится здесь и на очках.</pre>
+            <div class="page-controls">
+              <button id="prev" aria-label="Предыдущая страница">←</button
+              ><span id="page">1/1</span
+              ><button id="next" aria-label="Следующая страница">→</button>
+            </div>
+            <div id="choices" class="action-row" hidden>
+              <button id="choose" class="primary">Подтвердить выбор</button
+              ><button id="custom">Свой ответ</button>
+            </div>
+            <form id="manual" hidden>
+              <label for="draft">Поручение в выбранную сессию</label
+              ><textarea
+                id="draft"
+                rows="3"
+                maxlength="8000"
+                placeholder="Что нужно сделать?"
+              ></textarea
+              ><button id="send-text" class="primary">Отправить ↗</button>
+            </form>
+            <div class="voice-section">
+              <button class="voice" id="voice" disabled>
+                Удерживайте, чтобы говорить
+              </button>
+              <p id="mic-status" role="status">Микрофон не запущен.</p>
+              <div class="action-row">
+                <button id="back-home" class="quiet">К списку сессий</button
+                ><button id="mic-stop" class="quiet" disabled>
+                  Остановить запись
+                </button>
+              </div>
+            </div>
+            <p id="notice" role="status" class="notice">
+              Выберите сессию. Свайп листает страницы, удержание включает голос.
+            </p>
+            <div class="session-actions">
+              <button id="rename-terminal">Переименовать</button>
+              <button id="project-browser">Открыть браузер ↗</button
+              ><button id="close-terminal" class="danger-quiet">
+                Закрыть сессию
+              </button>
+            </div>
+            <form id="rename-form" class="close-dialog" hidden>
+              <h3>Переименовать терминал</h3>
+              <p>Сейчас: <span id="rename-current"></span></p>
+              <label for="rename-input">Новое имя</label
+              ><input
+                id="rename-input"
+                type="text"
+                maxlength="80"
+                autocomplete="off"
+                placeholder="Например: Бот поддержки"
+              />
+              <p id="rename-preview" role="status"></p>
+              <p>
+                На очках удерживайте кнопку для диктовки имени, затем
+                подтвердите выбор.
+              </p>
+              <div class="action-row">
+                <button id="rename-cancel" type="button">Отмена</button
+                ><button id="rename-save" class="primary" type="submit">
+                  Сохранить имя
+                </button>
+              </div>
+            </form>
+            <div id="close-dialog" class="close-dialog" hidden>
+              <p class="eyebrow">ПОДТВЕРЖДЕНИЕ</p>
+              <h3 id="close-title"></h3>
+              <p>
+                Процесс в этом окне будет остановлен. Файлы проекта сохранятся.
+              </p>
+              <div class="action-row">
+                <button id="close-cancel">Отмена</button
+                ><button id="close-confirm" class="danger">
+                  Закрыть терминал
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+      <section data-view="connection" class="panel connect-panel" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">ПЕРВОЕ ПОДКЛЮЧЕНИЕ</p>
+            <h1>Соединить с компьютером.</h1>
+            <p class="lead">
+              Откройте на Mac: Настройки → Управление → Even G2. Введите шесть цифр с экрана Mac. Оба устройства должны быть в одной сети Wi-Fi.
+            </p>
+          </div>
+        </div>
+        <div class="connection-path" aria-label="Компьютер, телефон, очки">
+          <span>01<span>CanvasTTY</span></span
+          ><i aria-hidden="true">→</i><span>02<span>Even App</span></span
+          ><i aria-hidden="true">→</i><span>03<span>Even G2</span></span>
+        </div>
+        <details class="pairing-card" open>
+          <summary>Подключение к CanvasTTY</summary>
+          <form id="pair">
+            <label for="token">Код подключения</label
+            ><input
+              id="token"
+              type="text"
+              inputmode="numeric"
+              autocomplete="off"
+              spellcheck="false"
+              maxlength="6"
+              placeholder="6 цифр с Mac"
+            />
+            <p class="field-help">
+              После ввода кода подтвердите запрос на компьютере. Подключение
+              сохранится на этом телефоне.
+            </p>
+            <p id="pair-status" role="status" class="field-help"></p>
+            <div class="action-row">
+              <button id="pair-cancel" type="button">Отмена</button>
+            </div>
+            <button id="pair-submit" class="primary">
+              Подключить компьютер ↗
+            </button>
+          </form>
+        </details>
+      </section>
+      <section data-view="settings" class="panel settings-panel" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">УПРАВЛЕНИЕ И СОСТОЯНИЕ</p>
+            <h1>Под рукой.</h1>
+          </div>
+        </div>
+        <section class="settings-card">
+          <div class="section-heading">
+            <h2>Распознавание речи</h2>
+            <span class="small-tag">НА КОМПЬЮТЕРЕ</span>
+          </div>
+          <p id="speech-engine">Нет данных</p>
+          <p class="field-help">
+            Модель выбирается в CanvasTTY. Микрофон телефона не используется.
+          </p>
+          <button id="mic-test" disabled>
+            Проверить микрофон · без отправки агенту
+          </button>
+        </section>
+        <section class="settings-card">
+          <h2>Жесты на очках</h2>
+          <dl class="gesture-list">
+            <div>
+              <dt>Свайп</dt>
+              <dd>Страница или вариант ответа</dd>
+            </div>
+            <div>
+              <dt>Клик</dt>
+              <dd>Открыть или подтвердить</dd>
+            </div>
+            <div>
+              <dt>Удержание</dt>
+              <dd>Голос; в меню — свой ответ</dd>
+            </div>
+            <div>
+              <dt>Двойной клик</dt>
+              <dd>Home; на Home — выход</dd>
+            </div>
+          </dl>
+        </section>
+        <details class="settings-card">
+          <summary>Предпросмотр дисплея G2</summary>
+          <pre id="hud" class="hud-preview"></pre>
+          <p id="ack" class="field-help"></p>
+        </details>
+        <details class="settings-card">
+          <summary>Диагностика управления</summary>
+          <p class="field-help">
+            Состояния подключения и микрофона. Без записи звука.
+          </p>
+          <pre id="diagnostics" class="diagnostics"></pre>
+        </details>
+      </section>
+      <footer>
+        <span>CanvasTTY · Even G2</span
+        ><span>0.5.6 · Локальное подключение</span>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.mjs"></script>
+  </body>
+</html>

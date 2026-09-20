@@ -1,3 +1,7 @@
+import { ipcMain } from "electron";
+import { randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
+import { EvenG2Controller } from "./services/companion/EvenG2Controller";
 import { join } from "node:path";
 import { app, BrowserWindow, dialog, net, Notification, protocol, safeStorage, session } from "electron";
 import electronUpdater from "electron-updater";
@@ -61,6 +65,11 @@ import { mainWindowChromeOptions } from "./windowChrome";
 
 // electron-updater is CommonJS; a default import is the only ESM-safe form.
 const { autoUpdater } = electronUpdater;
+if (process.env.CANVASTTY_USER_DATA_DIR) {
+  if (!isAbsolute(process.env.CANVASTTY_USER_DATA_DIR)) throw new Error("CANVASTTY_USER_DATA_DIR must be absolute");
+  app.setPath("userData", process.env.CANVASTTY_USER_DATA_DIR);
+  delete process.env.CANVASTTY_USER_DATA_DIR;
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -86,6 +95,26 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 let mainWindow: BrowserWindow | null = null;
+let evenG2: EvenG2Controller | null = null;
+const browserRequests = new Map<string, { resolve():void; reject(error:Error):void; timer:ReturnType<typeof setTimeout> }>();
+ipcMain.on(IPC.evenG2BrowserResponse, (event, response: {requestId?:unknown;ok?:unknown}) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || !response || typeof response.requestId !== "string" || typeof response.ok !== "boolean") return;
+  const request = browserRequests.get(response.requestId); if (!request) return;
+  clearTimeout(request.timer); browserRequests.delete(response.requestId);
+  if (response.ok) request.resolve(); else request.reject(new Error("Browser could not be shown"));
+});
+async function showCompanionBrowser():Promise<{title:string;url:string}> {
+  const window = mainWindow;
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed() || !browserService) throw new Error("Window unavailable");
+  if (browserRequests.size) throw new Error("Browser is opening");
+  window.show(); window.focus();
+  await new Promise<void>((resolve,reject) => {
+    const id=randomUUID(), timer=setTimeout(()=>{browserRequests.delete(id);reject(new Error("Browser display timeout"));},12000);
+    browserRequests.set(id,{resolve,reject,timer});window.webContents.send(IPC.evenG2BrowserRequest,id);
+  });
+  const state=browserService.getState(), tab=state.tabs.find(tab=>tab.id===state.activeTabId);
+  return {title:tab?.title||"Browser",url:tab?.url||""};
+}
 let terminalManager: TerminalManager | null = null;
 let agentControl: AgentControlGateway | null = null;
 let limitsService: LimitsService | null = null;
@@ -247,7 +276,7 @@ async function initializeServices(): Promise<void> {
     },
     (state) => {
       browserService?.setCanvasNavigationActive(state.navigationActive);
-      if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
         mainWindow.webContents.send(IPC.canvasNavigationOverrideState, state);
       }
     }
@@ -313,6 +342,7 @@ async function initializeServices(): Promise<void> {
           ...(signal.turnId ? { requestId: signal.turnId } : {})
         });
         agentControl?.onSignal(terminalSessionId, signal);
+        if (signal.lastAssistantMessage !== undefined) evenG2?.answer(terminalSessionId, signal.lastAssistantMessage, signal.turnId);
       }
     });
     await runtimeGateway.start();
@@ -354,7 +384,8 @@ async function initializeServices(): Promise<void> {
 
   terminalManager = new TerminalManager((channel, payload) => {
     agentControl?.observe(channel, payload);
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    evenG2?.observe(channel, payload);
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
       mainWindow.webContents.send(channel, payload);
     }
     // Attention notifications ride the session-status stream, never the output
@@ -405,6 +436,21 @@ async function initializeServices(): Promise<void> {
     }
   }
   limitsService = new LimitsService(providerClis, app.getVersion());
+  evenG2 = new EvenG2Controller({
+    userDataPath, terminals: terminalManager,
+    localDiscovery: process.platform === "darwin",
+    defaultWorkspace: join(app.getPath("documents"), "CanvasTTY Projects"),
+    bundledSpeech: process.platform === "darwin" ? (app.isPackaged ? join(process.resourcesPath, "companion/speech/canvastty-speech") : join(app.getAppPath(), "artifacts/companion-speech", process.arch, "canvastty-speech")) : undefined,
+    webRoot: app.isPackaged ? join(process.resourcesPath,"even-g2-web") : join(app.getAppPath(),"integrations/even-g2/dist"),
+    speechWorker: app.isPackaged ? join(process.resourcesPath,"companion/asr_worker.py") : join(app.getAppPath(),"src/main/services/companion/asr_worker.py"),
+    limits: () => limitsService!.get(), openBrowser: showCompanionBrowser
+  });
+  await evenG2.load();
+  const assertCompanionSender = (event: Electron.IpcMainInvokeEvent):void => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) throw new Error("Untrusted companion caller");
+  };
+  ipcMain.handle(IPC.evenG2State, event => { assertCompanionSender(event); return evenG2!.state(); });
+  ipcMain.handle(IPC.evenG2Command, async (event, command) => { assertCompanionSender(event); return evenG2!.command(command); });
   githubAuth = new GithubAuthService(app.getPath("userData"), undefined, {
     fetcher: (input, init) => net.fetch(input, init)
   });
@@ -756,7 +802,7 @@ if (hasSingleInstanceLock) {
     });
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) void startApplication();
+    if (app.isReady() && !shutdownRunning && BrowserWindow.getAllWindows().length === 0) void startApplication();
   });
 
   // The rejected second launch exits silently (the lock is never released), so
@@ -806,6 +852,9 @@ void IPC.terminalData;
 
 async function shutdownServices(): Promise<void> {
   if (agentControl) await Promise.allSettled([agentControl.close()]);
+  for (const request of browserRequests.values()) { clearTimeout(request.timer); request.reject(new Error("App closing")); }
+  browserRequests.clear();
+  await evenG2?.close();
   if (terminalManager) await terminalManager.shutdown();
   limitsService?.dispose();
   if (agentGateway) await Promise.allSettled([agentGateway.close()]);

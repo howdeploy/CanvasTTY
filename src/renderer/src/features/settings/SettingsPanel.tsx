@@ -1,3 +1,4 @@
+import { EvenG2Controls } from "./EvenG2Controls";
 import { useEffect, useState } from "react";
 import appManifest from "../../../../../package.json";
 import type {
@@ -680,6 +681,7 @@ export function SettingsPanel({
 
           {section === "controls" && (
             <>
+              <EvenG2Controls locale={locale} />
               <SettingGroup label={t(locale, "focusActivation")}>
                 <Segmented
                   value={settings.focusActivation}

@@ -1,0 +1,35 @@
+{
+  "package_id": "ai.nexcore.canvastty.g2.home",
+  "edition": "202601",
+  "supported_languages": [
+    "en"
+  ],
+  "name": "CanvasTTY G2",
+  "version": "0.5.6",
+  "min_app_version": "2.2.9",
+  "min_sdk_version": "0.0.14",
+  "entrypoint": "index.html",
+  "icon": "app-icon.png",
+  "author": "NEXCORE",
+  "description": "Companion for CanvasTTY: shared sessions, paged answers and voice from Even G2.",
+  "permissions": [
+    {
+      "name": "g2-microphone",
+      "desc": "Glasses microphone during explicit push-to-talk"
+    },
+    {
+      "name": "network",
+      "desc": "Connect to the configured CanvasTTY bridge.",
+      "whitelist": [
+        "http://canvastty.local:3481",
+        "http://canvastty-2.local:3481",
+        "http://canvastty-3.local:3481",
+        "http://canvastty-4.local:3481",
+        "http://canvastty-5.local:3481",
+        "http://canvastty-6.local:3481",
+        "http://canvastty-7.local:3481",
+        "http://canvastty-8.local:3481"
+      ]
+    }
+  ]
+}

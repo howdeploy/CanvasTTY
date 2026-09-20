@@ -16,7 +16,7 @@
   "scripts": {
     "control": "node scripts/canvastty-control.mjs",
     "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
+    "build": "npm run build:speech && npm run build:even && npm run typecheck && electron-vite build",
     "package": "npm run build && electron-builder --dir",
     "package:linux": "npm run build && electron-builder --linux AppImage deb --publish never",
     "prepackage:win": "node scripts/build-windows-agent-pipe-host.mjs --require-windows --self-test",
@@ -35,7 +35,13 @@
     "test:windows-pipe-host": "node scripts/build-windows-agent-pipe-host.mjs --require-windows --self-test",
     "test": "node --test --test-concurrency=1 --test-reporter=tap tests/*.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "postinstall": "install-electron && electron-rebuild -f -w node-pty && node scripts/build-windows-agent-pipe-host.mjs"
+    "postinstall": "install-electron && electron-rebuild -f -w node-pty && node scripts/build-windows-agent-pipe-host.mjs",
+    "build:even": "npm run build --workspace integrations/even-g2",
+    "test:even": "npm test --workspace integrations/even-g2",
+    "pack:even:local": "npm run pack --workspace integrations/even-g2 -- --local-development",
+    "predev": "npm run build:even",
+    "build:speech": "node scripts/build-companion-speech.mjs",
+    "pack:even": "npm run pack --workspace integrations/even-g2"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.11.0",
@@ -48,6 +54,7 @@
     "node-pty": "1.1.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "secure-remote-password": "0.3.1",
     "yaml": "2.9.0"
   },
   "devDependencies": {
@@ -70,5 +77,8 @@
     "esbuild@0.25.12": true,
     "esbuild@0.28.1": true,
     "node-pty@1.1.0": true
-  }
+  },
+  "workspaces": [
+    "integrations/even-g2"
+  ]
 }

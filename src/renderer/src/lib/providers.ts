@@ -1,3 +1,4 @@
+import { PROVIDER_LABELS } from "../../../shared/contracts.ts";
 import type { AgentProviderId, AppSettings, LimitProviderId, ProviderId } from "../../../shared/contracts";
 import type { TranslationKey } from "./i18n";
 
@@ -9,16 +10,16 @@ export interface ProviderDefinition {
 }
 
 export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
-  terminal: { id: "terminal", label: "Terminal" },
-  codex: { id: "codex", label: "Codex", dangerKey: "dangerCodex" },
-  claude: { id: "claude", label: "Claude", dangerKey: "dangerClaude" },
-  qwen: { id: "qwen", label: "Qwen Code", dangerKey: "dangerQwen" },
-  kimi: { id: "kimi", label: "Kimi", dangerKey: "dangerKimi" },
-  opencode: { id: "opencode", label: "OpenCode", limitsLabel: "OpenCode Go", dangerKey: "dangerOpenCode" },
-  hermes: { id: "hermes", label: "Hermes", dangerKey: "dangerHermes" },
-  grok: { id: "grok", label: "Grok Build", dangerKey: "dangerGrok" },
-  omp: { id: "omp", label: "OMP", dangerKey: "dangerOmp" },
-  pi: { id: "pi", label: "Pi", dangerKey: "dangerPi" }
+  terminal: { id: "terminal", label: PROVIDER_LABELS.terminal },
+  codex: { id: "codex", label: PROVIDER_LABELS.codex, dangerKey: "dangerCodex" },
+  claude: { id: "claude", label: PROVIDER_LABELS.claude, dangerKey: "dangerClaude" },
+  qwen: { id: "qwen", label: PROVIDER_LABELS.qwen, dangerKey: "dangerQwen" },
+  kimi: { id: "kimi", label: PROVIDER_LABELS.kimi, dangerKey: "dangerKimi" },
+  opencode: { id: "opencode", label: PROVIDER_LABELS.opencode, limitsLabel: "OpenCode Go", dangerKey: "dangerOpenCode" },
+  hermes: { id: "hermes", label: PROVIDER_LABELS.hermes, dangerKey: "dangerHermes" },
+  grok: { id: "grok", label: PROVIDER_LABELS.grok, dangerKey: "dangerGrok" },
+  omp: { id: "omp", label: PROVIDER_LABELS.omp, dangerKey: "dangerOmp" },
+  pi: { id: "pi", label: PROVIDER_LABELS.pi, dangerKey: "dangerPi" }
 };
 
 export const AGENT_PROVIDERS: AgentProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"];

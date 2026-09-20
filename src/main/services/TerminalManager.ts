@@ -174,6 +174,8 @@ export class TerminalManager {
     const origin = this.emittingFailureOrigin;
     this.emittingFailureOrigin = null;
     return origin;
+  }
+
   listMetadata(): SessionMetadata[] {
     return [...this.sessions.values()].map((session) => structuredClone(session.metadata));
   }

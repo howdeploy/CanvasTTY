@@ -26,6 +26,8 @@ jobs:
         run: npm run audit:secrets
       - name: Run tests
         run: npm test
+      - name: Test Even G2 companion
+        run: npm run test:even
       - name: Type-check
         run: npm run typecheck
       - name: Build production bundles

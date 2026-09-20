@@ -29,6 +29,7 @@ export interface RuntimeLifecycleSignal {
   event: string;
   turnId: string | null;
   result?: { text: string; truncated: boolean };
+  lastAssistantMessage?: string;
 }
 
 export interface RuntimeSessionCapability {
@@ -55,6 +56,7 @@ interface ParsedLifecycleMessage {
   event: string;
   turnId: string | null;
   result?: { text: string; truncated: boolean };
+  lastAssistantMessage?: string;
 }
 
 export interface RuntimeGatewayOptions {
@@ -245,6 +247,7 @@ export class RuntimeGateway {
       turnId: message.turnId,
       ...(message.result === undefined ? {} : { result: message.result })
     };
+    if(message.lastAssistantMessage!==undefined)signal.lastAssistantMessage=message.lastAssistantMessage;
     lease.latest = signal;
     this.onSignal?.(message.terminalSessionId, signal);
   }
@@ -252,7 +255,7 @@ export class RuntimeGateway {
 
 function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
   if (!isRecord(value)) throw new Error("Runtime message must be an object.");
-  const keys = Object.keys(value).sort();
+  const keys = Object.keys(value).filter(key=>key!=='lastAssistantMessage').sort();
   const expected = [
     "capabilityToken", "event", "provider", "state", "terminalSessionId", "turnId", "type", "v"
   ];
@@ -285,6 +288,10 @@ function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
     || typeof value.result.text !== "string" || value.result.text.length > MAX_RESULT_CHARS
     || typeof value.result.truncated !== "boolean"
   )) throw new Error("Runtime result is invalid.");
+  if (value.lastAssistantMessage !== undefined && (
+    value.provider !== "codex" || value.event !== "Stop" || value.state !== "idle"
+    || typeof value.lastAssistantMessage !== "string" || value.lastAssistantMessage.length > 4000
+  )) throw new Error("Invalid final-answer signal");
   return value as unknown as ParsedLifecycleMessage;
 }
 

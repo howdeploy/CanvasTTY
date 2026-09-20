@@ -57,6 +57,10 @@ extraResources:
     to: agent/orchestrator
     filter:
       - SKILL.md
+  - from: integrations/even-g2/dist
+    to: even-g2-web
+  - from: src/main/services/companion/asr_worker.py
+    to: companion/asr_worker.py
   - from: src/agent-browser
     to: agent-browser
     filter:
@@ -106,6 +110,9 @@ portable:
   artifactName: ${productName}-${version}-windows-${arch}-portable.${ext}
 
 mac:
+  extraResources:
+    - from: artifacts/companion-speech/${arch}
+      to: companion/speech
   icon: build/icon.png
   category: public.app-category.developer-tools
   # A free distribution has no Developer ID identity. Sign the bundle explicitly

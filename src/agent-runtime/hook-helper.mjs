@@ -35,7 +35,9 @@ if (captureResult && state === "idle" && event === "Stop" && typeof input?.last_
   if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0, -1);
   result = { text, truncated: text.length < input.last_assistant_message.length };
 }
-await reportLifecycle({ state, event, turnId, ...(result === undefined ? {} : { result }) });
+const lastAssistantMessage = event === "Stop" && typeof input?.last_assistant_message === "string"
+  ? input.last_assistant_message.slice(0, 4000) : undefined;
+await reportLifecycle({ state, event, turnId, ...(result === undefined ? {} : { result }), lastAssistantMessage });
 
 function firstString(...values) {
   return values.find((value) => typeof value === "string" && value.length > 0) ?? null;

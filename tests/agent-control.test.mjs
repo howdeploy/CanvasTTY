@@ -12,7 +12,14 @@ import { AgentControlGateway, codexComposerReady } from "../src/main/services/ag
 import { TerminalManager, terminalEnvironment } from "../src/main/services/TerminalManager.ts";
 import { TerminalSessionStore } from "../src/main/services/TerminalSessionStore.ts";
 import { RuntimeGateway } from "../src/main/services/agent-runtime/RuntimeGateway.ts";
-import { AGENT_RUNTIME_ENV, CAPTURE_RESULT_ENV, MAX_RESULT_CHARS } from "../src/agent-runtime/runtime-protocol.mjs";
+import {
+  AGENT_RUNTIME_ENV,
+  CAPTURE_ANSWER_ENV,
+  CAPTURE_RESULT_ENV,
+  MAX_ANSWER_CHARS,
+  MAX_RESULT_CHARS,
+  MAX_RUNTIME_MESSAGE_BYTES
+} from "../src/agent-runtime/runtime-protocol.mjs";
 
 const localSocket = { skip: process.platform === "win32" ? "Unix socket tests; native Windows pipe relay has its own suite." : false };
 const PROMPT = "\x1b[2J\x1b[H>_ OpenAI Codex\r\nmodel: test\r\npermissions: YOLO mode\r\n\r\n› Ask Codex to do anything";
@@ -254,21 +261,39 @@ test("opt-in hook result capture is authenticated, bounded and absent for ordina
   const gateway = new RuntimeGateway({ runtimeDirectory: root, onSignal: (id, signal) => signals.push({ id, signal }) });
   await gateway.start();
   t.after(() => gateway.close());
-  async function hook(id, capture, leaseCapture, text) {
-    const cap = gateway.registerSession(id, "codex", leaseCapture);
+  async function hook(id, capture, leaseCapture, text, answer = false, leaseAnswer = false) {
+    const cap = gateway.registerSession(id, "codex", leaseCapture, leaseAnswer);
     const env = { ...process.env, [AGENT_RUNTIME_ENV.address]: cap.address,
       [AGENT_RUNTIME_ENV.terminalSessionId]: cap.terminalSessionId, [AGENT_RUNTIME_ENV.provider]: cap.provider,
-      [AGENT_RUNTIME_ENV.capabilityToken]: cap.capabilityToken, [CAPTURE_RESULT_ENV]: capture ? "1" : "0" };
+      [AGENT_RUNTIME_ENV.capabilityToken]: cap.capabilityToken, [CAPTURE_RESULT_ENV]: capture ? "1" : "0",
+      [CAPTURE_ANSWER_ENV]: answer ? "1" : "0" };
     const child = spawn(process.execPath, [resolve("src/agent-runtime/hook-helper.mjs"), "idle", "Stop"], { env, stdio: ["pipe", "ignore", "pipe"] });
     child.stdin.end(JSON.stringify({ turn_id: "turn", last_assistant_message: text }));
     await new Promise((done, reject) => { child.on("error", reject); child.on("exit", (code) => code === 0 ? done() : reject(new Error("Hook failed"))); });
   }
   await hook("normal", false, false, "private ordinary response");
   assert.equal(signals[0].signal.result, undefined);
+  assert.equal(signals[0].signal.lastAssistantMessage, undefined);
+  assert.equal(JSON.stringify(signals).includes("private ordinary response"), false);
   await hook("controlled", true, true, "x".repeat(MAX_RESULT_CHARS + 100));
   assert.equal(signals[1].signal.result.text.length, MAX_RESULT_CHARS);
   assert.equal(signals[1].signal.result.truncated, true);
   await hook("not-authorized", true, false, "must not arrive");
   assert.equal(signals.length, 2);
   assert.equal(terminalEnvironment({ [CAPTURE_RESULT_ENV]: "1", PATH: "/bin" })[CAPTURE_RESULT_ENV], undefined);
+  assert.equal(terminalEnvironment({ [CAPTURE_ANSWER_ENV]: "1", PATH: "/bin" })[CAPTURE_ANSWER_ENV], undefined);
+
+  // A Stop payload larger than the wire cap still reports the turn for an ordinary session.
+  await hook("large", false, false, "z".repeat(MAX_RUNTIME_MESSAGE_BYTES + 1024));
+  assert.equal(signals[2].signal.turnId, "turn");
+  assert.equal(signals[2].signal.result, undefined);
+  assert.equal(signals[2].signal.lastAssistantMessage, undefined);
+
+  // Companion answer capture is a separate opt-in: bounded, and refused without its lease grant.
+  await hook("companion", false, false, "y".repeat(MAX_ANSWER_CHARS + 5), true, true);
+  assert.equal(signals[3].signal.result, undefined);
+  assert.equal(signals[3].signal.lastAssistantMessage.length, MAX_ANSWER_CHARS);
+  assert.equal(gateway.currentStatus("companion"), "idle");
+  await hook("companion-unauthorized", false, false, "must not arrive either", true, false);
+  assert.equal(signals.length, 4);
 });

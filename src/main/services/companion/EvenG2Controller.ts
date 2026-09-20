@@ -353,6 +353,10 @@ export class EvenG2Controller {
     this.saveQueue = operation.catch(() => undefined);
     return operation;
   }
+  /** Whether the companion is switched on; decides answer capture for sessions spawned now. */
+  enabled(): boolean {
+    return this.config.enabled;
+  }
   state(): EvenG2State {
     if (this.pairing && Date.now() > this.pairing.expiresAt)
       this.pairing = null;

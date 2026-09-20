@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderId } from "../../../shared/contracts.ts";
 import {
+  MAX_ANSWER_CHARS,
   MAX_RUNTIME_MESSAGE_BYTES,
   MAX_RESULT_CHARS,
   RUNTIME_PROTOCOL_VERSION,
@@ -46,6 +47,7 @@ interface RuntimeLease {
   activeTurnId: string | null;
   latest: RuntimeLifecycleSignal | null;
   captureResult: boolean;
+  captureAnswer: boolean;
 }
 
 interface ParsedLifecycleMessage {
@@ -133,7 +135,8 @@ export class RuntimeGateway {
   registerSession(
     terminalSessionId: string,
     provider: Exclude<ProviderId, "terminal">,
-    captureResult = false
+    captureResult = false,
+    captureAnswer = false
   ): RuntimeSessionCapability {
     if (!this.endpoint || (!this.server && !this.windowsTransport?.isRunning)) {
       throw new Error("Agent runtime gateway must be started before launching agents.");
@@ -152,7 +155,8 @@ export class RuntimeGateway {
       tokenDigest: digest(capabilityToken),
       activeTurnId: null,
       latest: null,
-      captureResult
+      captureResult,
+      captureAnswer
     });
     return { address: this.endpoint, terminalSessionId, provider, capabilityToken };
   }
@@ -231,6 +235,9 @@ export class RuntimeGateway {
     supplied.fill(0);
     if (!valid) throw new Error("Runtime capability is invalid.");
     if (message.result && !lease.captureResult) throw new Error("Result capture is not enabled for this session.");
+    if (message.lastAssistantMessage !== undefined && !lease.captureAnswer) {
+      throw new Error("Answer capture is not enabled for this session.");
+    }
 
     if (message.turnId && isTurnStart(message.event)) {
       lease.activeTurnId = message.turnId;
@@ -245,17 +252,19 @@ export class RuntimeGateway {
       state: message.state,
       event: message.event,
       turnId: message.turnId,
-      ...(message.result === undefined ? {} : { result: message.result })
+      ...(message.result === undefined ? {} : { result: message.result }),
+      ...(message.lastAssistantMessage === undefined ? {} : { lastAssistantMessage: message.lastAssistantMessage })
     };
-    if(message.lastAssistantMessage!==undefined)signal.lastAssistantMessage=message.lastAssistantMessage;
-    lease.latest = signal;
+    // The lease remembers state only; captured text is handed to the consumer once
+    // and never kept where a later status read could surface it.
+    lease.latest = { state: signal.state, event: signal.event, turnId: signal.turnId };
     this.onSignal?.(message.terminalSessionId, signal);
   }
 }
 
 function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
   if (!isRecord(value)) throw new Error("Runtime message must be an object.");
-  const keys = Object.keys(value).filter(key=>key!=='lastAssistantMessage').sort();
+  const keys = Object.keys(value).filter((key) => key !== "lastAssistantMessage").sort();
   const expected = [
     "capabilityToken", "event", "provider", "state", "terminalSessionId", "turnId", "type", "v"
   ];
@@ -290,8 +299,8 @@ function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
   )) throw new Error("Runtime result is invalid.");
   if (value.lastAssistantMessage !== undefined && (
     value.provider !== "codex" || value.event !== "Stop" || value.state !== "idle"
-    || typeof value.lastAssistantMessage !== "string" || value.lastAssistantMessage.length > 4000
-  )) throw new Error("Invalid final-answer signal");
+    || typeof value.lastAssistantMessage !== "string" || value.lastAssistantMessage.length > MAX_ANSWER_CHARS
+  )) throw new Error("Runtime lastAssistantMessage is invalid.");
   return value as unknown as ParsedLifecycleMessage;
 }
 

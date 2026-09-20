@@ -300,7 +300,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const activeLayerIds = useMemo(() => [
     ...renderedSessions.map((session) => terminalLayerId(session.id)),
     ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)).map((instance) => pluginLayerId(instance.id)),
-    ...renderedBrowserCanvases.map((entry) => browserLayerId(entry.id)),
+    ...renderedBrowserCanvases.map((entry) => browserCardLayerId(entry.id)),
     ...renderedStickyNotes.map((note) => noteLayerId(note.id))
   ], [renderablePluginIds, renderedBrowserCanvases, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
   const [layerOrder, setLayerOrder] = useState<string[]>(activeLayerIds);
@@ -316,7 +316,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     for (const instance of renderedPluginCanvas) {
       if (renderablePluginIds.has(instance.id)) result.set(pluginLayerId(instance.id), instance);
     }
-    for (const entry of renderedBrowserCanvases) result.set(browserLayerId(entry.id), entry);
+    for (const entry of renderedBrowserCanvases) result.set(browserCardLayerId(entry.id), entry);
     for (const note of renderedStickyNotes) result.set(noteLayerId(note.id), note);
     return result;
   }, [renderablePluginIds, renderedBrowserCanvases, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
@@ -639,7 +639,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     }
     const browser = renderedBrowserCanvases.find((candidate) => browserWindowWidgetId(candidate.id) === target);
     if (!browser) return;
-    raiseLayer(browserLayerId(browser.id));
+    raiseLayer(browserCardLayerId(browser.id));
     focusController.focus(target, "explicit");
     onFocusBrowser(browser.id);
   }, [focusCandidates, focusController, onFocusBrowser, onFocusPluginCanvas, onFocusSession,
@@ -902,7 +902,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             const windowState = browser.windows?.find((candidate) => candidate.id === entry.id);
             const snapshot = windowState?.snapshot ?? (entry.id === "default" ? browser : null);
             if (!snapshot) return null;
-            const layerId = browserLayerId(entry.id);
+            const layerId = browserCardLayerId(entry.id);
             const bounds = withGroupNudge(layerId, entry);
             const browserScreenRect = canvasScreenRect(bounds, camera);
             const browserUnderOverlay = overlayRects.some((rect) => boundsOverlap(browserScreenRect, rect));
@@ -1128,7 +1128,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             {settings.minimapPlacement === placement && (
               <CanvasMinimap viewport={viewport} camera={camera} homeBounds={homeBounds}
                 canvasRegions={renderedCanvasRegions} sessions={renderedSessions} stickyNotes={renderedStickyNotes}
-                pluginCanvas={renderedPluginCanvas} browserCanvas={null} browserCanvases={renderedBrowserCanvases}
+                pluginCanvas={renderedPluginCanvas} browserCanvases={renderedBrowserCanvases}
                 locale={settings.locale} interactionMode={settings.minimapInteractionMode}
                 onCameraChange={commitCamera} />
             )}
@@ -1179,7 +1179,7 @@ function containedBounds<T extends SessionBounds & { id: string }>(
     .map((item) => [item.id, copyBounds(item)]));
 }
 
-const browserLayerId = browserWindowWidgetId;
+const browserCardLayerId = browserWindowWidgetId;
 
 function shouldKeepCanvasContextMenu(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest(

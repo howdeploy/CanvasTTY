@@ -1,6 +1,7 @@
 import { createConnection } from "node:net";
 import {
   AGENT_RUNTIME_ENV,
+  MAX_ANSWER_CHARS,
   MAX_RUNTIME_MESSAGE_BYTES,
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_STATES
@@ -8,7 +9,7 @@ import {
 
 const CONNECT_TIMEOUT_MS = 1_000;
 
-export async function reportLifecycle({ state, event, turnId = null, result, lastAssistantMessage = undefined }) {
+export async function reportLifecycle({ state, event, turnId = null, result, lastAssistantMessage }) {
   if (!RUNTIME_STATES.includes(state)) return false;
   if (typeof event !== "string" || event.length === 0 || event.length > 80) return false;
   const address = process.env[AGENT_RUNTIME_ENV.address];
@@ -28,7 +29,11 @@ export async function reportLifecycle({ state, event, turnId = null, result, las
     turnId: normalizedId(turnId),
     ...(result === undefined ? {} : { result })
   };
-  if(provider==='codex'&&event==='Stop'&&typeof lastAssistantMessage==='string') message.lastAssistantMessage=lastAssistantMessage.slice(0,4000);
+  // The final answer only rides a Codex Stop event; anything else is dropped here
+  // so a misconfigured hook can never smuggle page text under that field.
+  if (provider === "codex" && event === "Stop" && typeof lastAssistantMessage === "string") {
+    message.lastAssistantMessage = lastAssistantMessage.slice(0, MAX_ANSWER_CHARS);
+  }
   const payload = Buffer.from(`${JSON.stringify(message)}\n`, "utf8");
   if (payload.length > MAX_RUNTIME_MESSAGE_BYTES) return false;
 

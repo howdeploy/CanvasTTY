@@ -29,7 +29,7 @@ import type {
   AgentRuntimeLaunchCoordinator,
   PreparedAgentRuntimePtyLaunch
 } from "./agent-runtime/AgentRuntimeBridge.ts";
-import { AGENT_RUNTIME_ENV, CAPTURE_RESULT_ENV } from "../../agent-runtime/runtime-protocol.mjs";
+import { AGENT_RUNTIME_ENV, CAPTURE_ANSWER_ENV, CAPTURE_RESULT_ENV } from "../../agent-runtime/runtime-protocol.mjs";
 import { mergeOpenCodeLaunchEnvironment } from "./agent-runtime/ProviderRuntimeLaunch.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
@@ -96,6 +96,8 @@ export class TerminalManager {
   private readonly agentBrowser?: AgentBrowserLaunchCoordinator;
   private readonly agentRuntime?: AgentRuntimeLaunchCoordinator;
   private readonly spawnPty: typeof pty.spawn;
+  /** Whether a Codex session spawned now should report its bounded final answers. */
+  private readonly captureAnswer: (provider: ProviderId) => boolean;
   // Renderer-reported card visibility, keyed by session and holding the
   // outputOffset at the moment it was hidden: the last offset the card saw.
   // A hidden session's batch queue is always empty (see setVisible/queueOutput),
@@ -116,8 +118,10 @@ export class TerminalManager {
     agentBrowser?: AgentBrowserLaunchCoordinator,
     agentRuntime?: AgentRuntimeLaunchCoordinator,
     lifecycleHooksEnabled = true,
-    spawnPty: typeof pty.spawn = pty.spawn
+    spawnPty: typeof pty.spawn = pty.spawn,
+    captureAnswer: (provider: ProviderId) => boolean = () => false
   ) {
+    this.captureAnswer = captureAnswer;
     this.emit = emit;
     this.providerClis = providerClis;
     this.agentBrowser = agentBrowser;
@@ -641,7 +645,10 @@ export class TerminalManager {
     const agentRuntime = provider === "terminal"
       ? null
       : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd,
-        ...(captureResult ? { captureResult: true } : {}) }) ?? null;
+        ...(captureResult ? { captureResult: true } : {}),
+        // Decided at spawn time, like result capture: the answer of a session
+        // launched while no companion was enabled stays with that session.
+        ...(provider === "codex" && this.captureAnswer(provider) ? { captureAnswer: true } : {}) }) ?? null;
     let agentBrowser: PreparedAgentBrowserPtyLaunch | null = null;
     try {
       // omp and pi take no browser bridge, exactly like grok: the adapter chain below
@@ -746,7 +753,8 @@ export function terminalEnvironment(
   const reserved = new Set<string>([
     ...Object.values(AGENT_BROWSER_ENV),
     ...Object.values(AGENT_RUNTIME_ENV),
-    CAPTURE_RESULT_ENV
+    CAPTURE_RESULT_ENV,
+    CAPTURE_ANSWER_ENV
   ]);
   const environment = Object.fromEntries(
     Object.entries(source).filter((entry): entry is [string, string] => (

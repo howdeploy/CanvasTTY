@@ -1,5 +1,5 @@
 import type { ProviderId } from "../../../shared/contracts.ts";
-import { AGENT_RUNTIME_ENV, CAPTURE_RESULT_ENV } from "../../../agent-runtime/runtime-protocol.mjs";
+import { AGENT_RUNTIME_ENV, CAPTURE_ANSWER_ENV, CAPTURE_RESULT_ENV } from "../../../agent-runtime/runtime-protocol.mjs";
 import type { RuntimeGateway, RuntimeLifecycleState } from "./RuntimeGateway.ts";
 import {
   ProviderRuntimeLaunchAdapters,
@@ -11,6 +11,8 @@ export interface PrepareAgentRuntimeLaunchInput {
   provider: Exclude<ProviderId, "terminal">;
   cwd: string;
   captureResult?: boolean;
+  /** Report the bounded final answer of each turn for a companion display. */
+  captureAnswer?: boolean;
 }
 
 export interface PreparedAgentRuntimePtyLaunch {
@@ -44,7 +46,8 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
 
   prepareLaunch(input: PrepareAgentRuntimeLaunchInput): PreparedAgentRuntimePtyLaunch {
     const capability = this.coreHooksEnabled
-      ? this.gateway.registerSession(input.terminalSessionId, input.provider, input.captureResult === true)
+      ? this.gateway.registerSession(
+        input.terminalSessionId, input.provider, input.captureResult === true, input.captureAnswer === true)
       : null;
     let prepared;
     try {
@@ -60,6 +63,7 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
       environment: {
         ...prepared.environment,
         ...(input.captureResult ? { [CAPTURE_RESULT_ENV]: "1" } : {}),
+        ...(input.captureAnswer ? { [CAPTURE_ANSWER_ENV]: "1" } : {}),
         ...(capability ? {
           [AGENT_RUNTIME_ENV.address]: capability.address,
           [AGENT_RUNTIME_ENV.terminalSessionId]: capability.terminalSessionId,

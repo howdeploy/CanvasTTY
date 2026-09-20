@@ -2,7 +2,6 @@ import type { BrowserCanvasEntry } from "../../../../shared/contracts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import type {
-  BrowserCanvasState,
   CameraState,
   CanvasRegion,
   LocaleId,
@@ -32,8 +31,7 @@ interface CanvasMinimapProps {
   sessions: readonly SessionSnapshot[];
   stickyNotes: readonly StickyNote[];
   pluginCanvas: readonly PluginCanvasInstance[];
-  browserCanvas: BrowserCanvasState | null;
-  browserCanvases?: BrowserCanvasEntry[];
+  browserCanvases: BrowserCanvasEntry[];
   locale: LocaleId;
   interactionMode: MinimapInteractionMode;
   onCameraChange(camera: CameraState): void;
@@ -60,7 +58,6 @@ export function CanvasMinimap({
   sessions,
   stickyNotes,
   pluginCanvas,
-  browserCanvas,
   browserCanvases,
   locale,
   interactionMode,
@@ -109,8 +106,8 @@ export function CanvasMinimap({
     ...sessions.map((session) => ({ id: session.id, kind: "terminal" as const, bounds: session })),
     ...stickyNotes.map((note) => ({ id: note.id, kind: "note" as const, bounds: note })),
     ...pluginCanvas.map((instance) => ({ id: instance.id, kind: "plugin" as const, bounds: instance })),
-    ...(browserCanvases ?? (browserCanvas ? [{ id: "default", ...browserCanvas }] : [])).map((entry) => ({ id: `browser:${entry.id}`, kind: "browser" as const, bounds: entry }))
-  ], [browserCanvas, browserCanvases, pluginCanvas, sessions, stickyNotes]);
+    ...browserCanvases.map((entry) => ({ id: `browser:${entry.id}`, kind: "browser" as const, bounds: entry }))
+  ], [browserCanvases, pluginCanvas, sessions, stickyNotes]);
 
   const applyCamera = (next: CameraState): void => {
     cameraRef.current = next;

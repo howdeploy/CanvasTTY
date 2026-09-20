@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- 新增独立的 Browser 卡片：再次从 HOME 打开 Browser 会创建另一张卡片，拥有自己的标签页、原生视口、焦点/层叠身份和持久化位置。卡片可独立移动、缩放、隐藏和重新打开；小地图、区域移动、框选、方向焦点和分组拖拽都包含每张卡片。代理可使用 `browser_new_window`、`browser_activate_window` 和 `browser_list_windows`，所有浏览器工具都接受 `browserId`，被某个代理占用的卡片会拒绝其他代理。旧的单卡片布局迁移到默认卡片；所有卡片共用同一个 Chromium 网站登录配置。
+- 新增原生 Codex 编排 CLI（`agent-control/canvastty-control.mjs`，文档见 `agent/orchestrator/SKILL.md`），通过 `--agent-control` 或 `CANVASTTY_AGENT_CONTROL=1` 启用：本地控制器在项目目录中创建 Codex 会话、发送任务、按屏幕修订号观察有界的终端输出并收集最终回答。每个控制器只能看到自己创建的会话，授权绑定到会话代次，变更 ID 去重，且只有受控会话会启用经过认证的 Stop-hook 结果捕获。不包含自动批准或删除终端的端点。
+- 新增可选的 Even G2 伴侣（设置 → 控制 → Even G2，伴侣应用位于 `integrations/even-g2`）：Bonjour 发现、带六位码和显式设备批准的短期 SRP-6a 配对、加密的本地请求与音频、按会话授权、眼镜 HUD 上的有界终端展示、通过固定版本的 transcribe.cpp helper 进行本地语音识别（仅 macOS 随包提供），以及通过现有桌面启动器创建会话。Codex 一轮的最终回答只会送达在伴侣启用期间启动的会话：runtime hook 以单独的会话授权上报，限制为 4000 个字符，gateway 会拒绝任何其他会话的该字段。
+
 - 默认 session 现在拒绝浏览器与设备权限：权限请求、权限检查与设备处理器一律拒绝，因此 plugin 窗口和 shell 无法获得摄像头、麦克风、定位或通知权限。内置浏览器仍保留自身独立的 partition 策略。
 - 打包构建新增 Electron fuses 加固：关闭 `NODE_OPTIONS` 环境变量与 CLI inspect 参数，并启用 embedded asar 完整性校验。`runAsNode` 刻意保持启用，因为 provider CLI 与 agent runtime 会通过 `ELECTRON_RUN_AS_NODE` 启动随包分发的 helper 进程；cookie 加密未启用，因为该切换是单向的。
 - 新增 renderer 崩溃恢复：renderer 进程丢失时，main 进程记录原因与退出码并重新加载应用界面，而不是留下空白窗口；终端服务与实时会话在恢复过程中继续存活。utility/GPU 子进程丢失也会被记录。

@@ -413,7 +413,9 @@ async function initializeServices(): Promise<void> {
     } else if (channel === IPC.terminalRemoved && "id" in payload) {
       notifiedAttentionStatus.delete(payload.id);
     }
-  }, providerClis, agentBrowserBridge ?? undefined, agentRuntimeBridge ?? undefined, settings.get().agentLifecycleHooksEnabled);
+  }, providerClis, agentBrowserBridge ?? undefined, agentRuntimeBridge ?? undefined, settings.get().agentLifecycleHooksEnabled,
+  // Final answers reach the runtime hook only for sessions spawned while Even G2 is on.
+  undefined, () => evenG2?.enabled() === true);
   const terminalSessionStore = new TerminalSessionStore(userDataPath);
   terminalManager.configureSessionPersistence(terminalSessionStore, settings.get().restoreTerminalSessions);
   await terminalManager.restorePersistedSessions();

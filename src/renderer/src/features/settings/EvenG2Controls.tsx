@@ -6,6 +6,7 @@ import type {
   EvenG2Command,
 } from "../../../../shared/evenG2";
 import { UiIcon } from "../../components/UiIcon";
+import { t } from "../../lib/i18n";
 import "./evenG2Controls.css";
 
 type Stage = "overview" | "transport" | "scope" | "pair";
@@ -14,8 +15,6 @@ export function EvenG2Controls({
 }: {
   locale: LocaleId;
 }): React.JSX.Element {
-  const ru = locale === "ru";
-  const text = (en: string, russian: string) => (ru ? russian : en);
   const [state, setState] = useState<EvenG2State | null>(null);
   const [draft, setDraft] = useState<EvenG2Config | null>(null);
   const [editing, setEditing] = useState(false);
@@ -60,10 +59,7 @@ export function EvenG2Controls({
         .catch(() => {
           if (active)
             setError(
-              text(
-                "Connection settings unavailable.",
-                "Настройки подключения недоступны.",
-              ),
+              t(locale, "evenG2ConnectionSettingsUnavailable"),
             );
         });
     read();
@@ -95,10 +91,7 @@ export function EvenG2Controls({
       return next;
     } catch {
       setError(
-        text(
-          "The action was not completed. Check the connection and settings.",
-          "Действие не завершено. Проверьте соединение и параметры.",
-        ),
+        t(locale, "evenG2TheActionWasNotCompleted"),
       );
       return null;
     } finally {
@@ -144,10 +137,7 @@ export function EvenG2Controls({
         <h3>Even G2</h3>
         <p>
           {error ||
-            text(
-              "Loading connection settings…",
-              "Загрузка настроек подключения…",
-            )}
+            t(locale, "evenG2LoadingConnectionSettings")}
         </p>
       </section>
     );
@@ -158,9 +148,9 @@ export function EvenG2Controls({
     (address) => address.name === draft.interfaceName,
   );
   const steps: Array<[Stage, string]> = [
-    ["transport", text("Connection", "Связь")],
-    ["scope", text("Access", "Доступ")],
-    ["pair", text("Connect", "Подключение")],
+    ["transport", t(locale, "evenG2Connection")],
+    ["scope", t(locale, "evenG2Access")],
+    ["pair", t(locale, "evenG2Connect")],
   ];
   return (
     <section className="g2-settings" aria-label="Even G2">
@@ -201,13 +191,10 @@ export function EvenG2Controls({
         <div>
           <span className="g2-settings__eyebrow">EVEN G2</span>
           <h3>
-            {text("Your sessions. On your glasses.", "Ваши сессии — на очках.")}
+            {t(locale, "evenG2YourSessionsOnYourGlasses")}
           </h3>
           <p>
-            {text(
-              "Read responses, speak to an agent, and control shared terminals.",
-              "Читайте ответы, диктуйте агенту и управляйте выбранными терминалами.",
-            )}
+            {t(locale, "evenG2ReadResponsesSpeakToAn")}
           </p>
         </div>
         <span
@@ -216,10 +203,10 @@ export function EvenG2Controls({
           }
         >
           {activePeers.length
-            ? text("Connected", "Подключено")
+            ? t(locale, "evenG2Connected")
             : state.config.enabled
-              ? text("Enabled", "Включено")
-              : text("Off", "Выключено")}
+              ? t(locale, "evenG2Enabled")
+              : t(locale, "evenG2Off")}
         </span>
       </header>
       {error && (
@@ -231,10 +218,7 @@ export function EvenG2Controls({
         <>
           <div className="g2-settings__entry">
             <p>
-              {text(
-                "Connect once. Choose what your glasses can access.",
-                "Подключите один раз и выберите, что будет доступно с очков.",
-              )}
+              {t(locale, "evenG2ConnectOnceChooseWhatYour")}
             </p>
             <button
               className="g2-primary"
@@ -253,12 +237,12 @@ export function EvenG2Controls({
                 }
               }}
             >
-              {text("Connect Even G2", "Подключить Even G2")}{" "}
+              {t(locale, "evenG2ConnectEvenG2")}{" "}
               <UiIcon name="arrow" />
             </button>
           </div>
           <button onClick={() => setStage("transport")}>
-            {text("Local network settings", "Параметры локальной сети")}
+            {t(locale, "evenG2LocalNetworkSettings")}
           </button>
           {state.peers.map((peer) => (
             <div className="g2-peer" key={peer.id}>
@@ -267,8 +251,8 @@ export function EvenG2Controls({
                   <strong>{peer.name}</strong>
                   <p>
                     {Date.now() - peer.lastSeen < 12000
-                      ? text("Even App is online", "Even App на связи")
-                      : text("Waiting for Even App", "Ожидаю Even App")}
+                      ? t(locale, "evenG2EvenAppIsOnline")
+                      : t(locale, "evenG2WaitingForEvenApp")}
                   </p>
                 </div>
                 <button
@@ -281,7 +265,7 @@ export function EvenG2Controls({
                     setStage("scope");
                   }}
                 >
-                  {text("Manage access", "Изменить доступ")}
+                  {t(locale, "evenG2ManageAccess")}
                 </button>
               </div>
               <div className="g2-checks">
@@ -291,10 +275,10 @@ export function EvenG2Controls({
                       peer.telemetry?.display === "confirmed" ? "pass" : ""
                     }
                   />
-                  {text("Display", "Дисплей")}:{" "}
+                  {t(locale, "evenG2Display")}:{" "}
                   {peer.telemetry?.display === "confirmed"
-                    ? text("acknowledged", "подтверждён")
-                    : text("not checked", "не проверен")}
+                    ? t(locale, "evenG2Acknowledged")
+                    : t(locale, "evenG2NotChecked")}
                 </span>
                 <span>
                   <i
@@ -305,12 +289,12 @@ export function EvenG2Controls({
                         : ""
                     }
                   />
-                  {text("Microphone", "Микрофон")}:{" "}
+                  {t(locale, "evenG2Microphone")}:{" "}
                   {peer.telemetry?.microphone === "unknown"
-                    ? text("unconfirmed", "не подтверждён")
+                    ? t(locale, "evenG2Unconfirmed")
                     : peer.telemetry?.audioBytes
-                      ? text("audio received", "звук получен")
-                      : text("not checked", "не проверен")}
+                      ? t(locale, "evenG2AudioReceived")
+                      : t(locale, "evenG2NotChecked")}
                 </span>
               </div>
               {peer.telemetry?.error && (
@@ -321,7 +305,7 @@ export function EvenG2Controls({
               {!!peer.telemetry?.diagnostics?.length && (
                 <details>
                   <summary>
-                    {text("Device diagnostics", "Диагностика с телефона")}
+                    {t(locale, "evenG2DeviceDiagnostics")}
                   </summary>
                   <pre
                     style={{
@@ -335,21 +319,15 @@ export function EvenG2Controls({
                 </details>
               )}
               <p className="g2-muted">
-                {text(
-                  "In Even App, open Settings → Check microphone. It does not send audio to the agent.",
-                  "В Even App откройте Настройки → Проверить микрофон. Этот тест не отправляет звук агенту.",
-                )}
+                {t(locale, "evenG2InEvenAppOpenSettings")}
               </p>
               {revoke === peer.id ? (
                 <div className="g2-actions">
                   <span>
-                    {text(
-                      "Revoke this device’s access?",
-                      "Отозвать доступ устройства?",
-                    )}
+                    {t(locale, "evenG2RevokeThisDeviceSAccess")}
                   </span>
                   <button onClick={() => setRevoke(null)}>
-                    {text("Cancel", "Отмена")}
+                    {t(locale, "evenG2Cancel")}
                   </button>
                   <button
                     className="g2-danger"
@@ -359,12 +337,12 @@ export function EvenG2Controls({
                       )
                     }
                   >
-                    {text("Revoke", "Отозвать")}
+                    {t(locale, "evenG2Revoke")}
                   </button>
                 </div>
               ) : (
                 <button className="g2-link" onClick={() => setRevoke(peer.id)}>
-                  {text("Disconnect device", "Отключить устройство")}
+                  {t(locale, "evenG2DisconnectDevice")}
                 </button>
               )}
             </div>
@@ -382,10 +360,7 @@ export function EvenG2Controls({
                 })
               }
             >
-              {text(
-                "Turn off Even G2 integration",
-                "Выключить интеграцию Even G2",
-              )}
+              {t(locale, "evenG2TurnOffEvenG2Integration")}
             </button>
           )}
         </>
@@ -393,7 +368,7 @@ export function EvenG2Controls({
         <>
           <nav
             className="g2-steps"
-            aria-label={text("Connection steps", "Шаги подключения")}
+            aria-label={t(locale, "evenG2ConnectionSteps")}
           >
             {steps
               .filter(([id]) => id !== "transport")
@@ -411,46 +386,28 @@ export function EvenG2Controls({
           </nav>
           {stage === "transport" && (
             <div className="g2-settings__body">
-              <h4>{text("Connect to CanvasTTY", "Подключение к CanvasTTY")}</h4>
+              <h4>{t(locale, "evenG2ConnectToCanvasTTY")}</h4>
               <span className="g2-tag">
-                {text(
-                  "Direct local connection",
-                  "Прямое локальное подключение",
-                )}
+                {t(locale, "evenG2DirectLocalConnection")}
               </span>
               <p className="g2-muted">
-                {text(
-                  "CanvasTTY chooses a local network automatically. Both devices must be on the same network.",
-                  "CanvasTTY выбирает локальную сеть автоматически. Телефон и Mac должны быть в одной сети.",
-                )}
+                {t(locale, "evenG2CanvasTTYChoosesALocalNetwork")}
               </p>
               {!draft.publicOrigin && (
                 <>
                   <ol>
                     <li>
-                      {text(
-                        "Connect your phone and computer to the same Wi-Fi network.",
-                        "Подключите телефон и компьютер к одной Wi-Fi-сети.",
-                      )}
+                      {t(locale, "evenG2ConnectYourPhoneAndComputer")}
                     </li>
                     <li>
-                      {text(
-                        "Choose this computer’s address below, then choose which sessions to share.",
-                        "Выберите адрес этого компьютера ниже, затем сессии для доступа с очков.",
-                      )}
+                      {t(locale, "evenG2ChooseThisComputerSAddress")}
                     </li>
                     <li>
-                      {text(
-                        "Enter the code in the installed CanvasTTY G2 app in Even App.",
-                        "Введите код в установленном CanvasTTY G2 в Even App.",
-                      )}
+                      {t(locale, "evenG2EnterTheCodeInThe")}
                     </li>
                   </ol>
                   <label>
-                    {text(
-                      "Computer network address",
-                      "Сетевой адрес компьютера",
-                    )}
+                    {t(locale, "evenG2ComputerNetworkAddress")}
                     <select
                       value={draft.interfaceName}
                       onChange={(event) =>
@@ -458,7 +415,7 @@ export function EvenG2Controls({
                       }
                     >
                       <option value="">
-                        {text("Choose a network", "Выберите сеть")}
+                        {t(locale, "evenG2ChooseANetwork")}
                       </option>
                       {state.transport.addresses.map((address) => (
                         <option key={address.id} value={address.name}>
@@ -472,36 +429,30 @@ export function EvenG2Controls({
               <div className="g2-actions">
                 <span className="g2-muted">
                   {draft.publicOrigin
-                    ? text("HTTPS address selected", "Выбран HTTPS-адрес")
+                    ? t(locale, "evenG2HTTPSAddressSelected")
                     : selected
-                      ? text("Address available", "Адрес доступен")
-                      : text(
-                          "Connect this computer to Wi-Fi",
-                          "Подключите компьютер к Wi-Fi",
-                        )}
+                      ? t(locale, "evenG2AddressAvailable")
+                      : t(locale, "evenG2ConnectThisComputerToWi")}
                 </span>
                 <button disabled={busy} onClick={() => void refresh()}>
-                  {text("Refresh", "Обновить")}
+                  {t(locale, "evenG2Refresh")}
                 </button>
               </div>
               {!draft.publicOrigin && (
                 <p className="g2-muted">
-                  {text(
-                    "This local preview uses HTTP on the selected interface. Use a trusted Wi-Fi network. Android debugging and an external server are not required.",
-                    "Локальный режим использует HTTP на выбранном сетевом интерфейсе. Используйте доверенную Wi-Fi-сеть. Отладка Android и внешний сервер не требуются.",
-                  )}
+                  {t(locale, "evenG2ThisLocalPreviewUsesHTTP")}
                 </p>
               )}
               <div className="g2-actions">
                 <button onClick={() => void cancel()}>
-                  {text("Cancel", "Отмена")}
+                  {t(locale, "evenG2Cancel")}
                 </button>
                 <button
                   className="g2-primary"
                   disabled={(!selected && !draft.publicOrigin) || busy}
                   onClick={() => setStage("scope")}
                 >
-                  {text("Choose access", "Выбрать доступ")}{" "}
+                  {t(locale, "evenG2ChooseAccess")}{" "}
                   <UiIcon name="arrow" />
                 </button>
               </div>
@@ -510,17 +461,14 @@ export function EvenG2Controls({
           {stage === "scope" && (
             <div className="g2-settings__body">
               <h4>
-                {text(
-                  "Choose the workspace and sessions",
-                  "Выберите рабочую папку и сессии",
-                )}
+                {t(locale, "evenG2ChooseTheWorkspaceAndSessions")}
               </h4>
               <label>
-                {text("Folder for new sessions", "Папка для новых сессий")}
+                {t(locale, "evenG2FolderForNewSessions")}
                 <div className="g2-path">
                   <span>
                     {draft.workspace ||
-                      text("No folder selected", "Папка не выбрана")}
+                      t(locale, "evenG2NoFolderSelected")}
                   </span>
                   <button
                     onClick={() =>
@@ -532,7 +480,7 @@ export function EvenG2Controls({
                     }
                   >
                     <UiIcon name="folder" />
-                    {text("Choose", "Выбрать")}
+                    {t(locale, "evenG2Choose")}
                   </button>
                 </div>
               </label>
@@ -561,10 +509,7 @@ export function EvenG2Controls({
                   ))
                 ) : (
                   <p className="g2-muted">
-                    {text(
-                      "No sessions are open. You can allow creating a new session in the selected folder.",
-                      "Открытых сессий нет. Можно разрешить создание новой в выбранной папке.",
-                    )}
+                    {t(locale, "evenG2NoSessionsAreOpenYou")}
                   </p>
                 )}
               </div>
@@ -573,31 +518,19 @@ export function EvenG2Controls({
                   [
                     [
                       "allowInput",
-                      text(
-                        "Send text/voice and rename sessions",
-                        "Отправлять текст и голос, переименовывать сессии",
-                      ),
+                      t(locale, "evenG2SendTextVoiceAndRename"),
                     ],
                     [
                       "allowCreate",
-                      text(
-                        "Create sessions in this folder",
-                        "Создавать сессии в этой папке",
-                      ),
+                      t(locale, "evenG2CreateSessionsInThisFolder"),
                     ],
                     [
                       "allowClose",
-                      text(
-                        "Close shared sessions",
-                        "Закрывать выбранные сессии",
-                      ),
+                      t(locale, "evenG2CloseSharedSessions"),
                     ],
                     [
                       "allowBrowser",
-                      text(
-                        "Open the project browser",
-                        "Открывать браузер проекта",
-                      ),
+                      t(locale, "evenG2OpenTheProjectBrowser"),
                     ],
                   ] as const
                 ).map(([key, label]) => (
@@ -612,14 +545,11 @@ export function EvenG2Controls({
                 ))}
               </div>
               <div className="g2-speech-setup">
-                <h4>{text("Voice on this Mac", "Голос на этом Mac")}</h4>
+                <h4>{t(locale, "evenG2VoiceOnThisMac")}</h4>
                 <p>
                   {state.speech?.available
-                    ? text("Ready: ", "Готово: ") + state.speech.model
-                    : text(
-                        "Prepare local recognition once. Audio stays on your Mac.",
-                        "Один раз подготовьте локальное распознавание. Звук остаётся на Mac.",
-                      )}
+                    ? t(locale, "evenG2Ready") + state.speech.model
+                    : t(locale, "evenG2PrepareLocalRecognitionOnceAudio")}
                 </p>
                 {state.speechSetup?.phase === "downloading" ||
                 state.speechSetup?.phase === "verifying" ? (
@@ -627,14 +557,11 @@ export function EvenG2Controls({
                     <progress
                       max={state.speechSetup.total}
                       value={state.speechSetup.received}
-                      aria-label={text(
-                        "Speech model download",
-                        "Загрузка модели речи",
-                      )}
+                      aria-label={t(locale, "evenG2SpeechModelDownload")}
                     />
                     <p>
                       {state.speechSetup.phase === "verifying"
-                        ? text("Verifying download…", "Проверяю загрузку…")
+                        ? t(locale, "evenG2VerifyingDownload")
                         : `${Math.round(state.speechSetup.received / 1048576)} / ${Math.round(state.speechSetup.total / 1048576)} МБ`}
                     </p>
                     <button
@@ -642,7 +569,7 @@ export function EvenG2Controls({
                         void command({ type: "cancel-speech-setup" })
                       }
                     >
-                      {text("Cancel download", "Отменить загрузку")}
+                      {t(locale, "evenG2CancelDownload")}
                     </button>
                   </>
                 ) : (
@@ -655,34 +582,22 @@ export function EvenG2Controls({
                       disabled={busy}
                     >
                       {state.speechSetup.phase === "ready"
-                        ? text(
-                            "Use built-in Nemotron 3.5",
-                            "Использовать встроенный Nemotron 3.5",
-                          )
-                        : text(
-                            "Prepare Nemotron 3.5 · 716 MB",
-                            "Подготовить Nemotron 3.5 · 716 МБ",
-                          )}
+                        ? t(locale, "evenG2UseBuiltInNemotron3")
+                        : t(locale, "evenG2PrepareNemotron35716")}
                     </button>
                   )
                 )}
                 {state.speechSetup?.phase === "error" && (
                   <p role="status">
-                    {text(
-                      "The model could not be downloaded. Check Internet access and retry.",
-                      "Не удалось загрузить модель. Проверьте интернет и повторите.",
-                    )}
+                    {t(locale, "evenG2TheModelCouldNotBe")}
                   </p>
                 )}
                 <details>
                   <summary>
-                    {text(
-                      "Use an existing speech application",
-                      "Использовать установленное приложение речи",
-                    )}
+                    {t(locale, "evenG2UseAnExistingSpeechApplication")}
                   </summary>
                   <label>
-                    {text("Handy executable", "Исполняемый файл Handy")}
+                    {t(locale, "evenG2HandyExecutable")}
                     <input
                       value={draft.speechExecutable}
                       onChange={(e) =>
@@ -691,7 +606,7 @@ export function EvenG2Controls({
                     />
                   </label>
                   <label>
-                    {text("Installed model ID", "ID установленной модели")}
+                    {t(locale, "evenG2InstalledModelID")}
                     <input
                       value={draft.speechModel}
                       onChange={(e) => patch({ speechModel: e.target.value })}
@@ -700,14 +615,11 @@ export function EvenG2Controls({
                 </details>
               </div>
               <p className="g2-muted">
-                {text(
-                  "These settings apply to paired devices. Sessions outside this list remain inaccessible.",
-                  "Эти настройки применяются к подключённым устройствам. Сессии вне списка остаются недоступными.",
-                )}
+                {t(locale, "evenG2TheseSettingsApplyToPaired")}
               </p>
               <div className="g2-actions">
                 <button onClick={() => setStage("overview")}>
-                  {text("Back", "Назад")}
+                  {t(locale, "evenG2Back")}
                 </button>
                 <button
                   className="g2-primary"
@@ -719,8 +631,8 @@ export function EvenG2Controls({
                   onClick={() => void saveAndPair()}
                 >
                   {editing
-                    ? text("Save access", "Сохранить доступ")
-                    : text("Enable and connect", "Включить и подключить")}{" "}
+                    ? t(locale, "evenG2SaveAccess")
+                    : t(locale, "evenG2EnableAndConnect")}{" "}
                   <UiIcon name="arrow" />
                 </button>
               </div>
@@ -729,23 +641,14 @@ export function EvenG2Controls({
           {stage === "pair" && (
             <div className="g2-settings__body">
               <h4>
-                {text(
-                  "Open CanvasTTY in Even App",
-                  "Откройте CanvasTTY в Even App",
-                )}
+                {t(locale, "evenG2OpenCanvasTTYInEvenApp")}
               </h4>
               <p>
-                {text(
-                  "Enter these six digits in CanvasTTY G2 in Even App, then approve the connection here. Keep both devices on the same Wi-Fi.",
-                  "Введите эти шесть цифр в CanvasTTY G2 в Even App, затем подтвердите подключение здесь. Оба устройства должны быть в одной сети Wi-Fi.",
-                )}
+                {t(locale, "evenG2EnterTheseSixDigitsIn")}
               </p>
               {!state.transport.ready && (
                 <p className="g2-settings__error">
-                  {text(
-                    "The selected network is unavailable. Check Wi-Fi and refresh the address.",
-                    "Выбранная сеть недоступна. Проверьте Wi-Fi и обновите адрес.",
-                  )}
+                  {t(locale, "evenG2TheSelectedNetworkIsUnavailable")}
                 </p>
               )}
               {state.pairing ? (
@@ -753,23 +656,20 @@ export function EvenG2Controls({
                   <div className="g2-pair-offer">
                     <div>
                       <p className="g2-muted">
-                        {text(
-                          "CanvasTTY pairing code",
-                          "Код подключения CanvasTTY",
-                        )}
+                        {t(locale, "evenG2CanvasTTYPairingCode")}
                       </p>
                       <strong className="g2-pair-code">
                         {state.pairing.code}
                       </strong>
                       <p className="g2-muted">
-                        {text("Valid for", "Действует ещё")}{" "}
+                        {t(locale, "evenG2ValidFor")}{" "}
                         {Math.max(
                           0,
                           Math.ceil(
                             (state.pairing.expiresAt - Date.now()) / 1000,
                           ),
                         )}{" "}
-                        {text("seconds", "секунд")}
+                        {t(locale, "evenG2Seconds")}
                       </p>
                       <button
                         onClick={() =>
@@ -779,7 +679,7 @@ export function EvenG2Controls({
                         }
                       >
                         <UiIcon name="copy" />
-                        {text("Copy code", "Копировать код")}
+                        {t(locale, "evenG2CopyCode")}
                       </button>
                     </div>
                   </div>
@@ -787,16 +687,13 @@ export function EvenG2Controls({
                     <div className="g2-approval">
                       <strong>{state.pairing.pending.name}</strong>
                       <p>
-                        {text(
-                          "This app entered the correct code. Allow access to the sessions selected above?",
-                          "Приложение ввело правильный код. Разрешить доступ к выбранным выше сессиям?",
-                        )}
+                        {t(locale, "evenG2ThisAppEnteredTheCorrect")}
                       </p>
                       <div className="g2-actions">
                         <button
                           onClick={() => void command({ type: "reject" })}
                         >
-                          {text("Reject", "Отклонить")}
+                          {t(locale, "evenG2Reject")}
                         </button>
                         <button
                           className="g2-primary"
@@ -810,16 +707,13 @@ export function EvenG2Controls({
                             })
                           }
                         >
-                          {text("Allow connection", "Разрешить подключение")}
+                          {t(locale, "evenG2AllowConnection")}
                         </button>
                       </div>
                     </div>
                   ) : (
                     <p className="g2-waiting">
-                      {text(
-                        "Waiting for confirmation from Even App…",
-                        "Ожидаю запрос из Even App…",
-                      )}
+                      {t(locale, "evenG2WaitingForConfirmationFromEven")}
                     </p>
                   )}
                 </>
@@ -829,19 +723,19 @@ export function EvenG2Controls({
                   disabled={busy || !state.transport.ready}
                   onClick={() => void command({ type: "begin-pairing" })}
                 >
-                  {text("Create pairing code", "Создать код подключения")}
+                  {t(locale, "evenG2CreatePairingCode")}
                 </button>
               )}
               <div className="g2-actions">
                 <button onClick={() => void cancel()}>
-                  {text("Finish later", "Завершить позже")}
+                  {t(locale, "evenG2FinishLater")}
                 </button>
                 {state.pairing && (
                   <button
                     disabled={busy}
                     onClick={() => void command({ type: "begin-pairing" })}
                   >
-                    {text("New code", "Новый код")}
+                    {t(locale, "evenG2NewCode")}
                   </button>
                 )}
               </div>

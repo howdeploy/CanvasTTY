@@ -51,6 +51,12 @@ electronFuses:
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true
 extraResources:
+  - from: scripts/canvastty-control.mjs
+    to: agent-control/canvastty-control.mjs
+  - from: agent/orchestrator
+    to: agent/orchestrator
+    filter:
+      - SKILL.md
   - from: src/agent-browser
     to: agent-browser
     filter:

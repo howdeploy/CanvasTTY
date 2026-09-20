@@ -12,6 +12,7 @@ import {
 import { registerIpc } from "./ipc/registerIpc";
 import { SettingsStore } from "./services/SettingsStore";
 import { TerminalManager } from "./services/TerminalManager";
+import { AgentControlGateway } from "./services/agent-control/AgentControlGateway";
 import { TerminalSessionStore } from "./services/TerminalSessionStore";
 import { LimitsService } from "./services/LimitsService";
 import {
@@ -86,6 +87,7 @@ protocol.registerSchemesAsPrivileged([
 
 let mainWindow: BrowserWindow | null = null;
 let terminalManager: TerminalManager | null = null;
+let agentControl: AgentControlGateway | null = null;
 let limitsService: LimitsService | null = null;
 let pluginManager: PluginManager | null = null;
 let githubAuth: GithubAuthService | null = null;
@@ -310,6 +312,7 @@ async function initializeServices(): Promise<void> {
           state: signal.state,
           ...(signal.turnId ? { requestId: signal.turnId } : {})
         });
+        agentControl?.onSignal(terminalSessionId, signal);
       }
     });
     await runtimeGateway.start();
@@ -350,6 +353,7 @@ async function initializeServices(): Promise<void> {
   }
 
   terminalManager = new TerminalManager((channel, payload) => {
+    agentControl?.observe(channel, payload);
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(channel, payload);
     }
@@ -382,6 +386,24 @@ async function initializeServices(): Promise<void> {
   const terminalSessionStore = new TerminalSessionStore(userDataPath);
   terminalManager.configureSessionPersistence(terminalSessionStore, settings.get().restoreTerminalSessions);
   await terminalManager.restorePersistedSessions();
+  if (process.argv.includes("--agent-control") || process.env.CANVASTTY_AGENT_CONTROL === "1") {
+    const windowsHostPath = process.platform === "win32"
+      ? app.isPackaged
+        ? join(process.resourcesPath, "agent-browser", WINDOWS_PIPE_HOST_FILENAME)
+        : join(app.getAppPath(), "build", "windows-agent-pipe-host", WINDOWS_PIPE_HOST_FILENAME)
+      : undefined;
+    agentControl = new AgentControlGateway({ userDataPath, terminals: terminalManager,
+      lifecycleEnabled: () => Boolean(runtimeGateway) && settings.get().agentLifecycleHooksEnabled,
+      windowsHostPath });
+    try {
+      const connection = await agentControl.start();
+      console.log(`CANVASTTY_AGENT_CONTROL_READY ${connection}`);
+    } catch {
+      await agentControl.close().catch(() => undefined);
+      agentControl = null;
+      console.warn("CanvasTTY agent control could not start; normal terminal operation is unchanged.");
+    }
+  }
   limitsService = new LimitsService(providerClis, app.getVersion());
   githubAuth = new GithubAuthService(app.getPath("userData"), undefined, {
     fetcher: (input, init) => net.fetch(input, init)
@@ -783,6 +805,7 @@ app.on("child-process-gone", (_event, details) => {
 void IPC.terminalData;
 
 async function shutdownServices(): Promise<void> {
+  if (agentControl) await Promise.allSettled([agentControl.close()]);
   if (terminalManager) await terminalManager.shutdown();
   limitsService?.dispose();
   if (agentGateway) await Promise.allSettled([agentGateway.close()]);

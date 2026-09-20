@@ -1,8 +1,10 @@
+import { browserCanvasEntries, browserCanvasPatch } from "../../shared/browserWindows";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentProviderId,
   AppSettings,
   BrowserCanvasState,
+  BrowserCanvasEntry,
   BrowserSnapshot,
   CameraState,
   CanvasRegion,
@@ -185,7 +187,12 @@ export function App(): React.JSX.Element {
   const [browser, setBrowser] = useState<BrowserSnapshot>(EMPTY_BROWSER_SNAPSHOT);
   const [camera, setCamera] = useState<CameraState>(() => homeCamera(DEFAULT_HOME_GRID_SIZE));
   const isHomeCamera = useRef(true);
-  const browserCanvasRef = useRef<BrowserCanvasState | null>(null);
+  const browserCanvasesRef = useRef<BrowserCanvasEntry[]>([]);
+  const manualBrowserOpens = useRef(0);
+  const [browserLayoutWake, setBrowserLayoutWake] = useState(0);
+  const [selectedBrowserId, setSelectedBrowserId] = useState("default");
+  const browserPlacementCamera = useRef(camera);
+  browserPlacementCamera.current = camera;
   /**
    * Latest settings, kept in step synchronously by the mutators below. A canvas gesture
    * can commit several windows in one tick; deriving each write from the render-captured
@@ -213,8 +220,8 @@ export function App(): React.JSX.Element {
   const showToast = useCallback((message: string): void => setToast(message), []);
 
   useEffect(() => {
-    browserCanvasRef.current = settings.browserCanvas;
-  }, [settings.browserCanvas]);
+    browserCanvasesRef.current = browserCanvasEntries(settings);
+  }, [settings.browserCanvas, settings.browserCanvases]);
 
   useEffect(() => {
     if (!toast) return;
@@ -253,9 +260,11 @@ export function App(): React.JSX.Element {
         if (!active) return;
         setSettings(loadedSettings);
         setPlugins(loadedPlugins);
-        if (loadedSettings.browserCanvas && browserApi) {
-          const browserState = await browserApi.open();
-          if (active) setBrowser(browserState);
+        if (browserApi) {
+          for (const entry of browserCanvasEntries(loadedSettings)) {
+            const browserState = await browserApi.open(undefined, entry.id);
+            if (active) setBrowser(browserState);
+          }
         }
         if (isHomeCamera.current) setCamera(homeCamera(loadedSettings.homeGridSize));
         if (loadedSettings.mediaPath) {
@@ -440,11 +449,34 @@ export function App(): React.JSX.Element {
     void saveSettings({ pluginCanvas });
   }, [saveSettings]);
 
-  const changeBrowserBounds = useCallback((browserCanvas: BrowserCanvasState): void => {
-    browserCanvasRef.current = browserCanvas;
-    setSettings((current) => ({ ...current, browserCanvas }));
-    void saveSettings({ browserCanvas });
+  const changeBrowserBounds = useCallback((id: string, bounds: BrowserCanvasState): void => {
+    const entries = browserCanvasesRef.current.map((entry) => entry.id === id ? { id, ...bounds } : entry);
+    browserCanvasesRef.current = entries;
+    const patch = browserCanvasPatch(entries);
+    settingsRef.current = { ...settingsRef.current, ...patch };
+    setSettings((current) => ({ ...current, ...patch }));
+    void saveSettings(patch);
   }, [saveSettings]);
+
+  useEffect(() => {
+    if (!ready || !browser.windows || manualBrowserOpens.current > 0) return;
+    const missing = browser.windows.filter((entry) => entry.snapshot.visible && !browserCanvasesRef.current.some((card) => card.id === entry.id));
+    if (missing.length === 0) return;
+    const view = browserPlacementCamera.current;
+    const entries = [...browserCanvasesRef.current];
+    for (const entry of missing) {
+      const index = entries.length;
+      entries.push({ id: entry.id, size: { width: 700, height: 480 }, position: {
+        x: (-view.x + 24) / view.zoom + (index % 2) * 740,
+        y: (-view.y + 100) / view.zoom + Math.floor(index / 2) * 520
+      } });
+    }
+    browserCanvasesRef.current = entries;
+    const patch = browserCanvasPatch(entries);
+    settingsRef.current = { ...settingsRef.current, ...patch };
+    setSettings((current) => ({ ...current, ...patch }));
+    void saveSettings(patch);
+  }, [browser.windows, browserLayoutWake, ready, saveSettings]);
 
   const createCanvasRegion = useCallback((region: CanvasRegion): void => {
     const canvasRegions = [...settingsRef.current.canvasRegions, region];
@@ -519,18 +551,16 @@ export function App(): React.JSX.Element {
           const moved = translateBounds(instance, delta);
           return { ...instance, ...moved };
         });
-        const currentBrowser = settingsRef.current.browserCanvas;
-        const browserCanvas = currentBrowser && boundsInsideRegion(currentBrowser, previous)
-          ? translateBounds(currentBrowser, delta)
-          : currentBrowser;
+        const browserCanvases = browserCanvasEntries(settingsRef.current).map((entry) => boundsInsideRegion(entry, previous)
+          ? { ...entry, ...translateBounds(entry, delta) } : entry);
         const stickyNotes = settingsRef.current.stickyNotes.map((note) => boundsInsideRegion(note, previous)
           ? { ...note, ...translateBounds(note, delta) }
           : note);
         setSessions(movedSessions);
         patch.pluginCanvas = pluginCanvas;
-        patch.browserCanvas = browserCanvas;
+        Object.assign(patch, browserCanvasPatch(browserCanvases));
         patch.stickyNotes = stickyNotes;
-        browserCanvasRef.current = browserCanvas;
+        browserCanvasesRef.current = browserCanvases;
       }
     }
 
@@ -559,37 +589,38 @@ export function App(): React.JSX.Element {
     setCamera(focusCamera(instance.position, instance.size, PLUGIN_CANVAS_FOCUS_ZOOM));
   }, [settings.pluginCanvas]);
 
-  const openBrowser = useCallback(async (url?: string, requestedCenter?: Point): Promise<void> => {
+  const openBrowser = useCallback(async (url?: string, requestedCenter?: Point, createNew = false): Promise<void> => {
     const browserApi = window.canvasTTY.browser;
     if (!browserApi) throw new Error(t(settings.locale, "browserRestartRequired"));
-    const existingBrowserCanvas = browserCanvasRef.current;
+    manualBrowserOpens.current += 1;
+    try {
+    const previous = browserCanvasesRef.current;
+    let id = previous.find((entry) => entry.id === selectedBrowserId)?.id ?? previous[0]?.id ?? "default";
+    if (createNew) {
+      const result = await browserApi.execute({ type: "browser_new_window", requestId: crypto.randomUUID(), ...(url ? { url } : {}) });
+      if (!result.ok) throw new Error(result.error?.message ?? t(settings.locale, "browserActionFailed"));
+      const created = result.data as BrowserSnapshot;
+      if (!created.browserId) throw new Error(t(settings.locale, "browserActionFailed"));
+      id = created.browserId;
+      setBrowser(await browserApi.getState());
+    } else setBrowser(await browserApi.open(url, id));
+    const existing = browserCanvasesRef.current.find((entry) => entry.id === id);
     const homeSize = homeGridPixelSize(settings.homeGridSize);
-    const browserCanvas = existingBrowserCanvas ?? {
-      position: requestedCenter
-        ? centeredWindowPosition(requestedCenter, { width: 920, height: 620 })
-        : {
-            x: homeSize.width + 160 + ((sessions.length + settings.pluginCanvas.length) % 2) * 760,
-            y: Math.floor((sessions.length + settings.pluginCanvas.length) / 2) * 500 + 20
-          },
-      size: { width: 920, height: 620 }
+    const bounds: BrowserCanvasEntry = existing ?? { id,
+      position: requestedCenter ? centeredWindowPosition(requestedCenter, { width: 700, height: 480 })
+        : { x: homeSize.width + 160 + (previous.length % 2) * 740, y: Math.floor(previous.length / 2) * 520 + 20 },
+      size: { width: 700, height: 480 }
     };
-    const snapshot = await browserApi.open(url);
-    setBrowser(snapshot);
-    if (!existingBrowserCanvas) {
-      browserCanvasRef.current = browserCanvas;
-      try {
-        await persistSettings({ browserCanvas });
-      } catch (error) {
-        browserCanvasRef.current = existingBrowserCanvas;
-        throw error;
-      }
+    if (!existing) {
+      browserCanvasesRef.current = [...browserCanvasesRef.current, bounds];
+      try { await persistSettings(browserCanvasPatch(browserCanvasesRef.current)); }
+      catch (error) { browserCanvasesRef.current = previous; throw error; }
     }
-    setSettingsOpen(false);
-    setActiveSessionId(null);
-    setBrowserSelected(true);
+    setSettingsOpen(false); setActiveSessionId(null); setSelectedBrowserId(id); setBrowserSelected(true);
     isHomeCamera.current = false;
-    setCamera(focusCamera(browserCanvas.position, browserCanvas.size));
-  }, [persistSettings, sessions.length, settings.homeGridSize, settings.locale, settings.pluginCanvas.length]);
+    setCamera(focusCamera(bounds.position, bounds.size));
+    } finally { manualBrowserOpens.current -= 1; setBrowserLayoutWake((value) => value + 1); }
+  }, [persistSettings, selectedBrowserId, settings.homeGridSize, settings.locale]);
 
   useEffect(() => {
     return window.canvasTTY.plugins.onBrowserOpenRequested((request) => {
@@ -605,31 +636,30 @@ export function App(): React.JSX.Element {
   }, [openBrowser, settings.locale, showToast]);
 
   const openBrowserFromUi = useCallback((position?: Point): void => {
-    void openBrowser(undefined, position).catch((error: unknown) => {
+    void openBrowser(undefined, position, true).catch((error: unknown) => {
       showToast(error instanceof Error ? error.message : t(settings.locale, "browserActionFailed"));
     });
   }, [openBrowser, settings.locale, showToast]);
 
-  const closeBrowser = useCallback(async (): Promise<void> => {
+  const closeBrowser = useCallback(async (id: string): Promise<void> => {
     try {
       const browserApi = window.canvasTTY.browser;
       if (!browserApi) return;
-      await browserApi.close();
-      browserCanvasRef.current = null;
-      await saveSettings({ browserCanvas: null });
-      setBrowserSelected(false);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : t(settings.locale, "browserActionFailed"));
-    }
-  }, [saveSettings, settings.locale, showToast]);
+      await browserApi.close(id);
+      const entries = browserCanvasesRef.current.filter((entry) => entry.id !== id);
+      browserCanvasesRef.current = entries;
+      await saveSettings(browserCanvasPatch(entries));
+      if (selectedBrowserId === id) setBrowserSelected(false);
+    } catch (error) { showToast(error instanceof Error ? error.message : t(settings.locale, "browserActionFailed")); }
+  }, [saveSettings, selectedBrowserId, settings.locale, showToast]);
 
-  const focusBrowser = useCallback((): void => {
-    if (!settings.browserCanvas) return;
-    setActiveSessionId(null);
-    setBrowserSelected(true);
+  const focusBrowser = useCallback((id: string): void => {
+    const bounds = browserCanvasEntries(settings).find((entry) => entry.id === id);
+    if (!bounds) return;
+    setActiveSessionId(null); setSelectedBrowserId(id); setBrowserSelected(true);
     isHomeCamera.current = false;
-    setCamera(focusCamera(settings.browserCanvas.position, settings.browserCanvas.size));
-  }, [settings.browserCanvas]);
+    setCamera(focusCamera(bounds.position, bounds.size));
+  }, [settings.browserCanvas, settings.browserCanvases]);
 
   const disposeSession = useCallback((id: string): void => {
     void window.canvasTTY.terminal.dispose(id);
@@ -1032,12 +1062,14 @@ export function App(): React.JSX.Element {
           onFocusSession={focusSession}
           activeSessionId={activeSessionId}
           browserSelected={browserSelected}
+          selectedBrowserId={selectedBrowserId}
           renamingSessionId={renamingSessionId}
           onSelectSession={(id) => {
             setBrowserSelected(false);
             setActiveSessionId(id);
           }}
-          onSelectBrowser={() => {
+          onSelectBrowser={(id) => {
+            setSelectedBrowserId(id);
             setActiveSessionId(null);
             setBrowserSelected(true);
           }}
@@ -1052,7 +1084,7 @@ export function App(): React.JSX.Element {
           onDisposeSession={disposeSession}
           onBrowserBoundsChange={changeBrowserBounds}
           onFocusBrowser={focusBrowser}
-          onCloseBrowser={() => void closeBrowser()}
+          onCloseBrowser={(id) => void closeBrowser(id)}
           onCreateCanvasRegion={createCanvasRegion}
           onChangeCanvasRegion={changeCanvasRegion}
           onCanvasRegionBoundsChange={changeCanvasRegionBounds}

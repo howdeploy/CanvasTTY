@@ -3,7 +3,7 @@ import type { RefObject } from "react";
 import type { AppSettings } from "../../../../shared/contracts";
 import { HOVER_FOCUS_DELAYS } from "./focus";
 import {
-  browserCanvasWidgetId,
+  browserWindowWidgetId,
   canvasWidgetFocusAfterClick,
   canvasWidgetTarget,
   terminalCanvasWidgetId
@@ -19,6 +19,7 @@ interface UseCanvasWidgetFocusOptions {
   settings: AppSettings;
   activeSessionId: string | null;
   browserSelected: boolean;
+  selectedBrowserId?: string;
   widgetTreeVersion: string;
 }
 
@@ -28,8 +29,8 @@ export interface CanvasWidgetFocusController {
   focus(id: string | null, source: CanvasWidgetFocusState["source"]): void;
   cancelHover(id?: string): void;
   scheduleHover(id: string): void;
-  focusBrowser(): void;
-  hoverBrowser(active: boolean): void;
+  focusBrowser(id?: string): void;
+  hoverBrowser(active: boolean, id?: string): void;
   handleClick(event: React.MouseEvent<HTMLDivElement>): void;
   handlePointerOver(event: React.PointerEvent<HTMLDivElement>): void;
   handlePointerOut(event: React.PointerEvent<HTMLDivElement>): void;
@@ -40,6 +41,7 @@ export function useCanvasWidgetFocus({
   settings,
   activeSessionId,
   browserSelected,
+  selectedBrowserId = "default",
   widgetTreeVersion
 }: UseCanvasWidgetFocusOptions): CanvasWidgetFocusController {
   const [state, setState] = useState<CanvasWidgetFocusState>({ id: null, source: "explicit" });
@@ -72,14 +74,14 @@ export function useCanvasWidgetFocus({
     };
   }, [cancelHover, focus]);
 
-  const focusBrowser = useCallback((): void => {
+  const focusBrowser = useCallback((id = "default"): void => {
     cancelHover();
-    focus(browserCanvasWidgetId, "explicit");
+    focus(browserWindowWidgetId(id), "explicit");
   }, [cancelHover, focus]);
 
-  const hoverBrowser = useCallback((active: boolean): void => {
-    if (active) scheduleHover(browserCanvasWidgetId);
-    else cancelHover(browserCanvasWidgetId);
+  const hoverBrowser = useCallback((active: boolean, id = "default"): void => {
+    if (active) scheduleHover(browserWindowWidgetId(id));
+    else cancelHover(browserWindowWidgetId(id));
   }, [cancelHover, scheduleHover]);
 
   useEffect(() => () => cancelHover(), [cancelHover]);
@@ -93,8 +95,8 @@ export function useCanvasWidgetFocus({
   }, [activeSessionId, focus]);
 
   useEffect(() => {
-    if (browserSelected) focus(browserCanvasWidgetId, "explicit");
-  }, [browserSelected, focus]);
+    if (browserSelected) focus(browserWindowWidgetId(selectedBrowserId), "explicit");
+  }, [browserSelected, selectedBrowserId, focus]);
 
   useEffect(() => {
     if (state.id === null) return;

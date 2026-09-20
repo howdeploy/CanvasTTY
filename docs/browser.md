@@ -6,13 +6,13 @@ CanvasTTY `1.0.2` exposes its built-in browser from HOME as a trusted canvas app
 
 ## Open and use the browser
 
-1. Open **Browser** on HOME. CanvasTTY creates or restores the browser card on the canvas.
+1. Open **Browser** on HOME to create a Browser card. Repeat to open another independent card; each has its own tab bar and active page.
 2. Use the trusted tab bar and address field for HTTP(S) navigation or search. Back, forward, reload, new-tab, close-tab, and close-all controls stay outside the remote page.
 3. Move or resize the card like a terminal. Zooming out below semantic scale replaces the native page with a stable summary; at live scale the page keeps rendering while the camera or card moves.
 4. Clicking the live page selects it and restores keyboard focus. The configured single/double-click mode controls only camera focusing. **Settings → Controls → Focus on hover** applies the same delay to terminals and the browser. Clicking empty canvas clears the active application.
 5. The downloads panel shows recent progress. JavaScript alert/confirm/prompt dialogs are suspended until the trusted CanvasTTY dialog answers them.
 
-Hiding the browser card does not close its tabs. **Close all** removes the tabs after confirmation. **Settings → Browser → Restore tabs** controls whether safe URLs return after restart.
+Moving, resizing or hiding one Browser card does not affect the others. Card positions and their separate tab sets restore after restart. Existing single-card layouts migrate to the default card. Hiding a Browser card does not close its tabs. **Close all** removes the tabs after confirmation. **Settings → Browser → Restore tabs** controls whether safe URLs return after restart.
 
 ## Browser settings
 
@@ -37,6 +37,14 @@ Agent mutations are ordered FIFO per tab, deduplicated by request ID, revision-c
 
 If the browser view has zero width or height, `browser_observe` returns `VIEWPORT_UNAVAILABLE` instead of a misleading empty list of controls. `browser_screenshot` returns the same retryable error for an empty capture. Bring the Browser card into view, then observe or capture again; reopening the tab is unnecessary. `browser_read_page` can still read document text while no drawable view is available.
 A human can also hand one observed element to an agent from the card itself. The **Inspect element** control in the trusted navigation bar observes the active page once through the same typed browser command path agents use (`browser_observe`, limit 20) and lists all of them, so every observed element is reachable: each row shows the element's accessible name, falling back to its role and then to its reference, above `role · reference`. **Send to agent** writes exactly one line into the newest running agent session — never a terminal, never an exited session, and never a session awaiting a decision: `[Browser inspect] <url|url=none> untrustedWebContent=true label="<name|role|reference>" ref=<reference> bounds=<x,y WxH|unknown> documentRevision=<revision>`, terminated with a carriage return. The URL carries no credentials, query string, or fragment, and page-supplied text is flattened and JSON-quoted under `untrustedWebContent=true`, so the page cannot inject a second line or a forged tail. A reference whose tab or document revision no longer matches the active tab is refused with a visible failure in the panel and nothing is sent; with no running agent session the panel says so and also sends nothing. Opening the panel hides the native page while it is open, so the list is never drawn beneath the live view, and the card's existing structure, panels, and controllers are unchanged.
+
+## Parallel agents
+
+Use `browser_new_window` to create a dedicated card, then include its returned `browserId` on every tool call. `browser_list_windows` lists card IDs and ownership; `browser_activate_window` selects an available card for the calling agent only. An agent cannot read or control another agent's claimed card by supplying its browser or tab ID. The user can still interact with all cards. Claims are released after a disconnected agent's in-flight requests finish; cards remain available and claims do not persist across an app restart.
+
+Tab selection, viewport reporting, downloads and canvas input are routed to the addressed card. Commands in different cards can run concurrently. Browser cards share the existing Chromium login/cookie profile, so they are not account or website-session isolation. Clearing browser data remains a workspace-wide action.
+
+`browser_list_tabs` is scoped to the agent's selected card and returns an empty snapshot before a card is selected. `browser_new_tab` can create a dedicated card on first use. Existing plugins continue opening URLs through the user's current card; the HOME Browser action creates an additional card. The workspace supports up to 16 cards, each retaining the existing tab limit.
 
 ## Website and file boundaries
 

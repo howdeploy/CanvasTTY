@@ -123,10 +123,10 @@ const api: CanvasTTYApi = {
   },
   browser: {
     getState: () => ipcRenderer.invoke(IPC.browserGetState),
-    open: (url?: string) => ipcRenderer.invoke(IPC.browserOpen, url),
-    close: () => ipcRenderer.invoke(IPC.browserClose),
-    closeAllTabs: () => ipcRenderer.invoke(IPC.browserCloseAllTabs),
-    newTab: (url?: string) => ipcRenderer.invoke(IPC.browserNewTab, url),
+    open: (url?: string, browserId?: string) => ipcRenderer.invoke(IPC.browserOpen, url, browserId),
+    close: (browserId?: string) => ipcRenderer.invoke(IPC.browserClose, browserId),
+    closeAllTabs: (browserId?: string) => ipcRenderer.invoke(IPC.browserCloseAllTabs, browserId),
+    newTab: (url?: string, browserId?: string) => ipcRenderer.invoke(IPC.browserNewTab, url, browserId),
     selectTab: (id: string) => ipcRenderer.invoke(IPC.browserSelectTab, id),
     closeTab: (id: string) => ipcRenderer.invoke(IPC.browserCloseTab, id),
     navigate: (id: string, value: string) => ipcRenderer.invoke(IPC.browserNavigate, id, value),
@@ -136,11 +136,11 @@ const api: CanvasTTYApi = {
     execute: (command: BrowserCommand) => ipcRenderer.invoke(IPC.browserExecute, command),
     getActivity: (sinceSequence?: number) => ipcRenderer.invoke(IPC.browserGetActivity, sinceSequence),
     clearData: () => ipcRenderer.invoke(IPC.browserClearData),
-    focus: () => ipcRenderer.send(IPC.browserFocus),
-    setInputFocused: (focused: boolean) => {
-      ipcRenderer.sendSync(IPC.browserSetInputFocused, focused);
+    focus: (browserId?: string) => ipcRenderer.send(IPC.browserFocus, browserId),
+    setInputFocused: (focused: boolean, browserId?: string) => {
+      ipcRenderer.sendSync(IPC.browserSetInputFocused, focused, browserId);
     },
-    setViewport: (bounds: BrowserViewportBounds) => ipcRenderer.send(IPC.browserSetViewport, bounds),
+    setViewport: (bounds: BrowserViewportBounds, browserId?: string) => ipcRenderer.send(IPC.browserSetViewport, bounds, browserId),
     onState: (listener: (event: BrowserStateEvent) => void) => subscribe(IPC.browserState, listener),
     onActivity: (listener: (event: BrowserActivityStateEvent) => void) => subscribe(IPC.browserActivity, listener),
     onCanvasWheel: (listener: (event: BrowserCanvasWheelEvent) => void) => subscribe(IPC.browserCanvasWheel, listener),

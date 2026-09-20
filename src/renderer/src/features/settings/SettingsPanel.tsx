@@ -1039,6 +1039,9 @@ function downloadStatusLabel(locale: LocaleId, status: BrowserDownloadSnapshot["
 
 const ACTIVITY_LABELS: Record<LocaleId, Record<BrowserCommandType, string>> = {
   ru: {
+    browser_list_windows: "Список браузеров",
+    browser_new_window: "Новый браузер",
+    browser_activate_window: "Выбор браузера",
     browser_list_tabs: "Просмотрел вкладки",
     browser_new_tab: "Открыл вкладку",
     browser_close_tab: "Закрыл вкладку",
@@ -1064,6 +1067,9 @@ const ACTIVITY_LABELS: Record<LocaleId, Record<BrowserCommandType, string>> = {
     browser_get_activity: "Проверил историю"
   },
   en: {
+    browser_list_windows: "List browsers",
+    browser_new_window: "New browser",
+    browser_activate_window: "Select browser",
     browser_list_tabs: "Viewed tabs",
     browser_new_tab: "Opened a tab",
     browser_close_tab: "Closed a tab",

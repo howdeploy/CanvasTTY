@@ -225,6 +225,7 @@ export interface AppSettings {
   stickyNotes: StickyNote[];
   pluginCanvas: PluginCanvasInstance[];
   browserCanvas: BrowserCanvasState | null;
+  browserCanvases?: BrowserCanvasEntry[];
   browserAgentAccess: boolean;
   browserShowAgentPresence: boolean;
   browserRestoreTabs: boolean;
@@ -533,6 +534,10 @@ export interface PluginPlaylistFile {
 
 export interface BrowserCanvasState extends SessionBounds {}
 
+export interface BrowserCanvasEntry extends BrowserCanvasState {
+  id: string;
+}
+
 export interface BrowserViewportClipBounds extends Size {
   x: number;
   y: number;
@@ -610,6 +615,7 @@ export interface BrowserDownloadSnapshot {
 
 export interface BrowserTabSnapshot {
   id: string;
+  browserId?: string;
   url: string;
   title: string;
   loading: boolean;
@@ -623,12 +629,21 @@ export interface BrowserTabSnapshot {
 }
 
 export interface BrowserSnapshot {
+  browserId?: string;
+  windows?: BrowserWindowSnapshot[];
   tabs: BrowserTabSnapshot[];
   activeTabId: string | null;
   visible: boolean;
   agents: AgentPresenceSnapshot[];
   downloads: BrowserDownloadSnapshot[];
   pendingDialog: BrowserDialogSnapshot | null;
+}
+
+export interface BrowserWindowSnapshot {
+  id: string;
+  title: string;
+  owner: string | null;
+  snapshot: BrowserSnapshot;
 }
 
 export interface BrowserStateEvent {
@@ -682,6 +697,9 @@ export interface BrowserCanvasPointerEvent {
 }
 
 export type BrowserErrorCode =
+  | "BROWSER_NOT_FOUND"
+  | "BROWSER_IN_USE"
+  | "BROWSER_REQUIRED"
   | "AUTH_INVALID"
   | "BRIDGE_UNAVAILABLE"
   | "TAB_NOT_FOUND"
@@ -759,6 +777,9 @@ export interface BrowserObservation {
 }
 
 export type BrowserCommandType =
+  | "browser_list_windows"
+  | "browser_new_window"
+  | "browser_activate_window"
   | "browser_list_tabs"
   | "browser_new_tab"
   | "browser_close_tab"
@@ -785,6 +806,8 @@ export type BrowserCommandType =
 
 export interface BrowserCommand {
   type: BrowserCommandType;
+  browserId?: string;
+  title?: string;
   requestId: string;
   tabId?: string;
   url?: string;
@@ -977,10 +1000,10 @@ export interface CanvasTTYApi {
   };
   browser: {
     getState(): Promise<BrowserSnapshot>;
-    open(url?: string): Promise<BrowserSnapshot>;
-    close(): Promise<void>;
-    closeAllTabs(): Promise<BrowserSnapshot>;
-    newTab(url?: string): Promise<BrowserSnapshot>;
+    open(url?: string, browserId?: string): Promise<BrowserSnapshot>;
+    close(browserId?: string): Promise<void>;
+    closeAllTabs(browserId?: string): Promise<BrowserSnapshot>;
+    newTab(url?: string, browserId?: string): Promise<BrowserSnapshot>;
     selectTab(id: string): Promise<BrowserSnapshot>;
     closeTab(id: string): Promise<BrowserSnapshot>;
     navigate(id: string, value: string): Promise<BrowserSnapshot>;
@@ -990,9 +1013,9 @@ export interface CanvasTTYApi {
     execute(command: BrowserCommand): Promise<BrowserResult>;
     getActivity(sinceSequence?: number): Promise<BrowserActivityEvent[]>;
     clearData(): Promise<BrowserSnapshot>;
-    focus(): void;
-    setInputFocused(focused: boolean): void;
-    setViewport(bounds: BrowserViewportBounds): void;
+    focus(browserId?: string): void;
+    setInputFocused(focused: boolean, browserId?: string): void;
+    setViewport(bounds: BrowserViewportBounds, browserId?: string): void;
     onState(listener: (event: BrowserStateEvent) => void): () => void;
     onActivity(listener: (event: BrowserActivityStateEvent) => void): () => void;
     onCanvasWheel(listener: (event: BrowserCanvasWheelEvent) => void): () => void;

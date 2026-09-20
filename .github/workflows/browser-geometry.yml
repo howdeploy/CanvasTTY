@@ -1,0 +1,171 @@
+name: Browser native geometry
+on:
+  push:
+    branches: [ci/browser-native-geometry]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            backend: baseline-x11
+            cards: 1
+            uiScale: 1
+          - os: ubuntu-latest
+            backend: x11
+            cards: 1
+            uiScale: 1
+          - os: ubuntu-latest
+            backend: x11
+            cards: 2
+            uiScale: 1
+          - os: ubuntu-latest
+            backend: x11
+            cards: 1
+            uiScale: 1.25
+          - os: ubuntu-latest
+            backend: x11
+            cards: 2
+            uiScale: 1.25
+          - os: ubuntu-latest
+            backend: wayland
+            cards: 1
+            uiScale: 1
+          - os: ubuntu-latest
+            backend: wayland
+            cards: 2
+            uiScale: 1
+          - os: ubuntu-latest
+            backend: wayland
+            cards: 1
+            uiScale: 1.25
+          - os: ubuntu-latest
+            backend: wayland
+            cards: 2
+            uiScale: 1.25
+          - os: windows-latest
+            backend: windows
+            cards: 1
+            uiScale: 1
+          - os: windows-latest
+            backend: windows
+            cards: 2
+            uiScale: 1
+          - os: windows-latest
+            backend: windows
+            cards: 1
+            uiScale: 1.25
+          - os: windows-latest
+            backend: windows
+            cards: 2
+            uiScale: 1.25
+          - os: macos-latest
+            backend: macos
+            cards: 1
+            uiScale: 1
+          - os: macos-latest
+            backend: macos
+            cards: 2
+            uiScale: 1
+          - os: macos-latest
+            backend: macos
+            cards: 1
+            uiScale: 1.25
+          - os: macos-latest
+            backend: macos
+            cards: 2
+            uiScale: 1.25
+    runs-on: ${{ matrix.os }}
+    env:
+      CANVASTTY_GEOMETRY_DISPOSABLE_DESKTOP: '1'
+      CANVASTTY_GEOMETRY_BACKEND: ${{ matrix.backend }}
+      CANVASTTY_GEOMETRY_CASE: ${{ matrix.cards }},${{ matrix.uiScale }}
+      CANVASTTY_GEOMETRY_COMMIT: ${{ github.sha }}
+      CANVASTTY_GEOMETRY_ARTIFACTS: ${{ github.workspace }}/geometry-artifacts
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+        if: matrix.backend == 'x11' && matrix.cards == 1 && matrix.uiScale == 1
+      - run: npm run build
+      - name: Install isolated Linux desktop tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb openbox xdotool imagemagick weston
+      - name: Native X11 desktop
+        if: matrix.backend == 'x11'
+        run: xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox --config-file "$GITHUB_WORKSPACE/scripts/browser-geometry-openbox.xml" > /tmp/geometry-openbox.log 2>&1 & node scripts/smoke-browser-geometry.mjs'
+      - name: Check out accepted main for comparison
+        if: matrix.backend == 'baseline-x11'
+        uses: actions/checkout@v7
+        with:
+          repository: howdeploy/CanvasTTY
+          ref: dd27b8a9e5b655337af8f33fda1a5e9bd8f52381
+          path: accepted-main
+      - name: Overlay the same harness on accepted main
+        if: matrix.backend == 'baseline-x11'
+        run: |
+          ln -s "$GITHUB_WORKSPACE/node_modules" accepted-main/node_modules
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          base = Path('accepted-main')
+          files = list(Path('scripts').glob('*browser-geometry*')) + [Path('src/main/services/browser/BrowserGeometrySmoke.ts')]
+          for file in files:
+              shutil.copyfile(file, base / file)
+          index = base / 'src/main/index.ts'
+          text = index.read_text()
+          marker = '  const browserSmokeUrl = process.env.CANVASTTY_BROWSER_SMOKE_URL;'
+          assert text.count(marker) == 1
+          current = Path('src/main/index.ts').read_text()
+          hook = current[current.index('  const geometrySmokeUrl ='):current.index(marker)]
+          text = 'import { runBrowserGeometrySmoke } from "./services/browser/BrowserGeometrySmoke";\n' + text.replace(marker, hook + marker)
+          lock = 'const hasSingleInstanceLock = app.requestSingleInstanceLock();'
+          setup = current[current.index('// Geometry smoke isolates'):current.index(lock)]
+          assert text.count(lock) == 1
+          text = text.replace(lock, setup + lock)
+          index.write_text(text)
+          PY
+          npm run build --prefix accepted-main
+      - name: Record accepted-main failures with real X11 input
+        if: matrix.backend == 'baseline-x11'
+        env:
+          CANVASTTY_GEOMETRY_BASELINE: '1'
+          CANVASTTY_GEOMETRY_COMMIT: dd27b8a9e5b655337af8f33fda1a5e9bd8f52381
+        run: xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox --config-file "$GITHUB_WORKSPACE/scripts/browser-geometry-openbox.xml" > /tmp/geometry-openbox.log 2>&1 & node accepted-main/scripts/smoke-browser-geometry.mjs'
+      - name: Native Wayland client in nested Weston compositor
+        if: matrix.backend == 'wayland'
+        run: |
+          mkdir -p "$RUNNER_TEMP/geometry-runtime"
+          chmod 700 "$RUNNER_TEMP/geometry-runtime"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/geometry-runtime"
+          xvfb-run -a -s '-screen 0 1920x1080x24' sh -c '
+            openbox --config-file "$GITHUB_WORKSPACE/scripts/browser-geometry-openbox.xml" > /tmp/geometry-openbox.log 2>&1 &
+            for i in $(seq 1 40); do xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id" && break; sleep 0.1; done
+            weston --backend=x11-backend.so --width=1920 --height=1080 --fullscreen --use-pixman --socket=wayland-geometry --idle-time=0 > "$GITHUB_WORKSPACE/weston.log" 2>&1 &
+            for i in $(seq 1 40); do test -S "$XDG_RUNTIME_DIR/wayland-geometry" && break; sleep 0.25; done
+            export WAYLAND_DISPLAY=wayland-geometry
+            node scripts/smoke-browser-geometry.mjs'
+      - name: Native Windows or macOS desktop
+        if: runner.os != 'Linux'
+        run: node scripts/smoke-browser-geometry.mjs
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: browser-geometry-${{ matrix.backend }}-${{ matrix.cards }}-${{ matrix.uiScale }}
+          path: |
+            geometry-artifacts/**/*.json
+            geometry-artifacts/**/electron.log
+            geometry-artifacts/**/*.png
+            weston.log
+          if-no-files-found: warn

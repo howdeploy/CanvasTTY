@@ -24,9 +24,12 @@ import { PluginMediaService } from "./services/PluginMediaService";
 import { PluginSecretsService } from "./services/PluginSecretsService";
 import { HermesHudService } from "./services/HermesHudService";
 import { BrowserService } from "./services/BrowserService";
+import { BrowserWorkspace } from "./services/browser/BrowserWorkspace";
+import { BrowserAuditStore } from "./services/browser/BrowserAuditStore";
 import { CanvasNavigationInputController } from "./services/CanvasNavigationOverride";
 import { activeCanvasWheelBinding } from "../shared/canvasNavigation";
 import { runBrowserElectronSmoke } from "./services/browser/BrowserElectronSmoke";
+import { runBrowserGeometrySmoke } from "./services/browser/BrowserGeometrySmoke";
 import {
   runProviderElectronSmoke,
   type ProviderSmokeTarget
@@ -89,7 +92,7 @@ let githubAuth: GithubAuthService | null = null;
 let pluginMediaService: PluginMediaService | null = null;
 let pluginSecretsService: PluginSecretsService | null = null;
 let hermesHudService: HermesHudService | null = null;
-let browserService: BrowserService | null = null;
+let browserService: BrowserWorkspace | null = null;
 let canvasNavigationInput: CanvasNavigationInputController | null = null;
 let agentGateway: AgentGateway | null = null;
 let agentBrowserBridge: AgentBrowserBridge | null = null;
@@ -117,6 +120,12 @@ const notifiedAttentionStatus = new Map<string, SessionStatus>();
 let updaterState: UpdaterState = { status: "idle" };
 let updaterInitialized = false;
 
+// Geometry smoke isolates settings, Chromium state and the instance lock before
+// any service starts. The installed application's path is never changed.
+if (process.env.CANVASTTY_GEOMETRY_DISPOSABLE_DESKTOP === "1"
+  && process.env.CANVASTTY_BROWSER_GEOMETRY_URL && process.env.CANVASTTY_GEOMETRY_USER_DATA) {
+  app.setPath("userData", process.env.CANVASTTY_GEOMETRY_USER_DATA);
+}
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 
@@ -245,14 +254,22 @@ async function initializeServices(): Promise<void> {
     canvasNavigationInput.attach(mainWindow.webContents, { preventMouseBindings: false });
   }
 
-  browserService = new BrowserService(() => mainWindow, {
+  browserService = new BrowserWorkspace({
     userDataPath,
-    restoreTabs: settings.get().browserRestoreTabs,
-    canvasWheelCaptureMode: settings.get().canvasWheelCaptureMode,
-    canvasNavigationInput,
-    ...(process.env.CANVASTTY_BROWSER_SMOKE_URL
-      ? { downloadRoot: join(userDataPath, "browser-smoke-downloads") }
-      : {})
+    audit: new BrowserAuditStore(userDataPath),
+    onState: (snapshot) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.browserState, { snapshot }); },
+    onActivity: (event) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.browserActivity, { event }); },
+    createInstance: (id, onState) => new BrowserService(() => mainWindow, {
+      browserId: id,
+      userDataPath: id === "default" ? userDataPath : join(userDataPath, "browser", "windows", id),
+      auditUserDataPath: join(userDataPath, "browser", "windows", id),
+      onState,
+      onActivity: () => {},
+      restoreTabs: settings.get().browserRestoreTabs,
+      canvasWheelCaptureMode: settings.get().canvasWheelCaptureMode,
+      canvasNavigationInput: canvasNavigationInput ?? undefined,
+      ...(process.env.CANVASTTY_BROWSER_SMOKE_URL ? { downloadRoot: join(userDataPath, "browser-smoke-downloads") } : {})
+    })
   });
   await browserService.ready();
   browserService.setCanvasNavigationActive(canvasNavigationInput.active);
@@ -466,9 +483,20 @@ async function loadApplication(window: BrowserWindow): Promise<void> {
     console.log("CANVASTTY_SMOKE_READY");
     app.quit();
   }
+  const geometrySmokeUrl = process.env.CANVASTTY_BROWSER_GEOMETRY_URL;
+  if (geometrySmokeUrl && browserService) {
+    try { await runBrowserGeometrySmoke(window, browserService, geometrySmokeUrl); }
+    catch (error) {
+      console.error(error);
+      // Release child WebContentsViews before forcing the failed fixture out.
+      await browserService.dispose().catch((cleanupError) => console.error(cleanupError));
+      app.exit(1);
+    }
+    return;
+  }
   const browserSmokeUrl = process.env.CANVASTTY_BROWSER_SMOKE_URL;
   if (browserSmokeUrl && browserService) {
-    await runBrowserElectronSmoke(browserService, browserSmokeUrl, app.getPath("userData"));
+    await runBrowserElectronSmoke(browserService.primaryInstance, browserSmokeUrl, app.getPath("userData"));
     console.log("CANVASTTY_BROWSER_SMOKE_READY");
     app.quit();
   }

@@ -21,7 +21,7 @@ import type { LimitsService } from "../services/LimitsService";
 import type { PluginManager } from "../services/PluginManager";
 import type { PluginMediaService } from "../services/PluginMediaService";
 import type { PluginSecretsService } from "../services/PluginSecretsService";
-import type { BrowserService } from "../services/BrowserService";
+import type { BrowserWorkspace } from "../services/browser/BrowserWorkspace";
 import { normalizePluginBrowserUrl } from "../services/browser/PluginBrowserOpenPolicy";
 import { PluginBrowserOpenBroker } from "./PluginBrowserOpenBroker";
 import type { GithubAuthService } from "../services/GithubAuthService";
@@ -44,7 +44,7 @@ interface Dependencies {
   plugins: PluginManager;
   pluginMedia: PluginMediaService;
   pluginSecrets: PluginSecretsService;
-  browser: BrowserService;
+  browser: BrowserWorkspace;
   githubAuth: GithubAuthService;
   hermesHud: HermesHudService;
   getMainWindow(): BrowserWindow | null;
@@ -487,21 +487,21 @@ export function registerIpc({
     assertMainRenderer(event, getMainWindow);
     return browser.getState();
   });
-  ipcMain.handle(IPC.browserOpen, (event, url?: string) => {
+  ipcMain.handle(IPC.browserOpen, (event, url?: string, browserId?: string) => {
     assertMainRenderer(event, getMainWindow);
-    return browser.open(url);
+    return browser.open(url, browserId);
   });
-  ipcMain.handle(IPC.browserClose, (event) => {
+  ipcMain.handle(IPC.browserClose, (event, browserId?: string) => {
     assertMainRenderer(event, getMainWindow);
-    return browser.close();
+    return browser.close(browserId);
   });
-  ipcMain.handle(IPC.browserCloseAllTabs, (event) => {
+  ipcMain.handle(IPC.browserCloseAllTabs, (event, browserId?: string) => {
     assertMainRenderer(event, getMainWindow);
-    return browser.closeAllTabs();
+    return browser.closeAllTabs(browserId);
   });
-  ipcMain.handle(IPC.browserNewTab, (event, url?: string) => {
+  ipcMain.handle(IPC.browserNewTab, (event, url?: string, browserId?: string) => {
     assertMainRenderer(event, getMainWindow);
-    return browser.newTab(url);
+    return browser.newTab(url, browserId);
   });
   ipcMain.handle(IPC.browserSelectTab, (event, id: string) => {
     assertMainRenderer(event, getMainWindow);
@@ -539,18 +539,18 @@ export function registerIpc({
     assertMainRenderer(event, getMainWindow);
     return browser.clearData();
   });
-  ipcMain.on(IPC.browserFocus, (event) => {
+  ipcMain.on(IPC.browserFocus, (event, browserId?: string) => {
     assertMainRenderer(event, getMainWindow);
-    browser.focus();
+    browser.focus(browserId);
   });
-  ipcMain.on(IPC.browserSetInputFocused, (event, focused: unknown) => {
+  ipcMain.on(IPC.browserSetInputFocused, (event, focused: unknown, browserId?: string) => {
     assertMainRenderer(event, getMainWindow);
-    browser.setInputFocused(focused === true);
+    browser.setInputFocused(focused === true, browserId);
     event.returnValue = true;
   });
-  ipcMain.on(IPC.browserSetViewport, (event, bounds) => {
+  ipcMain.on(IPC.browserSetViewport, (event, bounds, browserId?: string) => {
     assertMainRenderer(event, getMainWindow);
-    browser.setViewport(bounds);
+    browser.setViewport(bounds, browserId);
   });
   ipcMain.on(IPC.browserPageWheelDecision, (event, input: unknown) => {
     event.returnValue = browser.decidePageWheel(event.sender, input);

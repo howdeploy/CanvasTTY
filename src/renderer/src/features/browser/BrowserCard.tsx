@@ -22,7 +22,7 @@ import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 import { shouldActivateCanvasFromClick } from "../workspace/focus";
 import { snapMove, snapResize, type ResizeDirection } from "../workspace/snap";
-import { browserCanvasWidgetId } from "../workspace/canvasWidgetFocus";
+import { browserWindowWidgetId } from "../workspace/canvasWidgetFocus";
 import {
   INSPECT_ELEMENT_LIMIT,
   inspectAgentLine,
@@ -34,6 +34,8 @@ import {
 
 interface BrowserCardProps {
   browser: BrowserSnapshot;
+  browserId: string;
+  title: string;
   bounds: BrowserCanvasState;
   locale: LocaleId;
   /** Agent sessions that can receive an inspected element. */
@@ -76,6 +78,8 @@ const RESIZE_DIRECTIONS: ResizeDirection[] = ["n", "ne", "e", "se", "s", "sw", "
 
 export function BrowserCard({
   browser,
+  browserId,
+  title,
   bounds,
   locale,
   sessions,
@@ -186,8 +190,8 @@ export function BrowserCard({
       } : {}),
       canvasScale: state.zoom,
       showAgentPresence: state.showAgentPresence
-    });
-  }, []);
+    }, browserId);
+  }, [browserId]);
 
   useLayoutEffect(() => {
     reportViewport();
@@ -214,14 +218,14 @@ export function BrowserCard({
       surface: "hidden",
       canvasScale: 1,
       showAgentPresence: false
-    });
-  }, []);
+    }, browserId);
+  }, [browserId]);
 
   useLayoutEffect(() => {
-    window.canvasTTY.browser.setInputFocused(focused);
-  }, [focused]);
+    window.canvasTTY.browser.setInputFocused(focused, browserId);
+  }, [focused, browserId]);
 
-  useEffect(() => () => window.canvasTTY.browser.setInputFocused(false), []);
+  useEffect(() => () => window.canvasTTY.browser.setInputFocused(false, browserId), [browserId]);
 
   useEffect(() => window.canvasTTY.browser.onCanvasPointer((event) => {
     if (event.tabId !== browser.activeTabId) return;
@@ -236,25 +240,26 @@ export function BrowserCard({
     if (event.type === "down") {
       onWidgetFocus();
       onSelect();
-      window.canvasTTY.browser.focus();
+      window.canvasTTY.browser.focus(browserId);
       return;
     }
     if (shouldActivateCanvasFromClick(focusActivation, event.clickCount)) onActivate();
-  }), [browser.activeTabId, focusActivation, onActivate, onSelect, onWidgetFocus, onWidgetHoverChange]);
+  }), [browserId, browser.activeTabId, focusActivation, onActivate, onSelect, onWidgetFocus, onWidgetHoverChange]);
 
   useEffect(() => window.canvasTTY.browser.onCanvasFreezeFrame((event) => {
+    if (!browser.tabs.some((tab) => tab.id === event.tabId)) return;
     setFreezeFrame((current) => {
       if (current && event.generation <= current.generation) return current;
       const cachedDataUrl = current?.tabId === event.tabId ? current.dataUrl : null;
       return { ...event, dataUrl: event.dataUrl ?? cachedDataUrl };
     });
-  }), []);
+  }), [browser.tabs]);
 
   useEffect(() => {
     if (!focused || !nativeViewVisible) return;
-    const frame = requestAnimationFrame(() => window.canvasTTY.browser.focus());
+    const frame = requestAnimationFrame(() => window.canvasTTY.browser.focus(browserId));
     return () => cancelAnimationFrame(frame);
-  }, [focused, nativeViewVisible]);
+  }, [browserId, focused, nativeViewVisible]);
 
   const startDrag = (event: React.PointerEvent<HTMLElement>): void => {
     if ((event.target as HTMLElement).closest("button, input, [data-browser-action]")) return;
@@ -366,7 +371,7 @@ export function BrowserCard({
 
   const closeAllTabs = (): void => {
     run(async () => {
-      await window.canvasTTY.browser.closeAllTabs();
+      await window.canvasTTY.browser.closeAllTabs(browserId);
       setPanel(null);
     });
   };
@@ -436,6 +441,7 @@ export function BrowserCard({
     if (!dialog) return;
     run(async () => {
       const result = await window.canvasTTY.browser.execute({
+        browserId,
         type: "browser_handle_dialog",
         requestId: crypto.randomUUID(),
         tabId: dialog.tabId,
@@ -471,8 +477,9 @@ export function BrowserCard({
     <article
       className={`browser-card ${summaryMode ? "browser-card--summary" : ""} ${selected || groupSelected ? "browser-card--selected" : ""}`}
       data-interactive="true"
-      data-canvas-layer-id="browser"
-      data-canvas-widget-id={browserCanvasWidgetId}
+      data-canvas-layer-id={browserWindowWidgetId(browserId)}
+      data-canvas-widget-id={browserWindowWidgetId(browserId)}
+      data-browser-id={browserId}
       data-canvas-widget-focusable="true"
       data-canvas-zoom-surface="application"
       data-wheel-owner={summaryMode ? undefined : "local"}
@@ -506,7 +513,7 @@ export function BrowserCard({
         <span className="browser-card__title">
           <UiIcon name="browser" size="1.69em" />
           <span>
-            <strong>{t(locale, "browser")}</strong>
+            <strong>{title}</strong>
             <small title={activeTab?.title}>{activeTab?.title || t(locale, "newTab")}</small>
           </span>
         </span>
@@ -550,7 +557,7 @@ export function BrowserCard({
         <button
           className="browser-card__new-tab"
           type="button"
-          onClick={() => run(() => window.canvasTTY.browser.newTab())}
+          onClick={() => run(() => window.canvasTTY.browser.newTab(undefined, browserId))}
           title={t(locale, "newTab")}
           aria-label={t(locale, "newTab")}
         >
@@ -615,7 +622,10 @@ export function BrowserCard({
         className="browser-card__viewport"
         data-browser-canvas-wheel-owner={freezeFrameVisible ? "canvas" : undefined}
       >
-        {freezeFrameDataUrl && (
+        {/* Decode and paint the cached frame behind the native child before
+            a gesture exposes it. Mounting it at sink activation can reveal an
+            unpainted owner surface on macOS. */}
+        {surface === "native" && freezeFrameDataUrl && (
           <img
             className="browser-card__freeze-frame"
             src={freezeFrameDataUrl}
@@ -630,7 +640,7 @@ export function BrowserCard({
         <div className="browser-card__page-state">
           <UiIcon name="browser" size={36} />
           <strong>{t(locale, "browserNoTabs")}</strong>
-          <button type="button" onClick={() => run(() => window.canvasTTY.browser.newTab())}>{t(locale, "newTab")}</button>
+          <button type="button" onClick={() => run(() => window.canvasTTY.browser.newTab(undefined, browserId))}>{t(locale, "newTab")}</button>
         </div>
       )}
 

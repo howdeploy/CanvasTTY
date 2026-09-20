@@ -56,11 +56,12 @@ import {
 } from "./browser/BrowserStore.ts";
 
 const BROWSER_PARTITION = "persist:canvastty-browser";
+const browserPreloads = new WeakMap<Session, { id: string; users: number }>();
 const MAX_DOWNLOAD_HISTORY = 100;
 const MAX_FAVICON_BYTES = 256 * 1024;
 const HUMAN_ACTOR: BrowserActor = { kind: "human", connectionId: "canvastty-renderer" };
 
-// Mirrors the `.browser-card { border-radius: 17px }` declaration in src/renderer/src/styles/app.css: the
+// Mirrors the `.browser-card__viewport { border-radius: 17px }` declaration in src/renderer/src/styles/app.css: the
 // stylesheet owns this visual property, so the two have to stay in sync by hand.
 const CARD_CORNER_RADIUS = 17;
 // normalizeBrowserViewportBounds clamps canvasScale to 0.5..3; this bound only guards a bogus payload.
@@ -96,6 +97,10 @@ interface DownloadWaiter {
 }
 
 export interface BrowserServiceOptions {
+  browserId?: string;
+  auditUserDataPath?: string;
+  onState?(snapshot: BrowserSnapshot): void;
+  onActivity?(event: BrowserActivityEvent): void;
   userDataPath?: string;
   downloadRoot?: string;
   uploadRoots?: readonly string[];
@@ -107,6 +112,7 @@ export interface BrowserServiceOptions {
 
 export class BrowserService {
   readonly core: BrowserCore;
+  private readonly options: BrowserServiceOptions;
   private readonly getOwner: () => BrowserWindow | null;
   private readonly now: () => number;
   private readonly canvasNavigationInput: CanvasNavigationInputController | null;
@@ -125,6 +131,9 @@ export class BrowserService {
   private readonly presenceTimer: NodeJS.Timeout;
   private browserSession: Session | null = null;
   private browserPagePreloadId: string | null = null;
+  private readonly downloadListener = (event: Electron.Event, item: DownloadItem, contents: WebContents): void => {
+    if ([...this.tabs.values()].some((tab) => tab.view.webContents.id === contents.id)) this.onDownload(event, item, contents);
+  };
   private activeTabId: string | null = null;
   private viewport: BrowserViewportBounds = {
     x: 0,
@@ -140,13 +149,16 @@ export class BrowserService {
   private visible = false;
   private disposed = false;
   private restoreTabsEnabled: boolean;
+  private runtimeInitialized = false;
   private clipOwnerId: number | null = null;
   private clipTabId: string | null = null;
   private pointerTabId: string | null = null;
+  private readonly agentInputTabs = new Map<string, number>();
   private presenceWindow: BrowserWindow | null = null;
   private presenceWindowReady: Promise<void> | null = null;
 
   constructor(getOwner: () => BrowserWindow | null, options: BrowserServiceOptions = {}) {
+    this.options = options;
     this.getOwner = getOwner;
     this.now = options.now ?? Date.now;
     this.canvasNavigationInput = options.canvasNavigationInput ?? null;
@@ -159,7 +171,7 @@ export class BrowserService {
       uploadRoots: [downloadRoot, ...(options.uploadRoots ?? [])],
       uploadStagingRoot: join(userDataPath, "browser", "upload-staging", randomUUID())
     });
-    this.audit = new BrowserAuditStore(userDataPath, { now: this.now });
+    this.audit = new BrowserAuditStore(options.auditUserDataPath ?? userDataPath, { now: this.now });
     this.agents = new AgentRegistry(this.now);
     this.canvasGestures = new BrowserCanvasGestureController({
       getOwner: () => this.getOwner(),
@@ -168,6 +180,7 @@ export class BrowserService {
       getTab: (tabId) => this.tabs.get(tabId),
       isVisible: () => this.visible,
       isDisposed: () => this.disposed,
+      canCaptureFrame: () => this.clipView.getVisible(),
       getOverrideState: () => ({
         wheelActive: this.canvasNavigationInput?.wheelActive ?? false,
         navigationActive: this.canvasNavigationInput?.active ?? false
@@ -214,7 +227,7 @@ export class BrowserService {
       ensureRuntime: () => this.ensureRuntime(),
       newTab: (url) => this.hostNewTab(url),
       closeTab: (tabId) => this.hostCloseTab(tabId),
-      activateTab: (tabId) => this.hostActivateTab(tabId),
+      activateTab: (tabId, focus) => this.hostActivateTab(tabId, focus),
       navigateTab: (tabId, url) => this.hostNavigate(tabId, url),
       back: (tabId) => this.hostBack(tabId),
       forward: (tabId) => this.hostForward(tabId),
@@ -244,6 +257,25 @@ export class BrowserService {
     return this.readyPromise;
   }
 
+  ownsContents(contents: WebContents): boolean {
+    return [...this.tabs.values()].some((tab) => tab.view.webContents.id === contents.id);
+  }
+
+  normalizeInput(value: string): string { return this.policy.normalizeHumanInput(value); }
+
+  async executeInWorkspace(actor: BrowserActor, command: BrowserCommand, signal: AbortSignal): Promise<{ data?: unknown; tabId?: string | null }> {
+    const tabId = command.tabId;
+    const input = actor.kind === "agent" && tabId && ["browser_click", "browser_hover", "browser_type", "browser_select", "browser_press", "browser_scroll", "browser_drag"].includes(command.type);
+    if (input) this.agentInputTabs.set(tabId, (this.agentInputTabs.get(tabId) ?? 0) + 1);
+    try { return await this.core.executeScoped(actor, command, signal); }
+    finally {
+      if (input) {
+        const remaining = (this.agentInputTabs.get(tabId) ?? 1) - 1;
+        if (remaining) this.agentInputTabs.set(tabId, remaining); else this.agentInputTabs.delete(tabId);
+      }
+    }
+  }
+
   getState(): BrowserSnapshot {
     const agentValues = this.agents.snapshot();
     const runtimeTabs = [...this.tabs.values()];
@@ -251,7 +283,8 @@ export class BrowserService {
       ? runtimeTabs.map((tab) => this.tabSnapshot(tab, agentValues))
       : this.persisted.tabs.map((tab) => this.persistedTabSnapshot(tab, agentValues));
     return {
-      tabs,
+      ...(this.options.browserId ? { browserId: this.options.browserId } : {}),
+      tabs: this.options.browserId ? tabs.map((tab) => ({ ...tab, browserId: this.options.browserId })) : tabs,
       activeTabId: runtimeTabs.length > 0 ? this.activeTabId : this.persisted.activeTabId,
       visible: this.visible,
       agents: agentValues,
@@ -335,7 +368,12 @@ export class BrowserService {
     clearInterval(this.presenceTimer);
     this.destroyRuntimeTabs();
     if (this.browserSession && this.browserPagePreloadId) {
-      this.browserSession.unregisterPreloadScript(this.browserPagePreloadId);
+      const shared = browserPreloads.get(this.browserSession);
+      if (shared && --shared.users === 0) {
+        this.browserSession.unregisterPreloadScript(shared.id);
+        browserPreloads.delete(this.browserSession);
+      }
+      this.browserSession.removeListener("will-download", this.downloadListener);
       this.browserPagePreloadId = null;
     }
     this.hideClipView();
@@ -446,8 +484,9 @@ export class BrowserService {
     if (normalized.surface === "hidden") {
       this.canvasPointers.cancelNavigationGesture();
     }
+    // The controller ends hidden-surface gestures before sync, and requests
+    // resized captures only after sync has applied the native bounds and zoom.
     this.canvasGestures.viewportChanged(previous, normalized);
-    this.syncViews();
   }
 
   setCanvasNavigationActive(active: boolean): void {
@@ -482,6 +521,7 @@ export class BrowserService {
     await this.readyPromise;
     if (this.disposed) throw new BrowserKernelError("BRIDGE_UNAVAILABLE", "Browser service is disposed.");
     this.requireOwner();
+    this.runtimeInitialized = true;
     this.visible = true;
     for (const [id, tab] of this.tabs) {
       if (!tab.view.webContents.isDestroyed()) continue;
@@ -525,7 +565,7 @@ export class BrowserService {
     return this.getState();
   }
 
-  private async hostActivateTab(tabId: string): Promise<BrowserSnapshot> {
+  private async hostActivateTab(tabId: string, focus = true): Promise<BrowserSnapshot> {
     await this.ensureRuntime();
     const tab = this.requireTab(tabId);
     this.canvasPointers.cancelNavigationGesture();
@@ -536,7 +576,7 @@ export class BrowserService {
     this.canvasGestures.refreshFrame();
     const owner = this.getOwner();
     if (
-      this.viewport.surface === "native"
+      focus && this.viewport.surface === "native"
       && owner
       && !owner.isDestroyed()
       && owner.isFocused()
@@ -698,6 +738,8 @@ export class BrowserService {
     });
     contents.on("will-attach-webview", (event) => event.preventDefault());
     contents.on("before-mouse-event", (event, mouse) => {
+      // CDP input belongs to the addressed page, not the user's canvas selection.
+      if (this.agentInputTabs.has(tab.id)) return;
       const nativeSink = this.canvasGestures.activeNativeSink?.tabId === tab.id
         ? this.canvasGestures.activeNativeSink
         : null;
@@ -834,10 +876,13 @@ export class BrowserService {
     if (this.browserSession) return;
     const browserSession = session.fromPartition(BROWSER_PARTITION);
     this.browserSession = browserSession;
-    this.browserPagePreloadId = browserSession.registerPreloadScript({
-      type: "frame",
-      filePath: join(__dirname, "../preload/browser.cjs")
-    });
+    let preload = browserPreloads.get(browserSession);
+    if (!preload) {
+      preload = { id: browserSession.registerPreloadScript({ type: "frame", filePath: join(__dirname, "../preload/browser.cjs") }), users: 0 };
+      browserPreloads.set(browserSession, preload);
+    }
+    preload.users += 1;
+    this.browserPagePreloadId = preload.id;
     browserSession.setPermissionCheckHandler((_contents, permission, requestingOrigin) => (
       this.policy.permission(permission, requestingOrigin)
     ));
@@ -845,7 +890,7 @@ export class BrowserService {
       callback(this.policy.permission(permission, contents.getURL()));
     });
     browserSession.setDevicePermissionHandler(() => false);
-    browserSession.on("will-download", (event, item, contents) => this.onDownload(event, item, contents));
+    browserSession.on("will-download", this.downloadListener);
   }
 
   private onDownload(
@@ -996,7 +1041,7 @@ export class BrowserService {
   }
 
   private async persistRuntime(): Promise<void> {
-    if (!this.restoreTabsEnabled) return;
+    if (!this.restoreTabsEnabled || !this.runtimeInitialized) return;
     const tabs = [...this.tabs.values()]
       .map((tab) => ({ id: tab.id, url: this.tabUrl(tab) }))
       .filter((tab) => isSafeBrowserUrl(tab.url));
@@ -1050,7 +1095,7 @@ export class BrowserService {
       if (this.presenceWindow && !this.presenceWindow.isDestroyed()) this.presenceWindow.hide();
       if (canvasSurface.kind === "sink") {
         this.mountClipTab(owner, active);
-        this.clipView.setBounds(canvasSurface.layout.clip);
+        this.setNativeClipBounds(canvasSurface.layout.clip);
         active.view.setBounds(canvasSurface.layout.view);
         // The sink is a 4 DIP wheel receiver; rounding it would be a visual regression and could
         // break the wheel-continuity invariant (docs/adr/ADR-20260808-native-browser-wheel-continuity.md).
@@ -1058,7 +1103,9 @@ export class BrowserService {
         active.view.setVisible(true);
         this.clipView.setVisible(true);
       } else {
+        const wasVisible = this.clipView.getVisible();
         this.clipView.setVisible(false);
+        if (wasVisible) this.repaintExposedOwner();
       }
       return;
     }
@@ -1071,7 +1118,7 @@ export class BrowserService {
     }
 
     this.mountClipTab(owner, active);
-    this.clipView.setBounds({ x: left, y: top, width: right - left, height: bottom - top });
+    this.setNativeClipBounds({ x: left, y: top, width: right - left, height: bottom - top });
     this.applyPageScale(active);
     active.view.setBounds({
       x: this.viewport.x - left,
@@ -1088,6 +1135,23 @@ export class BrowserService {
   private invalidateCanvasSequence(sync = true): void {
     this.canvasGestures.endSequence(sync);
     this.canvasGestures.invalidateCapture();
+  }
+
+  private setNativeClipBounds(bounds: Electron.Rectangle): void {
+    const previous = this.clipView.getBounds();
+    const wasVisible = this.clipView.getVisible();
+    this.clipView.setBounds(bounds);
+    if (wasVisible && (previous.x !== bounds.x || previous.y !== bounds.y
+      || previous.width !== bounds.width || previous.height !== bounds.height)) this.repaintExposedOwner();
+  }
+
+  private repaintExposedOwner(): void {
+    const owner = this.getOwner();
+    if (!owner || owner.isDestroyed() || !owner.isVisible() || owner.webContents.isDestroyed()) return;
+    // Moving/shrinking a native child does not reliably repaint the newly
+    // exposed DOM texture on macOS. Request that paint explicitly, including
+    // the freeze image revealed when a full page becomes a 4 DIP wheel sink.
+    owner.webContents.invalidate();
   }
 
   private mountClipTab(owner: BrowserWindow, active: BrowserTab): void {
@@ -1116,6 +1180,7 @@ export class BrowserService {
   }
 
   private hideClipView(): void {
+    const wasVisible = this.clipView.getVisible();
     this.pointerTabId = null;
     for (const tab of this.tabs.values()) {
       tab.view.setVisible(false);
@@ -1123,6 +1188,7 @@ export class BrowserService {
       tab.view.setBorderRadius(0);
     }
     this.clipView.setVisible(false);
+    if (wasVisible) this.repaintExposedOwner();
   }
 
   private observeOwner(owner: BrowserWindow): void {
@@ -1335,11 +1401,13 @@ export class BrowserService {
   }
 
   private emit(): void {
+    if (this.options.onState) { this.options.onState(this.getState()); return; }
     const owner = this.getOwner();
     if (owner && !owner.isDestroyed()) owner.webContents.send(IPC.browserState, { snapshot: this.getState() });
   }
 
   private emitActivity(event: BrowserActivityEvent): void {
+    if (this.options.onActivity) { this.options.onActivity(event); return; }
     const owner = this.getOwner();
     if (owner && !owner.isDestroyed()) owner.webContents.send(IPC.browserActivity, { event });
   }

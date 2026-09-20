@@ -6,7 +6,7 @@ export const CANVAS_DRAG_THRESHOLD = 3;
 /** The four kinds of window the canvas renders, side by side, in one scene. */
 export type CanvasLayerKind = "terminal" | "plugin" | "browser" | "note";
 
-/** A canvas layer id decoded into what it names. The browser has no target of its own. */
+/** A canvas layer id decoded into what it names. The legacy default browser has a null target. */
 export interface CanvasLayerRef {
   kind: CanvasLayerKind;
   targetId: string | null;
@@ -38,7 +38,7 @@ export function parseCanvasLayerId(layerId: string): CanvasLayerRef | null {
   if (separator === -1 || separator === layerId.length - 1) return null;
   const kind = layerId.slice(0, separator);
   const targetId = layerId.slice(separator + 1);
-  if (kind !== "terminal" && kind !== "plugin" && kind !== "note") return null;
+  if (kind !== "terminal" && kind !== "plugin" && kind !== "note" && kind !== "browser") return null;
   return { kind, targetId };
 }
 

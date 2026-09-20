@@ -15,6 +15,7 @@ const object = (properties, required = []) => ({
 
 const id = string({ minLength: 1, maxLength: 128 });
 const tabId = string({ minLength: 1, maxLength: 128 });
+const browserId = string({ minLength: 1, maxLength: 128 });
 const url = string({ minLength: 1, maxLength: 2_048 });
 const text = string({ maxLength: 65_536 });
 const refObject = object({
@@ -35,11 +36,14 @@ function tool(name, description, properties = {}, required = []) {
   return {
     name,
     description,
-    inputSchema: object(properties, required)
+    inputSchema: object({ browserId, ...properties }, required)
   };
 }
 
 export const TOOL_DEFINITIONS = Object.freeze([
+  tool("browser_list_windows", "List Browser cards and their ownership. This does not switch any agent's current Browser card."),
+  tool("browser_new_window", "Create a separate Browser card for this agent. Save browserId and address subsequent operations to it; site logins are shared across cards.", { url, title: string({ minLength: 1, maxLength: 80 }) }),
+  tool("browser_activate_window", "Select an available Browser card for this agent without switching another agent's card or the user's keyboard focus.", {}, ["browserId"]),
   tool("browser_list_tabs", "List visible browser tabs and their stable tab IDs."),
   tool("browser_new_tab", "Open a new visible tab. Re-observe after navigation before using element refs.", { url }),
   tool("browser_close_tab", "Close a visible tab by stable tab ID.", { tabId }, ["tabId"]),

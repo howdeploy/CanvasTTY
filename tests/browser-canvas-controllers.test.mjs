@@ -21,10 +21,11 @@ function wheelInput(overrides = {}) {
   };
 }
 
-function gestureHarness() {
+function gestureHarness(capturePage) {
   let now = 1_000;
   let focused = false;
   let captureMode = "off";
+  let canCaptureFrame = true;
   let overrides = { wheelActive: false, navigationActive: false };
   let viewport = {
     x: 100,
@@ -37,7 +38,7 @@ function gestureHarness() {
   const trace = [];
   const contents = {
     isDestroyed: () => false,
-    capturePage: async () => { throw new Error("capture unavailable in unit test"); }
+    capturePage: capturePage ?? (async () => { throw new Error("capture unavailable in unit test"); })
   };
   const sink = {
     preserve: () => {
@@ -61,6 +62,7 @@ function gestureHarness() {
     getTab: (tabId) => tabId === tab.id ? tab : undefined,
     isVisible: () => true,
     isDisposed: () => false,
+    canCaptureFrame: () => canCaptureFrame,
     getOverrideState: () => overrides,
     getCursorScreenPoint: () => ({ x: 140, y: 180 }),
     requestSurfaceSync: () => trace.push("surface:sync"),
@@ -84,6 +86,7 @@ function gestureHarness() {
       controller.setCaptureMode(captureMode);
     },
     setOverrides(value) { overrides = value; },
+    setCanCaptureFrame(value) { canCaptureFrame = value; },
     setViewport(value) {
       const previous = viewport;
       viewport = { ...viewport, ...value };
@@ -161,6 +164,102 @@ test("BrowserCanvasGestureController preserves a canvas sequence across placehol
   harness.controller.endSequence(false);
 });
 
+function deferredCapture() {
+  const requests = [];
+  return {
+    requests,
+    capturePage: () => new Promise((resolve) => requests.push(resolve)),
+    resolve(index, label) {
+      requests[index]({
+        getSize: () => ({ width: 800, height: 600 }),
+        toJPEG: () => Buffer.from(label)
+      });
+    }
+  };
+}
+
+const flushCaptures = () => new Promise((resolve) => setImmediate(resolve));
+const capturedFrames = (harness) => harness.trace
+  .filter((entry) => Array.isArray(entry) && entry[0] === "freeze" && entry[1].dataUrl)
+  .map((entry) => Buffer.from(entry[1].dataUrl.split(",")[1], "base64").toString());
+
+test("a resize discards an in-flight frame from the previous native geometry", async () => {
+  const capture = deferredCapture();
+  const harness = gestureHarness(capture.capturePage);
+  harness.controller.refreshFrame();
+  harness.setViewport({ width: 920, canvasScale: 0.75 });
+  capture.resolve(0, "old dimensions");
+  await flushCaptures();
+  assert.deepEqual(capturedFrames(harness), []);
+  assert.equal(capture.requests.length, 2);
+  capture.resolve(1, "new dimensions");
+  await flushCaptures();
+  assert.deepEqual(capturedFrames(harness), ["new dimensions"]);
+});
+
+test("queued captures cannot replace the freeze frame with the 4 DIP wheel sink", async (t) => {
+  const capture = deferredCapture();
+  const harness = gestureHarness(capture.capturePage);
+  t.after(() => harness.controller.endSequence(false));
+  harness.controller.refreshFrame();
+  harness.controller.refreshFrame();
+  harness.controller.beginOwnerSequence({ x: 140, y: 160 }, true);
+  harness.controller.surfaceDecision("tab-1", { x: 100, y: 100, width: 800, height: 600 }, { width: 1200, height: 900 });
+  capture.resolve(0, "capture raced with sink");
+  await flushCaptures();
+  assert.deepEqual(capturedFrames(harness), []);
+  assert.equal(capture.requests.length, 1, "no capture while the native sink is mounted");
+  harness.controller.endSequence();
+  assert.equal(capture.requests.length, 2, "capture resumes after native bounds and emulation restore");
+  capture.resolve(1, "restored page");
+  await flushCaptures();
+  assert.deepEqual(capturedFrames(harness), ["restored page"]);
+});
+
+test("returning from summary mode refreshes the frame even at the same dimensions", () => {
+  const capture = deferredCapture();
+  const harness = gestureHarness(capture.capturePage);
+  harness.setViewport({ surface: "placeholder" });
+  harness.setViewport({ surface: "native" });
+  assert.equal(capture.requests.length, 1);
+});
+
+test("offscreen resize defers capture until the full native view is visible again", async () => {
+  const capture = deferredCapture();
+  const harness = gestureHarness(capture.capturePage);
+  harness.setCanCaptureFrame(false);
+  harness.setViewport({ width: 920, x: -1000 });
+  assert.equal(capture.requests.length, 0, "a hidden clip still has the old native bounds");
+  harness.setCanCaptureFrame(true);
+  harness.setViewport({ x: 100 });
+  assert.equal(capture.requests.length, 1, "position-only reappearance refreshes the deferred frame");
+  capture.resolve(0, "visible resized page");
+  await flushCaptures();
+  assert.deepEqual(capturedFrames(harness), ["visible resized page"]);
+});
+
+test("viewport transitions synchronize native layout before requesting a resized frame", () => {
+  const harness = gestureHarness(() => {
+    harness.trace.push("capture");
+    return new Promise(() => {});
+  });
+  harness.setViewport({ width: 920 });
+  assert.deepEqual(harness.trace, ["surface:sync", "capture"]);
+});
+
+test("hiding a viewport ends its native wheel sink before synchronizing the hidden surface", (t) => {
+  const harness = gestureHarness();
+  t.after(() => harness.controller.endSequence(false));
+  harness.controller.beginOwnerSequence({ x: 140, y: 160 }, true);
+  harness.controller.surfaceDecision("tab-1", { x: 100, y: 100, width: 800, height: 600 }, { width: 1200, height: 900 });
+  harness.trace.length = 0;
+  harness.setViewport({ surface: "hidden" });
+  assert.equal(harness.controller.activeNativeSink, null);
+  assert.deepEqual(harness.trace.map((entry) => Array.isArray(entry) ? entry[0] : entry), [
+    "pointer:cancel", "sink:restore", "freeze", "surface:sync"
+  ]);
+});
+
 function pointerHarness() {
   const cursors = [];
   const ownerEvents = [];
@@ -170,6 +269,7 @@ function pointerHarness() {
   let nativeSink = null;
   let freezeActive = false;
   let frozenTabId = null;
+  let viewport = { x: 200, y: 150, width: 600, height: 400, surface: "native", showAgentPresence: false };
   const contents = {
     isDestroyed: () => false,
     focus: () => undefined,
@@ -187,7 +287,7 @@ function pointerHarness() {
   };
   const router = new BrowserCanvasPointerRouter({
     getOwner: () => owner,
-    getViewport: () => ({ x: 200, y: 150, width: 600, height: 400, surface: "native", showAgentPresence: false }),
+    getViewport: () => viewport,
     getTab: (tabId) => tabId === tab.id ? tab : undefined,
     getTabs: () => [tab],
     getNativeWheelSink: () => nativeSink,
@@ -207,6 +307,7 @@ function pointerHarness() {
     browserEvents,
     navigationEvents,
     setNavigationOverrideActive(value) { navigationOverrideActive = value; },
+    setViewport(value) { viewport = { ...viewport, ...value }; },
     setNativeSink(value) { nativeSink = value; },
     setFreeze(value, tabId = "tab-1") {
       freezeActive = value;
@@ -222,6 +323,21 @@ function nativeEvent() {
     prevented: () => prevented
   };
 }
+
+test("native navigation uses screen coordinates for a clipped, zoomed page", () => {
+  const harness = pointerHarness();
+  harness.setViewport({ x: -699, y: 200, width: 800, canvasScale: 1.124 });
+  harness.setNavigationOverrideActive(true);
+  harness.router.setNavigationActive(true);
+  const down = nativeEvent();
+  harness.router.handleBrowserMouse(harness.tab, harness.owner, down.event, {
+    type: "mouseDown", button: "left", x: 657.5, y: 44.5,
+    globalX: 140, globalY: 350, modifiers: ["alt"]
+  });
+  assert.deepEqual(harness.navigationEvents.at(-1), {
+    tabId: "tab-1", type: "down", clientX: 40, clientY: 250
+  });
+});
 
 test("BrowserCanvasPointerRouter latches full-override drag and cursor across surfaces", () => {
   const harness = pointerHarness();

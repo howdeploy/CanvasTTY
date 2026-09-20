@@ -40,6 +40,7 @@ export interface BrowserCanvasGestureHost {
   getTab(tabId: string): BrowserCanvasGestureTab | undefined;
   isVisible(): boolean;
   isDisposed(): boolean;
+  canCaptureFrame(): boolean;
   getOverrideState(): { wheelActive: boolean; navigationActive: boolean };
   getCursorScreenPoint(): Point;
   requestSurfaceSync(): void;
@@ -67,6 +68,8 @@ export class BrowserCanvasGestureController {
   private capturePromise: Promise<void> | null = null;
   private captureQueued = false;
   private captureAfterSequence = false;
+  private captureWhenVisible = false;
+  private sequenceActive = false;
   private freezeActive = false;
   private freezeTabId: string | null = null;
   private freezeEventGeneration = 0;
@@ -180,6 +183,12 @@ export class BrowserCanvasGestureController {
     const transition = this.ownerSequence.begin(point, this.now());
     this.scheduleEnd();
     if (transition.started) {
+      this.sequenceActive = true;
+      // A pending asynchronous capture may observe the hidden view or the
+      // 4 DIP sink after the surface sync below. Keep the last complete frame
+      // for this gesture and capture again only after native restoration.
+      this.invalidateCapture();
+      this.captureAfterSequence = true;
       const proposedSink = preserveNativeTarget
         ? createBrowserCanvasNativeWheelSink(tab.id, viewport, point)
         : null;
@@ -187,7 +196,6 @@ export class BrowserCanvasGestureController {
       this.nativeSink = proposedSink && sinkTab?.canvasSinkViewport.preserve(proposedSink.viewport)
         ? proposedSink
         : null;
-      this.refreshFrame();
     }
     this.host.requestSurfaceSync();
   }
@@ -202,6 +210,7 @@ export class BrowserCanvasGestureController {
     const wasFrozen = this.freezeActive;
     const nativeSinkTabId = this.nativeSink?.tabId ?? null;
     this.ownerSequence.end();
+    this.sequenceActive = false;
     this.pageSequence.reset();
     this.nativeSink = null;
     if (sync && !this.host.isDisposed()) this.host.requestSurfaceSync();
@@ -230,15 +239,25 @@ export class BrowserCanvasGestureController {
       this.inputFocused = false;
       this.endSequence(false);
       this.invalidateCapture();
+      // End the sink before syncing: a latched gesture would otherwise mount
+      // its native 4 DIP receiver even after the card has been hidden.
+      this.host.requestSurfaceSync();
       return;
     }
+    // Resized-frame captures must observe the synchronized bounds and zoom.
+    this.host.requestSurfaceSync();
     if (next.surface === "native" && (
-      previous.width !== next.width
+      previous.surface !== "native"
+      || previous.width !== next.width
       || previous.height !== next.height
       || previous.canvasScale !== next.canvasScale
     )) {
-      if (this.freezeActive) this.captureAfterSequence = true;
-      else this.refreshFrame();
+      this.invalidateCapture();
+      this.refreshFrame();
+    } else if (next.surface !== "native") {
+      this.invalidateCapture();
+    } else if (this.captureWhenVisible) {
+      this.refreshFrame();
     }
   }
 
@@ -260,6 +279,16 @@ export class BrowserCanvasGestureController {
     const tab = this.host.getActiveTab();
     if (this.host.isDisposed() || !this.host.isVisible() || viewport.surface !== "native" || !tab) return;
     if (tab.view.webContents.isDestroyed()) return;
+    if (this.sequenceActive || this.freezeActive || this.nativeSink) {
+      this.captureAfterSequence = true;
+      return;
+    }
+    if (!this.host.canCaptureFrame()) {
+      this.captureWhenVisible = true;
+      this.invalidateCapture();
+      return;
+    }
+    this.captureWhenVisible = false;
     if (this.capturePromise) {
       this.captureQueued = true;
       return;
@@ -268,6 +297,11 @@ export class BrowserCanvasGestureController {
     const capture = (async (): Promise<void> => {
       try {
         const image = await tab.view.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
+        if (!this.host.canCaptureFrame()) {
+          this.captureWhenVisible = true;
+          this.frameStore.failCapture(token);
+          return;
+        }
         const dataUrl = encodeBrowserCanvasFreezeFrame(image);
         if (!dataUrl) {
           this.frameStore.failCapture(token);

@@ -1,3 +1,4 @@
+import type { BrowserCanvasEntry } from "../../shared/contracts.ts";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -133,7 +134,8 @@ export class SettingsStore {
         && persistedLauncherProviders !== null
         && ADDED_AGENT_PROVIDERS.some((provider) => !persistedLauncherProviders.includes(provider));
       this.hasPersistedLegacyWheelCapture = Object.hasOwn(source, "zoomOverApplications");
-      const needsMigration = !("useScrollWheelToZoom" in source)
+      const needsMigration = !("browserCanvases" in source)
+        || !("useScrollWheelToZoom" in source)
         || !("canvasNavigationOverride" in source)
         || !("canvasWheelOverride" in source)
         || !("canvasWheelCaptureMode" in source)
@@ -360,6 +362,7 @@ export function normalizeSettings(
   const canvasRegions = normalizeCanvasRegions(source.canvasRegions, fallback.canvasRegions ?? []);
   const stickyNotes = normalizeStickyNotes(source.stickyNotes, fallback.stickyNotes ?? []);
   const browserCanvas = normalizeBrowserCanvas(source.browserCanvas, fallback.browserCanvas ?? null);
+  const browserCanvases = normalizeBrowserCanvases(source.browserCanvases, fallback.browserCanvases, browserCanvas);
   const homeAccentColors = normalizeHomeAccentColors(
     source.homeAccentColors,
     fallback.homeAccentColors ?? DEFAULT_HOME_ACCENT_COLORS
@@ -479,6 +482,7 @@ export function normalizeSettings(
     stickyNotes,
     pluginCanvas,
     browserCanvas,
+    browserCanvases,
     browserAgentAccess: typeof source.browserAgentAccess === "boolean"
       ? source.browserAgentAccess
       : fallback.browserAgentAccess,
@@ -757,6 +761,18 @@ export function normalizeStickyNotes(
     ids.add(source.id);
   }
   return notes;
+}
+
+function normalizeBrowserCanvases(candidate: unknown, fallback: BrowserCanvasEntry[] | undefined, legacy: BrowserCanvasState | null): BrowserCanvasEntry[] {
+  if (!Array.isArray(candidate)) return fallback ? structuredClone(fallback) : legacy ? [{ id: "default", ...legacy }] : [];
+  const result: BrowserCanvasEntry[] = [];
+  const ids = new Set<string>();
+  for (const item of candidate.slice(0, 16)) {
+    if (!item || typeof item !== "object" || typeof item.id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(item.id) || ids.has(item.id)) continue;
+    const bounds = normalizeBrowserCanvas(item, null);
+    if (bounds) { result.push({ id: item.id, ...bounds }); ids.add(item.id); }
+  }
+  return result;
 }
 
 function normalizeBrowserCanvas(candidate: unknown, fallback: BrowserCanvasState | null): BrowserCanvasState | null {

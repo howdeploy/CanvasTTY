@@ -117,7 +117,9 @@ const FALLBACK_SETTINGS: AppSettings = {
   browserAgentAccess: true,
   browserShowAgentPresence: true,
   browserRestoreTabs: true,
-  attentionNotifications: true
+  attentionNotifications: true,
+  attentionQueueVisible: true,
+  attentionQueuePlacement: "bottom-right"
 };
 
 const EMPTY_BROWSER_SNAPSHOT: BrowserSnapshot = {
@@ -597,12 +599,12 @@ export function App(): React.JSX.Element {
     const previous = browserCanvasesRef.current;
     let id = previous.find((entry) => entry.id === selectedBrowserId)?.id ?? previous[0]?.id ?? "default";
     if (createNew) {
-      const result = await browserApi.execute({ type: "browser_new_window", requestId: crypto.randomUUID(), ...(url ? { url } : {}) });
-      if (!result.ok) throw new Error(result.error?.message ?? t(settings.locale, "browserActionFailed"));
-      const created = result.data as BrowserSnapshot;
-      if (!created.browserId) throw new Error(t(settings.locale, "browserActionFailed"));
-      id = created.browserId;
-      setBrowser(await browserApi.getState());
+      // HOME's Browser action: without a card ID the workspace reopens the most recently
+      // hidden user card (with its retained tabs) and creates a new card only when none is hidden.
+      const opened = await browserApi.open(url);
+      if (!opened.browserId) throw new Error(t(settings.locale, "browserActionFailed"));
+      id = opened.browserId;
+      setBrowser(opened);
     } else setBrowser(await browserApi.open(url, id));
     const existing = browserCanvasesRef.current.find((entry) => entry.id === id);
     const homeSize = homeGridPixelSize(settings.homeGridSize);

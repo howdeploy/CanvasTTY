@@ -236,6 +236,13 @@ export interface AppSettings {
   browserRestoreTabs: boolean;
   /** Show an OS notification when a session needs approval or fails. */
   attentionNotifications: boolean;
+  /**
+   * Show the on-canvas attention panel (sessions awaiting approval or failed).
+   * Independent of `attentionNotifications`: one is the HUD, the other the OS toast.
+   */
+  attentionQueueVisible: boolean;
+  /** Canvas corner that hosts the attention panel. */
+  attentionQueuePlacement: CanvasOverlayPlacement;
 }
 
 export interface CreateSessionRequest {
@@ -266,11 +273,23 @@ export interface SessionSnapshot extends SessionMetadata {
   buffer: string;
 }
 
+/**
+ * Which consumers a terminalData event is meant for. The main process feeds
+ * every manager event to its in-process observers (agent control, companion
+ * presentation) and to the renderer. Output produced while a card is hidden
+ * still has to reach the observers, whose cached screens would otherwise go
+ * stale, but must not reach the renderer, which gets one replay when the card
+ * is shown again; that replay in turn carries nothing the observers have not
+ * already seen. Absent means every consumer.
+ */
+export type TerminalDataAudience = "observers" | "renderer";
+
 export interface TerminalDataEvent {
   id: string;
   data: string;
   /** Total UTF-16 code units produced, including this batch and trimmed history. */
   outputOffset: number;
+  audience?: TerminalDataAudience;
 }
 
 export interface TerminalBufferSnapshot {
@@ -1006,6 +1025,7 @@ export interface CanvasTTYApi {
   };
   browser: {
     getState(): Promise<BrowserSnapshot>;
+    /** Without `browserId`: reopens the most recently hidden card no agent owns, or creates a new card. */
     open(url?: string, browserId?: string): Promise<BrowserSnapshot>;
     close(browserId?: string): Promise<void>;
     closeAllTabs(browserId?: string): Promise<BrowserSnapshot>;

@@ -40,6 +40,7 @@ import {
 import { shouldActivateCanvasFromClick } from "../workspace/focus";
 import type { ResizeDirection } from "../workspace/snap";
 import { terminalCanvasWidgetId } from "../workspace/canvasWidgetFocus";
+import { renameCommit, visibleTerminalTitle } from "./terminalTitle";
 
 interface TerminalCardProps {
   session: SessionSnapshot;
@@ -126,6 +127,12 @@ export function TerminalCard({
   onOpenUrlRef.current = onOpenUrl;
   const renameInput = useRef<HTMLInputElement>(null);
   const renameInFlight = useRef(false);
+  // Title the rename field was seeded with; the commit compares against this
+  // snapshot so a shell title changing mid-edit cannot turn "no edit" into a rename.
+  const renameInitial = useRef("");
+  // Set once this rename session ended (commit or Escape) so a trailing blur
+  // from the input unmounting cannot commit a second time.
+  const renameClosed = useRef(false);
   const suppressFocusReport = useRef(false);
   const sessionExited = useRef(session.exitCode !== null);
   sessionExited.current = session.exitCode !== null;
@@ -152,6 +159,12 @@ export function TerminalCard({
   const [searchMatches, setSearchMatches] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   // Last OSC 0/2 title the shell reported; display-only, never persisted.
   const [oscTitle, setOscTitle] = useState<string | null>(null);
+  const titleSource = { title: session.title, titleCustomized: session.titleCustomized, oscTitle };
+  const visibleTitle = visibleTerminalTitle({ ...titleSource, cwdLabel: compactPath(session.cwd) });
+  // Same precedence, but the tooltip shows the full path when the cwd is the label.
+  const visibleTitleTooltip = visibleTerminalTitle({ ...titleSource, cwdLabel: session.cwd });
+  const visibleTitleRef = useRef(visibleTitle);
+  visibleTitleRef.current = visibleTitle;
 
   restartAction.current = async () => {
     if (restarting || !sessionExited.current) return;
@@ -420,6 +433,14 @@ export function TerminalCard({
   const bindRenameInput = useCallback((input: HTMLInputElement | null): void => {
     renameInput.current = input;
     if (!input) return;
+    // Seed the field exactly once, from the title visible when the rename
+    // started. Deliberately not a `defaultValue` prop: React re-syncs that
+    // attribute on every render, which would overwrite an untouched field when
+    // the shell reports a new OSC title while the user is editing.
+    const initial = visibleTitleRef.current;
+    renameInitial.current = initial;
+    renameClosed.current = false;
+    input.value = initial;
     terminalRef.current?.blur();
     input.focus({ preventScroll: true });
     input.select();
@@ -541,19 +562,29 @@ export function TerminalCard({
   };
 
   const commitRename = async (): Promise<void> => {
-    if (renameInFlight.current) return;
-    const title = renameInput.current?.value.trim() ?? "";
-    if (!title) {
+    if (renameInFlight.current || renameClosed.current) return;
+    const { kind, title } = renameCommit({
+      previousVisible: renameInitial.current,
+      submitted: renameInput.current?.value ?? ""
+    });
+    if (kind === "unchanged") {
+      renameClosed.current = true;
       onRenameEnd();
       return;
     }
     renameInFlight.current = true;
     try {
       await onRename(session.id, title);
+      renameClosed.current = true;
       onRenameEnd();
     } finally {
       renameInFlight.current = false;
     }
+  };
+
+  const cancelRename = (): void => {
+    renameClosed.current = true;
+    onRenameEnd();
   };
 
   const runSearch = (query: string, direction: "next" | "previous", incremental: boolean): void => {
@@ -659,7 +690,6 @@ export function TerminalCard({
               ref={bindRenameInput}
               className="terminal-card__rename"
               data-terminal-rename="true"
-              defaultValue={session.title}
               autoFocus
               maxLength={80}
               aria-label={t(locale, "renameWindow")}
@@ -672,13 +702,13 @@ export function TerminalCard({
                   void commitRename();
                 } else if (event.key === "Escape") {
                   event.preventDefault();
-                  onRenameEnd();
+                  cancelRename();
                 }
               }}
             />
           ) : (
-            <strong title={session.titleCustomized ? session.title : oscTitle ?? session.cwd}>
-              {session.titleCustomized ? session.title : oscTitle ?? compactPath(session.cwd)}
+            <strong title={visibleTitleTooltip}>
+              {visibleTitle}
             </strong>
           )}
         </div>
@@ -765,13 +795,13 @@ export function TerminalCard({
         type="button"
         onClick={activateSummary}
         onDoubleClick={activateSummaryDouble}
-        title={session.title}
-        aria-label={session.title}
+        title={visibleTitle}
+        aria-label={visibleTitle}
         data-focus-activation={focusActivation}
       >
         <div className="terminal-card__summary-content">
           <ProviderIcon provider={session.provider} size="large" />
-          <div className="terminal-card__summary-copy"><strong>{session.title}</strong><span>{sessionStatusLabel(locale, session.status, session.provider)}</span></div>
+          <div className="terminal-card__summary-copy"><strong>{visibleTitle}</strong><span>{sessionStatusLabel(locale, session.status, session.provider)}</span></div>
         </div>
       </button>
       {RESIZE_DIRECTIONS.map((direction) => (

@@ -143,11 +143,14 @@ test("renaming is inline and does not join the xterm mount dependencies", async 
   assert.equal(mountDependencies, "session.id");
   assert.match(source, /window\.canvasTTY\.terminal\.rename|onRename\(session\.id, title\)/);
   assert.match(source, /data-terminal-rename="true"/);
-  assert.match(source, /defaultValue=\{session\.title\}/);
+  // The rename field is seeded once from the visible title, never re-synced from a prop.
+  assert.doesNotMatch(source, /defaultValue=\{session\.title\}/);
+  assert.match(source, /input\.value = initial/);
+  assert.match(source, /renameCommit\(/);
   assert.match(source, /autoFocus/);
   assert.match(source, /terminalRef\.current\?\.blur\(\)/);
   assert.doesNotMatch(source, /requestAnimationFrame\(\(\) => \{\s*renameInput/);
-  assert.match(source, /session\.titleCustomized \? session\.title : oscTitle \?\? compactPath\(session\.cwd\)/);
+  assert.match(source, /visibleTerminalTitle\(\{ \.\.\.titleSource, cwdLabel: compactPath\(session\.cwd\) \}\)/);
 });
 
 test("late input and resize events are guarded after PTY exit", async () => {

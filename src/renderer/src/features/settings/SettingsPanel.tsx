@@ -75,11 +75,12 @@ import {
 import { CanvasNavigationShortcutEditor } from "./CanvasNavigationShortcutEditor";
 import { AgentHooksSettings } from "./AgentHooksSettings";
 import { AboutSettings } from "./AboutSettings";
+import { UpdatesSettings } from "./UpdatesSettings";
 import { setCanvasLauncherItemEnabled } from "../launcher/canvasLauncher";
 import { itemLabel } from "../launcher/QuickRadialMenu";
 import { setRadialLauncherItemEnabled } from "../launcher/radialLauncher";
 
-type SettingsSection = "general" | "appearance" | "agents" | "controls" | "browser" | "plugins" | "about";
+type SettingsSection = "general" | "appearance" | "agents" | "controls" | "browser" | "plugins" | "updates" | "about";
 
 const SETTINGS_SECTIONS: ReadonlyArray<{
   id: SettingsSection;
@@ -91,6 +92,7 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
   { id: "controls", icon: "sliders-horizontal" },
   { id: "browser", icon: "browser" },
   { id: "plugins", icon: "blocks" },
+  { id: "updates", icon: "download" },
   { id: "about", icon: "info" }
 ];
 
@@ -370,7 +372,25 @@ export function SettingsPanel({
                   onChange={(value) => void onChange({ attentionNotifications: value === "on" })}
                 />
               </SettingGroup>
-              <UpdaterRow state={updaterState} locale={locale} />
+              <SettingGroup
+                label={t(locale, "attentionQueue")}
+                description={t(locale, "attentionQueueDescription")}
+              >
+                <Segmented
+                  value={settings.attentionQueueVisible ? "on" : "off"}
+                  options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
+                  onChange={(value) => void onChange({ attentionQueueVisible: value === "on" })}
+                />
+              </SettingGroup>
+              {settings.attentionQueueVisible && (
+                <SettingGroup label={t(locale, "attentionQueuePlacement")}>
+                  <PlacementChoices
+                    value={settings.attentionQueuePlacement}
+                    locale={locale}
+                    onChange={(attentionQueuePlacement) => void onChange({ attentionQueuePlacement })}
+                  />
+                </SettingGroup>
+              )}
               <SettingGroup
                 label={t(locale, "terminalSessionRestore")}
                 description={t(locale, "terminalSessionRestoreDescription")}
@@ -939,6 +959,10 @@ export function SettingsPanel({
             />
           )}
 
+            {section === "updates" && (
+              <UpdatesSettings state={updaterState} locale={locale} currentVersion={appManifest.version} />
+            )}
+
             {section === "about" && <AboutSettings locale={locale} />}
           </div>
         </div>
@@ -1100,57 +1124,6 @@ const ACTIVITY_LABELS: Record<LocaleId, Record<BrowserCommandType, string>> = {
 
 function activityOperationLabel(locale: LocaleId, operation: BrowserCommandType): string {
   return ACTIVITY_LABELS[locale][operation];
-}
-
-/**
- * One compact self-update row: the text reports the state, the button is the
- * only meaningful action for it. A release that was already found downloads on
- * the next request (autoDownload is off), so "Check for updates" and "Download"
- * share the same main-process action.
- */
-function UpdaterRow({ state, locale }: { state: UpdaterState; locale: LocaleId }): React.JSX.Element {
-  const percent = state.status === "downloading" && state.percent !== null ? ` · ${state.percent}%` : "";
-  let text: string;
-  let label: string;
-  let disabled = false;
-  let run = (): void => {
-    void window.canvasTTY.updater.check();
-  };
-  switch (state.status) {
-    case "checking":
-      text = t(locale, "checkForUpdates");
-      label = t(locale, "checkForUpdates");
-      disabled = true;
-      break;
-    case "available":
-      text = `${t(locale, "updateAvailable")} · v${state.version}`;
-      label = t(locale, "updateDownload");
-      break;
-    case "downloading":
-      text = `${t(locale, "updateDownloading")}${percent}`;
-      label = t(locale, "updateDownloading");
-      disabled = true;
-      break;
-    case "downloaded":
-      text = `${t(locale, "updateDownloaded")} · v${state.version}`;
-      label = t(locale, "updateInstall");
-      run = () => window.canvasTTY.updater.install();
-      break;
-    case "unavailable":
-      text = t(locale, "updateUnavailable");
-      label = t(locale, "checkForUpdates");
-      break;
-    default:
-      text = `CanvasTTY v${appManifest.version}`;
-      label = t(locale, "checkForUpdates");
-  }
-
-  return (
-    <div className="settings-update-row">
-      <span>{text}</span>
-      <button type="button" disabled={disabled} onClick={run}>{label}</button>
-    </div>
-  );
 }
 
 function ShortcutRow({

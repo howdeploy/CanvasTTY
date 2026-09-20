@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TerminalManager } from "../src/main/services/TerminalManager.ts";
+import { TerminalManager, reachesRenderer } from "../src/main/services/TerminalManager.ts";
 import { IPC } from "../src/shared/contracts.ts";
 import { attachTerminalOutput } from "../src/renderer/src/features/terminal/terminalOutput.ts";
 
@@ -8,12 +8,16 @@ const availableRegistry = {
   get: (provider) => ({ state: "available", provider, executable: "/resolved/codex", launcher: "native", environment: {}, checked: [] })
 };
 
+// `emitted` is what the renderer receives: the emit callback applies the same
+// routing as src/main/index.ts, where output produced while the card is hidden
+// is addressed to the in-process observers only (tests/terminal-hidden-output.test.mjs
+// covers that side).
 function createManager(t) {
   const emitted = [];
   let emitData;
   let exit;
   const manager = new TerminalManager((channel, event) => {
-    if (channel === IPC.terminalData) emitted.push(event);
+    if (channel === IPC.terminalData && reachesRenderer(event)) emitted.push(event);
   }, availableRegistry, undefined, undefined, true, () => ({
     pid: 10000, process: "codex", kill() {}, write() {}, resize() {},
     onData(listener) { emitData = listener; return { dispose() {} }; },
@@ -88,7 +92,7 @@ test("becoming visible with no new output emits nothing", (t) => {
   assert.equal(emitted.length, 1, "a disposed session cannot be replayed");
 });
 
-test("an exit while hidden does not emit terminalData for the hidden stretch", (t) => {
+test("an exit while hidden sends the renderer no terminalData for the hidden stretch", (t) => {
   const { manager, id, emitted, data, exit } = createManager(t);
 
   manager.setVisible(id, false);
@@ -102,7 +106,7 @@ test("the real renderer dedup writes the hidden stretch exactly once", async (t)
   const listeners = new Set();
   let emitData;
   const manager = new TerminalManager((channel, event) => {
-    if (channel === IPC.terminalData) for (const listener of listeners) listener(event);
+    if (channel === IPC.terminalData && reachesRenderer(event)) for (const listener of listeners) listener(event);
   }, availableRegistry, undefined, undefined, true, () => ({
     pid: 10000, process: "codex", kill() {}, write() {}, resize() {},
     onData(listener) { emitData = listener; return { dispose() {} }; },
@@ -143,7 +147,7 @@ test("a replay longer than the scrollback ring is marked as truncated, never sti
   const listeners = new Set();
   let emitData;
   const manager = new TerminalManager((channel, event) => {
-    if (channel === IPC.terminalData) for (const listener of listeners) listener(event);
+    if (channel === IPC.terminalData && reachesRenderer(event)) for (const listener of listeners) listener(event);
   }, availableRegistry, undefined, undefined, true, () => ({
     pid: 10000, process: "codex", kill() {}, write() {}, resize() {},
     onData(listener) { emitData = listener; return { dispose() {} }; },

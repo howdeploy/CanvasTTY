@@ -213,11 +213,29 @@ button { border: 0; }
 .usage-row__copy span { overflow: hidden; color: var(--session-row-muted); font-size: 11px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
 .usage-row__failure-trigger { position: absolute; top: 50%; right: 14px; width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border-radius: 7px; color: rgba(255,255,255,.88); background: transparent; cursor: help; transform: translateY(-50%); }
 .usage-row__failure-trigger:hover, .usage-row__failure-trigger:focus-visible { color: white; background: rgba(255,255,255,.1); }
-.usage-row__failure-tooltip { position: fixed; inset: auto; width: min(520px, calc(100vw - 32px)); margin: 0; grid-template-columns: minmax(0, 1fr) 30px; gap: 8px; align-items: start; padding: 10px; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; color: white; background: #292936; box-shadow: var(--shadow-md); }
+/* Failure popover: summary first, raw diagnostics collapsed below. Sized against the viewport
+   (the component clamps left/top and publishes the two max-height variables), long tokens wrap
+   with overflow-wrap so a path or URL never widens the box past the viewport edge. */
+.usage-row__failure-tooltip { position: fixed; inset: auto; width: min(520px, calc(100vw - 32px)); max-width: calc(100vw - 32px); max-height: var(--failure-tooltip-max-height, calc(100vh - 32px)); margin: 0; grid-template-columns: minmax(0, 1fr); gap: 8px; align-content: start; padding: 10px 12px 12px; overflow: auto; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: 10px; color: var(--text); background: var(--surface); box-shadow: var(--shadow-md); overflow-wrap: anywhere; }
 .usage-row__failure-tooltip:popover-open { display: grid; }
-.usage-row__failure-details { max-height: var(--failure-tooltip-details-max-height, 260px); overflow: auto; color: rgba(255,255,255,.84); font: 700 11px/1.4 var(--font-mono); white-space: pre; }
-.usage-row__failure-copy { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; color: rgba(255,255,255,.78); background: rgba(255,255,255,.1); cursor: pointer; }
-.usage-row__failure-copy:hover, .usage-row__failure-copy:focus-visible { color: white; background: rgba(255,255,255,.2); }
+.usage-row__failure-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.usage-row__failure-headline { min-width: 0; padding-top: 4px; color: var(--text); font-size: 13px; font-weight: 800; line-height: 1.35; overflow-wrap: anywhere; }
+.usage-row__failure-actions { display: flex; flex: 0 0 auto; gap: 4px; }
+.usage-row__failure-summary { margin: 0; display: grid; gap: 5px; color: var(--text-muted-on-dark); font-size: 12px; font-weight: 600; line-height: 1.4; }
+.usage-row__failure-cause { display: block; padding: 6px 8px; border-left: 3px solid var(--danger); border-radius: 0 7px 7px 0; color: var(--text); background: color-mix(in srgb, var(--danger) 14%, transparent); font: 700 11px/1.45 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.usage-row__failure-diagnostics { display: grid; gap: 6px; }
+.usage-row__failure-diagnostics > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 4px 6px; border-radius: 6px; color: var(--text-muted-on-dark); cursor: pointer; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; list-style: none; }
+.usage-row__failure-diagnostics > summary::before { content: "\25B8"; margin-right: 4px; font-size: 10px; }
+.usage-row__failure-diagnostics[open] > summary::before { content: "\25BE"; }
+.usage-row__failure-diagnostics > summary::-webkit-details-marker { display: none; }
+.usage-row__failure-diagnostics > summary small { color: color-mix(in srgb, var(--text-muted-on-dark) 70%, transparent); font-size: 10px; font-weight: 600; text-transform: none; letter-spacing: 0; }
+.usage-row__failure-diagnostics > summary:hover, .usage-row__failure-diagnostics > summary:focus-visible { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); outline: 0; }
+.usage-row__failure-details { max-height: var(--failure-tooltip-details-max-height, 260px); margin: 0; padding: 8px 10px; overflow: auto; border-radius: 8px; color: color-mix(in srgb, var(--text) 84%, transparent); background: color-mix(in srgb, var(--text-dark) 45%, transparent); font: 700 11px/1.4 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.usage-row__failure-details:focus-visible { outline: 0; box-shadow: inset 0 0 0 2px var(--secondary); }
+.usage-row__failure-copy, .usage-row__failure-close { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; outline: 0; color: var(--text-muted-on-dark); background: color-mix(in srgb, var(--text) 10%, transparent); cursor: pointer; }
+.usage-row__failure-copy:hover, .usage-row__failure-close:hover { color: var(--text); background: color-mix(in srgb, var(--text) 20%, transparent); }
+.usage-row__failure-copy:focus-visible, .usage-row__failure-close:focus-visible { color: var(--text); box-shadow: inset 0 0 0 2px var(--secondary); }
+.usage-row__failure-close:hover, .usage-row__failure-close:focus-visible { background: var(--danger); color: white; }
 .usage-row > .ui-icon--working { animation: spin 1.7s linear infinite; }
 .launcher-dock { padding: .62em; display: grid; grid-template-columns: repeat(var(--launcher-columns, 2), minmax(0, 1fr)); gap: .62em; border: 0; border-radius: 1.23em; background: var(--home-launcher-dock); font-size: calc(13px * var(--ui-scale, 1)); }
 .launcher-button, .settings-button { display: grid; place-items: center; color: var(--home-launcher-text); background: var(--home-launcher-tile); cursor: pointer; transition: background .15s ease, filter .15s ease; }
@@ -1037,10 +1055,15 @@ button { border: 0; }
 
 .canvas-marquee { position: absolute; z-index: 40; border: 1px solid color-mix(in srgb, var(--primary) 78%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--primary) 18%, transparent); pointer-events: none; }
 
-.attention-queue { display: grid; gap: 4px; min-width: 224px; padding: 9px 11px; border-radius: 12px; color: white; background: rgba(40,41,52,.9); box-shadow: var(--shadow-sm); pointer-events: auto; }
+/* The attention panel: sessions waiting for approval or failed, in creation order, click to focus.
+   Rows never reorder; the caption says what the list is. Width is bounded so a long title
+   cannot grow the HUD across the canvas. */
+.attention-queue { display: grid; gap: 4px; width: max-content; min-width: 224px; max-width: min(360px, calc(100vw - 36px)); padding: 9px 11px; border-radius: 12px; color: white; background: rgba(40,41,52,.9); box-shadow: var(--shadow-sm); pointer-events: auto; }
 .attention-queue__title { color: rgba(255,255,255,.66); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
-.attention-queue__item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; /* The shared failure trigger is absolutely positioned at right:14px in a 30px box, so the row reserves that band instead of letting text run under it. */ padding: 5px 44px 5px 6px; border-radius: 7px; color: white; background: transparent; cursor: pointer; text-align: left; }
+.attention-queue__caption { margin: -2px 0 2px; color: rgba(255,255,255,.45); font-size: 10px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.attention-queue__item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; /* The shared failure trigger is absolutely positioned at right:14px in a 30px box, so the row reserves that band instead of letting text run under it. */ padding: 5px 44px 5px 6px; border-radius: 7px; outline: 0; color: white; background: transparent; cursor: pointer; text-align: left; }
 .attention-queue__item:hover { background: rgba(255,255,255,.12); }
+.attention-queue__item:focus-visible { box-shadow: inset 0 0 0 2px var(--secondary); }
 .attention-queue__item span { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .attention-queue__empty { color: rgba(255,255,255,.5); font-size: 11px; font-weight: 700; }
 
@@ -1062,7 +1085,27 @@ button { border: 0; }
 .browser-inspect__send { height: 28px; border-radius: 7px; color: var(--text-dark); background: var(--primary); cursor: pointer; font-size: 12px; font-weight: 800; }
 .browser-inspect__send:disabled { opacity: .5; cursor: not-allowed; }
 
-.settings-update-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-radius: 9px; background: var(--surface-soft); }
-.settings-update-row span { font-size: 12px; font-weight: 750; }
-.settings-update-row button { min-height: 28px; padding: 0 10px; border-radius: 7px; color: var(--text-dark); background: var(--primary); cursor: pointer; font-size: 12px; font-weight: 800; }
-.settings-update-row button:disabled { opacity: .5; cursor: not-allowed; }
+/* Updates section: status text and buttons live in one wrapping flex row inside a card, so a long
+   status or error message wraps under the icon and the buttons drop to their own line instead of
+   sitting on top of the group divider (the Linux overlap the old single-line row produced). */
+.settings-updates .setting-group__description { max-width: 62ch; }
+.settings-updates__card { display: flex; flex-wrap: wrap; align-items: center; gap: .75em 1em; min-width: 0; padding: .9em 1em; border-radius: .9em; background: var(--surface-soft); }
+.settings-updates__icon { width: 2.3em; height: 2.3em; flex: 0 0 auto; display: grid; place-items: center; border-radius: .7em; color: var(--text-dark); background: var(--secondary); }
+.settings-updates__card[data-tone="ready"] .settings-updates__icon { background: var(--primary); }
+.settings-updates__card[data-tone="muted"] .settings-updates__icon { color: var(--text-muted-on-dark); background: color-mix(in srgb, var(--text) 10%, transparent); }
+.settings-updates__card[data-tone="busy"] .settings-updates__icon { animation: settings-updates-spin 1.1s linear infinite; }
+@keyframes settings-updates-spin { to { transform: rotate(360deg); } }
+.settings-updates__status { flex: 1 1 16em; min-width: 12em; display: grid; gap: .25em; overflow-wrap: anywhere; }
+.settings-updates__title { color: var(--text); font-size: .95em; font-weight: 800; line-height: 1.35; }
+.settings-updates__detail { color: var(--text-muted-on-dark); font-size: .8em; font-weight: 500; line-height: 1.45; }
+.settings-updates__progress { width: 100%; height: .5em; margin-top: .2em; appearance: none; border: 0; border-radius: 999px; overflow: hidden; background: color-mix(in srgb, var(--text) 12%, transparent); }
+.settings-updates__progress::-webkit-progress-bar { background: transparent; }
+.settings-updates__progress::-webkit-progress-value { background: var(--primary); border-radius: 999px; }
+.settings-updates__actions { flex: 0 1 auto; display: flex; flex-wrap: wrap; gap: .5em; margin-left: auto; }
+.settings-updates__button { min-height: 2.4em; min-width: 9em; padding: 0 1em; border-radius: .65em; outline: 0; color: var(--text); background: color-mix(in srgb, var(--text) 12%, transparent); cursor: pointer; font-size: .85em; font-weight: 800; white-space: nowrap; }
+.settings-updates__button:hover { background: color-mix(in srgb, var(--text) 20%, transparent); }
+.settings-updates__button:focus-visible { box-shadow: inset 0 0 0 2px var(--secondary); }
+.settings-updates__button--primary { color: var(--text-dark); background: var(--primary); }
+.settings-updates__button--primary:hover { background: var(--primary-hover); }
+.settings-updates__button:disabled { opacity: .5; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) { .settings-updates__card[data-tone="busy"] .settings-updates__icon { animation: none; } }

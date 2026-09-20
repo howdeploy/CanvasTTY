@@ -51,6 +51,6 @@ test("provider titles from OSC 0/2 fill the header only until the user renames t
   const source = await readFile(terminalCardPath, "utf8");
 
   assert.match(source, /terminal\.onTitleChange\(/);
-  assert.match(source, /oscTitle \?\? compactPath\(session\.cwd\)/);
+  assert.match(source, /visibleTerminalTitle\(\{ \.\.\.titleSource, cwdLabel: compactPath\(session\.cwd\) \}\)/);
   assert.doesNotMatch(source, /canvasTTY\.terminal\.rename\(session\.id, oscTitle/);
 });

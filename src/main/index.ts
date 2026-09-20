@@ -15,7 +15,7 @@ import {
 } from "../shared/contracts";
 import { registerIpc } from "./ipc/registerIpc";
 import { SettingsStore } from "./services/SettingsStore";
-import { TerminalManager } from "./services/TerminalManager";
+import { TerminalManager, reachesObservers, reachesRenderer } from "./services/TerminalManager";
 import { AgentControlGateway } from "./services/agent-control/AgentControlGateway";
 import { TerminalSessionStore } from "./services/TerminalSessionStore";
 import { LimitsService } from "./services/LimitsService";
@@ -383,9 +383,14 @@ async function initializeServices(): Promise<void> {
   }
 
   terminalManager = new TerminalManager((channel, payload) => {
-    agentControl?.observe(channel, payload);
-    evenG2?.observe(channel, payload);
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    // Output produced while a card is hidden is addressed to the observers
+    // only, and the replay when it is shown again to the renderer only; the
+    // event says which (TerminalDataEvent.audience).
+    if (reachesObservers(payload)) {
+      agentControl?.observe(channel, payload);
+      evenG2?.observe(channel, payload);
+    }
+    if (reachesRenderer(payload) && mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
       mainWindow.webContents.send(channel, payload);
     }
     // Attention notifications ride the session-status stream, never the output

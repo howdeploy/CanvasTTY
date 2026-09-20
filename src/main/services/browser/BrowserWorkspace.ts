@@ -21,6 +21,8 @@ interface WindowEntry {
   id: string;
   title: string;
   visible: boolean;
+  /** Order in which the card was last hidden in this process; 0 when it was restored hidden or never hidden. */
+  hiddenAt: number;
   owner: string | null;
   ownerLabel: string | null;
   service: BrowserService;
@@ -46,6 +48,7 @@ export class BrowserWorkspace {
   private readonly readyPromise: Promise<void>;
   private readonly filePath: string;
   private humanCurrent = DEFAULT_BROWSER_ID;
+  private hideSequence = 0;
   private writeQueue = Promise.resolve();
   private disposed = false;
 
@@ -168,7 +171,7 @@ export class BrowserWorkspace {
   }
   agentDisconnected(actor: BrowserActor): void {
     const key = actorKey(actor); this.disconnected.add(key);
-    void Promise.allSettled([...(this.inflight.get(key) ?? [])]).then(() => {
+    void Promise.allSettled([...(this.inflight.get(key) ?? [])]).then(async () => {
       if (!this.disconnected.has(key)) return;
       this.dispatcher.clearActor(actor); this.current.delete(key);
       this.disconnected.delete(key);
@@ -176,22 +179,58 @@ export class BrowserWorkspace {
         entry.service.core.agentDisconnected(actor);
         if (entry.owner === key) { entry.owner = null; entry.ownerLabel = null; }
       }
+      if (await this.releaseEmptyHidden()) await this.persist();
       this.emit();
-    });
+    }).catch((error: unknown) => console.warn("CanvasTTY Browser cards could not be released after an agent disconnected.", error));
   }
 
-  async open(url?: string, browserId = this.humanCurrent): Promise<BrowserSnapshot> {
+  /*
+   * Closed-card lifecycle.
+   *
+   * Closing a card only hides it: a hidden card keeps its tabs so the user gets the same
+   * session back. A hidden card that no agent owns and that holds no tabs has nothing to
+   * retain, so it is released as soon as it is hidden (removed from the map, disposed and
+   * dropped from browser-windows.json). The same sweep runs when an agent gives up
+   * ownership and once at startup, so a restart never restores dead capacity. The
+   * "default" card is the legacy primary instance and is never released.
+   *
+   * The user's Browser action calls open() without a card ID. It reopens the most recently
+   * hidden card that no agent owns (restoring its retained tabs) and creates a new card
+   * only when no such card exists, so ordinary open/close cycles never consume the
+   * MAX_BROWSER_WINDOWS budget. Agent-owned cards are never handed to the user this way;
+   * they become reusable only once their owner disconnects (see agentDisconnected).
+   */
+  async open(url?: string, browserId?: string): Promise<BrowserSnapshot> {
     await this.readyPromise;
-    const entry = this.require(browserId); this.humanCurrent = browserId;
+    const target = browserId ?? this.reopenCandidate()?.id;
+    if (!target) return this.humanCommand({ type: "browser_new_window", ...(url ? { url: this.primaryInstance.normalizeInput(url) } : {}) });
+    const entry = this.require(target); this.humanCurrent = target;
     entry.visible = true;
     const snapshot = entry.service.getState();
-    if (snapshot.tabs.length === 0) await this.humanCommand({ type: "browser_new_tab", browserId, url: url ? entry.service.normalizeInput(url) : DEFAULT_BROWSER_URL });
+    if (snapshot.tabs.length === 0) await this.humanCommand({ type: "browser_new_tab", browserId: target, url: url ? entry.service.normalizeInput(url) : DEFAULT_BROWSER_URL });
     else if (url && snapshot.activeTabId) await this.navigate(snapshot.activeTabId, url);
     else await entry.service.open();
     await this.persist(); this.emit(); return this.getState();
   }
   async close(browserId = this.humanCurrent): Promise<void> {
-    const entry = this.require(browserId); await entry.service.close(); entry.visible = false; await this.persist(); this.emit();
+    const entry = this.require(browserId); await entry.service.close(); entry.visible = false; entry.hiddenAt = ++this.hideSequence;
+    await this.releaseEmptyHidden(); await this.persist(); this.emit();
+  }
+  private reopenCandidate(): WindowEntry | undefined {
+    let best: WindowEntry | undefined;
+    for (const entry of this.windows.values()) if (!entry.visible && entry.owner === null && (!best || entry.hiddenAt >= best.hiddenAt)) best = entry;
+    return best;
+  }
+  /** Releases hidden, unowned cards that hold no tabs (see the lifecycle note above). Returns whether the map changed. */
+  private async releaseEmptyHidden(): Promise<boolean> {
+    const empty = [...this.windows.values()].filter((entry) => entry.id !== DEFAULT_BROWSER_ID && !entry.visible && entry.owner === null
+      && entry.service.getState().tabs.length === 0);
+    for (const entry of empty) {
+      this.windows.delete(entry.id);
+      if (this.humanCurrent === entry.id) this.humanCurrent = DEFAULT_BROWSER_ID;
+      await entry.service.dispose().catch((error: unknown) => console.warn(`CanvasTTY Browser card ${entry.id} could not be disposed.`, error));
+    }
+    return empty.length > 0;
   }
   async closeAllTabs(browserId = this.humanCurrent): Promise<BrowserSnapshot> { for (const tab of this.require(browserId).service.getState().tabs) await this.closeTab(tab.id); return this.getState(); }
   async newTab(url?: string, browserId = this.humanCurrent): Promise<BrowserSnapshot> { return this.humanCommand({ type: "browser_new_tab", url, browserId }); }
@@ -228,7 +267,7 @@ export class BrowserWorkspace {
 
   private add(id: string, title: string, visible: boolean): WindowEntry {
     const service = this.options.createInstance(id, () => this.emit());
-    const entry: WindowEntry = { id, title, visible, owner: null, ownerLabel: null, service };
+    const entry: WindowEntry = { id, title, visible, hiddenAt: 0, owner: null, ownerLabel: null, service };
     this.windows.set(id, entry); return entry;
   }
   private require(id: string): WindowEntry { const entry = this.windows.get(id); if (!entry) throw new BrowserKernelError("BROWSER_NOT_FOUND", "Browser card was not found."); return entry; }
@@ -250,6 +289,7 @@ export class BrowserWorkspace {
       }
     }
     await Promise.all([...this.windows.values()].map((entry) => entry.service.ready()));
+    if (await this.releaseEmptyHidden()) await this.persist();
   }
   private persist(): Promise<void> {
     const text = JSON.stringify({ version: 1, windows: [...this.windows.values()].map(({ id, title, visible }) => ({ id, title, visible })) }, null, 2) + "\n";

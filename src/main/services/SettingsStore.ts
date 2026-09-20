@@ -154,6 +154,8 @@ export class SettingsStore {
         || !("minimapInteractionMode" in source)
         || !("shortcutHintsPlacement" in source)
         || !("canvasControlsPlacement" in source)
+        || !("attentionQueueVisible" in source)
+        || !("attentionQueuePlacement" in source)
         || !("restoreTerminalSessions" in source)
         || !("persistCanvasRegions" in source)
         || !("persistStickyNotes" in source)
@@ -316,7 +318,9 @@ function createDefaults(systemLocale: string, platform: CanvasNavigationPlatform
     browserAgentAccess: true,
     browserShowAgentPresence: true,
     browserRestoreTabs: true,
-    attentionNotifications: true
+    attentionNotifications: true,
+    attentionQueueVisible: true,
+    attentionQueuePlacement: "bottom-right"
   };
 }
 
@@ -494,7 +498,14 @@ export function normalizeSettings(
       : fallback.browserRestoreTabs,
     attentionNotifications: typeof source.attentionNotifications === "boolean"
       ? source.attentionNotifications
-      : fallback.attentionNotifications
+      : fallback.attentionNotifications,
+    attentionQueueVisible: typeof source.attentionQueueVisible === "boolean"
+      ? source.attentionQueueVisible
+      : fallback.attentionQueueVisible,
+    attentionQueuePlacement: normalizeCanvasOverlayPlacement(
+      source.attentionQueuePlacement,
+      fallback.attentionQueuePlacement
+    )
   };
 }
 

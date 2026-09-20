@@ -24,7 +24,7 @@ import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 import { displayCanvasNavigationBinding, isRenameInputTarget, isShortcutCaptureTarget, matchesPhysicalOrLayoutKey } from "../../lib/shortcuts";
 import { BrowserCard } from "../browser/BrowserCard";
-import { attentionSessions } from "../home/attentionQueue";
+import { attentionQueueRenderedAt, attentionSessions } from "../home/attentionQueue";
 import type { LimitsLoadState } from "../home/homeModel";
 import { homeGridPixelSize, homeLayoutFitsGrid } from "../home/homeLayout";
 import { HomeZone } from "../home/HomeZone";
@@ -465,6 +465,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     return () => observer.disconnect();
   }, [
     attention.length,
+    settings.attentionQueuePlacement,
+    settings.attentionQueueVisible,
     settings.canvasControlsPlacement,
     settings.minimapPlacement,
     settings.shortcutHintsPlacement,
@@ -1100,9 +1102,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                 inside it paints under this layer and scales with the camera. The queue is a
                 screen-anchored HUD: it belongs here, and as the first child of the reversed column
                 it stacks below whatever else shares this corner. */}
-            {placement === "bottom-right" && (
-              <section className="attention-queue" aria-label={t(settings.locale, "needsAttention")}>
+            {attentionQueueRenderedAt(settings, placement) && (
+              <section className="attention-queue" aria-label={t(settings.locale, "needsAttention")}
+                title={t(settings.locale, "needsAttentionHint")}>
                 <span className="attention-queue__title">{t(settings.locale, "needsAttention")}</span>
+                <span className="attention-queue__caption">{t(settings.locale, "needsAttentionCaption")}</span>
                 {attention.length === 0 ? (
                   <span className="attention-queue__empty">{t(settings.locale, "needsAttentionEmpty")}</span>
                 ) : attention.map((session) => {

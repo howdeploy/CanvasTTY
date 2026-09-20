@@ -338,7 +338,9 @@ test("peer persistence contains only a private token hash and revocation survive
     saved = await readFile(path, "utf8");
   assert.equal(saved.includes(token), false);
   assert.match(saved, /tokenHash/);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  // POSIX keeps the peer file private through its mode; Windows has no such
+  // bits (stat reports 0o666 regardless), so the check applies where it can hold.
+  if (process.platform !== "win32") assert.equal((await stat(path)).mode & 0o777, 0o600);
   await f.controller.command({ type: "revoke", id });
   assert.equal((await f.call("/g2/api/home", { token })).status, 401);
   await f.controller.command({

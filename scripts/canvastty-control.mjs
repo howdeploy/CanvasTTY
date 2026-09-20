@@ -35,7 +35,7 @@ export async function controlRequest({ connectionPath, clientPath, method, param
   let connection;
   try { connection = JSON.parse(await privateFile(connectionPath)); }
   catch (error) {
-    if (error.code === "ENOENT") throw new Error("Agent control is unavailable. Start CanvasTTY with --agent-control and select its connection file.");
+    if (error.code === "ENOENT") throw new Error("Agent control is unavailable. Enable agent orchestration in CanvasTTY Settings → Agents (or start it with --agent-control) and select its connection file.");
     throw error;
   }
   if (connection.v !== 1 || connection.service !== "canvastty-agent-control"
@@ -123,10 +123,14 @@ export function parseArguments(argv) {
 
 const HELP = `CanvasTTY native agent control (JSON output; no GUI automation)
 
-Start CanvasTTY with --agent-control first. Each --client-file owns only the
-sessions it creates. Keep the same private client file across related commands.
+Enable agent orchestration in CanvasTTY Settings → Agents first (or start it
+with --agent-control). Each --client-file owns only the sessions it creates.
+Keep the same private client file across related commands.
 
-create --cwd <directory> [--title <name>] [--yolo | --profile normal]
+create --cwd <directory> [--provider <id>] [--title <name>] [--yolo | --profile normal]
+  provider: codex (default), claude, qwen, kimi, opencode, hermes, grok, omp, pi.
+  Only Codex workers report a captured result and expose startup/approval menus
+  to choose/dismiss; the create response lists each worker's capabilities.
 list
 status <session-id>
 screen <session-id>

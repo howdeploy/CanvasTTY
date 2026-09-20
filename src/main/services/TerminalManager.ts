@@ -100,8 +100,8 @@ export class TerminalManager {
   private readonly captureAnswer: (provider: ProviderId) => boolean;
   // Renderer-reported card visibility, keyed by session and holding the
   // outputOffset at the moment it was hidden: the last offset the card saw.
-  // A hidden session's batch queue is always empty (see setVisible/queueOutput),
-  // so no output can be stranded there.
+  // Output keeps flowing through emit while hidden, addressed to the observers
+  // only (see flushOutput), so the batch queue never holds renderer output.
   private readonly hiddenSinceOffset = new Map<string, number>();
   private lifecycleHooksEnabled: boolean;
   private sessionStore: TerminalSessionStore | null = null;
@@ -408,7 +408,8 @@ export class TerminalManager {
   /**
    * Reports whether the session's card renders live output. A hidden session
    * keeps appending to its scrollback and advancing outputOffset, so history
-   * stays canonical; only the renderer terminalData stream is gated.
+   * stays canonical, and keeps emitting terminalData for the in-process
+   * observers; only the renderer's delivery of that stream is gated.
    */
   setVisible(id: string, visible: boolean): void {
     if (typeof id !== "string" || typeof visible !== "boolean") return;
@@ -419,19 +420,22 @@ export class TerminalManager {
 
     if (!visible) {
       // Visible -> hidden: flush the batch queued while the card was still
-      // live instead of dropping it. From here on queueOutput stops batching,
-      // so this is the last batch that can exist while hidden — nothing is
-      // lost, and nothing is duplicated because the renderer dedups by
-      // absolute offset.
+      // live instead of dropping it. It was produced while visible, so it goes
+      // to every consumer; from here on flushOutput addresses the observers
+      // only. Nothing is lost, and nothing is duplicated because the renderer
+      // dedups by absolute offset.
       this.flushOutput(id, session);
       this.hiddenSinceOffset.set(id, session.outputOffset);
       return;
     }
 
-    // Hidden -> visible: replay the retained scrollback ending at the current
-    // outputOffset. The card drops everything it already wrote (its offset is
-    // absolute; features/terminal/terminalOutput.ts), so the missed suffix
-    // arrives — once.
+    // Hidden -> visible: first hand the observers whatever is still batched
+    // (still addressed to them alone, since the card has not seen it and the
+    // replay below covers it), then replay the retained scrollback ending at
+    // the current outputOffset to the renderer alone. The card drops everything
+    // it already wrote (its offset is absolute;
+    // features/terminal/terminalOutput.ts), so the missed suffix arrives —
+    // once. The observers get no replay: they already received every chunk.
     //
     // The window is bounded by MAX_SCROLLBACK_CHARS: when the hidden stretch
     // was longer than the ring, the buffer no longer reaches back to
@@ -441,10 +445,13 @@ export class TerminalManager {
     // wrote) and marks it in the card instead of stitching it as continuous
     // output. Never widen the ring to hide this: the truncation must stay
     // visible.
+    this.flushOutput(id, session);
     this.hiddenSinceOffset.delete(id);
     if (hiddenSince === undefined || session.outputOffset === hiddenSince) return;
     const data = session.bufferChunks.slice(session.bufferStart).join("");
-    if (data.length > 0) this.emit(IPC.terminalData, { id, data, outputOffset: session.outputOffset });
+    if (data.length > 0) {
+      this.emit(IPC.terminalData, { id, data, outputOffset: session.outputOffset, audience: "renderer" });
+    }
   }
 
   dispose(id: string): void {
@@ -719,9 +726,6 @@ export class TerminalManager {
   }
 
   private queueOutput(id: string, session: ManagedSession, data: string): void {
-    // The card is hidden: the scrollback already got the chunk in bindProcess,
-    // so don't accumulate a renderer batch that would be stale by flush time.
-    if (this.hiddenSinceOffset.has(id)) return;
     session.pendingOutput.push(data);
     if (session.outputTimer !== null) return;
     // Keep a TUI's clear-and-redraw sequence in one renderer update whenever possible.
@@ -737,8 +741,25 @@ export class TerminalManager {
 
     const data = session.pendingOutput.join("");
     session.pendingOutput.length = 0;
-    this.emit(IPC.terminalData, { id, data, outputOffset: session.outputOffset });
+    // While the card is hidden the batch is for the observers only: the
+    // renderer catches up through the replay in setVisible.
+    this.emit(IPC.terminalData, {
+      id,
+      data,
+      outputOffset: session.outputOffset,
+      ...(this.hiddenSinceOffset.has(id) ? { audience: "observers" as const } : {})
+    });
   }
+}
+
+/** A manager event the main process forwards to its in-process observers. */
+export function reachesObservers(payload: TerminalDataEvent | SessionEvent | SessionRemovedEvent): boolean {
+  return !("audience" in payload) || payload.audience !== "renderer";
+}
+
+/** A manager event the main process forwards to the renderer. */
+export function reachesRenderer(payload: TerminalDataEvent | SessionEvent | SessionRemovedEvent): boolean {
+  return !("audience" in payload) || payload.audience !== "observers";
 }
 
 function applyLaunchFailure(metadata: SessionMetadata, failure: UnavailableProviderCli): void {

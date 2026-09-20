@@ -1,11 +1,11 @@
 ---
 name: canvastty-orchestrator
-description: Create and coordinate native Codex sessions in CanvasTTY through its local CLI, without taking over the user's desktop.
+description: Create and coordinate native agent sessions (Codex, Claude, Qwen, Kimi, OpenCode, Hermes, Grok, OMP, Pi) in CanvasTTY through its local CLI, without taking over the user's desktop.
 ---
 
 # CanvasTTY Orchestrator
 
-Use the bundled `canvastty-control.mjs` CLI with a running CanvasTTY instance started with `--agent-control`. A plain shell running Codex is not a substitute for a native `provider: codex` session. Do not use mouse/keyboard automation, clipboard, window focus, CDP, or renderer injection.
+Use the bundled `canvastty-control.mjs` CLI with a running CanvasTTY instance whose agent orchestration endpoint is enabled (Settings → Agents → Agent orchestration, or the `--agent-control` start flag). A session launched from the desktop with the **Orchestrator** role already carries `CANVASTTY_CONTROL_CONNECTION` in its environment. A plain shell running a provider CLI is not a substitute for a native session created through this endpoint. Do not use mouse/keyboard automation, clipboard, window focus, CDP, or renderer injection.
 
 ## Create workers
 
@@ -15,9 +15,9 @@ Use the bundled `canvastty-control.mjs` CLI with a running CanvasTTY instance st
 
    `node scripts/canvastty-control.mjs create --provider codex --cwd <absolute-project-path> --title <task> --yolo`
 
-   CLI creation defaults to YOLO, using the provider's full-access, no-approval launch flag. It does not change global Codex settings. `--profile normal` is available when the user requests their ordinary configured profile; do not silently replace their selected permissions.
+   `--provider` accepts codex, claude, qwen, kimi, opencode, hermes, grok, omp and pi; each worker uses that provider's own normal/YOLO launch flags. The create response includes `capabilities`: only Codex workers have `result: true` (captured final answer) and `menus: true` (startup/approval menus that `choose`/`dismiss` can act on). For other providers, `result` ends as `no_result` and menus must be resolved by the user; treat their `screen` text as the only evidence. CLI creation defaults to YOLO, using the provider's full-access, no-approval launch flag. It does not change global provider settings. `--profile normal` is available when the user requests their ordinary configured profile; do not silently replace their selected permissions.
 4. Save the returned session ID and request ID. Verify provider, profile, cwd and launch status. A returned ID or an idle status alone does not prove a working agent.
-5. Inspect `screen <id>` until Codex is at an empty composer. Trust, authentication, permission menus and startup failures are not task prompts. Do not submit a task to dismiss them.
+5. Inspect `screen <id>` until the worker is at an empty composer (verified automatically for Codex; for other providers judge from the screen text). Trust, authentication, permission menus and startup failures are not task prompts. Do not submit a task to dismiss them.
 6. Resolve only reviewed, authorized menu actions: `choose <id> --choice <observed-number> --revision <interaction.revision>`. For an idle menu offering Escape, `dismiss <id> --revision <screen.revision>` closes it. A stale revision requires another inspection. In particular, inspect new or changed lifecycle hooks before trusting them; YOLO does not imply approval of unknown hooks. Verify the next screen after each choice.
 
 ## Run and verify

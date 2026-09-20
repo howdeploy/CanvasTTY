@@ -20,13 +20,33 @@
 
 `node-pty` 会在对应平台的 GitHub runner 上重新构建，因此 Linux、Windows 和 macOS 的包使用的都是各自平台的原生模块。一个系统的包绝不会被换个名字冒充另一个系统的构建。
 
+## 打包二进制的加固
+
+`electron-builder.yml` 会为 release 构建启用 Electron fuses；因为 fuses 在打包阶段应用，dev 构建不受影响：
+
+- `enableNodeOptionsEnvironmentVariable: false` — 忽略来自环境的 `NODE_OPTIONS` 与 `NODE_EXTRA_CA_CERTS`。
+- `enableNodeCliInspectArguments: false` — `--inspect` 参数无法在打包后的应用中打开调试器。
+- `enableEmbeddedAsarIntegrityValidation: true` — 请求在加载 `app.asar` 时校验内嵌 asar 哈希，但 Electron 仅在 macOS 16+ 与 Windows 30+ 上执行该校验，因此随包发布的 Linux AppImage 与 deb 目标带有该 fuse 却不会执行校验。
+
+`runAsNode` 被有意保留为启用状态。服务商 CLI 与 agent runtime 会以 `process.execPath` 加 `ELECTRON_RUN_AS_NODE=1` 启动随包附带的 helper（浏览器、agent runtime 与 plugin hook helper），因此关闭该 fuse 会在打包构建中破坏 agent runtime。由此带来的后果是明确的：本机已拥有该用户权限的代码，仍然可以把打包后的二进制当作 Node runtime 执行。`onlyLoadAppFromAsar` 同样保持关闭：该 fuse 只收窄 Electron 对应用代码的搜索顺序，而 helper 以独立的 `ELECTRON_RUN_AS_NODE` 子进程启动、不加载任何 application bundle，因此不受影响；关闭它的实际后果是内嵌 asar 完整性校验可经由应用代码搜索路径被绕过。Cookie 加密有意不启用：该 fuse 是单向转换，一旦某个 release 启用，之后所有没有密钥的构建都会把加密存储当作明文读取，从而损坏该 profile 的 cookie。
+
+## 默认会话权限
+
+Electron 默认会话采用默认拒绝：权限请求与权限检查都返回 `false`，设备权限请求同样被拒绝。因此 shell 窗口与插件窗口无法获得摄像头、麦克风、地理位置、通知或设备访问权限，也不会有任何权限被静默授予。
+
+内置浏览器运行在独立的持久化 `canvastty-browser` partition 中，拥有自己的策略对象，但该策略目前不授予任何权限：默认会话与内置浏览器都会拒绝全部浏览器权限。独立 partition 及其策略只是将来放置例外的位置，而不是默认会话。
+
+## Renderer 崩溃恢复
+
+如果 renderer 进程丢失，主进程会记录原因与退出码，并重新加载应用界面，而不是让窗口空着。终端服务与会话在恢复过程中继续存活。正常的干净退出不会被当作崩溃，也不会触发重新加载。丢失的 utility 或 GPU 子进程会连同类型与原因被记录；窗口本身通过同一路径恢复。
+
 ## 仅保存在本地的用户数据
 
 | 数据 | 位置与生命周期 |
 |:--|:--|
 | CanvasTTY 设置 | Electron 的每用户 `userData` 目录（典型 Linux 桌面为 `~/.config/canvastty`，Windows 为 `%APPDATA%\canvastty`，macOS 为 `~/Library/Application Support/canvastty`） |
 | 服务商凭据 | 由已安装的 Codex、Claude、Qwen Code、Kimi、OpenCode、Hermes 或 Grok Build CLI 自己管理的本地凭据存储，CanvasTTY 不会复制它 |
-| 临时服务商浏览器桥接 | Kimi fallback 与 Hermes MCP 配置项带有 journal，只属于活动的 CanvasTTY 会话，并在最后一个 PTY 退出时恢复，或在启动中断后进行修复；capability 机密绝不会以字面值写入 |
+| 临时服务商浏览器桥接 | Kimi fallback 与 Hermes MCP 配置项带有 journal，只属于活动的 CanvasTTY 会话，并在最后一个 PTY 退出时恢复，或在启动中断后进行修复；capability 机密绝不会以字面值写入。OMP 与 Pi 不会获得该桥接，也不会注入 MCP 配置 |
 | PTY 滚动缓冲区 | 应用会话存续期间主进程中的有界内存，不会写入仓库 |
 | Home 媒体 | 用户磁盘上的原始本地文件，设置中只保存它的本地路径 |
 | Runtime 插件 | `userData/plugins` 下的静态包和启用状态；`userData/plugin-storage` 下的隔离 JSON 存储限制为每个插件 64 KB，并在卸载时删除 |
@@ -46,6 +66,8 @@
 
 脱敏后的百分比、窗口元数据、时间戳以及明确的不可用原因可以通过 IPC 传递。原始的服务商响应、bearer 请求头、cookie 和凭据文件则不允许。Runtime 插件机密属于独立的可选边界：只有 manifest 声明 `secrets` 时，机密才会通过所属 sandbox 的请求路径传递，并通过 Electron `safeStorage` 加密保存。
 
+OMP 与 Pi 不在上述范围之内：它们作为普通 CLI 会话启动，CanvasTTY 不会为它们读取服务商凭据、不会向其环境中注入 MCP 配置，也不会为它们建立临时服务商浏览器桥接。
+
 ## 仓库防护
 
 ```bash
@@ -53,7 +75,7 @@ npm run audit:secrets
 npm test
 ```
 
-审计会检查高置信度的服务商/云服务令牌格式、私钥块、硬编码的密钥赋值、敏感文件名以及个人 home 目录的绝对路径。repository metadata 名称会在判断 entry 类型之前排除，因此普通 clone 的 `.git/` 目录和 linked worktree 的 `.git` 文件都会被忽略，同时可发布文件中的个人路径仍会被发现。`.gitignore` 排除了本地智能体上下文、planning 数据、env 文件、凭据、日志、设置、dependencies 和生成的软件包。CI 会在构建前运行审计，每个 release job 在打包前也会再运行一次。
+审计会扫描仓库源码树与构建产物 `out/`（若存在），检查高置信度的服务商/云服务令牌格式、私钥块、硬编码的密钥赋值、敏感文件名以及个人 home 目录的绝对路径，覆盖 POSIX `/home/...`、`/Users/...` 形式与 Windows 盘根用户目录路径。嵌在更长标识符内部的密钥前缀不会被报告：`sk-ant-` 与 `sk-` 模式要求该前缀前面不是字母或数字，因此 `disk-…`、`task-…` 这类标识符名称不再产生误报，而真实密钥仍会被匹配。repository metadata 名称会在判断 entry 类型之前排除，因此普通 clone 的 `.git/` 目录和 linked worktree 的 `.git` 文件都会被忽略，同时可发布文件中的个人路径仍会被发现。`.gitignore` 排除了本地智能体上下文、planning 数据、env 文件、凭据、日志、设置、dependencies 和生成的软件包。CI 在构建前对仓库源码树运行审计，并在构建后对产物 `out/` 再运行一次，然后才上传任何安装包。
 
 没有扫描器是万无一失的。永远不要“临时”提交真实密钥。如果密钥已经进入了 Git 历史，先吊销它，再清理历史记录，然后才公开仓库。
 

@@ -76,6 +76,13 @@ export interface ProviderLifecycleSignal {
   requestId?: string;
 }
 
+/**
+ * Why a snapshot reports a failing status, when that reason is not an ordinary
+ * transition into failure: "restore" re-derived a persisted session's status
+ * at launch, "user" is the outcome of a launch the user asked for in the UI.
+ */
+export type FailureOrigin = "restore" | "user";
+
 type Emit = (
   channel: typeof IPC.terminalData | typeof IPC.terminalSession | typeof IPC.terminalRemoved,
   payload: TerminalDataEvent | SessionEvent | SessionRemovedEvent
@@ -88,10 +95,19 @@ export class TerminalManager {
   private readonly agentBrowser?: AgentBrowserLaunchCoordinator;
   private readonly agentRuntime?: AgentRuntimeLaunchCoordinator;
   private readonly spawnPty: typeof pty.spawn;
+  // Renderer-reported card visibility, keyed by session and holding the
+  // outputOffset at the moment it was hidden: the last offset the card saw.
+  // A hidden session's batch queue is always empty (see setVisible/queueOutput),
+  // so no output can be stranded there.
+  private readonly hiddenSinceOffset = new Map<string, number>();
   private lifecycleHooksEnabled: boolean;
   private sessionStore: TerminalSessionStore | null = null;
   private sessionPersistenceEnabled = false;
   private suppressPersistence = false;
+  // Set and cleared around a single synchronous session emit (see emitSession):
+  // the main process reads it from its emit callback to tell a failure that is
+  // merely re-derived state from one the user just caused.
+  private emittingFailureOrigin: FailureOrigin | null = null;
 
   constructor(
     emit: Emit,
@@ -146,6 +162,17 @@ export class TerminalManager {
 
   list(): SessionSnapshot[] {
     return [...this.sessions.values()].map((session) => snapshot(session));
+  }
+
+  /**
+   * Takes the failure origin of the session event being emitted right now, or
+   * null for an ordinary snapshot. Only meaningful inside the emit callback:
+   * the value is one-shot, so one failure can never be announced twice.
+   */
+  consumeFailureOrigin(): FailureOrigin | null {
+    const origin = this.emittingFailureOrigin;
+    this.emittingFailureOrigin = null;
+    return origin;
   }
 
   readBuffer(id: string): TerminalBufferSnapshot {
@@ -253,8 +280,12 @@ export class TerminalManager {
       ? createProviderLifecycleParser(session.metadata.provider, session.metadata.cwd)
       : null;
     session.metadata.startedAt = Date.now();
+    // A restart is a launch the user asked for, so its failure is news even
+    // though the card already showed "failed" before they clicked.
+    let failureOrigin: FailureOrigin | null = null;
     if (launched.failure) {
       applyLaunchFailure(session.metadata, launched.failure);
+      failureOrigin = "user";
     } else {
       session.metadata.status = initialSessionStatus(session.metadata.provider);
       session.metadata.exitCode = null;
@@ -263,7 +294,7 @@ export class TerminalManager {
       const runtimeStatus = this.agentRuntime?.currentStatus(id);
       if (runtimeStatus) session.metadata.status = runtimeStatus;
     }
-    this.emitSession(session.metadata);
+    this.emitSession(session.metadata, failureOrigin);
     return snapshot(session);
   }
 
@@ -348,12 +379,55 @@ export class TerminalManager {
     }
   }
 
+  /**
+   * Reports whether the session's card renders live output. A hidden session
+   * keeps appending to its scrollback and advancing outputOffset, so history
+   * stays canonical; only the renderer terminalData stream is gated.
+   */
+  setVisible(id: string, visible: boolean): void {
+    if (typeof id !== "string" || typeof visible !== "boolean") return;
+    const session = this.sessions.get(id);
+    if (!session) return;
+    const hiddenSince = this.hiddenSinceOffset.get(id);
+    if (visible === (hiddenSince === undefined)) return;
+
+    if (!visible) {
+      // Visible -> hidden: flush the batch queued while the card was still
+      // live instead of dropping it. From here on queueOutput stops batching,
+      // so this is the last batch that can exist while hidden — nothing is
+      // lost, and nothing is duplicated because the renderer dedups by
+      // absolute offset.
+      this.flushOutput(id, session);
+      this.hiddenSinceOffset.set(id, session.outputOffset);
+      return;
+    }
+
+    // Hidden -> visible: replay the retained scrollback ending at the current
+    // outputOffset. The card drops everything it already wrote (its offset is
+    // absolute; features/terminal/terminalOutput.ts), so the missed suffix
+    // arrives — once.
+    //
+    // The window is bounded by MAX_SCROLLBACK_CHARS: when the hidden stretch
+    // was longer than the ring, the buffer no longer reaches back to
+    // hiddenSince and the head of that stretch is gone for good. There is no
+    // field on TerminalDataEvent to say so, so the consumer derives the hole
+    // from the offset arithmetic (the event starts after the offset it already
+    // wrote) and marks it in the card instead of stitching it as continuous
+    // output. Never widen the ring to hide this: the truncation must stay
+    // visible.
+    this.hiddenSinceOffset.delete(id);
+    if (hiddenSince === undefined || session.outputOffset === hiddenSince) return;
+    const data = session.bufferChunks.slice(session.bufferStart).join("");
+    if (data.length > 0) this.emit(IPC.terminalData, { id, data, outputOffset: session.outputOffset });
+  }
+
   dispose(id: string): void {
     const session = this.sessions.get(id);
     if (!session) return;
 
     this.flushOutput(id, session);
     this.sessions.delete(id);
+    this.hiddenSinceOffset.delete(id);
     session.agentBrowser?.cleanup();
     session.agentRuntime?.cleanup();
     if (session.process) {
@@ -452,7 +526,11 @@ export class TerminalManager {
     if (process) this.bindProcess(descriptor.id, session, process);
     const runtimeStatus = this.agentRuntime?.currentStatus(descriptor.id);
     if (runtimeStatus) session.metadata.status = runtimeStatus;
-    this.emitSession(metadata);
+    // Restoring re-derives a persisted session's status, so a failure here is
+    // state this launch found (a folder that vanished between runs), not
+    // something that happened under the user — announcing it every launch
+    // would notify about the same silent state again and again.
+    this.emitSession(metadata, metadata.status === "failed" ? "restore" : null);
   }
 
   private persistSessions(): Promise<void> {
@@ -470,9 +548,12 @@ export class TerminalManager {
     });
   }
 
-  private emitSession(metadata: SessionMetadata): void {
+  private emitSession(metadata: SessionMetadata, failureOrigin: FailureOrigin | null = null): void {
     metadata.revision += 1;
+    this.emittingFailureOrigin = failureOrigin;
     this.emit(IPC.terminalSession, { session: structuredClone(metadata) });
+    // The emit callback is the only legitimate reader and has already run.
+    this.emittingFailureOrigin = null;
   }
 
   private launchAwaitingSession(id: string, session: ManagedSession): void {
@@ -603,6 +684,9 @@ export class TerminalManager {
   }
 
   private queueOutput(id: string, session: ManagedSession, data: string): void {
+    // The card is hidden: the scrollback already got the chunk in bindProcess,
+    // so don't accumulate a renderer batch that would be stale by flush time.
+    if (this.hiddenSinceOffset.has(id)) return;
     session.pendingOutput.push(data);
     if (session.outputTimer !== null) return;
     // Keep a TUI's clear-and-redraw sequence in one renderer update whenever possible.

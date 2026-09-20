@@ -228,6 +228,8 @@ export interface AppSettings {
   browserAgentAccess: boolean;
   browserShowAgentPresence: boolean;
   browserRestoreTabs: boolean;
+  /** Show an OS notification when a session needs approval or fails. */
+  attentionNotifications: boolean;
 }
 
 export interface CreateSessionRequest {
@@ -897,6 +899,19 @@ export interface LimitsSnapshot {
   providers: ProviderLimitsSnapshot[];
 }
 
+/** Self-update lifecycle; `unavailable` is the honest state for dev and offline runs. */
+export type UpdaterState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "available"; version: string }
+  | { status: "downloading"; version: string; percent: number | null }
+  | { status: "downloaded"; version: string }
+  | { status: "unavailable"; reason: "dev" | "offline" | "error" };
+
+export interface UpdaterStateEvent {
+  state: UpdaterState;
+}
+
 export interface CanvasTTYApi {
   appVersion(): Promise<string>;
   clipboard: {
@@ -1009,9 +1024,17 @@ export interface CanvasTTYApi {
     setBounds(id: string, bounds: SessionBounds): void;
     rename(id: string, title: string): Promise<SessionMetadata>;
     dispose(id: string): Promise<void>;
+    /** Report whether the card renders live output; hidden cards keep history but skip streaming. */
+    setVisible(id: string, visible: boolean): void;
     onData(listener: (event: TerminalDataEvent) => void): () => void;
     onSession(listener: (event: SessionEvent) => void): () => void;
     onRemoved(listener: (event: SessionRemovedEvent) => void): () => void;
+  };
+  updater: {
+    state(): Promise<UpdaterState>;
+    check(): Promise<void>;
+    install(): void;
+    onState(listener: (event: UpdaterStateEvent) => void): () => void;
   };
   window: {
     isMacOS: boolean;
@@ -1027,6 +1050,10 @@ export const IPC = {
   clipboardRead: "clipboard:read",
   clipboardWrite: "clipboard:write",
   externalOpenUrl: "external:open-url",
+  terminalSetVisible: "terminal:set-visible",
+  updaterState: "updater:state",
+  updaterCheck: "updater:check",
+  updaterInstall: "updater:install",
   settingsGet: "settings:get",
   settingsUpdate: "settings:update",
   dialogPickDirectory: "dialog:pick-directory",

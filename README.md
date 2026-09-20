@@ -19,7 +19,7 @@ https://github.com/user-attachments/assets/444612f7-cda1-4fd6-8514-2f4fac9cc520
 
 | Desktop | Interface | Terminal | Providers |
 |:--|:--|:--|:--|
-| **Electron**<br>electron-vite | **React**<br>TypeScript | **xterm.js**<br>node-pty | **Codex**<br>Claude · Kimi · OpenCode · Hermes · Grok Build |
+| **Electron**<br>electron-vite | **React**<br>TypeScript | **xterm.js**<br>node-pty | **Codex**<br>Claude · Kimi · OpenCode · Hermes · Grok Build · OMP · Pi |
 
 The application interface currently supports English and Russian. This documentation is also available in Simplified Chinese.
 
@@ -29,7 +29,7 @@ Launch a shell or agent in a project directory, move and resize its live termina
 
 ## Windows shells and provider CLIs
 
-On Windows, the Terminal launcher uses the built-in Windows PowerShell with a clean `-NoLogo -NoProfile` session, then falls back to `pwsh` or `cmd.exe`. Codex, Claude, Qwen Code, Kimi, OpenCode, Hermes, and Grok Build are resolved to a concrete `.exe`, `.com`, `.cmd`, or `.bat` launcher from the user's `PATH` or standard per-user CLI directories before they are passed to `node-pty`/ConPTY.
+On Windows, the Terminal launcher uses the built-in Windows PowerShell with a clean `-NoLogo -NoProfile` session, then falls back to `pwsh` or `cmd.exe`. Codex, Claude, Qwen Code, Kimi, OpenCode, Hermes, Grok Build, OMP, and Pi are resolved to a concrete `.exe`, `.com`, `.cmd`, or `.bat` launcher from the user's `PATH` or standard per-user CLI directories before they are passed to `node-pty`/ConPTY.
 
 CanvasTTY does not install provider CLIs. If a provider is missing, the launch dialog reports which CLI was not found and which directories were checked. Install the required CLI and restart CanvasTTY so the desktop process receives the updated environment.
 

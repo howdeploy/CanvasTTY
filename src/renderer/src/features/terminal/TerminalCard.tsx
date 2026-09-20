@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import {
   INITIAL_TERMINAL_COLS,
@@ -25,6 +27,7 @@ import {
   shouldPasteTerminalClipboard,
   shouldRestartExitedTerminal,
   shouldScrollTerminalPage,
+  shouldSearchTerminalOutput,
   shouldSendTerminalLineBreak
 } from "./terminalShortcuts";
 import { fitTerminalPreservingViewport } from "./terminalViewport";
@@ -51,6 +54,7 @@ interface TerminalCardProps {
   focused: boolean;
   focusChangeSource: "explicit" | "hover";
   selected: boolean;
+  /** Multi-select group member: gets the selected outline without focus/WebGL side effects. */
   groupSelected?: boolean;
   renaming: boolean;
   snapTargets: readonly SessionBounds[];
@@ -77,6 +81,19 @@ interface ResizeState extends DragState {
 const RESIZE_DIRECTIONS: ResizeDirection[] = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
 const TERMINAL_FOCUS_IN = "\u001b[I";
 const TERMINAL_FOCUS_OUT = "\u001b[O";
+// The WebGL canvas backing store is layout x devicePixelRatio and xterm 6 has no
+// DPR option, so above 1x its raster would be upscaled by the scene transform.
+// The DOM renderer measures the same font metrics, so the swap needs no fit().
+const WEBGL_MAX_SCALE = 1;
+
+const SEARCH_DECORATIONS = {
+  matchBackground: "#7b7899",
+  matchBorder: "#7b7899",
+  matchOverviewRuler: "#7b7899",
+  activeMatchBackground: "#9a96c2",
+  activeMatchBorder: "#9a96c2",
+  activeMatchColorOverviewRuler: "#9a96c2"
+} as const;
 
 export function TerminalCard({
   session,
@@ -126,6 +143,15 @@ export function TerminalCard({
   const summaryMode = zoom < 0.5;
   const summaryScale = summaryMode ? Math.min(2.5, Math.max(1, 0.5 / zoom)) : 1;
   const terminalBackground = terminalTheme(palette).background;
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const webglAddonRef = useRef<WebglAddon | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchOpenRef = useRef(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchMatches, setSearchMatches] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
+  // Last OSC 0/2 title the shell reported; display-only, never persisted.
+  const [oscTitle, setOscTitle] = useState<string | null>(null);
 
   restartAction.current = async () => {
     if (restarting || !sessionExited.current) return;
@@ -160,6 +186,10 @@ export function TerminalCard({
       lineHeight: 1.2,
       scrollback: 5_000,
       allowTransparency: true,
+      // Search decorations (highlighting every match and reporting the match
+      // count) are proposed API in xterm; without this flag findNext throws and
+      // the counter never leaves 0/0. The flag only unlocks that surface.
+      allowProposedApi: true,
       theme: terminalTheme(palette),
       // OSC 8 hyperlinks are handled by xterm itself rather than WebLinksAddon.
       // Without an explicit handler, xterm shows its own confirm() prompt and
@@ -173,14 +203,18 @@ export function TerminalCard({
       }
     });
     const fitAddon = new FitAddon();
+    const searchAddon = new SearchAddon();
     const webLinksAddon = new WebLinksAddon((event, uri) => {
       event.preventDefault();
       event.stopPropagation();
       onOpenUrlRef.current(uri);
     });
     terminal.loadAddon(fitAddon);
+    terminal.loadAddon(searchAddon);
+    searchAddonRef.current = searchAddon;
     terminal.loadAddon(webLinksAddon);
     terminal.open(host);
+    setOscTitle(null);
     let lastReportedGrid = "";
     const reportGrid = (cols: number, rows: number): void => {
       const grid = `${cols}x${rows}`;
@@ -196,7 +230,9 @@ export function TerminalCard({
       (error) => {
         console.error("CanvasTTY could not load terminal history.", error);
         terminal.write(`\r\n[CanvasTTY] ${t(locale, "terminalHistoryFailed")}\r\n`);
-      }
+      },
+      // Same locale capture as the notice above: this effect is scoped to the session.
+      (missing) => t(locale, "terminalReplayTrimmed").replace("{count}", String(missing))
     );
     const fit = (): void => {
       try {
@@ -207,6 +243,18 @@ export function TerminalCard({
       }
     };
     terminal.attachCustomKeyEventHandler((event) => {
+      if (shouldSearchTerminalOutput(event)) {
+        // Ctrl+Shift+F belongs to the card's scrollback search, never the shell.
+        event.preventDefault();
+        event.stopPropagation();
+        if (searchOpenRef.current) {
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+        } else {
+          setSearchOpen(true);
+        }
+        return false;
+      }
       if (shouldRestartExitedTerminal(event, sessionExited.current)) {
         event.preventDefault();
         event.stopPropagation();
@@ -266,6 +314,13 @@ export function TerminalCard({
       if (suppressFocusReport.current && (data === TERMINAL_FOCUS_IN || data === TERMINAL_FOCUS_OUT)) return;
       window.canvasTTY.terminal.input(session.id, data);
     });
+    const titleChange = terminal.onTitleChange((title) => setOscTitle(title.trim() ? title : null));
+    const searchResults = searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+      setSearchMatches({
+        current: resultCount > 0 && resultIndex >= 0 ? resultIndex + 1 : 0,
+        total: resultCount
+      });
+    });
     return () => {
       cancelAnimationFrame(frame);
       detachMouseCoordinateAdapter();
@@ -273,6 +328,10 @@ export function TerminalCard({
       unsubscribe();
       resizeObserver.disconnect();
       input.dispose();
+      titleChange.dispose();
+      searchResults.dispose();
+      searchAddonRef.current = null;
+      webglAddonRef.current = null;
       resize.dispose();
       if (terminalRef.current === terminal) terminalRef.current = null;
       terminal.dispose();
@@ -283,6 +342,51 @@ export function TerminalCard({
     const terminal = terminalRef.current;
     if (terminal) terminal.options.theme = terminalTheme(palette);
   }, [palette]);
+
+  const enableWebgl = (): void => {
+    const terminal = terminalRef.current;
+    if (!terminal || webglAddonRef.current) return;
+    // WebglAddon takes no transparency argument in 0.19.0: it reads the stored
+    // terminal options, and this terminal is constructed with allowTransparency,
+    // so cell backgrounds stay transparent and the card's palette background
+    // keeps showing through the canvas exactly as it does in the DOM renderer.
+    const webgl = new WebglAddon();
+    webgl.onContextLoss(() => {
+      // GPU context gone: drop the renderer, xterm falls back to the DOM renderer.
+      webgl.dispose();
+      if (webglAddonRef.current === webgl) webglAddonRef.current = null;
+    });
+    try {
+      terminal.loadAddon(webgl);
+      webglAddonRef.current = webgl;
+    } catch {
+      // WebGL2 unavailable — stay on the DOM renderer.
+      webgl.dispose();
+    }
+  };
+
+  const disableWebgl = (): void => {
+    const webgl = webglAddonRef.current;
+    if (!webgl) return;
+    webgl.dispose();
+    webglAddonRef.current = null;
+  };
+
+  useEffect(() => {
+    // One WebGL context per card: only the focused/frontmost terminal owns one,
+    // every other card keeps the DOM renderer. Above WEBGL_MAX_SCALE the canvas
+    // raster would be an upscale, so the DOM renderer takes over instead.
+    if (focused && !summaryMode && zoom <= WEBGL_MAX_SCALE) enableWebgl();
+    else disableWebgl();
+  }, [focused, summaryMode, zoom]);
+
+  useEffect(() => {
+    // Gate the main-process output stream: in summary mode the card is a cheap
+    // thumbnail, so the renderer skips terminalData (scrollback stays
+    // authoritative and the missing suffix is replayed when it turns visible).
+    window.canvasTTY.terminal.setVisible(session.id, !summaryMode);
+    return () => window.canvasTTY.terminal.setVisible(session.id, false);
+  }, [session.id, summaryMode]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -295,6 +399,23 @@ export function TerminalCard({
     }
     suppressFocusReport.current = false;
   }, [focusChangeSource, focused, renaming, summaryMode]);
+
+  useEffect(() => {
+    searchOpenRef.current = searchOpen;
+  }, [searchOpen]);
+
+  useEffect(() => {
+    // The overlay is the only thing receiving keystrokes while it is open.
+    if (searchOpen) {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }
+  }, [searchOpen]);
+
+  useEffect(() => {
+    // Semantic zoom replaces the surface with a thumbnail and unmounts the overlay.
+    if (summaryMode) closeSearch();
+  }, [summaryMode]);
 
   const bindRenameInput = useCallback((input: HTMLInputElement | null): void => {
     renameInput.current = input;
@@ -435,21 +556,60 @@ export function TerminalCard({
     }
   };
 
+  const runSearch = (query: string, direction: "next" | "previous", incremental: boolean): void => {
+    const addon = searchAddonRef.current;
+    setSearchQuery(query);
+    if (!addon) return;
+    if (!query) {
+      addon.clearDecorations();
+      setSearchMatches({ current: 0, total: 0 });
+      return;
+    }
+    const options = { incremental, decorations: SEARCH_DECORATIONS };
+    if (direction === "next") addon.findNext(query, options);
+    else addon.findPrevious(query, options);
+  };
+
+  const closeSearch = (): void => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setSearchMatches({ current: 0, total: 0 });
+    searchAddonRef.current?.clearDecorations();
+    // Hand the keyboard back to the terminal so the next keystrokes reach the PTY.
+    if (!renaming && !summaryMode) terminalRef.current?.focus();
+  };
+
+  const toggleSearch = (): void => {
+    if (summaryMode) return;
+    if (searchOpen) closeSearch();
+    else setSearchOpen(true);
+  };
+
+  const searchCount = `${searchMatches.current}/${searchMatches.total}`;
   return (
     <article
-      className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""}`}
+      className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""} ${session.status === "needs_approval" || session.status === "failed" ? "terminal-card--attention" : ""}`}
       data-interactive="true"
       data-canvas-layer-id={`terminal:${session.id}`}
       data-canvas-widget-id={terminalCanvasWidgetId(session.id)}
       data-canvas-widget-focusable="true"
       data-canvas-zoom-surface="application"
       data-wheel-owner={summaryMode ? undefined : "local"}
+      data-session-id={session.id}
       tabIndex={-1}
       onPointerDownCapture={(event) => {
         onSelect(session.id);
         if (!renaming && !summaryMode && !(event.target as HTMLElement).closest("button, input")) {
           terminalRef.current?.focus();
         }
+      }}
+      onKeyDown={(event) => {
+        // Fallback for focus parked on the card itself; the terminal textarea is
+        // handled by attachCustomKeyEventHandler, which stops propagation first.
+        if (summaryMode || !shouldSearchTerminalOutput(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        toggleSearch();
       }}
       onClick={activateCard}
       onDoubleClick={activateCardDouble}
@@ -517,12 +677,23 @@ export function TerminalCard({
               }}
             />
           ) : (
-            <strong title={session.titleCustomized ? session.title : session.cwd}>
-              {session.titleCustomized ? session.title : compactPath(session.cwd)}
+            <strong title={session.titleCustomized ? session.title : oscTitle ?? session.cwd}>
+              {session.titleCustomized ? session.title : oscTitle ?? compactPath(session.cwd)}
             </strong>
           )}
         </div>
         <div className="terminal-card__actions">
+          {!summaryMode && (
+            <button
+              className="terminal-card__action terminal-card__action--search"
+              type="button"
+              onClick={toggleSearch}
+              title={t(locale, "terminalSearch")}
+              aria-label={t(locale, "terminalSearch")}
+            >
+              <UiIcon name="search" size="1.23em" />
+            </button>
+          )}
           {session.exitCode !== null && (
             <button
               className="terminal-card__action terminal-card__action--restart"
@@ -539,6 +710,56 @@ export function TerminalCard({
         </div>
       </header>
       <div className="terminal-card__surface" ref={terminalHost} />
+      {searchOpen && !summaryMode && (
+        <div className="terminal-card__search" role="search">
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            placeholder={t(locale, "terminalSearchPlaceholder")}
+            aria-label={t(locale, "terminalSearchPlaceholder")}
+            onChange={(event) => runSearch(event.target.value, "next", true)}
+            onKeyDown={(event) => {
+              // Keystrokes typed into the search box must never reach the PTY.
+              event.stopPropagation();
+              if (event.key === "Enter") {
+                event.preventDefault();
+                runSearch(searchQuery, event.shiftKey ? "previous" : "next", false);
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                closeSearch();
+              }
+            }}
+          />
+          <span className="terminal-card__search-count">{searchCount}</span>
+          {/* The chevron asset points down; the square button flips it for "previous". */}
+          <button
+            type="button"
+            title={t(locale, "terminalSearchPrevious")}
+            aria-label={t(locale, "terminalSearchPrevious")}
+            style={{ transform: "rotate(180deg)" }}
+            onClick={() => runSearch(searchQuery, "previous", false)}
+          >
+            <UiIcon name="chevron" size="1em" />
+          </button>
+          <button
+            type="button"
+            title={t(locale, "terminalSearchNext")}
+            aria-label={t(locale, "terminalSearchNext")}
+            onClick={() => runSearch(searchQuery, "next", false)}
+          >
+            <UiIcon name="chevron" size="1em" />
+          </button>
+          <button
+            type="button"
+            title={t(locale, "terminalSearchClose")}
+            aria-label={t(locale, "terminalSearchClose")}
+            onClick={closeSearch}
+          >
+            <UiIcon name="close" size="1em" />
+          </button>
+        </div>
+      )}
       <button
         className="terminal-card__summary"
         type="button"

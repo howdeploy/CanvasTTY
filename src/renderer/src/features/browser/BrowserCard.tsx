@@ -4,6 +4,9 @@ import type {
   BrowserCanvasFreezeFrameEvent,
   BrowserCanvasState,
   BrowserDownloadSnapshot,
+  BrowserObservation,
+  BrowserObservedElement,
+  BrowserResult,
   BrowserSnapshot,
   BrowserTabSnapshot,
   BrowserViewportSurface,
@@ -11,7 +14,8 @@ import type {
   FocusActivation,
   LocaleId,
   Point,
-  SessionBounds
+  SessionBounds,
+  SessionSnapshot
 } from "../../../../shared/contracts";
 import { BROWSER_PROVIDER_COLORS } from "../../../../shared/contracts";
 import { UiIcon } from "../../components/UiIcon";
@@ -19,11 +23,21 @@ import { t } from "../../lib/i18n";
 import { shouldActivateCanvasFromClick } from "../workspace/focus";
 import { snapMove, snapResize, type ResizeDirection } from "../workspace/snap";
 import { browserCanvasWidgetId } from "../workspace/canvasWidgetFocus";
+import {
+  INSPECT_ELEMENT_LIMIT,
+  inspectAgentLine,
+  inspectAgentAwaitsApproval,
+  inspectAgentSessionId,
+  inspectPayloadFor,
+  inspectRefIsStale
+} from "./inspectToAgent";
 
 interface BrowserCardProps {
   browser: BrowserSnapshot;
   bounds: BrowserCanvasState;
   locale: LocaleId;
+  /** Agent sessions that can receive an inspected element. */
+  sessions: readonly SessionSnapshot[];
   zoom: number;
   camera: CameraState;
   visible: boolean;
@@ -56,7 +70,7 @@ interface ResizeState extends DragState {
   direction: ResizeDirection;
 }
 
-type BrowserPanel = "downloads" | "close-all" | null;
+type BrowserPanel = "downloads" | "close-all" | "inspect" | null;
 
 const RESIZE_DIRECTIONS: ResizeDirection[] = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
 
@@ -64,6 +78,7 @@ export function BrowserCard({
   browser,
   bounds,
   locale,
+  sessions,
   zoom,
   camera,
   visible,
@@ -94,6 +109,9 @@ export function BrowserCard({
   const activeTab = browser.tabs.find((tab) => tab.id === browser.activeTabId) ?? null;
   const [address, setAddress] = useState(activeTab?.url ?? "");
   const [panel, setPanel] = useState<BrowserPanel>(null);
+  const [observed, setObserved] = useState<BrowserObservation | null>(null);
+  const [observedElement, setObservedElement] = useState<BrowserObservedElement | null>(null);
+  const [inspectError, setInspectError] = useState<string | null>(null);
   const [dialogPrompt, setDialogPrompt] = useState("");
   const [freezeFrame, setFreezeFrame] = useState<BrowserCanvasFreezeFrameEvent | null>(null);
   const summaryMode = zoom < 0.5;
@@ -122,6 +140,12 @@ export function BrowserCard({
   const freezeFrameDataUrl = freezeFrame && freezeFrame.tabId === activeTab?.id
     ? freezeFrame.dataUrl
     : null;
+  /** The exact line, CR included, that Send to agent will type into the PTY. */
+  const inspectPreview = useMemo(() => (
+    observed === null || observedElement === null
+      ? null
+      : inspectAgentLine(inspectPayloadFor(observedElement, observed.url))
+  ), [observed, observedElement]);
 
   useEffect(() => {
     liveBounds.current = bounds;
@@ -347,6 +371,66 @@ export function BrowserCard({
     });
   };
 
+  /** Observes the page once and lets the user hand a single element to an agent session. */
+  const toggleInspect = (): void => {
+    if (panel === "inspect") {
+      setPanel(null);
+      setObserved(null);
+      setObservedElement(null);
+      setInspectError(null);
+      return;
+    }
+    setPanel("inspect");
+    setObserved(null);
+    setObservedElement(null);
+    setInspectError(null);
+    if (!activeTab) {
+      setInspectError(t(locale, "browserInspectEmpty"));
+      return;
+    }
+    run(async () => {
+      try {
+        const result: BrowserResult = await window.canvasTTY.browser.execute({
+          type: "browser_observe",
+          requestId: crypto.randomUUID(),
+          tabId: activeTab.id,
+          limit: INSPECT_ELEMENT_LIMIT
+        });
+        if (!result.ok) throw new Error(result.error?.message ?? t(locale, "browserActionFailed"));
+        const observation = result.data as BrowserObservation;
+        setObserved(observation);
+        setObservedElement(observation.elements[0] ?? null);
+      } catch (error: unknown) {
+        setInspectError(error instanceof Error ? error.message : t(locale, "browserActionFailed"));
+      }
+    });
+  };
+
+  const sendInspectedElement = (): void => {
+    if (!observedElement || !observed) return;
+    const sessionId = inspectAgentSessionId(sessions);
+    if (sessionId === null) {
+      setInspectError(t(locale, inspectAgentAwaitsApproval(sessions)
+        ? "browserInspectAwaitingApproval"
+        : "browserInspectNoAgent"));
+      return;
+    }
+    const payload = inspectPayloadFor(observedElement, observed.url);
+    const live = activeTab === null
+      ? null
+      : { tabId: activeTab.id, documentRevision: activeTab.documentRevision };
+    if (inspectRefIsStale(payload, live)) {
+      // The page moved on; sending the old node would target the wrong element.
+      setInspectError(t(locale, "browserActionFailed"));
+      return;
+    }
+    window.canvasTTY.terminal.input(sessionId, inspectAgentLine(payload));
+    setPanel(null);
+    setObserved(null);
+    setObservedElement(null);
+    setInspectError(null);
+  };
+
   const answerDialog = (accept: boolean): void => {
     const dialog = browser.pendingDialog;
     if (!dialog) return;
@@ -505,6 +589,16 @@ export function BrowserCard({
         </form>
         {showAgentPresence && <AgentBadges agents={browser.agents} locale={locale} />}
         <button
+          className="browser-card__inspect-toggle"
+          type="button"
+          disabled={!activeTab}
+          onClick={toggleInspect}
+          title={t(locale, "browserInspect")}
+          aria-label={t(locale, "browserInspect")}
+        >
+          <UiIcon name="search" size={16} />
+        </button>
+        <button
           className={`browser-card__downloads ${activeDownloadCount > 0 ? "browser-card__downloads--active" : ""}`}
           type="button"
           onClick={() => setPanel((current) => current === "downloads" ? null : "downloads")}
@@ -581,6 +675,46 @@ export function BrowserCard({
           ) : recentDownloads.slice(0, 6).map((download) => (
             <DownloadRow download={download} locale={locale} key={download.id} />
           ))}
+        </section>
+      )}
+
+      {panel === "inspect" && (
+        <section className="browser-inspect" data-browser-action="true" data-wheel-owner="local" data-canvas-wheel-priority="local" aria-label={t(locale, "browserInspectTitle")}>
+          <strong className="browser-inspect__title">{t(locale, "browserInspectTitle")}</strong>
+          {inspectError && <p className="browser-inspect__empty">{inspectError}</p>}
+          {!inspectError && (observed === null || observed.elements.length === 0) && (
+            <p className="browser-inspect__empty">{observed === null ? t(locale, "browserInspect") : t(locale, "browserInspectEmpty")}</p>
+          )}
+          {observed !== null && observed.elements.length > 0 && (
+            <ul className="browser-inspect__list">
+              {observed.elements.map((element) => (
+                <li key={element.ref.ref}>
+                  <button
+                    className="browser-inspect__item"
+                    type="button"
+                    aria-selected={observedElement?.ref.ref === element.ref.ref}
+                    onClick={() => {
+                      setObservedElement(element);
+                      setInspectError(null);
+                    }}
+                  >
+                    <strong>{element.name || element.role || element.ref.ref}</strong>
+                    <span>{element.role} · {element.ref.ref}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {inspectPreview !== null && (
+            // The page-authored label is part of what the user approves: show the whole line, untruncated.
+            <p className="browser-inspect__preview" title={inspectPreview}>{inspectPreview}</p>
+          )}
+          <button
+            className="browser-inspect__send"
+            type="button"
+            disabled={observedElement === null}
+            onClick={sendInspectedElement}
+          >{t(locale, "browserInspectSend")}</button>
         </section>
       )}
 

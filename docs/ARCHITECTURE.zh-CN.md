@@ -29,7 +29,7 @@ Electron main process
 - `src/shared/contracts.ts` 是进程之间唯一的公共契约。跨进程数据的新增或修改必须先在这里声明。
 - `src/preload/index.ts` 只暴露 renderer 需要的类型化能力。Node integration 保持关闭，context isolation 与 sandbox 保持开启。
 - `src/main/ipc/registerIpc.ts` 负责原生 side effect，并校验对持久化媒体的访问。
-- `src/main/services/TerminalManager.ts` 是实时会话状态与 PTY buffer 的事实来源。它保存有界 scrollback，并将 PTY data 合并为 16ms IPC batch。普通终端从 `idle` 开始；智能体在收到首个机器可读 provider lifecycle signal 前保持 `unavailable`。之后 Codex、Claude Code、Qwen Code、Kimi Code、OpenCode、Hermes 与 Grok Build 通过 provider hook 在 `idle`、`working` 和 `needs_approval` 之间切换；Claude/Qwen 的精确 OSC 0/2 marker 保留为兼容 fallback。不会根据 PTY 是否存在或人类可读终端文字推断活动。进程退出只产生 `done` 或 `failed`。
+- `src/main/services/TerminalManager.ts` 是实时会话状态与 PTY buffer 的事实来源。它保存有界 scrollback，并将 PTY data 合并为 16ms IPC batch。普通终端从 `idle` 开始；智能体在收到首个机器可读 provider lifecycle signal 前保持 `unavailable`。之后 Codex、Claude Code、Qwen Code、Kimi Code、OpenCode、Hermes、Grok Build、OMP 与 Pi 通过 provider hook 在 `idle`、`working` 和 `needs_approval` 之间切换；Claude/Qwen 的精确 OSC 0/2 marker 保留为兼容 fallback。OMP 与 Pi 完全不提供 lifecycle hook，因此不会获得任何 hook 配置，没有机器可读信号的会话会停留在 `unavailable` 状态，而不会编造活动。不会根据 PTY 是否存在或人类可读终端文字推断活动。进程退出只产生 `done` 或 `failed`。
 - `src/main/services/LimitsService.ts` 通过已安装 CLI 的 app-server protocol 读取 Codex，并通过服务商 usage/billing endpoint 读取 Claude、Kimi、OpenCode Go 与 Grok Build。Qwen Code 是多服务商 CLI，没有 provider-neutral quota-read protocol，因此其 adapter 明确返回 `cli-not-found` 或 `unsupported-protocol`，不会伪造百分比。凭据只在可信主进程读取，只通过 HTTPS 发往匹配的服务商，不记录也不通过 IPC 暴露。该服务负责 timeout、structural normalization、cache、stale fallback 与子进程 cleanup；原始服务商响应不会跨越 IPC。
 - `src/main/services/SettingsStore.ts` 会规范化每次更新，并通过串行原子写入持久化。
 - `src/main/services/PluginManager.ts` 安装已构建的静态仓库，不执行 package script；拒绝 symlink 与超大包；持久化启用 registry；只提供包内文件，并执行每插件 permissions/storage quota。
@@ -38,8 +38,8 @@ Electron main process
 - `src/main/services/BrowserService.ts` 管理内置浏览器的 `WebContentsView` tab。远程页面使用独立 persistent partition，禁用 Node，启用 context isolation/sandbox，并默认拒绝网站权限。这是 core service，不是 runtime 插件能力。
 - `src/main/services/agent-runtime/` 是独立且始终启用的 lifecycle 边界，不受 Browser access 开关控制。每个 agent PTY 都为受保护的 user-local socket/pipe 获得独立 capability。Provider command hook 与 OpenCode event plugin 只能提交固定 status enum、受限 event 名称和可选 opaque turn/prompt ID；Gateway 的精确 schema 会拒绝 prompt text、回复、tool input 与任意 telemetry。PTY 退出时 capability 与临时文件都会被撤销。
 - Claude、Codex、Qwen 与 OpenCode 使用仅本次启动有效的 lifecycle hook。Kimi、Hermes 与 Grok 只能从 home 配置发现 hook，因此使用由实时 CanvasTTY 会话共享、带 ownership 检查的临时条目。Kimi 与 Hermes 使用 recovery journal 和精确 backup；Grok 使用独立 owned hook 文件。Cleanup 在无并发编辑时逐字恢复原文件，否则只移除 CanvasTTY 自己的条目。
-- `TerminalManager` 注入 MCP helper 时不会留下永久的服务商配置变更。Claude Code、Codex 与 Qwen Code 使用 CLI 参数；Qwen 使用一个 inline `--mcp-config`，只覆盖 CanvasTTY 服务名，不隐藏无关用户服务。OpenCode 使用合并后的、仅本次启动有效的 `OPENCODE_CONFIG_CONTENT` 和一条 scoped browser-tool 权限；Kimi 使用 per-run MCP 配置，旧版本则使用带 compare-and-swap 与 recovery journal 的临时配置。Hermes 会在 `HERMES_HOME/config.yaml` 中获得临时 `mcp_servers.canvastty_browser` 配置项（POSIX 默认路径为 `~/.hermes/config.yaml`，Windows 默认路径为 `%LOCALAPPDATA%\hermes\config.yaml`），敏感 capability 值仍以子进程环境变量占位符保存。Kimi 与 Hermes 的临时配置会保留到最后一个所属 PTY 会话结束；若文件未被并发修改，则精确恢复原始字节。若 Hermes 启动意外中断，journal 会在 CanvasTTY 下次启动时修复配置，compare-and-swap 则保留用户的并发修改。其他 MCP 配置项、凭据和文件/shell 权限不会受影响。Qwen、OpenCode 与 Hermes 的 YOLO 都不修改持久权限设置。
-- `src/main/services/providerCliRegistry.ts` 是服务商 CLI 发现的唯一职责边界。main 进程启动时，它按 smoke-only override、继承的 `PATH`、平台默认目录、已知用户/服务商目录的顺序，为 Codex、Claude、Qwen Code、Kimi、OpenCode、Hermes 与 Grok Build 创建一个不可变快照。可用条目保存绝对 executable、launcher 类型以及补充后的子进程 `PATH`；POSIX 候选必须是可执行文件，Windows 候选必须是受支持的 native 或 batch launcher。`TerminalManager`、`LimitsService`、agent-browser probe 与 provider smoke 共用该快照，不再各自查找命令。CLI 不可用时，系统会在创建 PTY 或临时 browser 配置之前生成 failed session，并提供可复制的已检查路径诊断；对应的 HOME limit 同样保持 `cli-not-found`。CanvasTTY 不读取 shell startup script；安装或移动 CLI 后必须重启应用。
+- `TerminalManager` 注入 MCP helper 时不会留下永久的服务商配置变更。Claude Code、Codex 与 Qwen Code 使用 CLI 参数；Qwen 使用一个 inline `--mcp-config`，只覆盖 CanvasTTY 服务名，不隐藏无关用户服务。OpenCode 使用合并后的、仅本次启动有效的 `OPENCODE_CONFIG_CONTENT` 和一条 scoped browser-tool 权限；Kimi 使用 per-run MCP 配置，旧版本则使用带 compare-and-swap 与 recovery journal 的临时配置。Hermes 会在 `HERMES_HOME/config.yaml` 中获得临时 `mcp_servers.canvastty_browser` 配置项（POSIX 默认路径为 `~/.hermes/config.yaml`，Windows 默认路径为 `%LOCALAPPDATA%\hermes\config.yaml`），敏感 capability 值仍以子进程环境变量占位符保存。Kimi 与 Hermes 的临时配置会保留到最后一个所属 PTY 会话结束；若文件未被并发修改，则精确恢复原始字节。若 Hermes 启动意外中断，journal 会在 CanvasTTY 下次启动时修复配置，compare-and-swap 则保留用户的并发修改。其他 MCP 配置项、凭据和文件/shell 权限不会受影响。OMP 与 Pi 被排除在这条 bridge 之外，与 Grok Build 完全相同，因为两者都不接受每次运行独立的 MCP 配置。Qwen、OpenCode 与 Hermes 的 YOLO 都不修改持久权限设置。
+- `src/main/services/providerCliRegistry.ts` 是服务商 CLI 发现的唯一职责边界。main 进程启动时，它按 smoke-only override、继承的 `PATH`、平台默认目录、已知用户/服务商目录的顺序，为 Codex、Claude、Qwen Code、Kimi、OpenCode、Hermes、Grok Build、OMP 与 Pi 创建一个不可变快照。可用条目保存绝对 executable、launcher 类型以及补充后的子进程 `PATH`；POSIX 候选必须是可执行文件，Windows 候选必须是受支持的 native 或 batch launcher。`TerminalManager`、`LimitsService`、agent-browser probe 与 provider smoke 共用该快照，不再各自查找命令。CLI 不可用时，系统会在创建 PTY 或临时 browser 配置之前生成 failed session，并提供可复制的已检查路径诊断；对应的 HOME limit 同样保持 `cli-not-found`。CanvasTTY 不读取 shell startup script；安装或移动 CLI 后必须重启应用。
 
 主 `BrowserWindow` 在 settings、plugins、media 和 IPC 服务初始化之前创建并显示轻量本地启动页。初始化成功后替换为可信 renderer；bootstrap 失败后替换为可见错误页，并保留原生对话框 fallback。主进程持有 Electron single-instance lock；再次启动时恢复并聚焦已有窗口。
 
@@ -47,7 +47,20 @@ Runtime 插件代码绝不会导入主进程或可信 renderer bundle。HOME wid
 
 插件音乐访问基于 capability，而不是通用文件系统权限。媒体扫描返回 library ID、相对路径、metadata 与 `canvastty-media://` stream URL；原始 playlist 文本是唯一暴露的 format-neutral 文件内容。媒体 URL 只为对应且已启用的插件解析，并且必须位于用户此前选择的 library root 下。卸载插件会撤销其持久化目录授权。
 
-内置浏览器跨两个界面分工：`BrowserCard` 渲染可信的外层 window chrome、tab、navigation、agent badge、download、dialog 与 canvas geometry；`BrowserService` 把活动 native view 定位到卡片测量出的 viewport 上。卡片或 camera 移动时 native view 保持实时渲染，并按帧合并 geometry 更新；仅在 semantic summary、编辑 HOME 或可信 modal 后方隐藏。Fractional renderer bounds 扩展到完整覆盖的 device-independent pixel；只有活动 tab 实际变化时才重新挂接 view。Typed pointer bridge 把 native page 的 click/hover activity 返回 canvas selection，并显式恢复页面焦点而不阻止页面输入。仅连接或 heartbeat 不会创建 presence：实际 browser command 后才显示 badge，获得真实 pointer position 后才显示 cursor。
+内置浏览器跨两个界面分工：`BrowserCard` 渲染可信的外层 window chrome、tab、navigation、agent badge、download、dialog 与 canvas geometry；`BrowserService` 把活动 native view 定位到卡片测量出的 viewport 上。卡片或 camera 移动时 native view 保持实时渲染，并按帧合并 geometry 更新；仅在 semantic summary、编辑 HOME 或可信 modal 后方隐藏。画布 HUD overlay（minimap、controls、shortcut hints、attention queue）参与同一套遮挡判断：覆盖页面的 overlay 会隐藏 native view，页面因此让位于它们。native page 通过 `View.setBorderRadius` 按画布缩放圆角，该圆角对 4 DIP wheel sink 和隐藏的 view 重置为 0。Fractional renderer bounds 扩展到完整覆盖的 device-independent pixel；只有活动 tab 实际变化时才重新挂接 view。Typed pointer bridge 把 native page 的 click/hover activity 返回 canvas selection，并显式恢复页面焦点而不阻止页面输入。仅连接或 heartbeat 不会创建 presence：实际 browser command 后才显示 badge，获得真实 pointer position 后才显示 cursor。
+
+## 安全姿态
+
+- Default session 拒绝而不是询问：`setPermissionRequestHandler`、`setPermissionCheckHandler` 与 `setDevicePermissionHandler` 在 `session.defaultSession` 上全部返回 `false`，因此 shell 窗口和 plugin 窗口都无法获得 camera、microphone、geolocation、notification 或设备访问。内置浏览器在独立 partition 上通过 `BrowserPolicyService` 维护自己的策略对象，但该策略同样拒绝全部权限，因此任何位置都不会授予浏览器权限。
+- Packaged 构建通过 electron-builder fuse 关闭剩余的启动期攻击面：`enableNodeOptionsEnvironmentVariable: false` 与 `enableNodeCliInspectArguments: false` 忽略环境中的 `NODE_OPTIONS`、`NODE_EXTRA_CA_CERTS` 和 `--inspect`，`enableEmbeddedAsarIntegrityValidation: true` 请求在加载 `app.asar` 时校验内嵌 asar；Electron 仅在 macOS 16+ 与 Windows 30+ 上执行该校验，因此随包发布的 Linux AppImage 与 deb 目标带有该 fuse 却不会执行校验。Fuse 在 packaging 阶段应用，因此 dev 构建不受影响。
+- `runAsNode` 被有意保持 ENABLED，这不是疏漏：provider CLI 与 agent runtime 以 `{ command: process.execPath, args: [helper], env: { ELECTRON_RUN_AS_NODE: "1" } }` 启动内置 helper —— `src/main/index.ts` 中的 browser、agent-runtime 与 plugin-hook helper，`src/agent-runtime/` 下的 runtime 脚本，以及生成的 lifecycle hook 命令。在 packaged 构建中设置 `runAsNode: false` 会破坏 agent runtime，因此这一取舍是有意接受的：这些 helper 需要该进程模式。`onlyLoadAppFromAsar` 保持关闭，是因为没有任何 packaged 构建验证过这次切换：该 fuse 只收窄 Electron 对应用代码的搜索顺序，而 helper 以独立的 `ELECTRON_RUN_AS_NODE` 子进程启动、不加载任何 application bundle，因此既不受其帮助也不受其破坏。关闭它的后果是内嵌 asar 完整性校验可经由应用代码搜索路径被绕过。
+- Cookie 加密未启用。`enableCookieEncryption` 是省略而不是设为 `false`，因为该 fuse 是单向切换：启用它的版本会让后续任何没有密钥的构建把加密存储当作明文读取，从而损坏 profile 的 cookie。
+- `npm run audit:secrets`（`scripts/audit-secrets.mjs`）扫描仓库源码树与构建产物 `out/` 中的高置信度密钥，覆盖 POSIX 与 Windows 个人 home 目录路径。密钥前缀模式带有 negative lookbehind，因此 `disk-...` 或 `task-...` 这类标识符内部的片段不会被报告，而真实密钥仍能匹配。
+
+## 崩溃恢复
+
+- renderer 丢失是可记录、可恢复的事件，而不是空白窗口。主窗口的 `render-process-gone` 会连同 reason 与 exit code 被记录，随后窗口重新加载应用界面。终端服务与活动会话在恢复过程中继续存活，只替换 renderer。`clean-exit` 是正常退出路径，不会触发重载。
+- utility/GPU 子进程丢失会通过 `child-process-gone` 记录 type、reason、service 名称与 exit code。这仅用于诊断：窗口通过上述 renderer 路径恢复。
 
 ## Renderer 边界
 
@@ -69,7 +82,13 @@ App
 
 领域决策放在 `homeModel.ts` 等纯 selector 中，编排放在 `App.tsx`，渲染/本地交互放在 feature component。IPC call 属于 `App.tsx` 或唯一拥有该 capability 的 feature。
 
+场景 transform 只在手势进行期间参与合成：`.workspace__scene` 在静止时不带合成提示，仅在画布 pan 或 zoom 时获得 `will-change: transform`，因此 Chromium 会按当前缩放重新栅格化场景，而不是复用按旧缩放缓存的栅格。终端卡片的 WebGL 遵循同一边界：仅在卡片获得焦点且画布缩放不超过 1 时启用，因为 WebGL backing store 等于 layout 乘以 device pixel ratio，而 xterm 不提供 device pixel ratio 选项，超过该上限时其栅格只能被放大，此时改由 DOM renderer 接管。缩放绝不重新拟合 PTY：终端网格保持其自身 layout 解析出的行列数。
+
 ## 会话流程
+
+会话持久化与恢复、provider lifecycle 以及 provider CLI 解析仍由 upstream 负责：CanvasTTY 原样继承这些行为，而不是重新定义它们。
+
+启用终端恢复时，启动会在 renderer 之前加载已校验的窗口描述符，并通过各服务商的原生 continue 模式重新启动每个已保存的智能体。这一点对除 shell 以外的所有服务商都成立：恢复会传递每个智能体自己的 continue 标志，而普通终端会在其保存的目录中以全新 shell 重新打开。
 
 1. Home 请求终端，或打开某个服务商专属的 launch card。
 2. `App` 发送类型化 `terminal:create` 请求。
@@ -79,15 +98,21 @@ App
 
 `SessionMetadata` 同时拥有 world-space position 与卡片尺寸。`App` 协调 bounds；`TerminalCard` 可以在 pointer-up 前暂存 pointer-move geometry。主进程在发送 session snapshot 前校验并限制已提交尺寸。Camera wheel 只处理空白 canvas；交互界面保留自己的 native scroll/input ownership。
 
-一个实时 `TerminalCard` 在对应 session ID 的整个生命周期内拥有同一个 xterm instance。切换 palette 时就地更新 `terminal.options.theme`；title/settings 变化不得销毁 terminal 或 renderer scrollback。窗口标题通过 `terminal:rename` 作为 session metadata 更新。与进程退出竞态的 PTY input/resize event 在主进程边界内处理，不会形成未捕获 Electron error。
+一个实时 `TerminalCard` 在对应 session ID 的整个生命周期内拥有同一个 xterm instance。切换 palette 时就地更新 `terminal.options.theme`；title/settings 变化不得销毁 terminal 或 renderer scrollback。窗口标题通过 `terminal:rename` 作为 session metadata 更新。Provider 标题仅用于显示：当 `titleCustomized` 为 false 时，卡片头部显示 shell 通过 OSC 0/2 上报的最后一个标题（`terminal.onTitleChange`），没有则回退到原有的路径显示；rename 会在主进程中设置 `titleCustomized` 并永久生效。renderer 从不把标题写回，因此 `TerminalManager` 与 `TerminalSessionStore` 始终是持久化 title 与 customized 标记的唯一拥有者。与进程退出竞态的 PTY input/resize event 在主进程边界内处理，不会形成未捕获 Electron error。
 
 输出 batching 是 IPC/rendering 边界，而不是历史边界：每个 PTY chunk 都立即追加到有界 scrollback；待发送的 renderer 输出在 16ms timer、exit 前和 dispose 前 flush。Scrollback trimming 通过推进 chunk 完成，不会每次写入都重建整个 buffer；snapshot 只 join 保留的后缀。
+
+卡片通过 `setVisible` 上报自己是否渲染实时输出；该标记只限制 renderer stream，从不限制历史。隐藏卡片（semantic summary mode）会先 flush 已排队的 batch，随后停止 batching，而 scrollback 继续接收每个 chunk、`outputOffset` 继续推进 —— 因此隐藏期间 pending 队列始终为空，隐藏时记录的 offset 就是卡片最后看到的 offset。重新显示卡片会重放以当前 `outputOffset` 结尾的已保留 scrollback，renderer 只写入超出自己已持有绝对 offset 的字节（`features/terminal/terminalOutput.ts`）。缺失的 suffix 恰好到达一次：不会丢失任何 chunk，因为 scrollback 已经保存；也不会重复，因为两侧比较的是绝对 UTF-16 offset，而不是各自发送了多少。
 
 终端指针坐标在 selection/wheel handling 前，从画布视觉变换后的矩形转换回 xterm layout 坐标。终端与画布滚轮方向从持久化设置中独立规范化。选中文字通过类型化 clipboard bridge 使用 `Ctrl+C`、`Ctrl+Shift+C` 或 `Cmd+C` 复制；使用 `Ctrl+Shift+V`、`Cmd+V` 或 `Shift+Insert` 粘贴，并通过 `Terminal.paste` 而非 synthetic keystroke 进入 xterm。`Shift+Enter` 直接向 PTY 发送 CSI-u modified Enter。
 
 Application shortcut 在 `SettingsStore` 中规范化，在 `App` 中匹配，并从同一持久化 binding 渲染到 canvas hint。`App` 拥有排他的 canvas application selection，以及窗口 rename 等操作使用的 selected terminal session；`TerminalCard` 拥有 xterm focus 与 inline editor，`BrowserService` 拥有 native page focus。点击空白 canvas 会清除任一 selection。可选 hover focus 对终端与内置 Browser 使用相同的进入/离开配置延迟；终端程序化切换产生的 focus-in/focus-out sequence 会在进入 PTY input 前被抑制，避免智能体 TUI 重置历史位置。
 
 Session counter、progress bar 与 status 必须来自真实 `SessionSnapshot`，UI 不得合成 telemetry。
+
+## 会话关注
+
+关注状态来自 session snapshot，而不是终端输出。需要审批或已失败的会话卡片保持常驻 attention ring，主进程仅在状态转变为 `needs_approval` 或 `failed` 时弹出系统通知 —— 对 `done`、`idle`、`working`、`unavailable` 从不弹出。通知按 session 以最后一次已公布的 status 去重，因此连续 snapshot 只通知一次；session 移除事件会清除该记录，使之后的 session 能再次通知。`attentionNotifications` 设置（默认开启）通过 `SettingsStore` 持久化，只控制系统通知，永不作为 status 来源。通知正文按应用 locale 本地化，标题在 session 无 title 时回退为 provider 名称。
 
 ## 服务商限额流程
 
@@ -96,6 +121,19 @@ Session counter、progress bar 与 status 必须来自真实 `SessionSnapshot`�
 3. Codex 通过 `codex app-server` 的 `account/rateLimits/read` 查询；Claude、Kimi、OpenCode Go 与 Grok Build 使用只读 usage/billing endpoint 和对应 CLI 已有凭据。Qwen Code 因没有通用 quota-read protocol 而返回明确 unavailable reason。OpenCode Go 提供真实 rolling、weekly、monthly window；Grok Build 提供真实共享 billing period。真实响应经过结构校验，只保留 percentage、window 与 reset time。
 4. 一次成功后刷新失败时，最后的有效 snapshot 以 stale 返回。缺失或不支持的 adapter 返回明确 unavailable reason，而不是 `0%`。
 5. CanvasTTY 使用当前用户 Claude CLI credentials 中的 OAuth token 请求 Claude usage。缺失或不可读的 credentials 返回 `not-authenticated`；本地 credential 状态不能证明用户没有订阅。CanvasTTY 不解析服务商 TUI screen。
+
+## 自更新
+
+主进程拥有唯一一个 updater 状态机，并在每次加载（包括崩溃恢复重载）时广播给 renderer；`SettingsPanel` 只渲染该状态，不自行编造。
+
+- `idle` —— 尚不知道更新，或 feed 报告当前已是最新版本。
+- `checking` —— 正在检查，该行被禁用。
+- `available`（含版本号）—— 存在更新但尚未下载。
+- `downloading`（已知时含百分比）—— `download-progress` 被缩减为四舍五入的百分比；数值不是 finite 时省略。
+- `downloaded`（含版本号）—— 可以使用"安装并重启"；`autoUpdater.autoInstallOnAppQuit` 也会在退出时安装。
+- `unavailable` —— reason 为 `dev`、`offline` 或 `error`。
+
+下载与安装都是显式的用户操作（`autoDownload` 关闭）。已发现的版本会在下一次请求时下载，因此"检查更新"和"下载"共用同一个主进程动作；在下载完成前 `install` 是空操作。开发运行、无法访问的 feed 以及 updater 错误都会报告 `unavailable` 而不是失败：`error` listener 始终挂载，因此 updater 故障会变成一种状态，而不是未捕获的 EventEmitter error。
 
 ## 扩展点
 

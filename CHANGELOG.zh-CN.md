@@ -2,6 +2,25 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+- 默认 session 现在拒绝浏览器与设备权限：权限请求、权限检查与设备处理器一律拒绝，因此 plugin 窗口和 shell 无法获得摄像头、麦克风、定位或通知权限。内置浏览器仍保留自身独立的 partition 策略。
+- 打包构建新增 Electron fuses 加固：关闭 `NODE_OPTIONS` 环境变量与 CLI inspect 参数，并启用 embedded asar 完整性校验。`runAsNode` 刻意保持启用，因为 provider CLI 与 agent runtime 会通过 `ELECTRON_RUN_AS_NODE` 启动随包分发的 helper 进程；cookie 加密未启用，因为该切换是单向的。
+- 新增 renderer 崩溃恢复：renderer 进程丢失时，main 进程记录原因与退出码并重新加载应用界面，而不是留下空白窗口；终端服务与实时会话在恢复过程中继续存活。utility/GPU 子进程丢失也会被记录。
+- 新增 scrollback 搜索：聚焦终端卡片后按 `Ctrl+Shift+F` 会在卡片内打开搜索行（输入框、匹配计数、上一个/下一个、关闭）。`Enter` 跳到下一个匹配，`Shift+Enter` 跳到上一个，`Escape` 关闭并把焦点交回终端，因此按键不会泄漏到 PTY。语义摘要模式下该行隐藏。
+- 卡片标题未被用户自定义时，标题栏会显示 provider 通过 OSC 0/2 设置的标题；provider 未设置时沿用原有的路径显示。重命名永久优先，而 provider 标题仅用于显示：绝不回写，也绝不持久化。
+- 新增画布控件 “Fit to content”：在现有 `0.2–1.35` 缩放范围内为 HOME 区域和每个窗口留出边距并将它们框入视野；空画布则回到 HOME。该命令也可从画布命令面板调用，且没有键盘快捷键。
+- 新增方向性聚焦：`Alt+方向键`（macOS 上为 `Option`）把焦点移到该方向上最近的窗口，覆盖终端卡片、内置浏览器与 plugin canvas；目标必须严格位于前方，并以垂直距离打破平局。重命名或捕获快捷键时该手势不会执行，也不影响 `Ctrl+K` 与 `Ctrl+,`。
+- 新增框选：在空白画布上 `Shift+drag` 会选中与其相交的所有终端卡片（plugin canvas、内置浏览器与便签不会被检查），拖动任意已选中的终端会以相同位移移动整个选择集；没有位移的按下仍是普通点击。空白画布拖动依旧只做平移。
+- 画布命令面板的搜索文本新增 session 路径（cwd），与标签和 provider 并列，因此可以按工作目录找到 session。没有第二个命令面板，也没有新的按键绑定。
+- 新增浏览器元素检查并发送给智能体：浏览器卡片的 Inspect 控件通过既有 browser command path 观察最多 20 个元素，并列出全部元素的 role/name 与 element reference，因此每个被观察到的元素都可访问。“Send to agent” 向最新的运行中智能体会话写入恰好一行结构化文本并以回车结尾；引用过期（标签页或文档 revision 变化）时会给出可见失败，而不是发送错误的元素；没有运行中的智能体会话时面板会说明并什么都不发送。正在等待决定的 session 绝不会成为发送目标，发送的页面 URL 不携带凭据、查询串或片段，页面提供的文本在行内被标记为不可信。
+- 新增 HOME 关注队列：列出需要确认或已失败的会话，仅由 session snapshot 推导；标题行与显式空状态始终渲染，点击某一行会聚焦该会话。失败详情（触发入口、浮层、复制）已抽出一份共享实现，队列与既有会话行共用。
+- 新增关注环：需要确认或已失败的会话所在卡片会显示持续的关注环；General 新增设置 “Notify when attention is needed”（默认开启），只在会话真正转入需要确认或失败状态时发出一次系统通知（绝不用于 done/idle/working/unavailable）：重复 snapshot 与恢复时已看过的失败保持安静，而用户通过重启触发的失败同样会通知。切换该设置会持久化。
+- 卡片现在会上报是否渲染实时输出：处于语义摘要模式（缩放低于 0.5）的卡片停止接收流式输出，而其 scrollback 在有界历史范围内保持完整且为准；卡片重新可见时，缺失的输出会被重放一次；如果隐藏期间产生的输出超过有界历史的容量，该段最早的部分已经丢失，重放会如实说明，而不会假装输出是连续的。
+- WebGL 仅用于聚焦的终端卡片：同一时间只有一个 context，焦点离开时释放；context 丢失时回退到 DOM renderer。调色板与透明度渲染保持不变。
+- Settings → General 新增一行自更新，状态如实呈现：idle、checking、update available（含版本号）、downloading（已知时显示百分比）、ready to install 以及 unavailable（dev、offline 或 error）。下载与安装都是显式操作，只有在更新下载完成后才提供 install-and-restart；开发模式下该行报告 unavailable 而不会抛错。
+- 仓库密钥审计不再把标识符内部的密钥前缀当作命中，因此 `disk-…`、`task-…` 这类名称不再产生误报，而真实密钥仍会被检出。
+
 ## 1.5.1
 
 - 修复 HOME 的 Terminal 按钮将鼠标事件误当作画布坐标传入、导致 “Session position is invalid” 的问题。

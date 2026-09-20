@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import appManifest from "../../../../../package.json";
 import type {
   AppSettings,
   BrowserActivityEvent,
@@ -28,6 +29,7 @@ import type {
   RadialLauncherItemId,
   SessionRowColorMode,
   ShortcutAction,
+  UpdaterState,
   ZoomSensitivity
 } from "../../../../shared/contracts";
 import {
@@ -164,6 +166,13 @@ export function SettingsPanel({
   const [clearConfirm, setClearConfirm] = useState(false);
   const [clearingBrowserData, setClearingBrowserData] = useState(false);
   const [browserDataMessage, setBrowserDataMessage] = useState<string | null>(null);
+  const [updaterState, setUpdaterState] = useState<UpdaterState>({ status: "idle" });
+
+  useEffect(() => {
+    const unsubscribe = window.canvasTTY.updater.onState(({ state }) => setUpdaterState(state));
+    void window.canvasTTY.updater.state().then(setUpdaterState);
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     if (!open) {
@@ -350,6 +359,17 @@ export function SettingsPanel({
                   onChange={(value) => void onChange({ locale: value as LocaleId })}
                 />
               </SettingGroup>
+              <SettingGroup
+                label={t(locale, "attentionNotifications")}
+                description={t(locale, "attentionNotificationsDescription")}
+              >
+                <Segmented
+                  value={settings.attentionNotifications ? "on" : "off"}
+                  options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
+                  onChange={(value) => void onChange({ attentionNotifications: value === "on" })}
+                />
+              </SettingGroup>
+              <UpdaterRow state={updaterState} locale={locale} />
               <SettingGroup
                 label={t(locale, "terminalSessionRestore")}
                 description={t(locale, "terminalSessionRestoreDescription")}
@@ -1072,6 +1092,57 @@ const ACTIVITY_LABELS: Record<LocaleId, Record<BrowserCommandType, string>> = {
 
 function activityOperationLabel(locale: LocaleId, operation: BrowserCommandType): string {
   return ACTIVITY_LABELS[locale][operation];
+}
+
+/**
+ * One compact self-update row: the text reports the state, the button is the
+ * only meaningful action for it. A release that was already found downloads on
+ * the next request (autoDownload is off), so "Check for updates" and "Download"
+ * share the same main-process action.
+ */
+function UpdaterRow({ state, locale }: { state: UpdaterState; locale: LocaleId }): React.JSX.Element {
+  const percent = state.status === "downloading" && state.percent !== null ? ` · ${state.percent}%` : "";
+  let text: string;
+  let label: string;
+  let disabled = false;
+  let run = (): void => {
+    void window.canvasTTY.updater.check();
+  };
+  switch (state.status) {
+    case "checking":
+      text = t(locale, "checkForUpdates");
+      label = t(locale, "checkForUpdates");
+      disabled = true;
+      break;
+    case "available":
+      text = `${t(locale, "updateAvailable")} · v${state.version}`;
+      label = t(locale, "updateDownload");
+      break;
+    case "downloading":
+      text = `${t(locale, "updateDownloading")}${percent}`;
+      label = t(locale, "updateDownloading");
+      disabled = true;
+      break;
+    case "downloaded":
+      text = `${t(locale, "updateDownloaded")} · v${state.version}`;
+      label = t(locale, "updateInstall");
+      run = () => window.canvasTTY.updater.install();
+      break;
+    case "unavailable":
+      text = t(locale, "updateUnavailable");
+      label = t(locale, "checkForUpdates");
+      break;
+    default:
+      text = `CanvasTTY v${appManifest.version}`;
+      label = t(locale, "checkForUpdates");
+  }
+
+  return (
+    <div className="settings-update-row">
+      <span>{text}</span>
+      <button type="button" disabled={disabled} onClick={run}>{label}</button>
+    </div>
+  );
 }
 
 function ShortcutRow({

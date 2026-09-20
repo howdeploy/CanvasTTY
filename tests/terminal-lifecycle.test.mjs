@@ -101,7 +101,10 @@ test("session metadata revisions advance before lifecycle events cross IPC", asy
   const source = await readFile(terminalManagerPath, "utf8");
 
   assert.match(source, /revision: 0/);
-  assert.match(source, /metadata\.revision \+= 1;\s*this\.emit\(IPC\.terminalSession/);
+  // The revision must advance before the session event is emitted, with only the
+  // emit-scoped bookkeeping in between; a bounded gap keeps a reordering that
+  // moves the emit away from the bump failing here.
+  assert.match(source, /metadata\.revision \+= 1;[\s\S]{0,120}?this\.emit\(IPC\.terminalSession/);
 });
 
 test("revoking lifecycle hooks makes live agent status unavailable until a restarted session gets a new parser", async () => {
@@ -144,7 +147,7 @@ test("renaming is inline and does not join the xterm mount dependencies", async 
   assert.match(source, /autoFocus/);
   assert.match(source, /terminalRef\.current\?\.blur\(\)/);
   assert.doesNotMatch(source, /requestAnimationFrame\(\(\) => \{\s*renameInput/);
-  assert.match(source, /session\.titleCustomized \? session\.title : compactPath\(session\.cwd\)/);
+  assert.match(source, /session\.titleCustomized \? session\.title : oscTitle \?\? compactPath\(session\.cwd\)/);
 });
 
 test("late input and resize events are guarded after PTY exit", async () => {

@@ -5,7 +5,6 @@
 ## Unreleased
 
 - 将代理编排端点改为显式设置（设置 → 代理 → “代理编排端点”，`agentControlEnabled`，默认关闭；`--agent-control` / `CANVASTTY_AGENT_CONTROL=1` 仍可为单次启动强制开启），并在运行时按设置启动和停止端点；启动对话框在 normal/YOLO 配置旁新增 **Orchestrator（编排器）** 角色：会话保留打开对话框时的提供方，环境中携带 `CANVASTTY_CONTROL_CONNECTION` 和 `CANVASTTY_CONTROL_CLI`，使内置 CLI 无需配置即可工作，卡片显示 “Orchestrator” 徽标，恢复会话时保留角色；端点关闭时对话框会先提示并提供开启按钮，而不会静默开启任何内容。端点的 `create` 现在接受所有代理提供方（`codex, claude, qwen, kimi, opencode, hermes, grok, omp, pi`），并在 `create` 和 `list` 响应中为每个工作会话报告 `capabilities { result, menus }`：仅 Codex 两者都为 `true`；其他提供方的 `screen` 没有菜单交互，`choose`/`dismiss` 返回 `NOT_SUPPORTED`，`send` 仅依据 idle 状态，`result` 以 `no_result` 结束。
-- 新增独立的 Browser 卡片：再次从 HOME 打开 Browser 会创建另一张卡片，拥有自己的标签页、原生视口、焦点/层叠身份和持久化位置。卡片可独立移动、缩放、隐藏和重新打开；小地图、区域移动、框选、方向焦点和分组拖拽都包含每张卡片。代理可使用 `browser_new_window`、`browser_activate_window` 和 `browser_list_windows`，所有浏览器工具都接受 `browserId`，被某个代理占用的卡片会拒绝其他代理。旧的单卡片布局迁移到默认卡片；所有卡片共用同一个 Chromium 网站登录配置。
 - 新增原生 Codex 编排 CLI（`agent-control/canvastty-control.mjs`，文档见 `agent/orchestrator/SKILL.md`），通过 `--agent-control` 或 `CANVASTTY_AGENT_CONTROL=1` 启用：本地控制器在项目目录中创建 Codex 会话、发送任务、按屏幕修订号观察有界的终端输出并收集最终回答。每个控制器只能看到自己创建的会话，授权绑定到会话代次，变更 ID 去重，且只有受控会话会启用经过认证的 Stop-hook 结果捕获。不包含自动批准或删除终端的端点。
 - 新增可选的 Even G2 伴侣（设置 → 控制 → Even G2，伴侣应用位于 `integrations/even-g2`）：Bonjour 发现、带六位码和显式设备批准的短期 SRP-6a 配对、加密的本地请求与音频、按会话授权、眼镜 HUD 上的有界终端展示、通过固定版本的 transcribe.cpp helper 进行本地语音识别（仅 macOS 随包提供），以及通过现有桌面启动器创建会话。Codex 一轮的最终回答只会送达在伴侣启用期间启动的会话：runtime hook 以单独的会话授权上报，限制为 4000 个字符，gateway 会拒绝任何其他会话的该字段。
 
@@ -18,13 +17,19 @@
 - 新增方向性聚焦：`Alt+方向键`（macOS 上为 `Option`）把焦点移到该方向上最近的窗口，覆盖终端卡片、内置浏览器与 plugin canvas；目标必须严格位于前方，并以垂直距离打破平局。重命名或捕获快捷键时该手势不会执行，也不影响 `Ctrl+K` 与 `Ctrl+,`。
 - 新增框选：在空白画布上 `Shift+drag` 会选中与其相交的所有终端卡片（plugin canvas、内置浏览器与便签不会被检查），拖动任意已选中的终端会以相同位移移动整个选择集；没有位移的按下仍是普通点击。空白画布拖动依旧只做平移。
 - 画布命令面板的搜索文本新增 session 路径（cwd），与标签和 provider 并列，因此可以按工作目录找到 session。没有第二个命令面板，也没有新的按键绑定。
-- 新增浏览器元素检查并发送给智能体：浏览器卡片的 Inspect 控件通过既有 browser command path 观察最多 20 个元素，并列出全部元素的 role/name 与 element reference，因此每个被观察到的元素都可访问。“Send to agent” 向最新的运行中智能体会话写入恰好一行结构化文本并以回车结尾；引用过期（标签页或文档 revision 变化）时会给出可见失败，而不是发送错误的元素；没有运行中的智能体会话时面板会说明并什么都不发送。正在等待决定的 session 绝不会成为发送目标，发送的页面 URL 不携带凭据、查询串或片段，页面提供的文本在行内被标记为不可信。
 - 新增 HOME 关注队列：列出需要确认或已失败的会话，仅由 session snapshot 推导；标题行与显式空状态始终渲染，点击某一行会聚焦该会话。失败详情（触发入口、浮层、复制）已抽出一份共享实现，队列与既有会话行共用。
 - 新增关注环：需要确认或已失败的会话所在卡片会显示持续的关注环；General 新增设置 “Notify when attention is needed”（默认开启），只在会话真正转入需要确认或失败状态时发出一次系统通知（绝不用于 done/idle/working/unavailable）：重复 snapshot 与恢复时已看过的失败保持安静，而用户通过重启触发的失败同样会通知。切换该设置会持久化。
 - 卡片现在会上报是否渲染实时输出：处于语义摘要模式（缩放低于 0.5）的卡片停止接收流式输出，而其 scrollback 在有界历史范围内保持完整且为准；卡片重新可见时，缺失的输出会被重放一次；如果隐藏期间产生的输出超过有界历史的容量，该段最早的部分已经丢失，重放会如实说明，而不会假装输出是连续的。
 - WebGL 仅用于聚焦的终端卡片：同一时间只有一个 context，焦点离开时释放；context 丢失时回退到 DOM renderer。调色板与透明度渲染保持不变。
-- Settings → General 新增一行自更新，状态如实呈现：idle、checking、update available（含版本号）、downloading（已知时显示百分比）、ready to install 以及 unavailable（dev、offline 或 error）。下载与安装都是显式操作，只有在更新下载完成后才提供 install-and-restart；开发模式下该行报告 unavailable 而不会抛错。
+- Settings → Updates 新增一行自更新，状态如实呈现：idle、checking、update available（含版本号）、downloading（已知时显示百分比）、ready to install 以及 unavailable（dev、offline 或 error）。下载与安装都是显式操作，只有在更新下载完成后才提供 install-and-restart；开发模式下该行报告 unavailable 而不会抛错。
 - 仓库密钥审计不再把标识符内部的密钥前缀当作命中，因此 `disk-…`、`task-…` 这类名称不再产生误报，而真实密钥仍会被检出。
+## 1.5.2
+
+- 修复调整卡片大小后，Codex 清空并重新绘制历史时终端跳到历史开头的问题。阅读时保留相对滚动位置，位于底部的终端继续跟随新输出。
+- 修复不可见卡片中的备用屏幕调整大小后，终端尺寸更新被延迟的问题；卡片回到可见区域时保持输出跟随状态。
+- 包含 PR #33、#47 中已合并的 OMP/Pi 提供商，以及智能体通信、启动、插件安装、画布手势和浏览器修复。
+- 包含 PR #50 的 Even G2 集成，支持本地配对和语音控制。
+- 包含 PR #48、#49 的架构决策文档、`js-yaml 4.3.2` 版本固定和构建依赖更新。
 
 ## 1.5.1
 

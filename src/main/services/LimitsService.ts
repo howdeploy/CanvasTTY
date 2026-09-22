@@ -51,8 +51,8 @@ interface PendingRequest {
 }
 
 export class LimitsService {
-  private readonly codex: CodexAppServerClient;
-  private readonly kimi: KimiWebUsageClient;
+  private codex: CodexAppServerClient;
+  private kimi: KimiWebUsageClient;
   private readonly providerClis: ProviderCliRegistry;
   private readonly clientVersion: string;
   private cache: CacheEntry | null = null;
@@ -91,6 +91,21 @@ export class LimitsService {
     this.disposed = true;
     this.codex.dispose();
     this.kimi.dispose();
+  }
+
+  async providerClisRefreshed(): Promise<void> {
+    await this.inFlight?.catch(() => undefined);
+    if (this.disposed) return;
+    this.codex.dispose();
+    this.kimi.dispose();
+    this.codex = new CodexAppServerClient(availableCli(this.providerClis, "codex"), this.clientVersion);
+    this.kimi = new KimiWebUsageClient(availableCli(this.providerClis, "kimi"));
+    this.cache = null;
+    this.lastGoodCodex = null;
+    this.lastGoodClaude = null;
+    this.lastGoodKimi = null;
+    this.lastGoodOpenCode = null;
+    this.lastGoodGrok = null;
   }
 
   private async refresh(): Promise<LimitsSnapshot> {

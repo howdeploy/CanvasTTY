@@ -32,6 +32,7 @@ settings.json
 .agents/
 .codex/
 .planning/
+/.tmp/
 graphify-out/
 AGENTS.md
 IDEA-DRAFT.md

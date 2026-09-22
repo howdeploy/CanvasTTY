@@ -1,7 +1,7 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
-import type { AgentProviderId } from "../../shared/contracts.ts";
+import type { AgentCliAvailability, AgentProviderId } from "../../shared/contracts.ts";
 
 export const PROVIDER_CLI_IDS: readonly AgentProviderId[] = Object.freeze([
   "codex",
@@ -46,6 +46,14 @@ export type ProviderCliResolution = AvailableProviderCli | UnavailableProviderCl
 export interface ProviderCliRegistry {
   get(provider: AgentProviderId): ProviderCliResolution;
   snapshot(): Readonly<Record<AgentProviderId, ProviderCliResolution>>;
+  refresh(): Readonly<Record<AgentProviderId, ProviderCliResolution>>;
+}
+
+export function providerCliAvailability(registry: ProviderCliRegistry): AgentCliAvailability {
+  return Object.fromEntries(PROVIDER_CLI_IDS.map((provider) => [
+    provider,
+    registry.get(provider).state === "available"
+  ])) as AgentCliAvailability;
 }
 
 interface ProviderCliRegistryOptions {
@@ -73,37 +81,43 @@ export function createProviderCliRegistry(options: ProviderCliRegistryOptions = 
   const inputDirectories = pathEntries(environment[pathKey], platform, startupDirectory);
   const platformDirectories = defaultPlatformDirectories(platform, options.platformRoot);
   const sharedDirectories = sharedUserDirectories(platform, environment, homeDirectory);
-  const childDirectories = uniquePaths(
-    [...inputDirectories, ...platformDirectories, ...sharedDirectories].filter(directoryExists),
-    platform
-  );
-  const childPath = childDirectories.join(platform === "win32" ? ";" : ":");
-  const resolutions = Object.fromEntries(PROVIDER_CLI_IDS.map((provider) => {
-    const providerDirectories = uniquePaths([
-      ...inputDirectories,
-      ...platformDirectories,
-      ...knownProviderDirectories(provider, platform, environment, homeDirectory),
-      ...sharedDirectories
-    ], platform);
-    return [provider, resolveProviderCli({
-      provider,
-      platform,
-      environment,
-      override: normalizeOverride(options.overrides?.[provider], platform, startupDirectory),
-      directories: providerDirectories,
-      pathKey,
-      childPath,
-      inspectCandidate
-    })];
-  })) as Record<AgentProviderId, ProviderCliResolution>;
-
-  for (const provider of PROVIDER_CLI_IDS) Object.freeze(resolutions[provider]);
-  Object.freeze(resolutions);
+  const resolveAll = (): Readonly<Record<AgentProviderId, ProviderCliResolution>> => {
+    const childDirectories = uniquePaths(
+      [...inputDirectories, ...platformDirectories, ...sharedDirectories].filter(directoryExists),
+      platform
+    );
+    const childPath = childDirectories.join(platform === "win32" ? ";" : ":");
+    const resolutions = Object.fromEntries(PROVIDER_CLI_IDS.map((provider) => {
+      const providerDirectories = uniquePaths([
+        ...inputDirectories,
+        ...platformDirectories,
+        ...knownProviderDirectories(provider, platform, environment, homeDirectory),
+        ...sharedDirectories
+      ], platform);
+      return [provider, resolveProviderCli({
+        provider,
+        platform,
+        environment,
+        override: normalizeOverride(options.overrides?.[provider], platform, startupDirectory),
+        directories: providerDirectories,
+        pathKey,
+        childPath,
+        inspectCandidate
+      })];
+    })) as Record<AgentProviderId, ProviderCliResolution>;
+    for (const provider of PROVIDER_CLI_IDS) Object.freeze(resolutions[provider]);
+    return Object.freeze(resolutions);
+  };
+  let resolutions = resolveAll();
   return Object.freeze({
     get(provider: AgentProviderId): ProviderCliResolution {
       return resolutions[provider];
     },
     snapshot(): Readonly<Record<AgentProviderId, ProviderCliResolution>> {
+      return resolutions;
+    },
+    refresh(): Readonly<Record<AgentProviderId, ProviderCliResolution>> {
+      resolutions = resolveAll();
       return resolutions;
     }
   });
@@ -174,7 +188,7 @@ export function providerCliDiagnostic(provider: AgentProviderId, checked: readon
     : checked.map((candidate) => `  - ${candidate.path}: ${candidate.result}`).join("\n");
   return [
     `${providerLabel(provider)} CLI was not found.`,
-    "CanvasTTY resolves provider CLIs once at startup; install the CLI and restart CanvasTTY.",
+    "Install the CLI, then use Check again in Agents settings to refresh CanvasTTY.",
     "Checked paths:",
     paths
   ].join("\n");

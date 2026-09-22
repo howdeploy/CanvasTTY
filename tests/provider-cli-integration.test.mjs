@@ -73,6 +73,29 @@ test("limits short-circuit every missing provider to cli-not-found", async () =>
   }
 });
 
+test("limit cache is invalidated after CLI recheck and installed Qwen stays protocol-unavailable", async () => {
+  let qwenInstalled = false;
+  const registry = {
+    get(provider) {
+      if (provider === "qwen" && qwenInstalled) {
+        return { state: "available", provider, executable: "/tools/qwen", launcher: "native", environment: {}, checked: [] };
+      }
+      return unavailable(provider);
+    }
+  };
+  const service = new LimitsService(registry, "test");
+  try {
+    const first = await service.get();
+    assert.equal(first.providers.find((entry) => entry.provider === "qwen").reason, "cli-not-found");
+    qwenInstalled = true;
+    await service.providerClisRefreshed();
+    const second = await service.get();
+    assert.equal(second.providers.find((entry) => entry.provider === "qwen").reason, "unsupported-protocol");
+  } finally {
+    service.dispose();
+  }
+});
+
 test("installed Qwen reports its real provider-neutral quota limitation", async () => {
   const registry = unavailableRegistry();
   const service = new LimitsService({

@@ -7,9 +7,9 @@
 - Node.js 与 npm。
 - 当前平台上 `node-pty` 支持的原生编译工具链。
 - 能运行 Electron 的图形桌面环境。
-- 可选：安装 `codex`、`claude`、`qwen`、`kimi`、`opencode`、`hermes` 或 `grok` 智能体 CLI 并加入 `PATH`，只装你打算使用的启动器对应的即可。
+- 可选：安装 `codex`、`claude`、`qwen`、`kimi`、`opencode`、`hermes`、`grok`、`omp` 或 `pi` 智能体 CLI 并加入 `PATH`，只装你打算使用的启动器对应的即可。
 
-CanvasTTY 不会替你安装或登录智能体 CLI。想让某个服务商的会话或订阅限额可用，请先完成该服务商自己的登录流程。
+Agents 设置提供官方安装说明链接和安装后的再次检查。CanvasTTY 不会替你安装或登录智能体 CLI。想让某个服务商的会话或订阅限额可用，请先完成该服务商自己的登录流程。
 
 ## 安装与运行
 

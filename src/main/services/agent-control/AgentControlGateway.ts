@@ -289,12 +289,19 @@ export class AgentControlGateway {
     }
     await owned.ready;
     if (this.closed) throw new ControlError("CLOSED", "Agent control is shutting down.");
-    const capabilities = controlCapabilities(metadata.provider);
+    // The grant was checked before the replay await. Exit and restart reuse the
+    // session id, so a write by id after the await would reach the new PTY.
+    const current = this.sessions.get(id);
+    const fresh = this.options.terminals.listMetadata().find((session) => session.id === id);
+    if (current !== owned || current.owner !== owner || !fresh || fresh.startedAt !== owned.startedAt) {
+      throw new ControlError("STALE_SESSION", "Session restarted; its old control grant is no longer valid.");
+    }
+    const capabilities = controlCapabilities(fresh.provider);
     const screen = viewport(owned.terminal);
     if (request.method === "screen") return { sessionId: id, text: screen, revision: hash(screen), outputOffset: owned.outputOffset,
       interaction: capabilities.menus ? codexChoices(screen) : null };
     if ((request.method === "choose" || request.method === "dismiss") && !capabilities.menus) {
-      throw new ControlError("NOT_SUPPORTED", `Menus are parsed for Codex only; resolve ${metadata.provider} prompts from the desktop and treat screen as the only evidence.`);
+      throw new ControlError("NOT_SUPPORTED", `Menus are parsed for Codex only; resolve ${fresh.provider} prompts from the desktop and treat screen as the only evidence.`);
     }
     if (this.busy.has(id)) throw new ControlError("BUSY", "A control operation is pending for this session.");
     this.busy.add(id);
@@ -334,7 +341,7 @@ export class AgentControlGateway {
       if (owned.turn && ["queued", "working"].includes(owned.turn.state)) throw new ControlError("BUSY", "The previous submitted turn has not finished.");
       // Only Codex's composer is recognised; for other providers the lifecycle
       // status is the sole readiness gate and the screen the only evidence.
-      if (!["idle", "unavailable"].includes(metadata.status)) throw new ControlError("NOT_READY", "The session is not idle; inspect screen and wait for the current activity to finish.");
+      if (!["idle", "unavailable"].includes(fresh.status)) throw new ControlError("NOT_READY", "The session is not idle; inspect screen and wait for the current activity to finish.");
       if (capabilities.menus && !codexComposerReady(screen)) throw new ControlError("NOT_READY", "Codex is not at an empty task composer; inspect screen and resolve startup or approvals without changing its sandbox.");
       const previousTurn = owned.turn;
       owned.turn = { id: request.id, state: "queued", sawWorking: false, nativeTurnId: null, interruptRequested: false, result: null };

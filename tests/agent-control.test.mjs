@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { controlRequest, parseArguments, runCli } from "../scripts/canvastty-control.mjs";
+import xterm from "@xterm/headless";
 import { AgentControlGateway, codexComposerReady } from "../src/main/services/agent-control/AgentControlGateway.ts";
 import { TerminalManager, terminalEnvironment } from "../src/main/services/TerminalManager.ts";
 import { TerminalSessionStore } from "../src/main/services/TerminalSessionStore.ts";
@@ -215,6 +216,24 @@ test("invalid socket credentials cannot launch a native session", localSocket, a
   assert.equal(reply.ok, false);
   assert.equal(reply.error.code, "INVALID_REQUEST");
   assert.equal(f.calls.length, 0);
+});
+
+test("a control write waiting on terminal replay cannot reach a restarted session", localSocket, async (t) => {
+  const held = [];
+  const original = xterm.Terminal.prototype.write;
+  xterm.Terminal.prototype.write = function(data, callback) {
+    return original.call(this, data, () => { if (typeof callback === "function") held.push(callback); });
+  };
+  t.after(() => { xterm.Terminal.prototype.write = original; for (const callback of held) callback(); });
+  const f = await fixture(t);
+  const { session } = await f.create();
+  const pending = f.request("send", { sessionId: session.id, text: "must not reach the new pty" });
+  await delay(20);
+  f.calls[0].pty.exit(1);
+  f.terminals.restart(session.id);
+  for (const callback of held.splice(0)) callback();
+  await assert.rejects(pending, (error) => error.code === "STALE_SESSION");
+  assert.equal(f.calls.at(-1).pty.writes.filter((text) => text.includes("must not reach")).length, 0);
 });
 
 test("YOLO persists across native restart/restore while stale control grants fail", localSocket, async (t) => {

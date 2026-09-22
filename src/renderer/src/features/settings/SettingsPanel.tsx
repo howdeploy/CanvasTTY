@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import appManifest from "../../../../../package.json";
 import type {
   AppSettings,
+  AgentCliAvailability,
+  AgentProviderId,
   BrowserActivityEvent,
   BrowserCommandType,
   BrowserDownloadSnapshot,
@@ -111,6 +113,8 @@ const CANVAS_COLOR_PREVIEWS: Record<CanvasColorId, string> = {
 interface SettingsPanelProps {
   open: boolean;
   settings: AppSettings;
+  agentAvailability: AgentCliAvailability | null;
+  onRecheckAgentClis(): Promise<void>;
   plugins: InstalledPlugin[];
   browser: BrowserSnapshot;
   onClose(): void;
@@ -136,6 +140,8 @@ interface SettingsPanelProps {
 export function SettingsPanel({
   open,
   settings,
+  agentAvailability,
+  onRecheckAgentClis,
   plugins,
   browser,
   onClose,
@@ -176,6 +182,39 @@ export function SettingsPanel({
     void window.canvasTTY.updater.state().then(setUpdaterState);
     return unsubscribe;
   }, []);
+  const [checkingAgentClis, setCheckingAgentClis] = useState(false);
+  const [agentCliError, setAgentCliError] = useState<string | null>(null);
+
+  const openAgentInstall = (provider: AgentProviderId): void => {
+    const url = PROVIDERS[provider].installUrl;
+    if (!url) return;
+    void window.canvasTTY.external.openUrl(url).catch(() => setAgentCliError(t(locale, "agentInstallLinkFailed")));
+  };
+
+  const recheckAgentClis = async (): Promise<void> => {
+    setCheckingAgentClis(true);
+    setAgentCliError(null);
+    try {
+      await onRecheckAgentClis();
+    } catch {
+      setAgentCliError(t(locale, "agentCliRecheckFailed"));
+    } finally {
+      setCheckingAgentClis(false);
+    }
+  };
+
+  const missingAgentRow = (provider: AgentProviderId, label = PROVIDERS[provider].label): React.JSX.Element => (
+    <div className="agent-launcher-settings__row" key={provider}>
+      <span className="agent-launcher-settings__identity">
+        <ProviderIcon provider={provider} size="small" />
+        <strong>{label}</strong>
+        <small>{t(locale, "limitCliNotFound")}</small>
+      </span>
+      <button className="setting-inline-action" type="button" onClick={() => openAgentInstall(provider)}>
+        {t(locale, "install")}
+      </button>
+    </div>
+  );
 
   useEffect(() => {
     if (!open) {
@@ -383,7 +422,7 @@ export function SettingsPanel({
                 />
               </SettingGroup>
               {settings.attentionQueueVisible && (
-                <SettingGroup label={t(locale, "attentionQueuePlacement")}>
+                <SettingGroup layout="stacked" label={t(locale, "attentionQueuePlacement")}>
                   <PlacementChoices
                     value={settings.attentionQueuePlacement}
                     locale={locale}
@@ -555,6 +594,12 @@ export function SettingsPanel({
 
           {section === "agents" && (
             <>
+              <div className="agent-cli-recheck">
+                <button className="setting-inline-action" type="button" disabled={checkingAgentClis} onClick={() => void recheckAgentClis()}>
+                  {t(locale, checkingAgentClis ? "agentCliRechecking" : "agentCliRecheck")}
+                </button>
+                {agentCliError && <span role="alert">{agentCliError}</span>}
+              </div>
               <AgentHooksSettings
                 settings={settings}
                 plugins={plugins}
@@ -579,6 +624,7 @@ export function SettingsPanel({
                 <div className="canvas-menu canvas-launcher-settings-menu">
                   <CanvasMenuLabel>{t(locale, "canvasLauncherSettingsLabel")}</CanvasMenuLabel>
                   {CANVAS_LAUNCHER_ITEMS.map((item: CanvasLauncherItemId) => {
+                    if (item !== "terminal" && !agentAvailability?.[item]) return missingAgentRow(item);
                     const enabled = settings.canvasLauncherItems.includes(item);
                     return (
                       <CanvasMenuRow
@@ -611,6 +657,7 @@ export function SettingsPanel({
                 label={t(locale, "quickLauncher")}
                 description={t(locale, "quickLauncherDescription")}
               >
+                <div className="quick-launcher-settings">
                 <Segmented
                   value={settings.radialLauncherEnabled ? "on" : "off"}
                   options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
@@ -619,6 +666,9 @@ export function SettingsPanel({
                 <div className="canvas-menu canvas-launcher-settings-menu">
                   <CanvasMenuLabel>{t(locale, "quickLauncherCount").replace("{count}", String(settings.radialLauncherItems.length))}</CanvasMenuLabel>
                   {RADIAL_LAUNCHER_ITEMS.map((item: RadialLauncherItemId) => {
+                    if (item !== "terminal" && item !== "note" && item !== "browser" && item !== "settings" && !agentAvailability?.[item]) {
+                      return missingAgentRow(item);
+                    }
                     const enabled = settings.radialLauncherItems.includes(item);
                     return (
                       <CanvasMenuRow
@@ -645,6 +695,7 @@ export function SettingsPanel({
                     onClick={() => void onChange({ radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS] })}
                   >{t(locale, "useDefaults")}</CanvasMenuRow>
                 </div>
+                </div>
               </SettingGroup>
               <SettingGroup
                 layout="stacked"
@@ -653,6 +704,7 @@ export function SettingsPanel({
               >
                 <div className="agent-launcher-settings">
                   {AGENT_PROVIDERS.map((provider) => {
+                    if (!agentAvailability?.[provider]) return missingAgentRow(provider);
                     const enabled = homeLauncherProviders.includes(provider);
                     return (
                       <div className="agent-launcher-settings__row" key={provider}>
@@ -683,6 +735,7 @@ export function SettingsPanel({
               >
                 <div className="agent-launcher-settings">
                   {LIMIT_PROVIDERS.map((provider: LimitProviderId) => {
+                    if (!agentAvailability?.[provider]) return missingAgentRow(provider, PROVIDERS[provider].limitsLabel ?? PROVIDERS[provider].label);
                     const enabled = homeLimitProviders.includes(provider);
                     return (
                       <div className="agent-launcher-settings__row" key={provider}>
@@ -1075,9 +1128,6 @@ function downloadStatusLabel(locale: LocaleId, status: BrowserDownloadSnapshot["
 
 const ACTIVITY_LABELS: Record<LocaleId, Record<BrowserCommandType, string>> = {
   ru: {
-    browser_list_windows: "Список браузеров",
-    browser_new_window: "Новый браузер",
-    browser_activate_window: "Выбор браузера",
     browser_list_tabs: "Просмотрел вкладки",
     browser_new_tab: "Открыл вкладку",
     browser_close_tab: "Закрыл вкладку",
@@ -1103,9 +1153,6 @@ const ACTIVITY_LABELS: Record<LocaleId, Record<BrowserCommandType, string>> = {
     browser_get_activity: "Проверил историю"
   },
   en: {
-    browser_list_windows: "List browsers",
-    browser_new_window: "New browser",
-    browser_activate_window: "Select browser",
     browser_list_tabs: "Viewed tabs",
     browser_new_tab: "Opened a tab",
     browser_close_tab: "Closed a tab",

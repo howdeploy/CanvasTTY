@@ -7,9 +7,9 @@
 - Node.js and npm.
 - A native compiler toolchain supported by `node-pty` on your platform.
 - A graphical desktop session capable of running Electron.
-- Optional agent CLIs — `codex`, `claude`, `qwen`, `kimi`, `opencode`, `hermes`, or `grok` — installed and available in `PATH` for the launchers you intend to use.
+- Optional agent CLIs — `codex`, `claude`, `qwen`, `kimi`, `opencode`, `hermes`, `grok`, `omp`, or `pi` — installed and available in `PATH` for the launchers you intend to use.
 
-CanvasTTY does not install or authenticate agent CLIs for you. Complete each provider's own login flow before expecting its sessions or subscription limits to work.
+Agents settings links to official installation instructions and can check again after installation. CanvasTTY does not install or authenticate agent CLIs for you. Complete each provider's own login flow before expecting its sessions or subscription limits to work.
 
 ## Install and run
 

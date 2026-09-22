@@ -1,4 +1,3 @@
-import { browserCanvasEntries } from "../../../../shared/browserWindows";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentProviderId,
@@ -64,7 +63,7 @@ import {
   reconcileCanvasLayerOrder
 } from "./canvasStacking";
 import {
-  browserWindowWidgetId,
+  browserCanvasWidgetId,
   canvasWidgetInDirection,
   canvasWidgetTarget,
   pluginCanvasWidgetId,
@@ -74,6 +73,7 @@ import {
 } from "./canvasWidgetFocus";
 import { boundsIntersect } from "./minimapGeometry";
 import {
+  browserLayerId,
   noteLayerId,
   parseCanvasLayerId,
   pluginLayerId,
@@ -134,7 +134,7 @@ type RegionMovePreview = {
   currentBounds: SessionBounds;
   sessionBounds: ReadonlyMap<string, SessionBounds>;
   pluginBounds: ReadonlyMap<string, SessionBounds>;
-  browserBounds: ReadonlyMap<string, SessionBounds>;
+  browserBounds: SessionBounds | null;
   noteBounds: ReadonlyMap<string, SessionBounds>;
 };
 
@@ -159,10 +159,9 @@ interface WorkspaceCanvasProps {
   onFocusSession(session: SessionSnapshot): void;
   activeSessionId: string | null;
   browserSelected: boolean;
-  selectedBrowserId: string;
   renamingSessionId: string | null;
   onSelectSession(id: string): void;
-  onSelectBrowser(id: string): void;
+  onSelectBrowser(): void;
   onClearCanvasSelection(): void;
   onRenameSession(id: string, title: string): Promise<void>;
   onRenameEnd(): void;
@@ -179,9 +178,9 @@ interface WorkspaceCanvasProps {
   onSessionBoundsChange(id: string, bounds: SessionBounds): void;
   onRestartSession(id: string): Promise<void>;
   onDisposeSession(id: string): void;
-  onBrowserBoundsChange(id: string, bounds: BrowserCanvasState): void;
-  onFocusBrowser(id: string): void;
-  onCloseBrowser(id: string): void;
+  onBrowserBoundsChange(bounds: BrowserCanvasState): void;
+  onFocusBrowser(): void;
+  onCloseBrowser(): void;
   onCreateCanvasRegion(region: CanvasRegion): void;
   onChangeCanvasRegion(region: CanvasRegion): void;
   onCanvasRegionBoundsChange(id: string, bounds: SessionBounds, interaction: "move" | "resize"): void;
@@ -197,7 +196,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     settings, mediaData, sessions, limits, limitsLoadState, plugins, browser,
     browserViewVisible, homeEditing, camera, onCameraChange, onGoHome,
     onOpenSettings, onOpenAgent, onOpenTerminal, onOpenBrowser, onOpenTerminalUrl, onFocusSession,
-    activeSessionId, browserSelected, selectedBrowserId, renamingSessionId, onSelectSession,
+    activeSessionId, browserSelected, renamingSessionId, onSelectSession,
     onSelectBrowser, onClearCanvasSelection, onRenameSession, onRenameEnd,
     onRequestMedia, onRemoveMedia, onHomeLayoutChange, onHomeGridSizeChange,
     onFinishHomeEdit, onResetHomeLayout, onPluginError, onPluginCanvasBoundsChange,
@@ -244,11 +243,13 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         currentBounds: copyBounds(bounds),
         sessionBounds: containedBounds(sessions, startRegion),
         pluginBounds: containedBounds(settings.pluginCanvas, startRegion),
-        browserBounds: containedBounds(browserCanvasEntries(settings), startRegion),
+        browserBounds: settings.browserCanvas && boundsInsideRegion(settings.browserCanvas, startRegion)
+          ? copyBounds(settings.browserCanvas)
+          : null,
         noteBounds: containedBounds(settings.stickyNotes, startRegion)
       };
     });
-  }, [sessions, settings.browserCanvas, settings.browserCanvases, settings.canvasRegions, settings.pluginCanvas, settings.stickyNotes]);
+  }, [sessions, settings.browserCanvas, settings.canvasRegions, settings.pluginCanvas, settings.stickyNotes]);
 
   // A press can lose its pointer (window blur, leaving Edit HOME) before it reaches a
   // pointer-up, so the scene drops any live preview instead of leaving it stuck.
@@ -282,10 +283,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     const start = regionMovePreview?.pluginBounds.get(instance.id);
     return start && previewDelta ? { ...instance, ...translateBounds(start, previewDelta) } : instance;
   }), [previewDelta, regionMovePreview, settings.pluginCanvas]);
-  const renderedBrowserCanvases = useMemo(() => browserCanvasEntries(settings).map((entry) => {
-    const start = regionMovePreview?.browserBounds.get(entry.id);
-    return start && previewDelta ? { ...entry, ...translateBounds(start, previewDelta) } : entry;
-  }), [previewDelta, regionMovePreview, settings.browserCanvas, settings.browserCanvases]);
+  const renderedBrowserCanvas = useMemo(() => (
+    settings.browserCanvas && regionMovePreview?.browserBounds && previewDelta
+      ? { ...settings.browserCanvas, ...translateBounds(regionMovePreview.browserBounds, previewDelta) }
+      : settings.browserCanvas
+  ), [previewDelta, regionMovePreview, settings.browserCanvas]);
   const renderedStickyNotes = useMemo(() => settings.stickyNotes.map((note) => {
     const start = regionMovePreview?.noteBounds.get(note.id);
     return start && previewDelta ? { ...note, ...translateBounds(start, previewDelta) } : note;
@@ -300,9 +302,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const activeLayerIds = useMemo(() => [
     ...renderedSessions.map((session) => terminalLayerId(session.id)),
     ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)).map((instance) => pluginLayerId(instance.id)),
-    ...renderedBrowserCanvases.map((entry) => browserCardLayerId(entry.id)),
+    ...(renderedBrowserCanvas ? [browserLayerId] : []),
     ...renderedStickyNotes.map((note) => noteLayerId(note.id))
-  ], [renderablePluginIds, renderedBrowserCanvases, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
+  ], [renderablePluginIds, renderedBrowserCanvas, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
   const [layerOrder, setLayerOrder] = useState<string[]>(activeLayerIds);
   useEffect(() => {
     setLayerOrder((current) => reconcileCanvasLayerOrder(current, activeLayerIds));
@@ -316,15 +318,15 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     for (const instance of renderedPluginCanvas) {
       if (renderablePluginIds.has(instance.id)) result.set(pluginLayerId(instance.id), instance);
     }
-    for (const entry of renderedBrowserCanvases) result.set(browserCardLayerId(entry.id), entry);
+    if (renderedBrowserCanvas) result.set(browserLayerId, renderedBrowserCanvas);
     for (const note of renderedStickyNotes) result.set(noteLayerId(note.id), note);
     return result;
-  }, [renderablePluginIds, renderedBrowserCanvases, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
+  }, [renderablePluginIds, renderedBrowserCanvas, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
   // Every window on the canvas, in the order they are rendered: terminals, plugin canvases, browser, notes.
   const allWindowBounds: SessionBounds[] = [
     ...renderedSessions,
     ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)),
-    ...renderedBrowserCanvases,
+    ...(renderedBrowserCanvas ? [renderedBrowserCanvas] : []),
     ...renderedStickyNotes
   ];
   const focusCandidates: CanvasFocusCandidate[] = [
@@ -332,7 +334,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     ...renderedPluginCanvas
       .filter((instance) => renderablePluginIds.has(instance.id))
       .map((instance) => ({ id: pluginCanvasWidgetId(instance.id), bounds: instance })),
-    ...renderedBrowserCanvases.map((entry) => ({ id: browserWindowWidgetId(entry.id), bounds: entry }))
+    ...(renderedBrowserCanvas ? [{ id: browserCanvasWidgetId, bounds: renderedBrowserCanvas }] : [])
   ];
 
   const homeBounds: SessionBounds = {
@@ -400,20 +402,19 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       if (ref.kind === "terminal" && ref.targetId !== null) onSessionBoundsChange(ref.targetId, moved);
       else if (ref.kind === "plugin" && ref.targetId !== null) onPluginCanvasBoundsChange(ref.targetId, moved);
       else if (ref.kind === "note" && ref.targetId !== null) onStickyNoteBoundsChange(ref.targetId, moved);
-      else if (ref.kind === "browser") onBrowserBoundsChange(ref.targetId ?? "default", moved);
+      else if (ref.kind === "browser" && settings.browserCanvas) onBrowserBoundsChange({ ...settings.browserCanvas, ...moved });
     }
   }, [boundsByLayer, homeBounds, onBrowserBoundsChange, onPluginCanvasBoundsChange,
-    onSessionBoundsChange, onStickyNoteBoundsChange, renderedCanvasRegions, settings.snapToGrid]);
+    onSessionBoundsChange, onStickyNoteBoundsChange, renderedCanvasRegions, settings.browserCanvas, settings.snapToGrid]);
 
   const focusController = useCanvasWidgetFocus({
     viewport,
     settings,
     activeSessionId,
     browserSelected,
-    selectedBrowserId,
     widgetTreeVersion: [
       browserViewVisible ? "browser-visible" : "browser-hidden",
-      renderedBrowserCanvases.map((entry) => entry.id).join(","),
+      renderedBrowserCanvas ? "browser-card" : "no-browser-card",
       sessions.map((session) => session.id).join(","),
       plugins.map((plugin) => [
         plugin.manifest.id,
@@ -473,6 +474,13 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     settings.showShortcutHints,
     settings.uiScale
   ]);
+  const browserOccluded = renderedBrowserCanvas !== null
+    && canvasLayerIsOccluded(browserLayerId, layerOrder, boundsByLayer);
+  const browserScreenRect = renderedBrowserCanvas === null
+    ? null
+    : canvasScreenRect(renderedBrowserCanvas, camera);
+  const browserUnderOverlay = browserScreenRect !== null
+    && overlayRects.some((rect) => boundsOverlap(browserScreenRect, rect));
   const wheelNavigation = useCanvasWheelNavigation({
     viewport,
     settings,
@@ -639,13 +647,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       onFocusPluginCanvas(instance.id);
       return;
     }
-    const browser = renderedBrowserCanvases.find((candidate) => browserWindowWidgetId(candidate.id) === target);
-    if (!browser) return;
-    raiseLayer(browserCardLayerId(browser.id));
-    focusController.focus(target, "explicit");
-    onFocusBrowser(browser.id);
+    if (renderedBrowserCanvas && target === browserCanvasWidgetId) {
+      raiseLayer(browserLayerId);
+      focusController.focus(target, "explicit");
+      onFocusBrowser();
+      return;
+    }
   }, [focusCandidates, focusController, onFocusBrowser, onFocusPluginCanvas, onFocusSession,
-    renderedBrowserCanvases, renderedPluginCanvas, renderedSessions, raiseLayer, viewportCenterWorldPoint]);
+    renderedBrowserCanvas, renderedPluginCanvas, renderedSessions, raiseLayer, viewportCenterWorldPoint]);
 
   const fitCanvasRef = useRef(fitCanvas);
   fitCanvasRef.current = fitCanvas;
@@ -900,45 +909,48 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               />
             );
           })}
-          {renderedBrowserCanvases.map((entry) => {
-            const windowState = browser.windows?.find((candidate) => candidate.id === entry.id);
-            const snapshot = windowState?.snapshot ?? (entry.id === "default" ? browser : null);
-            if (!snapshot) return null;
-            const layerId = browserCardLayerId(entry.id);
-            const bounds = withGroupNudge(layerId, entry);
-            const browserScreenRect = canvasScreenRect(bounds, camera);
-            const browserUnderOverlay = overlayRects.some((rect) => boundsOverlap(browserScreenRect, rect));
-            const occluded = canvasLayerIsOccluded(layerId, layerOrder, boundsByLayer);
-            return <BrowserCard
-              key={entry.id}
-              browserId={entry.id}
-              title={windowState?.title ?? t(settings.locale, "browser")}
-              browser={snapshot}
-              bounds={bounds}
+          {renderedBrowserCanvas && (
+            <BrowserCard
+              browser={browser}
+              bounds={withGroupNudge(browserLayerId, renderedBrowserCanvas)}
               locale={settings.locale}
-              sessions={sessions}
               zoom={camera.zoom}
               camera={camera}
               visible={browserViewVisible && !homeEditing && contextMenu === null
-                && regionEditor === null && !commandPaletteOpen && radialLauncher === null && !occluded && !browserUnderOverlay}
-              stackIndex={canvasLayerZIndex(layerOrder, layerId)}
+                && regionEditor === null && !commandPaletteOpen && radialLauncher === null
+                && !browserOccluded && !browserUnderOverlay}
+              stackIndex={canvasLayerZIndex(layerOrder, browserLayerId)}
               uiScale={settings.uiScale}
               snapEnabled={settings.snapToGrid}
               focusActivation={settings.focusActivation}
-              focused={widgetFocus.id === browserWindowWidgetId(entry.id)}
-              selected={browserSelected && selectedBrowserId === entry.id}
+              focused={widgetFocus.id === browserCanvasWidgetId}
+              selected={browserSelected}
               showAgentPresence={settings.browserShowAgentPresence}
-              snapTargets={[homeBounds, ...renderedCanvasRegions, ...allWindowBounds.filter((candidate) => candidate !== entry)]}
-              onBoundsChange={(bounds) => onBrowserBoundsChange(entry.id, bounds)}
-              onActivate={() => { raiseLayer(layerId); focusController.focusBrowser(entry.id); onFocusBrowser(entry.id); }}
-              onSelect={() => { raiseLayer(layerId); onSelectBrowser(entry.id); }}
-              onWidgetFocus={() => { raiseLayer(layerId); focusController.focusBrowser(entry.id); }}
-              onWidgetHoverChange={(active) => focusController.hoverBrowser(active, entry.id)}
-              onClose={() => onCloseBrowser(entry.id)}
-              groupSelected={marqueeSelection.has(layerId)}
+              snapTargets={[
+                homeBounds,
+                ...renderedCanvasRegions.map((candidate) => ({ position: candidate.position, size: candidate.size })),
+                ...allWindowBounds.filter((candidate) => candidate !== renderedBrowserCanvas)
+              ]}
+              onBoundsChange={onBrowserBoundsChange}
+              onActivate={() => {
+                raiseLayer(browserLayerId);
+                focusController.focusBrowser();
+                onFocusBrowser();
+              }}
+              onSelect={() => {
+                raiseLayer(browserLayerId);
+                onSelectBrowser();
+              }}
+              onWidgetFocus={() => {
+                raiseLayer(browserLayerId);
+                focusController.focusBrowser();
+              }}
+              onWidgetHoverChange={focusController.hoverBrowser}
+              onClose={onCloseBrowser}
               onError={onPluginError}
-            />;
-          })}
+              groupSelected={marqueeSelection.has(browserLayerId)}
+            />
+          )}
           {renderedStickyNotes.map((note) => (
             <StickyNoteCard
               key={note.id}
@@ -1132,7 +1144,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             {settings.minimapPlacement === placement && (
               <CanvasMinimap viewport={viewport} camera={camera} homeBounds={homeBounds}
                 canvasRegions={renderedCanvasRegions} sessions={renderedSessions} stickyNotes={renderedStickyNotes}
-                pluginCanvas={renderedPluginCanvas} browserCanvases={renderedBrowserCanvases}
+                pluginCanvas={renderedPluginCanvas} browserCanvas={renderedBrowserCanvas}
                 locale={settings.locale} interactionMode={settings.minimapInteractionMode}
                 onCameraChange={commitCamera} />
             )}
@@ -1182,8 +1194,6 @@ function containedBounds<T extends SessionBounds & { id: string }>(
     .filter((item) => boundsInsideRegion(item, region))
     .map((item) => [item.id, copyBounds(item)]));
 }
-
-const browserCardLayerId = browserWindowWidgetId;
 
 function shouldKeepCanvasContextMenu(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest(

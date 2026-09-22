@@ -6,6 +6,7 @@ import checkIcon from "../assets/icons/lucide/check.svg";
 import chevronIcon from "../assets/icons/lucide/chevron-down.svg";
 import closeIcon from "../assets/icons/lucide/x.svg";
 import copyIcon from "../assets/icons/lucide/copy.svg";
+import downloadIcon from "../assets/icons/lucide/download.svg";
 import errorIcon from "../assets/icons/lucide/circle-alert.svg";
 import folderIcon from "../assets/icons/lucide/folder.svg";
 import browserIcon from "../assets/icons/lucide/globe.svg";
@@ -90,7 +91,7 @@ const ICONS: Record<UiIconName, string> = {
   reload: workingIcon,
   arrow: arrowIcon,
   chevron: chevronIcon,
-  download: chevronIcon,
+  download: downloadIcon,
   plus: plusIcon,
   palette: paletteIcon,
   pencil: pencilIcon,

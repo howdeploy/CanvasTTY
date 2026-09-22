@@ -921,9 +921,7 @@ export function PluginSettingsSection({
         )}
         </section>
         {!githubAuthorized && (
-          <div className="plugin-showcase-lock">
-            <span>{t(locale, "showcaseRequiresGithub")}</span>
-          </div>
+          <p className="plugin-showcase-lock" role="status">{t(locale, "showcaseRequiresGithub")}</p>
         )}
       </div>
     </div>

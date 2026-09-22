@@ -36,7 +36,6 @@ import {
   providerChildProcessLaunch,
   type AvailableProviderCli,
   type ProviderCliRegistry,
-  type ProviderCliResolution
 } from "../providerCliRegistry.ts";
 
 const KIMI_RULE_PATTERN = `mcp__${MCP_SERVER_NAME}__*`;
@@ -78,7 +77,7 @@ export class ProviderLaunchAdapters {
   private readonly providerClis: ProviderCliRegistry;
   private readonly hermesHomeDirectory: string;
   private readonly kimiHomeDirectory: string;
-  private readonly kimiCli: ProviderCliResolution;
+  private kimiProbedExecutable: string | null = null;
   private readonly probe: (cli: AvailableProviderCli) => boolean;
   private readonly environment: Readonly<Record<string, string | undefined>>;
   private kimiSupportsPerRunConfig: boolean | null = null;
@@ -95,9 +94,13 @@ export class ProviderLaunchAdapters {
     this.kimiHomeDirectory = validateKimiHomeDirectory(
       options.kimiHomeDirectory ?? join(homedir(), ".kimi-code")
     );
-    this.kimiCli = options.providerClis.get("kimi");
     this.probe = options.probeKimiPerRunConfig ?? probeKimiPerRunMcpConfig;
     this.environment = options.environment ?? process.env;
+  }
+
+  providerClisRefreshed(): void {
+    this.kimiProbedExecutable = null;
+    this.kimiSupportsPerRunConfig = null;
   }
 
   prepare(provider: AgentProvider, connectionId: string): PreparedProviderLaunch {
@@ -170,9 +173,14 @@ export class ProviderLaunchAdapters {
   }
 
   private prepareKimi(connectionId: string): PreparedProviderLaunch {
-    if (this.kimiCli.state === "unavailable") throw new Error(this.kimiCli.diagnostic);
+    const kimiCli = this.providerClis.get("kimi");
+    if (kimiCli.state === "unavailable") throw new Error(kimiCli.diagnostic);
+    if (this.kimiProbedExecutable !== kimiCli.executable) {
+      this.kimiSupportsPerRunConfig = null;
+      this.kimiProbedExecutable = kimiCli.executable;
+    }
     if (this.kimiSupportsPerRunConfig === null) {
-      this.kimiSupportsPerRunConfig = this.probe(this.kimiCli);
+      this.kimiSupportsPerRunConfig = this.probe(kimiCli);
       KimiTemporaryConfiguration.recover(this.kimiHomeDirectory);
     }
     const supportsPerRun = this.kimiSupportsPerRunConfig;

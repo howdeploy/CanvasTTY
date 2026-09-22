@@ -7,19 +7,20 @@ export interface ProviderDefinition {
   label: string;
   limitsLabel?: string;
   dangerKey?: TranslationKey;
+  installUrl?: string;
 }
 
 export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
   terminal: { id: "terminal", label: PROVIDER_LABELS.terminal },
-  codex: { id: "codex", label: PROVIDER_LABELS.codex, dangerKey: "dangerCodex" },
-  claude: { id: "claude", label: PROVIDER_LABELS.claude, dangerKey: "dangerClaude" },
-  qwen: { id: "qwen", label: PROVIDER_LABELS.qwen, dangerKey: "dangerQwen" },
-  kimi: { id: "kimi", label: PROVIDER_LABELS.kimi, dangerKey: "dangerKimi" },
-  opencode: { id: "opencode", label: PROVIDER_LABELS.opencode, limitsLabel: "OpenCode Go", dangerKey: "dangerOpenCode" },
-  hermes: { id: "hermes", label: PROVIDER_LABELS.hermes, dangerKey: "dangerHermes" },
-  grok: { id: "grok", label: PROVIDER_LABELS.grok, dangerKey: "dangerGrok" },
-  omp: { id: "omp", label: PROVIDER_LABELS.omp, dangerKey: "dangerOmp" },
-  pi: { id: "pi", label: PROVIDER_LABELS.pi, dangerKey: "dangerPi" }
+  codex: { id: "codex", label: PROVIDER_LABELS.codex, dangerKey: "dangerCodex", installUrl: "https://learn.chatgpt.com/docs/codex/cli" },
+  claude: { id: "claude", label: PROVIDER_LABELS.claude, dangerKey: "dangerClaude", installUrl: "https://code.claude.com/docs/en/setup" },
+  qwen: { id: "qwen", label: PROVIDER_LABELS.qwen, dangerKey: "dangerQwen", installUrl: "https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/" },
+  kimi: { id: "kimi", label: PROVIDER_LABELS.kimi, dangerKey: "dangerKimi", installUrl: "https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started" },
+  opencode: { id: "opencode", label: PROVIDER_LABELS.opencode, limitsLabel: "OpenCode Go", dangerKey: "dangerOpenCode", installUrl: "https://opencode.ai/en/docs" },
+  hermes: { id: "hermes", label: PROVIDER_LABELS.hermes, dangerKey: "dangerHermes", installUrl: "https://hermes-agent.nousresearch.com/docs/getting-started/installation" },
+  grok: { id: "grok", label: PROVIDER_LABELS.grok, dangerKey: "dangerGrok", installUrl: "https://docs.x.ai/build/overview" },
+  omp: { id: "omp", label: PROVIDER_LABELS.omp, dangerKey: "dangerOmp", installUrl: "https://github.com/can1357/oh-my-pi" },
+  pi: { id: "pi", label: PROVIDER_LABELS.pi, dangerKey: "dangerPi", installUrl: "https://pi.dev/docs/latest" }
 };
 
 export const AGENT_PROVIDERS: AgentProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"];

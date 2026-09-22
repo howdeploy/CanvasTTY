@@ -3,7 +3,7 @@ import test from "node:test";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
 import xterm from "@xterm/xterm";
-import { fitTerminalPreservingViewport } from "../src/renderer/src/features/terminal/terminalViewport.ts";
+import { attachTerminalRedrawViewport, fitTerminalPreservingViewport } from "../src/renderer/src/features/terminal/terminalViewport.ts";
 
 // Exercise the installed xterm buffer and scrollbar in Node, without opening a DOM terminal.
 const { outputFiles } = await build({
@@ -59,12 +59,20 @@ async function xtermFixture(t, { cols = 80, rows = 40, viewportY = 12, paused = 
     viewport.queueSync();
   });
   bufferService.onScroll(() => viewport._sync());
+  bufferService.buffers.onBufferActivate(() => {
+    viewport._latestYDisp = undefined;
+    viewport.queueSync();
+  });
+  terminal._core._onScroll.event(() => viewport.queueSync());
+  terminal._core._inputHandler.onScroll(() => viewport.queueSync());
   terminal._core._viewport = viewport;
+  t.after(attachTerminalRedrawViewport(terminal));
   viewport._sync();
   terminal.scrollToLine(viewportY === "bottom" ? terminal.buffer.active.baseY : viewportY);
 
   return {
     terminal,
+    resumeRender() { viewport._renderService._pausedResizeTask.flush(); },
     flushRender() { for (const callback of refreshes.splice(0)) callback(); },
     visibleLine: () => scrollable.getCurrentScrollPosition().scrollTop / 18
   };
@@ -123,6 +131,79 @@ test("a terminal following output stays pinned across resize and later writes", 
     assert.equal(terminal.buffer.active.viewportY, terminal.buffer.active.baseY);
     assert.equal(visibleLine(), terminal.buffer.active.baseY);
   }
+});
+
+test("offscreen alternate-screen resize keeps following output after returning to normal history", async (t) => {
+  const { terminal, flushRender, resumeRender, visibleLine } = await xtermFixture(t, {
+    viewportY: "bottom",
+    paused: true
+  });
+  const write = (data) => new Promise((resolve) => terminal.write(data, resolve));
+
+  await write("\x1b[?1049h");
+  fitTerminalPreservingViewport(terminal, () => terminal.resize(80, 12));
+  await write("\x1b[?1049l");
+  // A late renderer resize must not leave xterm treating its own clamp as user scrolling.
+  resumeRender();
+  flushRender();
+  await write(Array.from({ length: 6_000 }, (_, i) => `\r\nnew output ${i}`).join(""));
+  flushRender();
+
+  assert.equal(terminal.buffer.active.viewportY, terminal.buffer.active.baseY);
+  assert.equal(visibleLine(), terminal.buffer.active.baseY);
+});
+
+test("a synchronized TUI history redraw retains the reader after resize across output chunks", async (t) => {
+  const { terminal, flushRender, visibleLine } = await xtermFixture(t, { viewportY: 100 });
+  const write = (data) => new Promise((resolve) => terminal.write(data, resolve));
+  fitTerminalPreservingViewport(terminal, () => terminal.resize(40, 24));
+  const expected = terminal.buffer.active.viewportY;
+
+  // Codex finishes one frame, clears scrollback outside synchronized mode,
+  // then starts a separate frame that replays its history.
+  await write("\x1b[?2026h\x1b[?2026l\x1b[3J\x1b[H\x1b[2J");
+  await write("\x1b[?2026h");
+  await write(Array.from({ length: 200 }, (_, i) => `${String(i).padStart(3, "0")} ${"x".repeat(120)}`).join("\r\n"));
+  assert.equal(terminal.buffer.active.viewportY, 0, "wait for the complete synchronized frame");
+  await write("\x1b[?2026l");
+  flushRender();
+
+  assert.equal(terminal.modes.synchronizedOutputMode, false);
+  // Unlike resize, replay rewraps the old cursor line too; allow one row of drift.
+  assert.ok(Math.abs(terminal.buffer.active.viewportY - expected) <= 1);
+  assert.equal(visibleLine(), terminal.buffer.active.viewportY);
+});
+
+test("synchronized redraw follows the bottom while an ordinary clear still clears history", async (t) => {
+  const { terminal, flushRender, visibleLine } = await xtermFixture(t, { viewportY: "bottom" });
+  const write = (data) => new Promise((resolve) => terminal.write(data, resolve));
+  const output = Array.from({ length: 300 }, (_, i) => `\r\nline ${i}`).join("");
+  await write(`\x1b[?2026h\x1b[3J\x1b[H\x1b[2J${output}\x1b[?2026l`);
+  flushRender();
+  assert.equal(terminal.buffer.active.viewportY, terminal.buffer.active.baseY);
+  assert.equal(visibleLine(), terminal.buffer.active.baseY);
+
+  terminal.scrollToLine(50);
+  await write(`\x1b[3J\x1b[H\x1b[2J${output}`);
+  await write("\x1b[?2026h\r\nlater frame\x1b[?2026l");
+  flushRender();
+  assert.equal(terminal.buffer.active.viewportY, 0);
+});
+
+test("a TUI that rewraps history does not push a near-bottom reader to the end", async (t) => {
+  const { terminal, flushRender, visibleLine } = await xtermFixture(t, { viewportY: 350 });
+  const write = (data) => new Promise((resolve) => terminal.write(data, resolve));
+  fitTerminalPreservingViewport(terminal, () => terminal.resize(40, 24));
+
+  // A TUI can rebuild fewer rows than xterm's initial resize reflow produced.
+  const output = Array.from({ length: 500 }, (_, i) => `\r\nreformatted line ${i}`).join("");
+  await write(`\x1b[3J\x1b[H\x1b[2J\x1b[?2026h${output}\x1b[?2026l`);
+  flushRender();
+
+  assert.ok(terminal.buffer.active.viewportY > 0);
+  assert.ok(terminal.buffer.active.viewportY < terminal.buffer.active.baseY);
+  assert.equal(terminal._core._bufferService.isUserScrolling, true);
+  assert.equal(visibleLine(), terminal.buffer.active.viewportY);
 });
 
 function terminalFixture({

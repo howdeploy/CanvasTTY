@@ -646,11 +646,21 @@ button { border: 0; }
 .color-field__hex { width: 6.4em; height: 2.5em; padding: 0 .6em; border: .08em solid color-mix(in srgb, var(--text) 14%, transparent); border-radius: .6em; outline: 0; color: var(--text); background: var(--surface); font: 700 .76em var(--font-mono); text-transform: uppercase; user-select: text; }
 .color-field__hex:focus { border-color: var(--primary); box-shadow: 0 0 0 .14em color-mix(in srgb, var(--primary) 24%, transparent); }
 .agent-launcher-settings { display: grid; gap: 7px; }
-.agent-launcher-settings__row { min-height: 4.3em; padding: .55em .65em .55em .85em; display: grid; grid-template-columns: minmax(0, 1fr) 14em; align-items: center; gap: .9em; border-radius: .75em; color: var(--text); background: var(--surface-soft); }
+.agent-launcher-settings__row { min-height: 4.3em; padding: .55em .65em .55em .85em; display: grid; grid-template-columns: minmax(0, 1fr) minmax(9em, 14em); align-items: center; gap: .9em; border-radius: .75em; color: var(--text); background: var(--surface-soft); }
 .agent-launcher-settings__identity { min-width: 0; display: flex; align-items: center; gap: 10px; }
 .agent-launcher-settings__identity strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.canvas-launcher-settings-menu { position: relative; left: auto; top: auto; z-index: auto; width: 100%; min-width: 0; max-width: 100%; background: var(--surface-soft); box-shadow: none; }
+.agent-launcher-settings__identity small { color: var(--text-muted); white-space: nowrap; }
+.agent-launcher-settings__row > .setting-inline-action { justify-self: end; }
+.agent-cli-recheck { display: flex; align-items: center; gap: 10px; }
+.agent-cli-recheck [role="alert"] { color: var(--text-muted); font-size: 12px; }
+.canvas-launcher-settings-menu { position: relative; left: auto; top: auto; z-index: auto; width: 100%; min-width: 0; max-width: 100%; display: grid; gap: .15em; padding: .4em; border-radius: .9em; background: var(--surface-soft); box-shadow: none; }
 .canvas-launcher-settings-menu .canvas-menu__icon { background: var(--surface); }
+.canvas-launcher-settings-menu .canvas-menu__row,
+.canvas-launcher-settings-menu .agent-launcher-settings__row { min-height: 2.75em; }
+.canvas-launcher-settings-menu .agent-launcher-settings__row { grid-template-columns: minmax(0, 1fr) auto; padding: .35em .55em .35em .7em; background: transparent; }
+.canvas-launcher-settings-menu .setting-inline-action { min-width: 7.2em; min-height: 2.15em; }
+.quick-launcher-settings { display: grid; gap: .75em; }
+.quick-launcher-settings > .segmented { width: min(18em, 100%); }
 .ui-scale-setting { display: grid; grid-template-columns: minmax(0, 1fr) 4.6em; align-items: center; gap: 1em; }
 .ui-scale-setting input { width: 100%; accent-color: var(--primary); }
 .ui-scale-setting output { min-height: 2.7em; display: grid; place-items: center; border-radius: .65em; color: var(--text-dark); background: var(--secondary); font: 700 .82em/1 var(--font-mono); }
@@ -813,22 +823,17 @@ button { border: 0; }
 .plugin-showcase-wrap .plugin-showcase-group { margin-top: 0; }
 .plugin-showcase-group--off { filter: grayscale(1) opacity(.28); pointer-events: none; user-select: none; }
 .plugin-showcase-lock {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: auto;
-}
-.plugin-showcase-lock span {
-  padding: 8px 16px;
-  border-radius: 10px;
-  background: var(--surface);
-  color: #f8f7f1;
+  position: static;
+  display: block;
+  margin: 0 0 10px;
+  padding: 0;
+  color: var(--text-muted);
   font-size: 12px;
-  font-weight: 850;
-  box-shadow: 0 0 0 1px rgba(248, 247, 241, .16), 0 8px 22px rgba(0, 0, 0, .45);
+  font-weight: 700;
+  line-height: 1.45;
+  background: none;
+  box-shadow: none;
+  pointer-events: none;
 }
 .plugin-showcase-search { margin-top: 12px; }
 .plugin-pagination { margin-top: 10px; display: flex; align-items: center; gap: 10px; }
@@ -1011,7 +1016,7 @@ button { border: 0; }
 .settings-panel :is(.plugin-github-code strong, .plugin-github-copied, .plugin-github-flow a) { color: var(--primary); }
 .settings-panel .plugin-github-copied { background: color-mix(in srgb, var(--primary) 14%, transparent); }
 .settings-panel .plugin-github-dot { background: var(--success); box-shadow: 0 0 0 .22em color-mix(in srgb, var(--success) 22%, transparent); }
-.settings-panel .plugin-showcase-lock span { color: var(--text); background: var(--surface-soft); box-shadow: var(--shadow-md); }
+.settings-panel .plugin-showcase-lock { color: var(--text-muted); background: none; box-shadow: none; }
 .settings-panel .plugin-icon--fallback { color: var(--text-dark); background: var(--primary); }
 .settings-panel .canvas-launcher-settings-menu .canvas-menu__row--muted .canvas-menu__grow { color: var(--text-muted-on-dark); }
 .toast { position: fixed; z-index: 9999; left: 50%; bottom: 24px; max-width: min(540px, calc(100% - 40px)); padding: 12px 17px; border-radius: 11px; color: white; background: rgba(37,38,48,.94); box-shadow: var(--shadow-md); opacity: 0; transform: translate(-50%, 18px); pointer-events: none; transition: all .2s ease; }
@@ -1073,41 +1078,26 @@ button { border: 0; }
 .attention-queue__item span { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .attention-queue__empty { color: rgba(255,255,255,.5); font-size: 11px; font-weight: 700; }
 
-/* A flex column, not a fixed row template: message, preview and list are mutually
-   optional, and a fixed template gave the flex row to whichever child landed in it,
-   so the list could paint over a message. Only the list grows and scrolls. */
-.browser-inspect { position: absolute; z-index: 24; top: calc(var(--card-header-height) + 6px); right: 10px; width: 296px; max-height: 320px; display: flex; flex-direction: column; gap: 6px; padding: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; color: white; background: rgba(28,30,40,.97); box-shadow: var(--shadow-md); }
-.browser-inspect > * { flex: 0 0 auto; }
-.browser-inspect__title { color: rgba(255,255,255,.62); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
-/* The exact line Send will type: monospace so page text cannot disguise itself as chrome,
-   wrapped rather than clipped, and bounded so a long line cannot push the list away. */
-.browser-inspect__preview { max-height: 96px; margin: 0; padding: 7px 8px; overflow: auto; border-radius: 8px; color: rgba(255,255,255,.72); background: rgba(255,255,255,.06); font: 700 10px/1.45 var(--font-mono); overflow-wrap: anywhere; white-space: pre-wrap; }
-.browser-inspect__list { flex: 1 1 auto; min-height: 0; display: grid; align-content: start; gap: 3px; overflow-y: auto; }
-.browser-inspect__item { display: grid; gap: 2px; padding: 5px 6px; border-radius: 7px; color: white; background: rgba(255,255,255,.05); cursor: pointer; text-align: left; }
-.browser-inspect__item[aria-selected="true"] { background: color-mix(in srgb, var(--primary) 42%, transparent); }
-.browser-inspect__item strong { overflow: hidden; font-size: 12px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
-.browser-inspect__item span { color: rgba(255,255,255,.5); font: 700 10px var(--font-mono); }
-.browser-inspect__empty { padding: 8px 4px; color: rgba(255,255,255,.5); font-size: 11px; font-weight: 700; }
-.browser-inspect__send { height: 28px; border-radius: 7px; color: var(--text-dark); background: var(--primary); cursor: pointer; font-size: 12px; font-weight: 800; }
-.browser-inspect__send:disabled { opacity: .5; cursor: not-allowed; }
-
-/* Updates section: status text and buttons live in one wrapping flex row inside a card, so a long
-   status or error message wraps under the icon and the buttons drop to their own line instead of
-   sitting on top of the group divider (the Linux overlap the old single-line row produced). */
+/* Updates section: icon, status and action sit on one grid. Narrow windows move the actions
+   onto their own row so a long status wraps inside the middle column. */
 .settings-updates .setting-group__description { max-width: 62ch; }
-.settings-updates__card { display: flex; flex-wrap: wrap; align-items: center; gap: .75em 1em; min-width: 0; padding: .9em 1em; border-radius: .9em; background: var(--surface-soft); }
+.settings-updates__card { display: grid; grid-template-columns: 2.3em minmax(0, 1fr) auto; align-items: center; column-gap: 1em; row-gap: .75em; min-width: 0; padding: 1em 1.1em; border-radius: .9em; background: var(--surface-soft); }
 .settings-updates__icon { width: 2.3em; height: 2.3em; flex: 0 0 auto; display: grid; place-items: center; border-radius: .7em; color: var(--text-dark); background: var(--secondary); }
 .settings-updates__card[data-tone="ready"] .settings-updates__icon { background: var(--primary); }
 .settings-updates__card[data-tone="muted"] .settings-updates__icon { color: var(--text-muted-on-dark); background: color-mix(in srgb, var(--text) 10%, transparent); }
 .settings-updates__card[data-tone="busy"] .settings-updates__icon { animation: settings-updates-spin 1.1s linear infinite; }
 @keyframes settings-updates-spin { to { transform: rotate(360deg); } }
-.settings-updates__status { flex: 1 1 16em; min-width: 12em; display: grid; gap: .25em; overflow-wrap: anywhere; }
+.settings-updates__status { min-width: 0; display: grid; gap: .25em; overflow-wrap: anywhere; }
 .settings-updates__title { color: var(--text); font-size: .95em; font-weight: 800; line-height: 1.35; }
 .settings-updates__detail { color: var(--text-muted-on-dark); font-size: .8em; font-weight: 500; line-height: 1.45; }
 .settings-updates__progress { width: 100%; height: .5em; margin-top: .2em; appearance: none; border: 0; border-radius: 999px; overflow: hidden; background: color-mix(in srgb, var(--text) 12%, transparent); }
 .settings-updates__progress::-webkit-progress-bar { background: transparent; }
 .settings-updates__progress::-webkit-progress-value { background: var(--primary); border-radius: 999px; }
-.settings-updates__actions { flex: 0 1 auto; display: flex; flex-wrap: wrap; gap: .5em; margin-left: auto; }
+.settings-updates__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5em; }
+@media (max-width: 760px) {
+  .settings-updates__card { grid-template-columns: 2.3em minmax(0, 1fr); }
+  .settings-updates__actions { grid-column: 1 / -1; justify-content: flex-start; }
+}
 .settings-updates__button { min-height: 2.4em; min-width: 9em; padding: 0 1em; border-radius: .65em; outline: 0; color: var(--text); background: color-mix(in srgb, var(--text) 12%, transparent); cursor: pointer; font-size: .85em; font-weight: 800; white-space: nowrap; }
 .settings-updates__button:hover { background: color-mix(in srgb, var(--text) 20%, transparent); }
 .settings-updates__button:focus-visible { box-shadow: inset 0 0 0 2px var(--secondary); }

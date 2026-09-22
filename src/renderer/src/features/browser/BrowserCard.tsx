@@ -4,9 +4,6 @@ import type {
   BrowserCanvasFreezeFrameEvent,
   BrowserCanvasState,
   BrowserDownloadSnapshot,
-  BrowserObservation,
-  BrowserObservedElement,
-  BrowserResult,
   BrowserSnapshot,
   BrowserTabSnapshot,
   BrowserViewportSurface,
@@ -14,32 +11,19 @@ import type {
   FocusActivation,
   LocaleId,
   Point,
-  SessionBounds,
-  SessionSnapshot
+  SessionBounds
 } from "../../../../shared/contracts";
 import { BROWSER_PROVIDER_COLORS } from "../../../../shared/contracts";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 import { shouldActivateCanvasFromClick } from "../workspace/focus";
 import { snapMove, snapResize, type ResizeDirection } from "../workspace/snap";
-import { browserWindowWidgetId } from "../workspace/canvasWidgetFocus";
-import {
-  INSPECT_ELEMENT_LIMIT,
-  inspectAgentLine,
-  inspectAgentAwaitsApproval,
-  inspectAgentSessionId,
-  inspectPayloadFor,
-  inspectRefIsStale
-} from "./inspectToAgent";
+import { browserCanvasWidgetId } from "../workspace/canvasWidgetFocus";
 
 interface BrowserCardProps {
   browser: BrowserSnapshot;
-  browserId: string;
-  title: string;
   bounds: BrowserCanvasState;
   locale: LocaleId;
-  /** Agent sessions that can receive an inspected element. */
-  sessions: readonly SessionSnapshot[];
   zoom: number;
   camera: CameraState;
   visible: boolean;
@@ -72,17 +56,14 @@ interface ResizeState extends DragState {
   direction: ResizeDirection;
 }
 
-type BrowserPanel = "downloads" | "close-all" | "inspect" | null;
+type BrowserPanel = "downloads" | "close-all" | null;
 
 const RESIZE_DIRECTIONS: ResizeDirection[] = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
 
 export function BrowserCard({
   browser,
-  browserId,
-  title,
   bounds,
   locale,
-  sessions,
   zoom,
   camera,
   visible,
@@ -113,9 +94,6 @@ export function BrowserCard({
   const activeTab = browser.tabs.find((tab) => tab.id === browser.activeTabId) ?? null;
   const [address, setAddress] = useState(activeTab?.url ?? "");
   const [panel, setPanel] = useState<BrowserPanel>(null);
-  const [observed, setObserved] = useState<BrowserObservation | null>(null);
-  const [observedElement, setObservedElement] = useState<BrowserObservedElement | null>(null);
-  const [inspectError, setInspectError] = useState<string | null>(null);
   const [dialogPrompt, setDialogPrompt] = useState("");
   const [freezeFrame, setFreezeFrame] = useState<BrowserCanvasFreezeFrameEvent | null>(null);
   const summaryMode = zoom < 0.5;
@@ -144,12 +122,6 @@ export function BrowserCard({
   const freezeFrameDataUrl = freezeFrame && freezeFrame.tabId === activeTab?.id
     ? freezeFrame.dataUrl
     : null;
-  /** The exact line, CR included, that Send to agent will type into the PTY. */
-  const inspectPreview = useMemo(() => (
-    observed === null || observedElement === null
-      ? null
-      : inspectAgentLine(inspectPayloadFor(observedElement, observed.url))
-  ), [observed, observedElement]);
 
   useEffect(() => {
     liveBounds.current = bounds;
@@ -190,8 +162,8 @@ export function BrowserCard({
       } : {}),
       canvasScale: state.zoom,
       showAgentPresence: state.showAgentPresence
-    }, browserId);
-  }, [browserId]);
+    });
+  }, []);
 
   useLayoutEffect(() => {
     reportViewport();
@@ -218,14 +190,14 @@ export function BrowserCard({
       surface: "hidden",
       canvasScale: 1,
       showAgentPresence: false
-    }, browserId);
-  }, [browserId]);
+    });
+  }, []);
 
   useLayoutEffect(() => {
-    window.canvasTTY.browser.setInputFocused(focused, browserId);
-  }, [focused, browserId]);
+    window.canvasTTY.browser.setInputFocused(focused);
+  }, [focused]);
 
-  useEffect(() => () => window.canvasTTY.browser.setInputFocused(false, browserId), [browserId]);
+  useEffect(() => () => window.canvasTTY.browser.setInputFocused(false), []);
 
   useEffect(() => window.canvasTTY.browser.onCanvasPointer((event) => {
     if (event.tabId !== browser.activeTabId) return;
@@ -240,26 +212,25 @@ export function BrowserCard({
     if (event.type === "down") {
       onWidgetFocus();
       onSelect();
-      window.canvasTTY.browser.focus(browserId);
+      window.canvasTTY.browser.focus();
       return;
     }
     if (shouldActivateCanvasFromClick(focusActivation, event.clickCount)) onActivate();
-  }), [browserId, browser.activeTabId, focusActivation, onActivate, onSelect, onWidgetFocus, onWidgetHoverChange]);
+  }), [browser.activeTabId, focusActivation, onActivate, onSelect, onWidgetFocus, onWidgetHoverChange]);
 
   useEffect(() => window.canvasTTY.browser.onCanvasFreezeFrame((event) => {
-    if (!browser.tabs.some((tab) => tab.id === event.tabId)) return;
     setFreezeFrame((current) => {
       if (current && event.generation <= current.generation) return current;
       const cachedDataUrl = current?.tabId === event.tabId ? current.dataUrl : null;
       return { ...event, dataUrl: event.dataUrl ?? cachedDataUrl };
     });
-  }), [browser.tabs]);
+  }), []);
 
   useEffect(() => {
     if (!focused || !nativeViewVisible) return;
-    const frame = requestAnimationFrame(() => window.canvasTTY.browser.focus(browserId));
+    const frame = requestAnimationFrame(() => window.canvasTTY.browser.focus());
     return () => cancelAnimationFrame(frame);
-  }, [browserId, focused, nativeViewVisible]);
+  }, [focused, nativeViewVisible]);
 
   const startDrag = (event: React.PointerEvent<HTMLElement>): void => {
     if ((event.target as HTMLElement).closest("button, input, [data-browser-action]")) return;
@@ -371,69 +342,9 @@ export function BrowserCard({
 
   const closeAllTabs = (): void => {
     run(async () => {
-      await window.canvasTTY.browser.closeAllTabs(browserId);
+      await window.canvasTTY.browser.closeAllTabs();
       setPanel(null);
     });
-  };
-
-  /** Observes the page once and lets the user hand a single element to an agent session. */
-  const toggleInspect = (): void => {
-    if (panel === "inspect") {
-      setPanel(null);
-      setObserved(null);
-      setObservedElement(null);
-      setInspectError(null);
-      return;
-    }
-    setPanel("inspect");
-    setObserved(null);
-    setObservedElement(null);
-    setInspectError(null);
-    if (!activeTab) {
-      setInspectError(t(locale, "browserInspectEmpty"));
-      return;
-    }
-    run(async () => {
-      try {
-        const result: BrowserResult = await window.canvasTTY.browser.execute({
-          type: "browser_observe",
-          requestId: crypto.randomUUID(),
-          tabId: activeTab.id,
-          limit: INSPECT_ELEMENT_LIMIT
-        });
-        if (!result.ok) throw new Error(result.error?.message ?? t(locale, "browserActionFailed"));
-        const observation = result.data as BrowserObservation;
-        setObserved(observation);
-        setObservedElement(observation.elements[0] ?? null);
-      } catch (error: unknown) {
-        setInspectError(error instanceof Error ? error.message : t(locale, "browserActionFailed"));
-      }
-    });
-  };
-
-  const sendInspectedElement = (): void => {
-    if (!observedElement || !observed) return;
-    const sessionId = inspectAgentSessionId(sessions);
-    if (sessionId === null) {
-      setInspectError(t(locale, inspectAgentAwaitsApproval(sessions)
-        ? "browserInspectAwaitingApproval"
-        : "browserInspectNoAgent"));
-      return;
-    }
-    const payload = inspectPayloadFor(observedElement, observed.url);
-    const live = activeTab === null
-      ? null
-      : { tabId: activeTab.id, documentRevision: activeTab.documentRevision };
-    if (inspectRefIsStale(payload, live)) {
-      // The page moved on; sending the old node would target the wrong element.
-      setInspectError(t(locale, "browserActionFailed"));
-      return;
-    }
-    window.canvasTTY.terminal.input(sessionId, inspectAgentLine(payload));
-    setPanel(null);
-    setObserved(null);
-    setObservedElement(null);
-    setInspectError(null);
   };
 
   const answerDialog = (accept: boolean): void => {
@@ -441,7 +352,6 @@ export function BrowserCard({
     if (!dialog) return;
     run(async () => {
       const result = await window.canvasTTY.browser.execute({
-        browserId,
         type: "browser_handle_dialog",
         requestId: crypto.randomUUID(),
         tabId: dialog.tabId,
@@ -477,9 +387,8 @@ export function BrowserCard({
     <article
       className={`browser-card ${summaryMode ? "browser-card--summary" : ""} ${selected || groupSelected ? "browser-card--selected" : ""}`}
       data-interactive="true"
-      data-canvas-layer-id={browserWindowWidgetId(browserId)}
-      data-canvas-widget-id={browserWindowWidgetId(browserId)}
-      data-browser-id={browserId}
+      data-canvas-layer-id="browser"
+      data-canvas-widget-id={browserCanvasWidgetId}
       data-canvas-widget-focusable="true"
       data-canvas-zoom-surface="application"
       data-wheel-owner={summaryMode ? undefined : "local"}
@@ -513,7 +422,7 @@ export function BrowserCard({
         <span className="browser-card__title">
           <UiIcon name="browser" size="1.69em" />
           <span>
-            <strong>{title}</strong>
+            <strong>{t(locale, "browser")}</strong>
             <small title={activeTab?.title}>{activeTab?.title || t(locale, "newTab")}</small>
           </span>
         </span>
@@ -557,7 +466,7 @@ export function BrowserCard({
         <button
           className="browser-card__new-tab"
           type="button"
-          onClick={() => run(() => window.canvasTTY.browser.newTab(undefined, browserId))}
+          onClick={() => run(() => window.canvasTTY.browser.newTab())}
           title={t(locale, "newTab")}
           aria-label={t(locale, "newTab")}
         >
@@ -596,16 +505,6 @@ export function BrowserCard({
         </form>
         {showAgentPresence && <AgentBadges agents={browser.agents} locale={locale} />}
         <button
-          className="browser-card__inspect-toggle"
-          type="button"
-          disabled={!activeTab}
-          onClick={toggleInspect}
-          title={t(locale, "browserInspect")}
-          aria-label={t(locale, "browserInspect")}
-        >
-          <UiIcon name="search" size={16} />
-        </button>
-        <button
           className={`browser-card__downloads ${activeDownloadCount > 0 ? "browser-card__downloads--active" : ""}`}
           type="button"
           onClick={() => setPanel((current) => current === "downloads" ? null : "downloads")}
@@ -622,10 +521,7 @@ export function BrowserCard({
         className="browser-card__viewport"
         data-browser-canvas-wheel-owner={freezeFrameVisible ? "canvas" : undefined}
       >
-        {/* Decode and paint the cached frame behind the native child before
-            a gesture exposes it. Mounting it at sink activation can reveal an
-            unpainted owner surface on macOS. */}
-        {surface === "native" && freezeFrameDataUrl && (
+        {freezeFrameDataUrl && (
           <img
             className="browser-card__freeze-frame"
             src={freezeFrameDataUrl}
@@ -640,7 +536,7 @@ export function BrowserCard({
         <div className="browser-card__page-state">
           <UiIcon name="browser" size={36} />
           <strong>{t(locale, "browserNoTabs")}</strong>
-          <button type="button" onClick={() => run(() => window.canvasTTY.browser.newTab(undefined, browserId))}>{t(locale, "newTab")}</button>
+          <button type="button" onClick={() => run(() => window.canvasTTY.browser.newTab())}>{t(locale, "newTab")}</button>
         </div>
       )}
 
@@ -685,46 +581,6 @@ export function BrowserCard({
           ) : recentDownloads.slice(0, 6).map((download) => (
             <DownloadRow download={download} locale={locale} key={download.id} />
           ))}
-        </section>
-      )}
-
-      {panel === "inspect" && (
-        <section className="browser-inspect" data-browser-action="true" data-wheel-owner="local" data-canvas-wheel-priority="local" aria-label={t(locale, "browserInspectTitle")}>
-          <strong className="browser-inspect__title">{t(locale, "browserInspectTitle")}</strong>
-          {inspectError && <p className="browser-inspect__empty">{inspectError}</p>}
-          {!inspectError && (observed === null || observed.elements.length === 0) && (
-            <p className="browser-inspect__empty">{observed === null ? t(locale, "browserInspect") : t(locale, "browserInspectEmpty")}</p>
-          )}
-          {observed !== null && observed.elements.length > 0 && (
-            <ul className="browser-inspect__list">
-              {observed.elements.map((element) => (
-                <li key={element.ref.ref}>
-                  <button
-                    className="browser-inspect__item"
-                    type="button"
-                    aria-selected={observedElement?.ref.ref === element.ref.ref}
-                    onClick={() => {
-                      setObservedElement(element);
-                      setInspectError(null);
-                    }}
-                  >
-                    <strong>{element.name || element.role || element.ref.ref}</strong>
-                    <span>{element.role} · {element.ref.ref}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {inspectPreview !== null && (
-            // The page-authored label is part of what the user approves: show the whole line, untruncated.
-            <p className="browser-inspect__preview" title={inspectPreview}>{inspectPreview}</p>
-          )}
-          <button
-            className="browser-inspect__send"
-            type="button"
-            disabled={observedElement === null}
-            onClick={sendInspectedElement}
-          >{t(locale, "browserInspectSend")}</button>
         </section>
       )}
 

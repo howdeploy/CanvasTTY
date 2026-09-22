@@ -22,7 +22,7 @@ const pointerNavigationPath = new URL("../src/renderer/src/features/workspace/us
 const workspacePath = new URL("../src/renderer/src/features/workspace/WorkspaceCanvas.tsx", import.meta.url);
 
 /** Every window kind, each named the way its own card root names it. */
-const everyLayerId = [terminalLayerId("a"), pluginLayerId("p"), browserLayerId, "browser:first", "browser:second", noteLayerId("n")];
+const everyLayerId = [terminalLayerId("a"), pluginLayerId("p"), browserLayerId, noteLayerId("n")];
 
 /** A primary press on empty canvas, overridden per test. */
 function press(overrides = {}) {
@@ -123,15 +123,13 @@ test("a layer id round-trips every window kind and nothing else parses", () => {
     [terminalLayerId("s-1"), { kind: "terminal", targetId: "s-1" }],
     [pluginLayerId("p-1"), { kind: "plugin", targetId: "p-1" }],
     [browserLayerId, { kind: "browser", targetId: null }],
-    ["browser:first", { kind: "browser", targetId: "first" }],
-    ["browser:second", { kind: "browser", targetId: "second" }],
     [noteLayerId("n-1"), { kind: "note", targetId: "n-1" }]
   ];
   for (const [layerId, expected] of cases) {
     assert.deepEqual(parseCanvasLayerId(layerId), expected, `${layerId} must resolve to its own kind`);
   }
   assert.deepEqual(parseCanvasLayerId(terminalLayerId("s:1")), { kind: "terminal", targetId: "s:1" });
-  for (const junk of ["", "terminal", "terminal:", "plugin:", "note:", ":a", "session:a", "browser:", "Browser"]) {
+  for (const junk of ["", "terminal", "terminal:", "plugin:", "note:", ":a", "session:a", "browser:", "browser:first", "browser:second", "Browser"]) {
     assert.equal(parseCanvasLayerId(junk), null, `"${junk}" is not a layer id`);
   }
 });

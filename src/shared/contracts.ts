@@ -5,6 +5,7 @@ export const PROVIDER_LABELS: Record<ProviderId, string> = {
   omp: "OMP", pi: "Pi",
 };
 export type AgentProviderId = Exclude<ProviderId, "terminal">;
+export type AgentCliAvailability = Record<AgentProviderId, boolean>;
 export type LimitProviderId = Extract<AgentProviderId, "codex" | "claude" | "qwen" | "kimi" | "opencode" | "grok">;
 export type LaunchProfileId = "normal" | "yolo";
 /**
@@ -240,7 +241,6 @@ export interface AppSettings {
   stickyNotes: StickyNote[];
   pluginCanvas: PluginCanvasInstance[];
   browserCanvas: BrowserCanvasState | null;
-  browserCanvases?: BrowserCanvasEntry[];
   browserAgentAccess: boolean;
   browserShowAgentPresence: boolean;
   browserRestoreTabs: boolean;
@@ -577,10 +577,6 @@ export interface PluginPlaylistFile {
 
 export interface BrowserCanvasState extends SessionBounds {}
 
-export interface BrowserCanvasEntry extends BrowserCanvasState {
-  id: string;
-}
-
 export interface BrowserViewportClipBounds extends Size {
   x: number;
   y: number;
@@ -658,7 +654,6 @@ export interface BrowserDownloadSnapshot {
 
 export interface BrowserTabSnapshot {
   id: string;
-  browserId?: string;
   url: string;
   title: string;
   loading: boolean;
@@ -672,21 +667,12 @@ export interface BrowserTabSnapshot {
 }
 
 export interface BrowserSnapshot {
-  browserId?: string;
-  windows?: BrowserWindowSnapshot[];
   tabs: BrowserTabSnapshot[];
   activeTabId: string | null;
   visible: boolean;
   agents: AgentPresenceSnapshot[];
   downloads: BrowserDownloadSnapshot[];
   pendingDialog: BrowserDialogSnapshot | null;
-}
-
-export interface BrowserWindowSnapshot {
-  id: string;
-  title: string;
-  owner: string | null;
-  snapshot: BrowserSnapshot;
 }
 
 export interface BrowserStateEvent {
@@ -740,9 +726,6 @@ export interface BrowserCanvasPointerEvent {
 }
 
 export type BrowserErrorCode =
-  | "BROWSER_NOT_FOUND"
-  | "BROWSER_IN_USE"
-  | "BROWSER_REQUIRED"
   | "AUTH_INVALID"
   | "BRIDGE_UNAVAILABLE"
   | "TAB_NOT_FOUND"
@@ -820,9 +803,6 @@ export interface BrowserObservation {
 }
 
 export type BrowserCommandType =
-  | "browser_list_windows"
-  | "browser_new_window"
-  | "browser_activate_window"
   | "browser_list_tabs"
   | "browser_new_tab"
   | "browser_close_tab"
@@ -849,8 +829,6 @@ export type BrowserCommandType =
 
 export interface BrowserCommand {
   type: BrowserCommandType;
-  browserId?: string;
-  title?: string;
   requestId: string;
   tabId?: string;
   url?: string;
@@ -992,6 +970,10 @@ export interface CanvasTTYApi {
     get(): Promise<AppSettings>;
     update(patch: Partial<AppSettings>): Promise<AppSettings>;
   };
+  agents: {
+    availability(): Promise<AgentCliAvailability>;
+    recheck(): Promise<{ availability: AgentCliAvailability; settings: AppSettings }>;
+  };
   dialog: {
     pickDirectory(defaultPath?: string): Promise<string | null>;
     pickMedia(): Promise<MediaSelection | null>;
@@ -1044,11 +1026,10 @@ export interface CanvasTTYApi {
   };
   browser: {
     getState(): Promise<BrowserSnapshot>;
-    /** Without `browserId`: reopens the most recently hidden card no agent owns, or creates a new card. */
-    open(url?: string, browserId?: string): Promise<BrowserSnapshot>;
-    close(browserId?: string): Promise<void>;
-    closeAllTabs(browserId?: string): Promise<BrowserSnapshot>;
-    newTab(url?: string, browserId?: string): Promise<BrowserSnapshot>;
+    open(url?: string): Promise<BrowserSnapshot>;
+    close(): Promise<void>;
+    closeAllTabs(): Promise<BrowserSnapshot>;
+    newTab(url?: string): Promise<BrowserSnapshot>;
     selectTab(id: string): Promise<BrowserSnapshot>;
     closeTab(id: string): Promise<BrowserSnapshot>;
     navigate(id: string, value: string): Promise<BrowserSnapshot>;
@@ -1058,9 +1039,9 @@ export interface CanvasTTYApi {
     execute(command: BrowserCommand): Promise<BrowserResult>;
     getActivity(sinceSequence?: number): Promise<BrowserActivityEvent[]>;
     clearData(): Promise<BrowserSnapshot>;
-    focus(browserId?: string): void;
-    setInputFocused(focused: boolean, browserId?: string): void;
-    setViewport(bounds: BrowserViewportBounds, browserId?: string): void;
+    focus(): void;
+    setInputFocused(focused: boolean): void;
+    setViewport(bounds: BrowserViewportBounds): void;
     onState(listener: (event: BrowserStateEvent) => void): () => void;
     onActivity(listener: (event: BrowserActivityStateEvent) => void): () => void;
     onCanvasWheel(listener: (event: BrowserCanvasWheelEvent) => void): () => void;
@@ -1209,6 +1190,8 @@ export const IPC = {
   terminalList: "terminal:list",
   terminalReadBuffer: "terminal:read-buffer",
   terminalCreate: "terminal:create",
+  agentsAvailability: "agents:availability",
+  agentsRecheck: "agents:recheck",
   terminalRestart: "terminal:restart",
   terminalInput: "terminal:input",
   terminalResize: "terminal:resize",

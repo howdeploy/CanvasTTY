@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createProviderCliRegistry,
+  providerCliAvailability,
   providerChildProcessLaunch
 } from "../src/main/services/providerCliRegistry.ts";
 
@@ -93,7 +94,7 @@ test("unavailable diagnostics preserve missing and rejected candidate evidence",
   assert.equal(resolution.state, "unavailable");
   assert.match(resolution.diagnostic, /\/tools\/codex: not-file/u);
   assert.match(resolution.diagnostic, /\/opt\/homebrew\/bin\/codex: not-executable/u);
-  assert.match(resolution.diagnostic, /restart CanvasTTY/u);
+  assert.match(resolution.diagnostic, /Check again in Agents settings/u);
 });
 
 test("Windows native launch preserves the resolved executable and child PATH", () => {
@@ -147,4 +148,28 @@ test("registry snapshot and provider resolutions are immutable", () => {
 
   assert.equal(Object.isFrozen(registry.snapshot()), true);
   assert.equal(Object.isFrozen(registry.get("codex")), true);
+});
+
+test("refresh detects installed and removed CLIs without changing an earlier snapshot", () => {
+  const executable = "/tools/codex";
+  const present = new Set();
+  const registry = createProviderCliRegistry({
+    platform: "linux",
+    environment: { PATH: "/tools" },
+    homeDirectory: "/test-home",
+    inspectCandidate: (path) => present.has(path) ? null : "missing",
+    directoryExists: () => true
+  });
+  const first = registry.snapshot();
+  assert.equal(providerCliAvailability(registry).codex, false);
+
+  present.add(executable);
+  registry.refresh();
+  assert.equal(registry.get("codex").state, "available");
+  assert.equal(providerCliAvailability(registry).codex, true);
+  assert.equal(first.codex.state, "unavailable");
+
+  present.delete(executable);
+  registry.refresh();
+  assert.equal(registry.get("codex").state, "unavailable");
 });

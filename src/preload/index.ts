@@ -61,6 +61,10 @@ const api: CanvasTTYApi = {
     get: () => ipcRenderer.invoke(IPC.settingsGet),
     update: (patch: Partial<AppSettings>) => ipcRenderer.invoke(IPC.settingsUpdate, patch)
   },
+  agents: {
+    availability: () => ipcRenderer.invoke(IPC.agentsAvailability),
+    recheck: () => ipcRenderer.invoke(IPC.agentsRecheck)
+  },
   dialog: {
     pickDirectory: (defaultPath?: string) => ipcRenderer.invoke(IPC.dialogPickDirectory, defaultPath),
     pickMedia: () => ipcRenderer.invoke(IPC.dialogPickMedia)
@@ -129,10 +133,10 @@ const api: CanvasTTYApi = {
   },
   browser: {
     getState: () => ipcRenderer.invoke(IPC.browserGetState),
-    open: (url?: string, browserId?: string) => ipcRenderer.invoke(IPC.browserOpen, url, browserId),
-    close: (browserId?: string) => ipcRenderer.invoke(IPC.browserClose, browserId),
-    closeAllTabs: (browserId?: string) => ipcRenderer.invoke(IPC.browserCloseAllTabs, browserId),
-    newTab: (url?: string, browserId?: string) => ipcRenderer.invoke(IPC.browserNewTab, url, browserId),
+    open: (url?: string) => ipcRenderer.invoke(IPC.browserOpen, url),
+    close: () => ipcRenderer.invoke(IPC.browserClose),
+    closeAllTabs: () => ipcRenderer.invoke(IPC.browserCloseAllTabs),
+    newTab: (url?: string) => ipcRenderer.invoke(IPC.browserNewTab, url),
     selectTab: (id: string) => ipcRenderer.invoke(IPC.browserSelectTab, id),
     closeTab: (id: string) => ipcRenderer.invoke(IPC.browserCloseTab, id),
     navigate: (id: string, value: string) => ipcRenderer.invoke(IPC.browserNavigate, id, value),
@@ -142,11 +146,11 @@ const api: CanvasTTYApi = {
     execute: (command: BrowserCommand) => ipcRenderer.invoke(IPC.browserExecute, command),
     getActivity: (sinceSequence?: number) => ipcRenderer.invoke(IPC.browserGetActivity, sinceSequence),
     clearData: () => ipcRenderer.invoke(IPC.browserClearData),
-    focus: (browserId?: string) => ipcRenderer.send(IPC.browserFocus, browserId),
-    setInputFocused: (focused: boolean, browserId?: string) => {
-      ipcRenderer.sendSync(IPC.browserSetInputFocused, focused, browserId);
+    focus: () => ipcRenderer.send(IPC.browserFocus),
+    setInputFocused: (focused: boolean) => {
+      ipcRenderer.sendSync(IPC.browserSetInputFocused, focused);
     },
-    setViewport: (bounds: BrowserViewportBounds, browserId?: string) => ipcRenderer.send(IPC.browserSetViewport, bounds, browserId),
+    setViewport: (bounds: BrowserViewportBounds) => ipcRenderer.send(IPC.browserSetViewport, bounds),
     onState: (listener: (event: BrowserStateEvent) => void) => subscribe(IPC.browserState, listener),
     onActivity: (listener: (event: BrowserActivityStateEvent) => void) => subscribe(IPC.browserActivity, listener),
     onCanvasWheel: (listener: (event: BrowserCanvasWheelEvent) => void) => subscribe(IPC.browserCanvasWheel, listener),

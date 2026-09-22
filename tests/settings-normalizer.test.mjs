@@ -436,6 +436,51 @@ test("the HOME limit selection persists without changing the launcher selection"
   }
 });
 
+test("CLI availability permanently prunes all four selections and leaves reinstalled agents off", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "canvastty-settings-cli-availability-"));
+  const available = Object.fromEntries(
+    ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]
+      .map((provider) => [provider, provider === "codex"])
+  );
+  try {
+    const fresh = new SettingsStore(dir, "en", "darwin", available);
+    const defaults = await fresh.load();
+    assert.deepEqual(defaults.homeLauncherProviders, ["codex"]);
+    assert.deepEqual(defaults.homeLimitProviders, ["codex"]);
+    assert.deepEqual(defaults.canvasLauncherItems, ["codex", "terminal"]);
+    assert.deepEqual(defaults.radialLauncherItems, ["codex", "note", "terminal", "browser", "settings"]);
+
+    await writeFile(join(dir, "settings.json"), JSON.stringify({ ...fallback, settingsVersion: 15 }));
+    const existing = new SettingsStore(dir, "en", "darwin", available);
+    const pruned = await existing.load();
+    assert.deepEqual(pruned.homeLimitProviders, ["codex"]);
+    assert.deepEqual(pruned.canvasLauncherItems, ["codex", "terminal"]);
+    assert.deepEqual(JSON.parse(await readFile(join(dir, "settings.json"), "utf8")).homeLauncherProviders, ["codex"]);
+
+    const afterInstall = await existing.setAvailableProviders({ ...available, claude: true });
+    assert.deepEqual(afterInstall.homeLauncherProviders, ["codex"]);
+    assert.deepEqual(afterInstall.homeLimitProviders, ["codex"]);
+    await existing.update({ homeLimitProviders: ["codex", "claude"] });
+    assert.deepEqual(existing.get().homeLimitProviders, ["codex", "claude"]);
+    assert.deepEqual(existing.get().homeLauncherProviders, ["codex"]);
+    await existing.update({ canvasLauncherItems: ["codex", "claude", "terminal"] });
+    assert.deepEqual(existing.get().canvasLauncherItems, ["codex", "claude", "terminal"]);
+    assert.deepEqual(existing.get().radialLauncherItems, ["codex", "note", "terminal", "browser", "settings"]);
+    await existing.update({ radialLauncherItems: ["codex", "claude", "note", "terminal", "browser", "settings"] });
+    assert.deepEqual(existing.get().radialLauncherItems, ["codex", "claude", "note", "terminal", "browser", "settings"]);
+    assert.deepEqual(existing.get().homeLauncherProviders, ["codex"]);
+    await existing.setAvailableProviders(available);
+    assert.deepEqual(existing.get().homeLimitProviders, ["codex"]);
+    assert.deepEqual(existing.get().canvasLauncherItems, ["codex", "terminal"]);
+    assert.deepEqual(existing.get().radialLauncherItems, ["codex", "note", "terminal", "browser", "settings"]);
+    const noneAvailable = Object.fromEntries(Object.keys(available).map((provider) => [provider, false]));
+    await existing.setAvailableProviders(noneAvailable);
+    assert.deepEqual(existing.get().homeLimitProviders, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("OpenCode and Hermes dangerous-profile acknowledgements survive normalization", () => {
   const normalized = normalizeSettings({
     acknowledgedDangerousProfiles: ["opencode", "hermes", "unknown", "codex"]

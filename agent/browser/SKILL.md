@@ -5,7 +5,7 @@ description: Use CanvasTTY's visible authenticated browser through bounded brows
 
 # CanvasTTY Browser
 
-Use this skill when the task needs the visible CanvasTTY browser. Each Browser card has its own tabs and active tab. Site logins are shared across cards; cards are not separate cookie profiles. Actions happen in real tabs and are recorded in the activity log.
+Use this skill when the task needs the visible CanvasTTY browser. The browser is shared with the user and other connected agents. Actions happen in real tabs and are recorded in the activity log.
 
 ## Safety boundary
 
@@ -18,13 +18,11 @@ Use this skill when the task needs the visible CanvasTTY browser. Each Browser c
 
 ## Required workflow
 
-1. For independent work, call `browser_new_window` with a short task title. Save `data.browserId` and the returned tab ID. Include this `browserId` on subsequent calls, including `browser_new_tab`, `browser_observe`, `browser_screenshot` and navigation. Do not create a new card on every call.
-2. Use `browser_list_windows` to discover cards. `browser_activate_window` explicitly binds an available card to this agent without switching another agent's current card or taking the user's keyboard focus. Never select or mutate a card owned by another agent; create a separate card instead. To work in an existing user card, select it explicitly within the user's task authorization.
-3. `browser_list_tabs` returns only the selected card's tabs. With no card selected it returns an empty list; `browser_new_tab` can bootstrap a dedicated card. Browser and tab IDs must agree. Selecting a tab in one card must not change another card.
-4. Call `browser_observe` before interacting. Use the returned tab ID, document revision, and element ref.
-5. Perform one bounded action such as `browser_click`, `browser_type`, `browser_select`, `browser_press`, `browser_scroll`, or `browser_drag`.
-6. Re-observe after navigation, dialogs, meaningful DOM changes, or any action whose result matters.
-7. If the result contains `STALE_REF`, never retry the old ref. Call `browser_observe`, choose the replacement ref from the new revision, and retry once.
+1. Call `browser_list_tabs`, then `browser_activate_tab` or `browser_new_tab` when needed.
+2. Call `browser_observe` before interacting. Use the returned tab ID, document revision, and element ref.
+3. Perform one bounded action such as `browser_click`, `browser_type`, `browser_select`, `browser_press`, `browser_scroll`, or `browser_drag`.
+4. Re-observe after navigation, dialogs, meaningful DOM changes, or any action whose result matters.
+5. If the result contains `STALE_REF`, never retry the old ref. Call `browser_observe`, choose the replacement ref from the new revision, and retry once.
 
 Element refs belong to one tab, frame, and document revision. Do not copy a ref between tabs or reuse it after reload/navigation. The user or another agent may change the shared page between your calls; if the document revision changes, re-observe and continue from the new revision instead of guessing what changed.
 
@@ -39,10 +37,7 @@ Element refs belong to one tab, frame, and document revision. Do not copy a ref 
 
 - `STALE_REF`: re-observe and use a new ref.
 - `DIALOG_OPEN`: inspect/handle it with `browser_handle_dialog`, then re-observe.
-- `BROWSER_REQUIRED`: create your own card or explicitly select an available one.
-- `BROWSER_IN_USE`: the card belongs to another agent. Create a separate card; do not repeatedly try its tabs or refs.
-- `BROWSER_NOT_FOUND`: list cards again and use a current `browserId`.
-- `TAB_NOT_FOUND` or `TAB_CLOSED`: list tabs in your card and select a live tab.
+- `TAB_NOT_FOUND` or `TAB_CLOSED`: list tabs and select a live tab.
 - `VIEWPORT_UNAVAILABLE`: bring the Browser card into view and re-observe before retrying. A zero-size view or empty capture is not evidence that the page has no controls. Do not loop on screenshots while the card remains unavailable.
 - `RATE_LIMITED` or bridge busy: reduce parallel browser calls and retry once.
 - `PAYLOAD_TOO_LARGE`: request a smaller page chunk or omit the screenshot and use semantic page reading.

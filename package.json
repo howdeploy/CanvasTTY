@@ -1,6 +1,6 @@
 {
   "name": "canvastty",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "private": true,
   "description": "A spatial desktop for local AI agents and real terminal sessions.",
   "desktopName": "CanvasTTY",
@@ -23,7 +23,6 @@
     "package:win": "npm run build && electron-builder --win nsis portable --publish never",
     "package:mac": "npm run build && electron-builder --mac dmg zip --publish never",
     "smoke:browser": "node scripts/smoke-browser-electron.mjs",
-    "smoke:browser:geometry": "node scripts/smoke-browser-geometry.mjs",
     "smoke:browser:providers": "node scripts/smoke-browser-providers.mjs --deterministic",
     "smoke:browser:provider-helper": "node scripts/smoke-browser-providers.mjs --direct",
     "smoke:browser:providers:live": "node scripts/smoke-browser-providers.mjs --all",

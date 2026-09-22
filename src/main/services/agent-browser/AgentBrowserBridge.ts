@@ -47,6 +47,10 @@ export class AgentBrowserBridge implements AgentBrowserLaunchCoordinator {
     this.gateway.setEnabled(enabled);
   }
 
+  providerClisRefreshed(): void {
+    this.providers.providerClisRefreshed();
+  }
+
   prepareLaunch(input: PrepareAgentBrowserLaunchInput): PreparedAgentBrowserPtyLaunch | null {
     if (!this.gateway.isEnabled) return null;
     const capability = this.gateway.registerAgent(input);

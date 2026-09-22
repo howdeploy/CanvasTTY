@@ -27,7 +27,7 @@ export interface BrowserCoreHost {
   ensureRuntime(): Promise<void>;
   newTab(url: string): Promise<BrowserSnapshot>;
   closeTab(tabId: string): Promise<BrowserSnapshot>;
-  activateTab(tabId: string, focus?: boolean): Promise<BrowserSnapshot> | BrowserSnapshot;
+  activateTab(tabId: string): Promise<BrowserSnapshot> | BrowserSnapshot;
   navigateTab(tabId: string, url: string): Promise<BrowserSnapshot>;
   back(tabId: string): Promise<BrowserSnapshot> | BrowserSnapshot;
   forward(tabId: string): Promise<BrowserSnapshot> | BrowserSnapshot;
@@ -109,11 +109,6 @@ export class BrowserCore {
     return this.dispatcher.closeAndDrain();
   }
 
-  /** Workspace routing supplies the shared dispatcher, audit and ownership checks. */
-  executeScoped(actor: BrowserActor, command: BrowserCommand, signal: AbortSignal): Promise<{ data?: unknown; tabId?: string | null }> {
-    return this.executeCommand(actor, command, signal);
-  }
-
   private async executeCommand(
     actor: BrowserActor,
     command: BrowserCommand,
@@ -177,7 +172,7 @@ export class BrowserCore {
         return { data: dataForActor(actor, snapshot), tabId: requiredTabId };
       }
       case "browser_activate_tab":
-        return { data: dataForActor(actor, await this.host.activateTab(requiredTabId, actor.kind === "human")), tabId: requiredTabId };
+        return { data: dataForActor(actor, await this.host.activateTab(requiredTabId)), tabId: requiredTabId };
       case "browser_navigate": {
         const url = this.policy.assertNavigationUrl(command.url);
         return { data: dataForActor(actor, await this.host.navigateTab(requiredTabId, url)), tabId: requiredTabId };
@@ -416,7 +411,7 @@ function normalizeTabCommand(command: BrowserCommand, activeTabId: string | null
   return tabId ? { ...command, tabId } : command;
 }
 
-export function sanitizeAgentResult(result: BrowserResult): BrowserResult {
+function sanitizeAgentResult(result: BrowserResult): BrowserResult {
   return {
     ...result,
     ...(result.data === undefined ? {} : { data: sanitizeAgentValue(result.data) }),
@@ -483,9 +478,6 @@ function sanitizeAgentErrorDetails(
 
 function agentErrorMessage(code: BrowserErrorCode): string {
   const messages: Record<BrowserErrorCode, string> = {
-    BROWSER_NOT_FOUND: "Browser card was not found; list Browser cards again.",
-    BROWSER_IN_USE: "Browser card belongs to another agent; create your own Browser card.",
-    BROWSER_REQUIRED: "Create a Browser card with browser_new_window or select one with browser_activate_window first.",
     AUTH_INVALID: "Browser agent authentication failed.",
     BRIDGE_UNAVAILABLE: "Browser bridge is unavailable.",
     TAB_NOT_FOUND: "Browser tab was not found.",

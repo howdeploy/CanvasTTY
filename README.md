@@ -31,7 +31,7 @@ Launch a shell or agent in a project directory, move and resize its live termina
 
 On Windows, the Terminal launcher uses the built-in Windows PowerShell with a clean `-NoLogo -NoProfile` session, then falls back to `pwsh` or `cmd.exe`. Codex, Claude, Qwen Code, Kimi, OpenCode, Hermes, and Grok Build are resolved to a concrete `.exe`, `.com`, `.cmd`, or `.bat` launcher from the user's `PATH` or standard per-user CLI directories before they are passed to `node-pty`/ConPTY.
 
-CanvasTTY does not install provider CLIs. If a provider is missing, the launch dialog reports which CLI was not found and which directories were checked. Install the required CLI and restart CanvasTTY so the desktop process receives the updated environment.
+CanvasTTY does not install provider CLIs. Missing agents remain in Agents settings with an official installation link. After installation, use Check again to refresh the available launchers and limit rows. The launch diagnostic lists checked paths if a CLI is still unavailable.
 
 ## Install
 

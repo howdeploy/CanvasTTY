@@ -748,6 +748,37 @@ test("ProviderLaunchAdapters uses only injected temp Kimi paths and reference-co
   assert.equal(await exists(join(home, "config.toml")), false);
 });
 
+test("Kimi launch uses a CLI found after recheck and reprobes a changed executable", async (t) => {
+  const root = await fixture(t, "canvastty-provider-kimi-refresh-");
+  let executable = null;
+  const probed = [];
+  const adapters = new ProviderLaunchAdapters({
+    helper,
+    providerClis: {
+      get(provider) {
+        if (provider !== "kimi") throw new Error("Unexpected provider");
+        return executable
+          ? { ...providerClis.get("kimi"), executable }
+          : { state: "unavailable", provider, reason: "cli-not-found", diagnostic: "Kimi CLI missing", checked: [] };
+      },
+      snapshot() { throw new Error("Not needed"); }
+    },
+    kimiHomeDirectory: join(root, "kimi-home"),
+    hermesHomeDirectory: join(root, "hermes-home"),
+    runtimeDirectory: join(root, "runtime"),
+    probeKimiPerRunConfig: (cli) => { probed.push(cli.executable); return true; }
+  });
+
+  assert.throws(() => adapters.prepare("kimi", "missing"), /Kimi CLI missing/);
+  executable = "/tools/kimi";
+  adapters.prepare("kimi", "installed").releaseConfiguration();
+  executable = "/new-tools/kimi";
+  adapters.prepare("kimi", "moved").releaseConfiguration();
+  adapters.providerClisRefreshed();
+  adapters.prepare("kimi", "updated-in-place").releaseConfiguration();
+  assert.deepEqual(probed, ["/tools/kimi", "/new-tools/kimi", "/new-tools/kimi"]);
+});
+
 test("ProviderLaunchAdapters fallback adds and removes only temporary Kimi state", async (t) => {
   const root = await fixture(t, "canvastty-provider-kimi-fallback-");
   const home = join(root, "kimi-home");

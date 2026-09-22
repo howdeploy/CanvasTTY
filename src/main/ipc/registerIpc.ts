@@ -4,6 +4,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron"
 import type { IpcMainEvent, IpcMainInvokeEvent, OpenDialogOptions } from "electron";
 import type {
   AppSettings,
+  AgentCliAvailability,
   BrowserCommand,
   CanvasNavigationPointerBindingInput,
   CreateSessionRequest,
@@ -16,12 +17,13 @@ import { IPC } from "../../shared/contracts";
 import { isCanvasNavigationMouseButton } from "../../shared/canvasNavigation";
 import { observeWindowState, readWindowState } from "../windowState";
 import type { SettingsStore } from "../services/SettingsStore";
+import { providerCliAvailability, type ProviderCliRegistry } from "../services/providerCliRegistry";
 import type { TerminalManager } from "../services/TerminalManager";
 import type { LimitsService } from "../services/LimitsService";
 import type { PluginManager } from "../services/PluginManager";
 import type { PluginMediaService } from "../services/PluginMediaService";
 import type { PluginSecretsService } from "../services/PluginSecretsService";
-import type { BrowserWorkspace } from "../services/browser/BrowserWorkspace";
+import type { BrowserService } from "../services/BrowserService";
 import { normalizePluginBrowserUrl } from "../services/browser/PluginBrowserOpenPolicy";
 import { PluginBrowserOpenBroker } from "./PluginBrowserOpenBroker";
 import type { GithubAuthService } from "../services/GithubAuthService";
@@ -39,12 +41,14 @@ const MEDIA_MIME: Record<string, string> = {
 
 interface Dependencies {
   settings: SettingsStore;
+  providerClis: ProviderCliRegistry;
+  recheckProviderClis(): Promise<{ availability: AgentCliAvailability; settings: AppSettings }>;
   terminals: TerminalManager;
   limits: LimitsService;
   plugins: PluginManager;
   pluginMedia: PluginMediaService;
   pluginSecrets: PluginSecretsService;
-  browser: BrowserWorkspace;
+  browser: BrowserService;
   githubAuth: GithubAuthService;
   hermesHud: HermesHudService;
   getMainWindow(): BrowserWindow | null;
@@ -68,6 +72,8 @@ interface Dependencies {
 
 export function registerIpc({
   settings,
+  providerClis,
+  recheckProviderClis,
   terminals,
   limits,
   plugins,
@@ -107,6 +113,14 @@ export function registerIpc({
     return app.getVersion();
   });
   ipcMain.handle(IPC.settingsGet, () => settings.get());
+  ipcMain.handle(IPC.agentsAvailability, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    return providerCliAvailability(providerClis);
+  });
+  ipcMain.handle(IPC.agentsRecheck, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    return recheckProviderClis();
+  });
   ipcMain.handle(IPC.settingsUpdate, async (_event, patch: Partial<AppSettings>) => {
     const next = await settings.update(patch);
     await applyBrowserSettings(next);
@@ -487,21 +501,21 @@ export function registerIpc({
     assertMainRenderer(event, getMainWindow);
     return browser.getState();
   });
-  ipcMain.handle(IPC.browserOpen, (event, url?: string, browserId?: string) => {
+  ipcMain.handle(IPC.browserOpen, (event, url?: string) => {
     assertMainRenderer(event, getMainWindow);
-    return browser.open(url, browserId);
+    return browser.open(url);
   });
-  ipcMain.handle(IPC.browserClose, (event, browserId?: string) => {
+  ipcMain.handle(IPC.browserClose, (event) => {
     assertMainRenderer(event, getMainWindow);
-    return browser.close(browserId);
+    return browser.close();
   });
-  ipcMain.handle(IPC.browserCloseAllTabs, (event, browserId?: string) => {
+  ipcMain.handle(IPC.browserCloseAllTabs, (event) => {
     assertMainRenderer(event, getMainWindow);
-    return browser.closeAllTabs(browserId);
+    return browser.closeAllTabs();
   });
-  ipcMain.handle(IPC.browserNewTab, (event, url?: string, browserId?: string) => {
+  ipcMain.handle(IPC.browserNewTab, (event, url?: string) => {
     assertMainRenderer(event, getMainWindow);
-    return browser.newTab(url, browserId);
+    return browser.newTab(url);
   });
   ipcMain.handle(IPC.browserSelectTab, (event, id: string) => {
     assertMainRenderer(event, getMainWindow);
@@ -539,18 +553,18 @@ export function registerIpc({
     assertMainRenderer(event, getMainWindow);
     return browser.clearData();
   });
-  ipcMain.on(IPC.browserFocus, (event, browserId?: string) => {
+  ipcMain.on(IPC.browserFocus, (event) => {
     assertMainRenderer(event, getMainWindow);
-    browser.focus(browserId);
+    browser.focus();
   });
-  ipcMain.on(IPC.browserSetInputFocused, (event, focused: unknown, browserId?: string) => {
+  ipcMain.on(IPC.browserSetInputFocused, (event, focused: unknown) => {
     assertMainRenderer(event, getMainWindow);
-    browser.setInputFocused(focused === true, browserId);
+    browser.setInputFocused(focused === true);
     event.returnValue = true;
   });
-  ipcMain.on(IPC.browserSetViewport, (event, bounds, browserId?: string) => {
+  ipcMain.on(IPC.browserSetViewport, (event, bounds) => {
     assertMainRenderer(event, getMainWindow);
-    browser.setViewport(bounds, browserId);
+    browser.setViewport(bounds);
   });
   ipcMain.on(IPC.browserPageWheelDecision, (event, input: unknown) => {
     event.returnValue = browser.decidePageWheel(event.sender, input);

@@ -100,7 +100,7 @@ export class BrowserCanvasPointerRouter {
     const activeSink = sink?.tabId === tab.id ? sink : null;
     const mouseClientPoint = activeSink
       ? this.ownerPointerClientPoint(owner, activeSink.pointer, mouse)
-      : this.browserNavigationClientPoint(owner, mouse);
+      : { x: this.host.getViewport().x + mouse.x, y: this.host.getViewport().y + mouse.y };
     const pointerType = browserCanvasNavigationPointerType(
       mouse,
       this.host.isNavigationOverrideActive(),
@@ -361,19 +361,6 @@ export class BrowserCanvasPointerRouter {
     } else {
       this.sendPointerToOwner(owner, mouseUp, relay, relay.lastClient);
     }
-  }
-
-  private browserNavigationClientPoint(owner: BrowserWindow, mouse: Electron.MouseInputEvent): Point {
-    // Page-local coordinates vary with Chromium zoom and clipping. Native
-    // screen coordinates share the owner's DIP space and avoid a negative
-    // canvas start point when the page extends off the left/top of the window.
-    if (typeof mouse.globalX === "number" && Number.isFinite(mouse.globalX)
-      && typeof mouse.globalY === "number" && Number.isFinite(mouse.globalY)) {
-      const content = owner.getContentBounds();
-      return { x: mouse.globalX - content.x, y: mouse.globalY - content.y };
-    }
-    const viewport = this.host.getViewport();
-    return { x: viewport.x + mouse.x, y: viewport.y + mouse.y };
   }
 
   private ownerPointerClientPoint(

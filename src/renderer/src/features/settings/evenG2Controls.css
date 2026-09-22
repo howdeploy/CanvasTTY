@@ -99,6 +99,7 @@
   background: color-mix(in srgb, var(--surface) 60%, transparent);
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 18px;
   justify-content: space-between;
 }
@@ -111,6 +112,23 @@
 }
 .g2-settings__entry button {
   flex-shrink: 0;
+  margin-left: auto;
+}
+.g2-settings__network {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 0 22px 18px;
+  padding-top: 14px;
+  border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+}
+.g2-settings__network p {
+  margin: 0;
+  max-width: 36ch;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted-on-dark);
 }
 .g2-steps {
   display: flex;

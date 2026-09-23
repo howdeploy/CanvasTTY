@@ -519,12 +519,16 @@ export function TerminalCard({
               }}
             />
           ) : (
-            <strong title={session.titleCustomized ? session.title : session.cwd}>
+            <strong title={[session.titleCustomized ? session.title : session.cwd, session.integrationNote].filter(Boolean).join("\n")}>
               {session.titleCustomized ? session.title : compactPath(session.cwd)}
             </strong>
           )}
         </div>
         <div className="terminal-card__actions">
+          {session.execution && <span className="terminal-card__workspace-status" title={[t(locale, "workspaceSource") + ": " + session.cwd, t(locale, "workspaceExecution") + ": " + (session.execution.executionCwd ?? t(locale, "workspacePreparing")), session.execution.baseCommit, session.failureDetails].filter(Boolean).join("\n")}>
+            {session.execution.state === "preparing" ? t(locale, "workspacePreparing") : session.execution.mode === "worktree" ? "Git worktree" : "ⓘ"}
+          </span>}
+          {session.integrationNote && <span title={session.integrationNote} aria-label={session.integrationNote}>ⓘ</span>}
           {session.exitCode !== null && (
             <button
               className="terminal-card__action terminal-card__action--restart"
@@ -540,6 +544,7 @@ export function TerminalCard({
           <button className="terminal-card__action terminal-card__action--close" type="button" onClick={() => onDispose(session.id)} title={t(locale, "close")} aria-label={t(locale, "close")}><UiIcon name="close" size="1.23em" /></button>
         </div>
       </header>
+      {session.execution?.state === "failed" && session.failureDetails && <div className="terminal-card__launch-error" role="alert">{session.failureDetails}</div>}
       <div className="terminal-card__surface" ref={terminalHost} />
       <button
         className="terminal-card__summary"

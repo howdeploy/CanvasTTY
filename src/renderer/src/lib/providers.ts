@@ -20,10 +20,14 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
   hermes: { id: "hermes", label: PROVIDER_LABELS.hermes, dangerKey: "dangerHermes", installUrl: "https://hermes-agent.nousresearch.com/docs/getting-started/installation" },
   grok: { id: "grok", label: PROVIDER_LABELS.grok, dangerKey: "dangerGrok", installUrl: "https://docs.x.ai/build/overview" },
   omp: { id: "omp", label: PROVIDER_LABELS.omp, dangerKey: "dangerOmp", installUrl: "https://github.com/can1357/oh-my-pi" },
-  pi: { id: "pi", label: PROVIDER_LABELS.pi, dangerKey: "dangerPi", installUrl: "https://pi.dev/docs/latest" }
+  pi: { id: "pi", label: PROVIDER_LABELS.pi, dangerKey: "dangerPi", installUrl: "https://pi.dev/docs/latest" },
+  cursor: { id: "cursor", label: PROVIDER_LABELS.cursor, dangerKey: "dangerCursor", installUrl: "https://cursor.com/docs/cli/installation" },
+  minimax: { id: "minimax", label: PROVIDER_LABELS.minimax, dangerKey: "dangerMinimax", installUrl: "https://github.com/MiniMax-AI/minimax-code/blob/main/docs/installation.md" },
+  devin: { id: "devin", label: PROVIDER_LABELS.devin, dangerKey: "dangerDevin", installUrl: "https://docs.devin.ai/cli" },
+  antigravity: { id: "antigravity", label: PROVIDER_LABELS.antigravity, dangerKey: "dangerAntigravity", installUrl: "https://antigravity.google/docs/cli/install/" }
 };
 
-export const AGENT_PROVIDERS: AgentProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"];
+export const AGENT_PROVIDERS: AgentProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"];
 export const LIMIT_PROVIDERS: LimitProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "grok"];
 
 export function resolveHomeLauncherProviders(

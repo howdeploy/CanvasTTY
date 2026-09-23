@@ -138,6 +138,95 @@ test("Windows batch launch uses the startup-resolved command prompt", () => {
   assert.equal(launch.windowsVerbatimArguments, true);
 });
 
+test("Cursor permits an explicitly configured generic agent executable", () => {
+  const agent = "/test-home/.local/bin/agent";
+  const registry = createProviderCliRegistry({
+    platform: "darwin",
+    overrides: { cursor: agent },
+    environment: { PATH: "/usr/bin:/bin" },
+    homeDirectory: "/test-home",
+    inspectCandidate: inspection(new Map([
+      [agent, null],
+      ["/usr/bin/cursor", null]
+    ])),
+    directoryExists: (path) => ["/usr/bin", "/bin", "/test-home/.local/bin"].includes(path)
+  });
+
+  const resolution = registry.get("cursor");
+  assert.equal(resolution.state, "available");
+  assert.equal(resolution.provider, "cursor");
+  assert.equal(resolution.executable, agent);
+  assert.equal(resolution.environment.PATH, "/usr/bin:/bin:/test-home/.local/bin");
+  // A literal `cursor` executable must never be selected for the cursor provider.
+  assert.equal(resolution.checked.some((candidate) => candidate.path.endsWith("/cursor")), false);
+});
+
+test("Cursor falls back to the cursor-agent spelling when agent is absent", () => {
+  const legacy = "/usr/local/bin/cursor-agent";
+  const registry = createProviderCliRegistry({
+    platform: "linux",
+    environment: { PATH: "/usr/bin:/usr/local/bin" },
+    inspectCandidate: inspection(new Map([[legacy, null]])),
+    directoryExists: () => true
+  });
+
+  const resolution = registry.get("cursor");
+  assert.equal(resolution.state, "available");
+  assert.equal(resolution.executable, legacy);
+});
+
+test("MiniMax Code resolves through its mcode command instead of the provider id", () => {
+  const mcode = "/test-home/.npm-global/bin/mcode";
+  const registry = createProviderCliRegistry({
+    platform: "linux",
+    environment: { PATH: "/usr/bin" },
+    homeDirectory: "/test-home",
+    inspectCandidate: inspection(new Map([
+      [mcode, null],
+      ["/usr/bin/minimax", null]
+    ])),
+    directoryExists: (path) => ["/usr/bin", "/test-home/.npm-global/bin"].includes(path)
+  });
+
+  const resolution = registry.get("minimax");
+  assert.equal(resolution.state, "available");
+  assert.equal(resolution.executable, mcode);
+  assert.equal(resolution.checked.some((candidate) => candidate.path.endsWith("/minimax")), false);
+});
+
+test("Devin resolves through its devin command", () => {
+  const devin = "/opt/homebrew/bin/devin";
+  const registry = createProviderCliRegistry({
+    platform: "darwin",
+    environment: { PATH: "/usr/bin:/bin" },
+    inspectCandidate: inspection(new Map([[devin, null]])),
+    directoryExists: (path) => ["/usr/bin", "/bin", "/opt/homebrew/bin"].includes(path)
+  });
+
+  const resolution = registry.get("devin");
+  assert.equal(resolution.state, "available");
+  assert.equal(resolution.executable, devin);
+});
+
+test("Antigravity resolves through its agy command instead of the provider id", () => {
+  const agy = "/test-home/.local/bin/agy";
+  const registry = createProviderCliRegistry({
+    platform: "linux",
+    environment: { PATH: "/usr/bin" },
+    homeDirectory: "/test-home",
+    inspectCandidate: inspection(new Map([
+      [agy, null],
+      ["/usr/bin/antigravity", null]
+    ])),
+    directoryExists: (path) => ["/usr/bin", "/test-home/.local/bin"].includes(path)
+  });
+
+  const resolution = registry.get("antigravity");
+  assert.equal(resolution.state, "available");
+  assert.equal(resolution.executable, agy);
+  assert.equal(resolution.checked.some((candidate) => candidate.path.endsWith("/antigravity")), false);
+});
+
 test("registry snapshot and provider resolutions are immutable", () => {
   const registry = createProviderCliRegistry({
     platform: "linux",
@@ -148,6 +237,105 @@ test("registry snapshot and provider resolutions are immutable", () => {
 
   assert.equal(Object.isFrozen(registry.snapshot()), true);
   assert.equal(Object.isFrozen(registry.get("codex")), true);
+});
+
+test("custom definitions resolve executables that do not match the provider id", () => {
+  const registry = createProviderCliRegistry({
+    platform: "linux",
+    environment: { PATH: "/usr/bin" },
+    definitions: [{ id: "example", commands: ["exa"] }],
+    inspectCandidate: inspection(new Map([["/usr/bin/exa", null]])),
+    directoryExists: () => true
+  });
+
+  const resolution = registry.get("example");
+  assert.equal(resolution.state, "available");
+  assert.equal(resolution.provider, "example");
+  assert.equal(resolution.executable, "/usr/bin/exa");
+  assert.deepEqual(Object.keys(registry.snapshot()), ["example"]);
+});
+
+test("definitions fall back to later commands when the primary command is missing", () => {
+  const registry = createProviderCliRegistry({
+    platform: "linux",
+    environment: { PATH: "/usr/bin" },
+    definitions: [{ id: "example", commands: ["exa", "example-agent"] }],
+    inspectCandidate: inspection(new Map([["/usr/bin/example-agent", null]])),
+    directoryExists: () => true
+  });
+
+  const resolution = registry.get("example");
+  assert.equal(resolution.state, "available");
+  assert.equal(resolution.executable, "/usr/bin/example-agent");
+  assert.deepEqual(
+    resolution.checked.map((candidate) => candidate.path),
+    ["/usr/bin/exa", "/usr/bin/example-agent"]
+  );
+});
+
+test("definition known directories participate in resolution and child PATH", () => {
+  const registry = createProviderCliRegistry({
+    platform: "darwin",
+    environment: { PATH: "/usr/bin:/bin" },
+    homeDirectory: "/test-home",
+    definitions: [{
+      id: "example",
+      commands: ["exa"],
+      knownDirectories: [{ root: "home", segments: [".example", "bin"] }]
+    }],
+    inspectCandidate: inspection(new Map([["/test-home/.example/bin/exa", null]])),
+    directoryExists: (path) => ["/usr/bin", "/bin", "/test-home/.example/bin"].includes(path)
+  });
+
+  const resolution = registry.get("example");
+  assert.equal(resolution.state, "available");
+  assert.equal(resolution.executable, "/test-home/.example/bin/exa");
+  assert.equal(resolution.environment.PATH, "/usr/bin:/bin:/test-home/.example/bin");
+});
+
+test("windows-local-appdata known directories are ignored outside Windows", () => {
+  const registry = createProviderCliRegistry({
+    platform: "darwin",
+    environment: { PATH: "/usr/bin" },
+    homeDirectory: "/test-home",
+    definitions: [{
+      id: "example",
+      commands: ["exa"],
+      knownDirectories: [{ root: "windows-local-appdata", segments: ["Programs", "Example", "bin"] }]
+    }],
+    inspectCandidate: () => "missing",
+    directoryExists: () => true
+  });
+
+  const resolution = registry.get("example");
+  assert.equal(resolution.state, "unavailable");
+  assert.equal(
+    resolution.checked.some((candidate) => candidate.path.includes("AppData")),
+    false
+  );
+});
+
+test("definitions without commands or with duplicate ids are rejected", () => {
+  const base = {
+    platform: "linux",
+    environment: {},
+    inspectCandidate: () => "missing",
+    directoryExists: () => false
+  };
+  assert.throws(
+    () => createProviderCliRegistry({ ...base, definitions: [{ id: "example", commands: [] }] }),
+    /at least one CLI command/u
+  );
+  assert.throws(
+    () => createProviderCliRegistry({
+      ...base,
+      definitions: [
+        { id: "example", commands: ["exa"] },
+        { id: "example", commands: ["exa2"] }
+      ]
+    }),
+    /declared more than once/u
+  );
 });
 
 test("refresh detects installed and removed CLIs without changing an earlier snapshot", () => {

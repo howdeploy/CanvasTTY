@@ -41,6 +41,21 @@ const api: CanvasTTYApi = {
     completeOpenBrowser: (requestId, ok) => ipcRenderer.send(IPC.evenG2BrowserResponse, { requestId, ok })
   },
   appVersion: () => ipcRenderer.invoke(IPC.appVersion),
+  containers: {
+    probe: profileId => ipcRenderer.invoke(IPC.containersProbe, profileId),
+    list: () => ipcRenderer.invoke(IPC.containersList),
+    cleanup: id => ipcRenderer.invoke(IPC.containersCleanup, id)
+  },
+  workspaces: {
+    list: () => ipcRenderer.invoke(IPC.workspacesList),
+    review: (id: string) => ipcRenderer.invoke(IPC.workspacesReview, id),
+    exportPatch: (id: string, reviewId: string) => ipcRenderer.invoke(IPC.workspacesExport, id, reviewId),
+    cleanup: (id: string) => ipcRenderer.invoke(IPC.workspacesCleanup, id)
+  },
+  operationalMetrics: {
+    local: () => ipcRenderer.invoke(IPC.operationalMetricsLocal),
+    remote: (hostId: string) => ipcRenderer.invoke(IPC.operationalMetricsRemote, hostId)
+  },
   clipboard: {
     readText: () => ipcRenderer.invoke(IPC.clipboardRead),
     writeText: (text: string) => ipcRenderer.send(IPC.clipboardWrite, text)
@@ -65,6 +80,15 @@ const api: CanvasTTYApi = {
   },
   limits: {
     get: () => ipcRenderer.invoke(IPC.limitsGet)
+  },
+  providerSecrets: {
+    status: () => ipcRenderer.invoke(IPC.providerSecretsStatus),
+    set: (secretId: string, value: string) => ipcRenderer.invoke(IPC.providerSecretsSet, secretId, value),
+    clear: (secretId: string) => ipcRenderer.invoke(IPC.providerSecretsClear, secretId),
+    create: (owner, value) => ipcRenderer.invoke(IPC.providerSecretsCreate, owner, value),
+    scopedStatus: () => ipcRenderer.invoke(IPC.providerSecretsScopedStatus),
+    update: (ref, owner, value) => ipcRenderer.invoke(IPC.providerSecretsUpdate, ref, owner, value),
+    remove: (ref, owner) => ipcRenderer.invoke(IPC.providerSecretsRemove, ref, owner)
   },
   plugins: {
     list: () => ipcRenderer.invoke(IPC.pluginsList),

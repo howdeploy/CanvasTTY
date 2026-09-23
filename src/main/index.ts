@@ -1,3 +1,8 @@
+import { ContainerExecutionService } from "./services/ContainerExecutionService";
+import { WorktreeService } from "./services/WorktreeService";
+import { SessionLaunchCoordinator } from "./services/SessionLaunchCoordinator";
+import { ProviderAccountLaunchService } from "./services/ProviderAccountLaunchService";
+import { LocalOperationalMetricsService } from "./services/LocalOperationalMetrics";
 import { ipcMain } from "electron";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
@@ -7,6 +12,7 @@ import { app, BrowserWindow, dialog, net, protocol, safeStorage } from "electron
 import { IPC, type PluginCanvasRequest } from "../shared/contracts";
 import { registerIpc } from "./ipc/registerIpc";
 import { SettingsStore } from "./services/SettingsStore";
+import { SessionLaunchPolicy } from "./services/SessionLaunchPolicy";
 import { TerminalManager } from "./services/TerminalManager";
 import { TerminalSessionStore } from "./services/TerminalSessionStore";
 import { LimitsService } from "./services/LimitsService";
@@ -19,6 +25,13 @@ import { PluginManager } from "./services/PluginManager";
 import { GithubAuthService } from "./services/GithubAuthService";
 import { PluginMediaService } from "./services/PluginMediaService";
 import { PluginSecretsService } from "./services/PluginSecretsService";
+import { ProviderSecretsService } from "./services/ProviderSecretsService";
+import { AgentControlService } from "./services/AgentControlService";
+import { HostPlacementService } from "./services/HostPlacement";
+import { RemoteProviderDiscovery } from "./services/RemoteProviderDiscovery";
+import { RemoteProviderAccess } from "./services/RemoteProviderAccess";
+import { RemoteHostMetricsService } from "./services/RemoteHostMetrics";
+import { sshRunner } from "./services/RemoteHostsService";
 import { HermesHudService } from "./services/HermesHudService";
 import { BrowserService } from "./services/BrowserService";
 import { CanvasNavigationInputController } from "./services/CanvasNavigationOverride";
@@ -30,6 +43,9 @@ import {
 } from "./services/browser/ProviderElectronSmoke";
 import {
   AgentBrowserBridge,
+  OrchestrationGateway,
+  OrchestrationBridge,
+  ScopedOrchestrationHandler,
   AgentGateway,
   WINDOWS_PIPE_HOST_FILENAME,
   WINDOWS_AGENT_GATEWAY_UNAVAILABLE,
@@ -108,10 +124,12 @@ let pluginManager: PluginManager | null = null;
 let githubAuth: GithubAuthService | null = null;
 let pluginMediaService: PluginMediaService | null = null;
 let pluginSecretsService: PluginSecretsService | null = null;
+let providerSecretsService: ProviderSecretsService | null = null;
 let hermesHudService: HermesHudService | null = null;
 let browserService: BrowserService | null = null;
 let canvasNavigationInput: CanvasNavigationInputController | null = null;
 let agentGateway: AgentGateway | null = null;
+let orchestrationGateway: OrchestrationGateway | null = null;
 let agentBrowserBridge: AgentBrowserBridge | null = null;
 let agentBrowserHelper: StdioHelperLaunch | null = null;
 let runtimeGateway: RuntimeGateway | null = null;
@@ -261,8 +279,16 @@ async function initializeServices(): Promise<void> {
       args: [helperPath],
       env: { ELECTRON_RUN_AS_NODE: "1" }
     };
+    const orchestrationHelperPath = app.isPackaged
+      ? join(process.resourcesPath, "agent-browser", "orchestration-helper.mjs")
+      : join(app.getAppPath(), "src", "agent-browser", "orchestration-helper.mjs");
     agentBrowserBridge = new AgentBrowserBridge(agentGateway, {
       helper: agentBrowserHelper,
+      orchestrationHelper: {
+        command: process.execPath,
+        args: [orchestrationHelperPath],
+        env: { ELECTRON_RUN_AS_NODE: "1" }
+      },
       providerClis,
       runtimeDirectory,
       hermesHomeDirectory,
@@ -325,8 +351,71 @@ async function initializeServices(): Promise<void> {
       mainWindow.webContents.send(channel, payload);
     }
   }, providerClis, agentBrowserBridge ?? undefined, agentRuntimeBridge ?? undefined, settings.get().agentLifecycleHooksEnabled);
+  terminalManager.configureLaunchPolicy(new SessionLaunchPolicy(() => settings.get()));
   const terminalSessionStore = new TerminalSessionStore(userDataPath);
   terminalManager.configureSessionPersistence(terminalSessionStore, settings.get().restoreTerminalSessions);
+
+  // The orchestration bridge exists only for sessions explicitly launched with
+  // the orchestrator role; interactive sessions never receive capabilities.
+  const remoteMetrics = new RemoteHostMetricsService(sshRunner);
+  const remoteDiscovery = new RemoteProviderDiscovery(sshRunner);
+  const remoteAccess = new RemoteProviderAccess(sshRunner);
+  const localMetrics = new LocalOperationalMetricsService({
+    sessions: () => terminalManager!.listMetadata(),
+    processMetrics: () => app.getAppMetrics().map((metric) => ({ cpuPercent: metric.cpu.percentCPUUsage, workingSetKb: metric.memory.workingSetSize }))
+  });
+  const hostPlacement = new HostPlacementService({
+    metrics: (host) => remoteMetrics.collect(host),
+    discovery: (host, providers) => remoteDiscovery.discover(host, undefined, providers),
+    access: (host, providers) => remoteAccess.probe(host, undefined, providers),
+    capacity: (excludeSessionId) => {
+      const counts = new Map<string, { sessions: number; agents: number }>();
+      for (const session of terminalManager!.listMetadata()) {
+        if (session.id === excludeSessionId || session.hostId === undefined || session.exitCode !== null) continue;
+        const count = counts.get(session.hostId) ?? { sessions: 0, agents: 0 };
+        count.sessions++;
+        if (session.provider !== "terminal") count.agents++;
+        counts.set(session.hostId, count);
+      }
+      const limit = settings.get().agentBudgets.maxRemoteAgentsPerHost;
+      return {
+        activeSessions: (hostId) => counts.get(hostId)?.sessions ?? 0,
+        hasAgentCapacity: (hostId) => (counts.get(hostId)?.agents ?? 0) < limit
+      };
+    }
+  });
+  orchestrationGateway = new OrchestrationGateway({
+    runtimeDirectory: join(userDataPath, "orchestration", "runtime"),
+    handler: new ScopedOrchestrationHandler(new AgentControlService(
+      terminalManager!,
+      { place: (request) => hostPlacement.place(settings.get().remoteHosts, request) }
+    ))
+  });
+  await orchestrationGateway.start();
+  terminalManager.configureOrchestration(new OrchestrationBridge(orchestrationGateway));
+
+  // Remote shell sessions resolve their host from the live settings registry:
+  // a hostId with no matching entry fails the create instead of spawning.
+  terminalManager.configureRemoteHosts(
+    (hostId) => settings.get().remoteHosts.find((host) => host.id === hostId) ?? null
+  );
+
+  providerSecretsService = new ProviderSecretsService(userDataPath, {
+    isAvailable: securePluginStorageAvailable,
+    encrypt: (value) => safeStorage.encryptString(value),
+    decrypt: (value) => safeStorage.decryptString(value)
+  }, (owner, pendingCreation) => {
+    if (owner.hostId !== "local") return false;
+    const profile = settings.get().apiProfiles.find((candidate) => candidate.id === owner.profileId);
+    return profile ? (profile.hostId ?? "local") === owner.hostId : pendingCreation;
+  });
+  await providerSecretsService.load();
+  const worktrees = new WorktreeService({ rootDirectory: join(userDataPath, "execution-workspaces") });
+  await worktrees.recover().catch(() => { console.warn("CanvasTTY retained workspaces could not be verified; they remain on disk."); });
+  const containers = new ContainerExecutionService(() => settings.get(), { rootDirectory: join(userDataPath, "container-generations"), onWorkspaceStopped: (id, lease) => worktrees.confirmContainerStopped(id, lease) });
+  terminalManager.configureProviderLaunch(new SessionLaunchCoordinator(
+    new ProviderAccountLaunchService(() => settings.get(), providerSecretsService, { discovery: remoteDiscovery }), worktrees, () => settings.get(), hostPlacement, containers));
+
   await terminalManager.restorePersistedSessions();
   limitsService = new LimitsService(providerClis, app.getVersion());
   evenG2 = new EvenG2Controller({
@@ -367,6 +456,10 @@ async function initializeServices(): Promise<void> {
   protocol.handle("canvastty-plugin", (request) => pluginManager!.protocolResponse(request.url));
   protocol.handle("canvastty-media", (request) => pluginMediaService!.protocolResponse(request));
   registerIpc({
+    containers,
+    worktrees,
+    localMetrics,
+    remoteMetrics,
     settings,
     providerClis,
     recheckProviderClis: async () => {
@@ -382,6 +475,7 @@ async function initializeServices(): Promise<void> {
     plugins: pluginManager,
     pluginMedia: pluginMediaService,
     pluginSecrets: pluginSecretsService,
+    providerSecrets: providerSecretsService!,
     browser: browserService,
     githubAuth: githubAuth!,
     hermesHud: hermesHudService,

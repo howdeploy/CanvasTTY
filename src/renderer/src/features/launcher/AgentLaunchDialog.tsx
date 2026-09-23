@@ -1,6 +1,8 @@
+import { accountSupportsRuntime } from "../../../../shared/providerAccountPolicy";
 import { useEffect, useState } from "react";
 import type {
   AgentProviderId,
+  AgentLaunchOptions,
   AppSettings,
   LaunchProfileId
 } from "../../../../shared/contracts";
@@ -15,7 +17,7 @@ interface AgentLaunchDialogProps {
   settings: AppSettings;
   onClose(): void;
   onAcknowledge(provider: AgentProviderId): Promise<void>;
-  onLaunch(provider: AgentProviderId, profile: LaunchProfileId, cwd: string): Promise<void>;
+  onLaunch(options: AgentLaunchOptions): Promise<void>;
 }
 
 export function AgentLaunchDialog({
@@ -26,6 +28,11 @@ export function AgentLaunchDialog({
   onLaunch
 }: AgentLaunchDialogProps): React.JSX.Element | null {
   const [profile, setProfile] = useState<LaunchProfileId>("normal");
+  const [isolation, setIsolation] = useState<"direct" | "worktree" | "container">("direct");
+  const [containerProfileId, setContainerProfileId] = useState("");
+  const [accountId, setAccountId] = useState("");
+  const [model, setModel] = useState("");
+  const [ref, setRef] = useState("HEAD");
   const [cwd, setCwd] = useState(settings.lastDirectory);
   const [confirmDanger, setConfirmDanger] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -35,6 +42,8 @@ export function AgentLaunchDialog({
   useEffect(() => {
     if (!provider) return;
     setProfile("normal");
+    setIsolation(settings.requiresSandboxProfiles?.includes("normal") ? "worktree" : "direct");
+    setRef("HEAD"); setContainerProfileId(""); setAccountId(""); setModel("");
     setCwd(settings.lastDirectory);
     setConfirmDanger(false);
     setError(null);
@@ -51,6 +60,12 @@ export function AgentLaunchDialog({
 
   if (!provider) return null;
 
+  const containerProfiles = (settings.containerProfiles ?? []).filter(p => p.commands[provider]);
+  const containerProfile = containerProfiles.find(p => p.id === containerProfileId);
+  const containerAccounts = isolation === 'container' ? settings.providerAccounts.filter(a => {
+    if (a.binding?.kind !== 'api-profile' || (a.hostId ?? 'local') !== (containerProfile?.hostId ?? 'local')) return false;
+    try { return accountSupportsRuntime(a, provider, settings.apiProfiles); } catch { return false; }
+  }) : [];
   const acknowledged = settings.acknowledgedDangerousProfiles.includes(provider);
   const dangerKey = PROVIDERS[provider].dangerKey!;
 
@@ -86,7 +101,8 @@ export function AgentLaunchDialog({
     setError(null);
     try {
       if (profile === "yolo" && !acknowledged) await onAcknowledge(provider);
-      await onLaunch(provider, profile, cwd);
+      if (isolation === 'container' && (!containerProfile || !accountId)) throw new Error(locale === 'ru' ? 'Выберите профиль контейнера и API-аккаунт.' : 'Select a container profile and API account.');
+      await onLaunch({ provider, profile, cwd, ...(isolation === 'container' ? { accountId, ...(model.trim() ? { model: model.trim() } : {}), ...(containerProfile?.hostId !== 'local' ? { hostId: containerProfile?.hostId } : {}) } : {}), isolation: isolation === 'container' ? { mode: 'container', profileId: containerProfileId } : isolation === "worktree" ? { mode: "worktree", ref: ref.trim() || "HEAD" } : { mode: "direct" } });
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t(locale, "launchFailed"));
@@ -122,6 +138,20 @@ export function AgentLaunchDialog({
           </div>
         </div>
 
+        <div className="launch-isolation">
+          <label>{t(locale, "isolationMode")}<select value={isolation} onChange={event => setIsolation(event.target.value as "direct" | "worktree" | "container")}>
+            <option value="direct">{t(locale, "isolationDirect")}</option><option value="worktree">{t(locale, "isolationWorktree")}</option><option value="container">{locale === 'ru' ? 'Контейнер' : 'Container'}</option>
+          </select></label>
+          {isolation === 'container' && <>
+            <label>{locale === 'ru' ? 'Профиль контейнера' : 'Container profile'}<select value={containerProfileId} onChange={e => { setContainerProfileId(e.target.value); setAccountId(''); }}><option value="">—</option>{containerProfiles.map(p => <option key={p.id} value={p.id}>{p.label} · {p.hostId} · {p.network}</option>)}</select></label>
+            <label>{locale === 'ru' ? 'API-аккаунт' : 'API account'}<select value={accountId} onChange={e => setAccountId(e.target.value)}><option value="">—</option>{containerAccounts.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}</select></label>
+            {containerAccounts.length === 0 && <p role="status">{locale === 'ru' ? 'Для этого сервера нет совместимых API-аккаунтов. Проверьте их привязки в настройках.' : 'No compatible API accounts for this host. Check their bindings in settings.'}</p>}
+            <label>{locale === 'ru' ? 'Модель (пусто: из API-профиля)' : 'Model (blank: API profile default)'}<input value={model} maxLength={200} onChange={e => setModel(e.target.value)} /></label>
+            <p>{locale === 'ru' ? 'Контейнер получает полный checkout из Git. Bridge разрешает исходящий интернет. Native OAuth и remote BYOK пока недоступны.' : 'Container receives the full Git checkout. Bridge permits outbound internet. Native OAuth and remote BYOK are unavailable.'}</p>
+          </>}
+          {isolation === "worktree" && <><label>{t(locale, "worktreeBase")}<input value={ref} maxLength={256} onChange={event => setRef(event.target.value)} /></label><p>{t(locale, "worktreeExplanation")}</p></>}
+          {settings.requiresSandboxProfiles?.includes(profile) && <p>{t(locale, "isolationRequired")}</p>}
+        </div>
         <div className="profile-row">
           <button className={profile === "normal" ? "profile-button profile-button--active" : "profile-button"} type="button" onClick={() => {
             setProfile("normal");
@@ -142,7 +172,7 @@ export function AgentLaunchDialog({
             {!acknowledged && <span>{confirmDanger ? t(locale, "dangerousFirstUse") : t(locale, "confirmLaunch")}</span>}
           </div>
         )}
-        {error && <div className="dialog-error">{error}</div>}
+        {error && <div className="dialog-error" role="alert">{error}</div>}
       </section>
     </div>
   );

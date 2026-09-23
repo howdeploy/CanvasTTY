@@ -19,6 +19,7 @@ interface LaunchResolutionOptions {
   fileExists?: (path: string) => boolean;
   providerCli?: ProviderCliResolution;
   resumePrevious?: boolean;
+  model?: string;
 }
 
 const WINDOWS_NATIVE_EXTENSIONS = [".exe", ".com"];
@@ -49,8 +50,10 @@ export function resolveTerminalLaunch(
     ? openCodeYoloEnvironment({ ...environment, ...providerCli.environment })
     : undefined;
   const providerArgs = [
+    ...(provider === "hermes" ? ["chat"] : []),
     ...(profile === "yolo" && provider !== "opencode" ? DANGEROUS_ARGUMENTS[provider] : []),
     ...agentBrowserArgs,
+    ...providerModelArguments(provider, options.model),
     ...(options.resumePrevious ? RESUME_ARGUMENTS[provider] : [])
   ];
   const combinedEnvironment = {
@@ -84,7 +87,11 @@ const RESUME_ARGUMENTS: Record<Exclude<ProviderId, "terminal">, string[]> = {
   hermes: ["--continue"],
   grok: ["--continue"],
   omp: ["--continue"],
-  pi: ["--continue"]
+  pi: ["--continue"],
+  cursor: ["--continue"],
+  minimax: ["--continue"],
+  devin: ["--continue"],
+  antigravity: ["--continue"]
 };
 
 const DANGEROUS_ARGUMENTS: Record<Exclude<ProviderId, "terminal" | "opencode">, string[]> = {
@@ -99,7 +106,20 @@ const DANGEROUS_ARGUMENTS: Record<Exclude<ProviderId, "terminal" | "opencode">, 
   omp: ["--auto-approve"],
   // pi 0.85.1 has no permission system, so it has no auto-approve flag. `-a, --approve`
   // only skips its one prompt (trust project-local settings for this run).
-  pi: ["--approve"]
+  pi: ["--approve"],
+  // Verified Cursor CLI permission bypass; this is not the Claude flag.
+  cursor: ["--force"],
+  // Measured on @minimax-ai/code 0.5.1: the CLI has no permission bypass flag.
+  // Permission modes (default/auto/bypassPermissions/off) are settings.json and
+  // TUI state (/permission, Alt+M) only, so YOLO launches the stock CLI.
+  minimax: [],
+  // Devin CLI documents --permission-mode; `dangerous` (aliases yolo/bypass)
+  // auto-approves every tool call. `smart` (an AI gatekeeper that approves only
+  // clearly-safe actions) is a supervised mode, deliberately NOT mapped here.
+  devin: ["--permission-mode", "dangerous"],
+  // Documented on antigravity.google/docs/cli: --dangerously-skip-permissions
+  // and --sandbox exist; no --yolo spelling.
+  antigravity: ["--dangerously-skip-permissions"]
 };
 
 function resolveWindowsShell(
@@ -158,4 +178,12 @@ function findWindowsNativeCommand(
     }
   }
   return null;
+}
+
+export function providerModelArguments(provider: Exclude<ProviderId, "terminal">, model?: string): string[] {
+  if (model === undefined) return [];
+  if (typeof model !== "string" || !model.trim() || model.startsWith("-") || model.length > 200 || /[\u0000-\u001f\u007f]/u.test(model)) throw new Error("Selected model is invalid.");
+  if (provider === "minimax") throw new Error("MiniMax model selection requires a configured API profile; interactive --model is not supported.");
+  if (provider === "kimi" && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(model)) throw new Error("Kimi model must name a configured model alias, not a raw API model path.");
+  return ["--model", model];
 }

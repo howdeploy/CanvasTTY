@@ -23,6 +23,10 @@
 - Limited WebGL to the focused terminal card: one context at a time, disposed when focus leaves, with a fallback to the DOM renderer when the context is lost. Palette and transparency rendering are unchanged.
 - Added a self-update section in Settings → Updates with the honest states: idle, checking, update available with the version, downloading with the percent when known, ready to install, and unavailable for dev, offline, or error. Downloading and installing are explicit user actions, install-and-restart is offered only once the update is downloaded, and in development the row reports unavailable instead of throwing.
 - Hardened the repository secret audit to ignore key prefixes embedded inside identifiers, so names such as `disk-…` or `task-…` no longer produce false positives while real keys still match.
+- Added Cursor, MiniMax Code, Devin and Antigravity agents (PR #63).
+- Added provider API keys, API profiles and agent-to-agent delegation through the orchestration MCP (PR #64).
+- The plugin showcase works without a GitHub account; signing in is optional and only raises GitHub's limits (issue #22). The HOME clock shows the date (issue #53).
+- The default session denies web permissions, a crashed renderer reloads, long agent answers keep their turn, and the secret audit also checks the built bundle (from PRs #35 and #51).
 ## 1.5.2
 
 - Fixed terminal history jumping to the beginning when Codex clears and redraws its history after a card resize. Readers retain their relative scroll position, while terminals at the bottom continue following new output.

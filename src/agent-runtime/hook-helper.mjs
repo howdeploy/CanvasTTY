@@ -62,7 +62,7 @@ await reportLifecycle({
 /** Cuts at the limit without leaving a dangling high surrogate. */
 function boundedText(value, limit) {
   const text = value.slice(0, limit);
-  return /[\uD800-\uDBFF]$/.test(text) ? text.slice(0, -1) : text;
+  return /[\uD800-\uDBFF]$/u.test(text) ? text.slice(0, -1) : text;
 }
 function firstString(...values) {
   return values.find((value) => typeof value === "string" && value.length > 0) ?? null;

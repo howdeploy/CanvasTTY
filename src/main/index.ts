@@ -248,11 +248,9 @@ function shellWindowGone(window: BrowserWindow): boolean {
 }
 
 async function initializeServices(): Promise<void> {
-  // Deny-by-default browser permissions on the default session: neither the
-  // shell window nor plugin windows ever request camera, microphone, location,
-  // notifications or device access, so nothing is granted silently. The
-  // browser partition keeps its own, deliberately more permissive policy in
-  // BrowserService; exceptions belong there, not here.
+  // Deny-by-default web permissions on the default session: the app window and plugin windows
+  // never need camera, microphone, location, notifications or device access. The Browser card uses
+  // its own partition with its own policy in BrowserService.
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   session.defaultSession.setDevicePermissionHandler(() => false);

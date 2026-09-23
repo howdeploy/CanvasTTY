@@ -56,6 +56,38 @@ test("RuntimeGateway accepts one authenticated hook event over a mode-0600 local
   assert.equal(JSON.stringify(signals).includes("must stay local"), false);
 });
 
+test("a final answer longer than one runtime message still reports its turn and a bounded answer", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
+  const root = await fixture(t);
+  const signals = [];
+  const gateway = new RuntimeGateway({ runtimeDirectory: root, onSignal: (id, signal) => signals.push({ id, signal }) });
+  await gateway.start();
+  t.after(() => gateway.close());
+  const grantExpiresAt = Date.now() + 60_000;
+  const capability = gateway.registerSession("terminal-long", "codex", grantExpiresAt);
+  await send(capability.address, message(capability, "working", "UserPromptSubmit", "turn-long"));
+  const helper = new URL("../src/agent-runtime/hook-helper.mjs", import.meta.url);
+  const child = spawn(process.execPath, [helper.pathname, "idle", "Stop"], {
+    env: {
+      ...process.env,
+      [CAPTURE_ANSWER_ENV]: "1",
+      [CAPTURE_ANSWER_EXPIRES_AT_ENV]: String(grantExpiresAt),
+      [AGENT_RUNTIME_ENV.address]: capability.address,
+      [AGENT_RUNTIME_ENV.terminalSessionId]: capability.terminalSessionId,
+      [AGENT_RUNTIME_ENV.provider]: capability.provider,
+      [AGENT_RUNTIME_ENV.capabilityToken]: capability.capabilityToken
+    },
+    stdio: ["pipe", "ignore", "pipe"]
+  });
+  // 40 KB of text with an astral character straddling the 4000-character cut.
+  const answer = "a".repeat(3999) + "\u{1F600}" + "b".repeat(40_000);
+  child.stdin.end(JSON.stringify({ turn_id: "turn-long", last_assistant_message: answer }));
+  const result = await childResult(child);
+  assert.equal(result.code, 0, result.stderr);
+  const stop = signals.find(({ signal }) => signal.event === "Stop");
+  assert.equal(stop?.signal.turnId, "turn-long");
+  assert.equal(stop.signal.lastAssistantMessage, "a".repeat(3999));
+});
+
 test("RuntimeGateway rejects a wrong capability and ignores a stale turn completion", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
   const root = await fixture(t);
   const signals = [];

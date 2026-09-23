@@ -72,13 +72,19 @@ test("restored agent windows use each provider's native continue mode", () => {
     "--last"
   ]);
 
-  for (const provider of ["claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]) {
+  for (const provider of ["claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin"]) {
     const launch = resolveTerminalLaunch(provider, "normal", ["--bridge"], {
       providerCli: available(provider, `/resolved/${provider}`),
       resumePrevious: true
     });
     assert.deepEqual(launch.args, ["--bridge", "--continue"]);
   }
+  // antigravity deliberately restores fresh: no latest-session launch flag.
+  const restored = resolveTerminalLaunch("antigravity", "normal", ["--bridge"], {
+    providerCli: available("antigravity", "/resolved/agy"),
+    resumePrevious: true
+  });
+  assert.deepEqual(restored.args, ["--bridge"]);
 });
 
 test("OMP and Pi use their documented dangerous flags instead of the legacy default", () => {
@@ -87,6 +93,26 @@ test("OMP and Pi use their documented dangerous flags instead of the legacy defa
 
   const pi = resolveTerminalLaunch("pi", "yolo", [], { providerCli: available("pi", "/resolved/pi") });
   assert.deepEqual(pi.args, ["--approve"]);
+});
+
+test("Cursor YOLO uses its Claude-Code-style permission bypass", () => {
+  const cursor = resolveTerminalLaunch("cursor", "yolo", [], { providerCli: available("cursor", "/resolved/agent") });
+  assert.deepEqual(cursor.args, ["--dangerously-skip-permissions"]);
+});
+
+test("MiniMax YOLO launches the stock CLI because mcode has no bypass flag", () => {
+  const minimax = resolveTerminalLaunch("minimax", "yolo", [], { providerCli: available("minimax", "/resolved/mcode") });
+  assert.deepEqual(minimax.args, []);
+});
+
+test("Devin YOLO selects the documented dangerous permission mode", () => {
+  const devin = resolveTerminalLaunch("devin", "yolo", [], { providerCli: available("devin", "/resolved/devin") });
+  assert.deepEqual(devin.args, ["--permission-mode", "dangerous"]);
+});
+
+test("Antigravity YOLO uses its documented bypass flag", () => {
+  const yolo = resolveTerminalLaunch("antigravity", "yolo", [], { providerCli: available("antigravity", "/resolved/agy") });
+  assert.deepEqual(yolo.args, ["--dangerously-skip-permissions"]);
 });
 
 test("OpenCode merges YOLO config with the registry child environment", () => {

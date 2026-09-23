@@ -1,13 +1,11 @@
-export type ProviderId = "terminal" | "codex" | "claude" | "qwen" | "kimi" | "opencode" | "hermes" | "grok" | "omp" | "pi";
-export const PROVIDER_LABELS: Record<ProviderId, string> = {
-  terminal: "Terminal", codex: "Codex", claude: "Claude", qwen: "Qwen Code",
-  kimi: "Kimi", opencode: "OpenCode", hermes: "Hermes", grok: "Grok Build",
-  omp: "OMP", pi: "Pi",
-};
+import { CANVAS_LAUNCHER_ITEMS, PROVIDER_LABELS, type CanvasLauncherItemId, type ProviderId } from "./providerCatalog.ts";
+export { CANVAS_LAUNCHER_ITEMS, PROVIDER_LABELS };
+export type { CanvasLauncherItemId, ProviderId };
 export type AgentProviderId = Exclude<ProviderId, "terminal">;
 export type AgentCliAvailability = Record<AgentProviderId, boolean>;
 export type LimitProviderId = Extract<AgentProviderId, "codex" | "claude" | "qwen" | "kimi" | "opencode" | "grok">;
 export type LaunchProfileId = "normal" | "yolo";
+export type SessionRole = "interactive" | "orchestrator" | "subagent";
 export type SessionStatus = "idle" | "working" | "needs_approval" | "unavailable" | "done" | "failed";
 export type PaletteId = "sage" | "lilac" | "night";
 export type HomeAccentPresetId = "classic" | "warm" | "cool" | "mono" | "custom";
@@ -25,22 +23,8 @@ export type MinimapInteractionMode = "click" | "drag";
 export type BrowserViewportSurface = "native" | "placeholder" | "hidden";
 export type FocusActivation = "off" | "single" | "double";
 export type ShortcutAction = "home" | "renameWindow";
-export type CanvasLauncherItemId = ProviderId;
 export type RadialLauncherActionId = "note" | "browser" | "settings";
 export type RadialLauncherItemId = ProviderId | RadialLauncherActionId;
-
-export const CANVAS_LAUNCHER_ITEMS: readonly CanvasLauncherItemId[] = [
-  "codex",
-  "claude",
-  "qwen",
-  "kimi",
-  "opencode",
-  "hermes",
-  "grok",
-  "omp",
-  "pi",
-  "terminal"
-];
 
 // Keeps the safe provider subset proposed by @TroopJostle in PR #23 while
 // region, note, Browser, and Settings remain fixed top-level menu actions.
@@ -62,6 +46,10 @@ export const RADIAL_LAUNCHER_ITEMS: readonly RadialLauncherItemId[] = [
   "grok",
   "omp",
   "pi",
+  "cursor",
+  "minimax",
+  "devin",
+  "antigravity",
   "terminal",
   "note",
   "browser",
@@ -225,6 +213,19 @@ export interface AppSettings {
   mediaFit: MediaFit;
   lastDirectory: string;
   acknowledgedDangerousProfiles: AgentProviderId[];
+  /** Confidentiality tier applied to tasks that carry no explicit dataClass.
+   *  Defaults to D2 (confidential): an unclassified repo is never implicitly
+   *  public. */
+  defaultDataClass: DataClass;
+  apiProfiles: ApiProfile[];
+  remoteHosts: RemoteHost[];
+  /** Ordered path-class policies (Roadmap D6), FIRST MATCH WINS — see
+   *  PathPolicy and dataClassForPath. Empty by default: no path carries an
+   *  explicit class until the operator writes one. */
+  pathPolicies: PathPolicy[];
+  /** Subscriptions per provider; see ProviderAccount. Drives spawn's account
+   *  routing (model coverage + per-account privacy caps). */
+  providerAccounts: ProviderAccount[];
   homeGridSize: HomeGridSize;
   homeLayout: HomeWidgetPlacement[];
   canvasRegions: CanvasRegion[];
@@ -242,6 +243,20 @@ export interface CreateSessionRequest {
   profile: LaunchProfileId;
   position: Point;
   title?: string;
+  role?: SessionRole;
+  /** Owning session; required for subagents. Cycles are impossible because a
+   * parent must already exist when the child is created. */
+  parentSessionId?: string;
+  /** Remote host for the session: shells spawn `ssh -tt [user@]host $SHELL`,
+   *  agents spawn `ssh -tt … "cd '<mapped workspace>' && exec <cli>"`. Agents
+   *  require the cwd to be mapped on the host — an unmapped workspace fails
+   *  the create. */
+  hostId?: string;
+  /** Provider account selected for this session; names an
+   *  AppSettings.providerAccounts entry. Bookkeeping only: it records WHICH
+   *  subscription the placement layer chose, it never changes how the
+   *  process spawns. */
+  accountId?: string;
 }
 
 export interface SessionMetadata {
@@ -254,6 +269,13 @@ export interface SessionMetadata {
   cwd: string;
   position: Point;
   size: Size;
+  role: SessionRole;
+  parentSessionId?: string;
+  /** Present only for remote sessions; names an AppSettings.remoteHosts entry. */
+  hostId?: string;
+  /** Present only when account routing picked a subscription; names an
+   *  AppSettings.providerAccounts entry. */
+  accountId?: string;
   status: SessionStatus;
   startedAt: number;
   exitCode: number | null;
@@ -555,6 +577,799 @@ export type BrowserTabStatus = "loading" | "ready" | "error" | "crashed";
 export type BrowserConnectionState = "connected" | "stale";
 export type BrowserAgentProvider = AgentProviderId | "unknown";
 
+// API keys CanvasTTY stores for BYOK-capable provider CLIs. The renderer only
+// ever learns which of them are configured; values stay in the main process.
+export const PROVIDER_SECRET_IDS = [
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "XAI_API_KEY",
+  "GOOGLE_API_KEY",
+  "ZAI_API_KEY",
+  "MINIMAX_API_KEY",
+  "OPENROUTER_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "DEVIN_API_KEY",
+  "CURSOR_API_KEY"
+] as const;
+export type ProviderSecretId = (typeof PROVIDER_SECRET_IDS)[number];
+
+// An ApiProfile names a model backend for BYOK-capable provider CLIs. It is
+// deliberately not an agent provider: it never appears in launchers or session
+// restore, it only supplies endpoint and credential references to runtimes
+// that accept custom backends.
+export type ApiProfileProtocol = "openai-compatible" | "anthropic-compatible" | "google";
+
+export interface ApiProfile {
+  id: string;
+  name: string;
+  protocol: ApiProfileProtocol;
+  baseUrl?: string;
+  secretRef: ProviderSecretId;
+  defaultModel?: string;
+}
+
+export const API_PROFILE_PROTOCOLS: readonly ApiProfileProtocol[] = ["openai-compatible", "anthropic-compatible", "google"];
+
+// Static, per-host policy for which agent providers may ever run there. A
+// host behind regional blocking (say, OpenAI/Anthropic unreachable from a
+// Russian server) declares the providers it can actually serve; placement
+// consults this rule as a hard filter before ranking anything.
+//   - allowlist: ONLY the listed providers may run on the host;
+//   - blocklist: every provider EXCEPT the listed ones may run.
+export interface ProviderAccessRule {
+  mode: "allowlist" | "blocklist";
+  providers: AgentProviderId[];
+}
+
+// A RemoteHost names an SSH-reachable machine the orchestrator can launch
+// agent sessions on. Like ApiProfile it is pure settings data: nothing spawns
+// from it until a connectivity check or launch explicitly runs ssh.
+export interface RemoteHost {
+  id: string;
+  label: string;
+  sshHost: string;
+  sshUser?: string;
+  sshPort?: number;
+  /** Lower value is preferred. 0-100. */
+  priority?: number;
+  /** Concurrent sessions this host accepts. 1-64. */
+  maxSessions?: number;
+  /** Which providers the host may run (see ProviderAccessRule). Absent means
+   *  unrestricted: every provider is permitted until a rule says otherwise. */
+  providerAccess?: ProviderAccessRule;
+  /** Confidentiality ceiling of the HOST itself (Roadmap D5): the code a
+   *  session touches is seen not only by the AI provider but by the machine
+   *  that executes it, so a VPS the operator labels D1 must never receive D2
+   *  material even when the provider tier would allow it. Absent means D3 —
+   *  the operator's own machines are unrestricted until labeled otherwise. */
+  maxDataClass?: DataClass;
+  /** Local project directories pre-mapped to their remote counterparts, at
+   *  most 8 per host. Pure lookup data: nothing ever syncs or copies files
+   *  between the two paths. */
+  workspaces?: RemoteWorkspaceMapping[];
+}
+
+// One row of a host's workspace table: a local directory and the directory an
+// agent session should use for it on the remote side. The mapping only
+// translates paths; later roadmap stages decide what (if anything) runs there.
+export interface RemoteWorkspaceMapping {
+  localPath: string;
+  remotePath: string;
+}
+
+const MAX_REMOTE_WORKSPACES_PER_HOST = 8;
+const REMOTE_WORKSPACE_PATH_MAX_LENGTH = 4096;
+
+// Absolute local path: a POSIX root or a Windows drive/UNC root. Interior
+// spaces are legal — the value is a lookup key, not a shell argument — so only
+// the root shape is pinned.
+function isAbsoluteLocalPath(value: string): boolean {
+  return value.startsWith("/")
+    || value.startsWith("\\\\")
+    || /^[A-Za-z]:[\\/]/u.test(value);
+}
+
+function remoteWorkspacesInvalidReason(value: unknown): string | null {
+  if (!Array.isArray(value)) {
+    return "workspaces must be an array of at most 8 mappings";
+  }
+  if (value.length > MAX_REMOTE_WORKSPACES_PER_HOST) {
+    return "workspaces must hold at most 8 mappings";
+  }
+  const localPaths = new Set<string>();
+  for (const workspace of value) {
+    if (!workspace || typeof workspace !== "object" || Array.isArray(workspace)) {
+      return "each workspace mapping must be an object";
+    }
+    const mapping = workspace as Record<string, unknown>;
+    const keys = Object.keys(mapping);
+    if (keys.length !== 2 || mapping.localPath === undefined || mapping.remotePath === undefined) {
+      return "each workspace mapping must have exactly the localPath and remotePath keys";
+    }
+    if (typeof mapping.localPath !== "string"
+      || mapping.localPath.length === 0
+      || mapping.localPath.length > REMOTE_WORKSPACE_PATH_MAX_LENGTH
+      || mapping.localPath.trim().length === 0
+      || !isAbsoluteLocalPath(mapping.localPath)) {
+      return "localPath must be an absolute POSIX or Windows path of at most 4096 characters";
+    }
+    if (typeof mapping.remotePath !== "string"
+      || mapping.remotePath.length === 0
+      || mapping.remotePath.length > REMOTE_WORKSPACE_PATH_MAX_LENGTH
+      || mapping.remotePath.trim().length === 0
+      || !mapping.remotePath.startsWith("/")) {
+      return "remotePath must be an absolute POSIX path of at most 4096 characters";
+    }
+    if (localPaths.has(mapping.localPath)) {
+      return "localPath must be unique within a host (case-sensitive)";
+    }
+    localPaths.add(mapping.localPath);
+  }
+  return null;
+}
+
+const MAX_PROVIDERS_PER_ACCESS_RULE = 16;
+
+// Every agent provider id, derived from the launcher registry so a provider
+// added there is automatically valid here too.
+const AGENT_PROVIDER_IDS: readonly AgentProviderId[] = CANVAS_LAUNCHER_ITEMS.filter(
+  (id): id is AgentProviderId => id !== "terminal"
+);
+
+function providerAccessInvalidReason(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "providerAccess must be an object";
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (keys.length !== 2 || record.mode === undefined || record.providers === undefined) {
+    return "providerAccess must have exactly the mode and providers keys";
+  }
+  if (record.mode !== "allowlist" && record.mode !== "blocklist") {
+    return "providerAccess.mode must be allowlist or blocklist";
+  }
+  if (!Array.isArray(record.providers)
+    || record.providers.length < 1
+    || record.providers.length > MAX_PROVIDERS_PER_ACCESS_RULE) {
+    return "providerAccess.providers must hold between 1 and 16 provider ids";
+  }
+  const seen = new Set<string>();
+  for (const provider of record.providers) {
+    if (typeof provider !== "string" || !AGENT_PROVIDER_IDS.includes(provider as AgentProviderId)) {
+      return "providerAccess.providers contains an unknown provider id";
+    }
+    if (seen.has(provider)) {
+      return "providerAccess.providers must not repeat a provider id";
+    }
+    seen.add(provider);
+  }
+  return null;
+}
+
+function isIntegerInRange(value: unknown, min: number, max: number): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+}
+
+// Single source of truth for RemoteHost validation, shared by the settings
+// normalizer and the connectivity service. Returns null when the entry is
+// valid, otherwise a short human-readable reason. sshHost and sshUser reject
+// any whitespace: those strings are composed into an ssh command line, so a
+// space could smuggle extra arguments. They also reject a leading dash: the
+// composed destination would sit in ssh's option region, where ssh parses it
+// as options ("-oProxyCommand=..." style injection) rather than a hostname.
+export function remoteHostInvalidReason(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "entry must be an object";
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== "string" || record.id.length === 0 || record.id.length > 64) {
+    return "id must be a non-empty string of at most 64 characters";
+  }
+  if (typeof record.label !== "string" || record.label.trim().length === 0 || record.label.length > 80) {
+    return "label must be a non-empty string of at most 80 characters";
+  }
+  if (typeof record.sshHost !== "string"
+    || record.sshHost.length === 0
+    || record.sshHost.length > 253
+    || /\s/u.test(record.sshHost)
+    || record.sshHost.startsWith("-")) {
+    return "sshHost must be a whitespace-free string of at most 253 characters that does not start with a dash";
+  }
+  if (record.sshUser !== undefined
+    && (typeof record.sshUser !== "string"
+      || record.sshUser.length === 0
+      || record.sshUser.length > 64
+      || /\s/u.test(record.sshUser)
+      || record.sshUser.startsWith("-"))) {
+    return "sshUser must be a whitespace-free string of at most 64 characters that does not start with a dash";
+  }
+  if (record.sshPort !== undefined && !isIntegerInRange(record.sshPort, 1, 65535)) {
+    return "sshPort must be an integer between 1 and 65535";
+  }
+  if (record.priority !== undefined && !isIntegerInRange(record.priority, 0, 100)) {
+    return "priority must be an integer between 0 and 100";
+  }
+  if (record.maxSessions !== undefined && !isIntegerInRange(record.maxSessions, 1, 64)) {
+    return "maxSessions must be an integer between 1 and 64";
+  }
+  if (record.maxDataClass !== undefined && !DATA_CLASSES.includes(record.maxDataClass as DataClass)) {
+    return "maxDataClass must be a data class (D0-D3) when present";
+  }
+  if (record.providerAccess !== undefined) {
+    const providerAccessReason = providerAccessInvalidReason(record.providerAccess);
+    if (providerAccessReason !== null) return providerAccessReason;
+  }
+  if (record.workspaces !== undefined) {
+    const workspacesReason = remoteWorkspacesInvalidReason(record.workspaces);
+    if (workspacesReason !== null) return workspacesReason;
+  }
+  return null;
+}
+
+export function isValidRemoteHost(value: unknown): value is RemoteHost {
+  return remoteHostInvalidReason(value) === null;
+}
+
+// Pure policy lookup, no I/O: does this host's providerAccess rule permit the
+// given provider? An absent rule leaves the host unrestricted (true); an
+// allowlist admits only its listed providers, a blocklist everything except
+// them. Callers that also probe network reachability (RemoteProviderAccess)
+// combine the two answers — permission says the host may run the provider,
+// reachability says it can.
+export function providerPermittedOnHost(host: RemoteHost, provider: AgentProviderId): boolean {
+  const rule = host.providerAccess;
+  if (!rule) return true;
+  const listed = rule.providers.includes(provider);
+  return rule.mode === "allowlist" ? listed : !listed;
+}
+
+// The most sensitive data class a HOST may carry (Roadmap D5). A task's
+// effective ceiling is min(provider tier, host ceiling): the provider contract
+// governs what leaves the machine, the host label governs what may execute on
+// it, and a task must satisfy BOTH. An absent label reads as D3 — your own
+// machine is unrestricted; a VPS the user labels D2 caps at D2. Pure lookup:
+// placement uses it as a hard filter only, never as a ranking key.
+export function hostEffectiveMaxDataClass(host: RemoteHost): DataClass {
+  return host.maxDataClass ?? "D3";
+}
+
+// One HTTPS hostname per provider, used ONLY as a connectivity beacon: the
+// placement layer asks whether the remote host can open a network path to
+// each hostname, never what lives at the other end. This is a heuristic, not
+// truth — an endpoint answering says nothing about quota, authentication, or
+// regional availability of the actual model API, and a captive portal could
+// even answer for a blocked provider. Placement treats the signal as one hard
+// filter among several, and a host with no probe data is never excluded on
+// this basis.
+export const PROVIDER_API_ENDPOINTS: Readonly<Record<AgentProviderId, string>> = Object.freeze({
+  codex: "api.openai.com",
+  claude: "api.anthropic.com",
+  qwen: "dashscope.aliyuncs.com",
+  kimi: "api.moonshot.ai",
+  opencode: "opencode.ai",
+  hermes: "nousresearch.com",
+  grok: "api.x.ai",
+  omp: "omp.sh",
+  pi: "pi.dev",
+  cursor: "api2.cursor.com",
+  minimax: "api.minimax.io",
+  devin: "api.devin.ai",
+  antigravity: "antigravity.google"
+});
+
+// The beacon URL for one provider: https plus the endpoint hostname and root
+// path, exactly what a reachability probe should request.
+export function providerApiUrl(provider: AgentProviderId): string {
+  return `https://${PROVIDER_API_ENDPOINTS[provider]}/`;
+}
+
+// Lookup surface for the workspace table: translate a local project directory
+// into its remote counterpart on the host, or null when no mapping covers it.
+// Exact localPath matches win; a trailing-slash difference ("/a" vs "/a/")
+// still resolves in either direction. The function only reads the table — no
+// file is ever transferred or synchronized.
+export function remotePathForHost(host: RemoteHost, localPath: string): string | null {
+  if (typeof localPath !== "string" || localPath.length === 0) return null;
+  const workspaces = host.workspaces;
+  if (!workspaces || workspaces.length === 0) return null;
+  for (const workspace of workspaces) {
+    if (workspace.localPath === localPath) return workspace.remotePath;
+  }
+  const wanted = withoutTrailingSeparators(localPath);
+  for (const workspace of workspaces) {
+    if (withoutTrailingSeparators(workspace.localPath) === wanted) return workspace.remotePath;
+  }
+  return null;
+}
+
+// Collapses trailing path separators so a directory path with and without its
+// final slash compares equal. The POSIX root keeps its slash.
+function withoutTrailingSeparators(path: string): string {
+  if (path === "/" || path === "\\") return path;
+  return path.replace(/[\\/]+$/u, "");
+}
+
+// What CanvasTTY can actually do with each provider's session today. A
+// capability is only declared when the integration exists; "none"/"terminal"
+// values are explicit instead of pretending every provider is the same.
+export interface AgentCapabilities {
+  /** Prompt text can be written into the live PTY. */
+  send: boolean;
+  /** Scrollback can be read back from the session buffer. */
+  observe: boolean;
+  lifecycle: "structured" | "hooks" | "process" | "none";
+  result: "structured" | "final-message" | "terminal" | "none";
+  approvals: "structured" | "terminal" | "none";
+  browser: "mcp" | "none";
+  acp: boolean;
+}
+
+export const PROVIDER_CAPABILITIES: Readonly<Record<AgentProviderId, AgentCapabilities>> = Object.freeze({
+  codex: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  claude: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  qwen: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  kimi: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  // OpenCode reports status through its structured event plugin.
+  opencode: Object.freeze({ send: true, observe: true, lifecycle: "structured", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  hermes: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  grok: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  omp: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  pi: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  cursor: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  minimax: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  devin: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  antigravity: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false })
+});
+
+// Roadmap Stage 4, D1: the confidentiality policy layer. CanvasTTY classifies
+// the DATA-HANDLING PATH a task's data will travel — never the company behind
+// it: the same vendor can run a consumer tier that trains and a business tier
+// that does not, and only the contract actually in force for this path counts.
+//   D0 public       — may appear anywhere (docs, marketing, open-source code);
+//   D1 internal     — not for public posting, but cloud processing is fine;
+//   D2 confidential — secrets, customer data, unreleased work (the DEFAULT);
+//   D3 restricted   — contractually protected data, self-hosted paths only.
+// An unclassified repo is NEVER implicitly public: with no classification in
+// force the effective tier is D2, so nothing sensitive leaks just because
+// nobody bothered to classify the workspace.
+export type DataClass = "D0" | "D1" | "D2" | "D3";
+
+export const DATA_CLASSES: readonly DataClass[] = ["D0", "D1", "D2", "D3"];
+
+// Strictness ordering used by dataClassSatisfies: a provider cleared for D2
+// may also run D0 and D1 tasks, never the reverse.
+export const DATA_CLASS_RANK: Record<DataClass, number> = {
+  D0: 0,
+  D1: 1,
+  D2: 2,
+  D3: 3
+};
+
+// One provider's default data-handling path, as facts where they were checked
+// and as explicit "unknown" where they were not. verifiedAt and sources exist
+// to keep fact distinguishable from guess: a profile citing sources with a
+// recent verifiedAt is a checked fact; "unknown" fields are an admission that
+// someone still needs to read the terms.
+export interface DataHandlingProfile {
+  /** Whether prompts and outputs may train the vendor's models. */
+  training: "none" | "opt-in" | "opt-out" | "may-train" | "unknown";
+  /** How long the vendor keeps request data after serving it. */
+  retention: "zero" | "bounded" | "persistent" | "unknown";
+  /** Jurisdictions whose legal process can reach the data; unstated when absent. */
+  jurisdiction?: string[];
+  /** Whether anything beyond the vendor and its subprocessors sees the data. */
+  thirdPartyProcessing: "yes" | "no" | "unknown";
+  /** The strongest contractual frame available on this path by default. */
+  contractualMode: "consumer" | "api" | "business" | "enterprise" | "self-hosted";
+  /** When the fields above were last checked against the cited sources. */
+  verifiedAt?: string;
+  /** Where the facts came from; an entry without them is a guess. */
+  sources?: string[];
+}
+
+// Static DEFAULTS for the confidentiality tiers. These describe each
+// provider's consumer-tier data path as shipped, NOT any particular
+// organization's contract: an org with a ZDR or enterprise add-on carries its
+// own (usually stricter) copy. Entries marked UNVERIFIED (opencode, hermes,
+// omp, pi) have had no primary-source review at all, and entries marked
+// PROVISIONAL (cursor, minimax) rest on partially-read terms — both must read
+// as conservative guesses, which is exactly what their derived tiers say.
+export const PROVIDER_DATA_HANDLING: Readonly<Record<AgentProviderId, DataHandlingProfile>> = Object.freeze({
+  codex: Object.freeze({
+    training: "opt-out",
+    retention: "persistent",
+    thirdPartyProcessing: "yes",
+    contractualMode: "consumer",
+    verifiedAt: "2026-09-21",
+    sources: ["https://help.openai.com/en/articles/5722486", "https://openai.com/policies/row-usage-policy"]
+  }),
+  claude: Object.freeze({
+    training: "opt-out",
+    retention: "persistent",
+    thirdPartyProcessing: "yes",
+    contractualMode: "consumer",
+    verifiedAt: "2026-09-21",
+    sources: ["https://www.anthropic.com/legal/consumer-terms", "https://support.anthropic.com/en/articles/8866577"]
+  }),
+  grok: Object.freeze({
+    training: "opt-out",
+    retention: "bounded",
+    thirdPartyProcessing: "yes",
+    contractualMode: "consumer",
+    verifiedAt: "2026-09-21",
+    sources: ["https://x.ai/legal/terms-of-service", "https://docs.x.ai/docs/data-usage"]
+  }),
+  qwen: Object.freeze({
+    training: "may-train",
+    retention: "persistent",
+    thirdPartyProcessing: "yes",
+    contractualMode: "consumer",
+    verifiedAt: "2026-09-21",
+    sources: ["https://www.alibabacloud.com/help/en/model-studio/", "https://help.aliyun.com/zh/model-studio/"]
+  }),
+  // Kimi ships the same default posture as Qwen: a verified opt-out agreement
+  // would raise its derived tier from D1 to D2.
+  kimi: Object.freeze({
+    training: "may-train",
+    retention: "persistent",
+    thirdPartyProcessing: "yes",
+    contractualMode: "consumer",
+    verifiedAt: "2026-09-21",
+    sources: ["https://www.moonshot.ai/terms-of-service", "https://platform.moonshot.ai/docs/pricing/chat"]
+  }),
+  // UNVERIFIED: no primary-source review yet, so every field is "unknown" and
+  // the derived tier is D0 — public data only until someone checks the terms.
+  opencode: Object.freeze({
+    training: "unknown",
+    retention: "unknown",
+    thirdPartyProcessing: "unknown",
+    contractualMode: "consumer",
+    verifiedAt: "2026-09-21",
+    sources: ["https://opencode.ai/docs/"]
+  }),
+  hermes: Object.freeze({
+    training: "unknown",
+    retention: "unknown",
+    thirdPartyProcessing: "unknown",
+    contractualMode: "consumer",
+    verifiedAt: "2026-09-21",
+    sources: ["https://nousresearch.com"]
+  }),
+  omp: Object.freeze({
+    training: "unknown",
+    retention: "unknown",
+    thirdPartyProcessing: "unknown",
+    contractualMode: "consumer",
+    verifiedAt: "2026-09-21",
+    sources: ["https://omp.sh"]
+  }),
+  pi: Object.freeze({
+    training: "unknown",
+    retention: "unknown",
+    thirdPartyProcessing: "unknown",
+    contractualMode: "consumer",
+    verifiedAt: "2026-09-21",
+    sources: ["https://pi.dev"]
+  }),
+  // PROVISIONAL: Privacy Mode is documented but not verified per-workspace,
+  // so training stays "unknown" and the derived tier stays D0.
+  cursor: Object.freeze({
+    training: "unknown",
+    retention: "persistent",
+    thirdPartyProcessing: "yes",
+    contractualMode: "consumer",
+    verifiedAt: "2026-09-21",
+    sources: ["https://cursor.com/privacy", "https://docs.cursor.com/account/privacy"]
+  }),
+  // PROVISIONAL: API-tier terms were read, but the training posture remains
+  // unsettled, so it is recorded pessimistically.
+  minimax: Object.freeze({
+    training: "may-train",
+    retention: "unknown",
+    thirdPartyProcessing: "yes",
+    contractualMode: "api",
+    verifiedAt: "2026-09-21",
+    sources: ["https://platform.minimax.io/docs", "https://www.minimax.io/terms"]
+  }),
+  devin: Object.freeze({
+    training: "none",
+    retention: "bounded",
+    thirdPartyProcessing: "yes",
+    contractualMode: "business",
+    verifiedAt: "2026-09-21",
+    sources: ["https://cognition.ai/privacy", "https://docs.devin.ai"]
+  }),
+  antigravity: Object.freeze({
+    training: "none",
+    retention: "bounded",
+    thirdPartyProcessing: "yes",
+    contractualMode: "consumer",
+    verifiedAt: "2026-09-21",
+    sources: ["https://antigravity.google/privacy", "https://developers.google.com/antigravity"]
+  })
+});
+
+// The most sensitive data class a provider's DEFAULT data-handling path may
+// carry. Pure lookup over PROVIDER_DATA_HANDLING, in precedence order:
+//   - contractualMode "self-hosted" → D3: the data never leaves infrastructure
+//     the operator controls. No static entry is self-hosted; reaching D3 is an
+//     org override that flips this field for a verified ZDR or on-prem
+//     deployment (the override raises the tier, it never lowers it).
+//   - training "unknown" → D0: the path is unverified, so only public data
+//     may flow until someone checks the terms.
+//   - training other than "none" → D1: the vendor may retain and train on the
+//     data, capping the path at internal material.
+//   - training "none" with bounded or zero retention → D2.
+//   - Anything else (no training but unbounded or unstated retention) reads
+//     as D0: not proven safe for confidential data.
+export function providerMaxDataClass(provider: AgentProviderId): DataClass {
+  const profile = PROVIDER_DATA_HANDLING[provider];
+  if (profile.contractualMode === "self-hosted") return "D3";
+  if (profile.training === "unknown") return "D0";
+  if (profile.training !== "none") return "D1";
+  if (profile.retention === "bounded" || profile.retention === "zero") return "D2";
+  return "D0";
+}
+
+// Rank comparison: a provider allowed to handle `allowed` satisfies every
+// task whose class is `required` or lower. D3 satisfies only D3-capable
+// paths, D0 is satisfied by everything.
+export function dataClassSatisfies(required: DataClass, allowed: DataClass): boolean {
+  return DATA_CLASS_RANK[required] <= DATA_CLASS_RANK[allowed];
+}
+
+// Multi-account support: one provider may have SEVERAL subscriptions
+// attached (a $20 ChatGPT plan next to a $100 Pro plan; Claude Pro vs Max;
+// different Grok tiers), and placement must pick an account whose tier
+// actually covers the requested model — Astra-class work pointed at a $20
+// account, or Opus-class work at a $20 Claude plan, burns the cheap quota
+// for nothing. Like ApiProfile and RemoteHost this is pure settings data:
+// nothing about it touches a process until spawn consults it.
+export interface ProviderAccount {
+  id: string;
+  provider: AgentProviderId;
+  label: string;
+  /** Free-form subscription label, e.g. "chatgpt-plus", "chatgpt-pro",
+   *  "claude-pro", "claude-max", "grok-standard". Diagnostic only — tiers
+   *  are never parsed, the models list below is what placement enforces. */
+  tier?: string;
+  /** Model ids this account's tier is ALLOWED to run. Absent or empty means
+   *  unrestricted. A cheap tier should list only what it can sensibly run —
+   *  a plus-tier account lists its light models and leaves the heavyweight
+   *  ids (Astra-class, Opus-class) to the pro account above it, because even
+   *  on Pro the heavyweight models eat quota. Entries are exact matches or
+   *  prefix wildcards ending in "*" (see accountSupportsModel). */
+  models?: string[];
+  /** A shared/team account: colleagues can see its prompts and outputs, so
+   *  privacy tightens — accountEffectiveMaxDataClass caps it at D1 even when
+   *  the provider's own ceiling is higher. */
+  shared?: boolean;
+  /** Optionally tightens the data-class ceiling BELOW the provider's own
+   *  (never raises it): a named account can be held to internal-only data
+   *  even on a provider whose default path allows more. */
+  maxDataClass?: DataClass;
+}
+
+// The most sensitive data class this ACCOUNT may carry. Pure lookup: the
+// account's own cap when set, else the provider's default ceiling — and
+// never ABOVE that ceiling (a devin account claiming D3 reads as D2, the
+// provider's actual ceiling) — tightened to at most D1 when the account is
+// shared. An explicit cap below the ceiling survives: shared with maxDataClass
+// D0 stays D0.
+export function accountEffectiveMaxDataClass(account: ProviderAccount): DataClass {
+  const providerCeiling = providerMaxDataClass(account.provider);
+  let effective: DataClass = account.maxDataClass !== undefined
+    && DATA_CLASS_RANK[account.maxDataClass] <= DATA_CLASS_RANK[providerCeiling]
+    ? account.maxDataClass
+    : providerCeiling;
+  if (account.shared && DATA_CLASS_RANK[effective] > DATA_CLASS_RANK.D1) {
+    effective = "D1";
+  }
+  return effective;
+}
+
+// Does this account's tier cover the requested model? A request without a
+// model (undefined) constrains nothing, and an account with no models list
+// is unrestricted. Matching is case-insensitive: entries are exact ids
+// ("gpt-5-mini") or prefix wildcards ending in "*" ("gpt-5*" covers
+// "gpt-5", "gpt-5-codex", "GPT-5-Mini").
+export function accountSupportsModel(account: ProviderAccount, model: string | undefined): boolean {
+  if (model === undefined) return true;
+  const models = account.models;
+  if (models === undefined || models.length === 0) return true;
+  const wanted = model.toLowerCase();
+  for (const entry of models) {
+    const candidate = entry.toLowerCase();
+    if (candidate.endsWith("*")) {
+      if (wanted.startsWith(candidate.slice(0, -1))) return true;
+    } else if (candidate === wanted) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Accounts of the given provider whose tier covers the model, in the order
+// they were configured — spawn's deterministic v1 picker takes the first.
+export function eligibleAccountsForModel(
+  accounts: readonly ProviderAccount[],
+  provider: AgentProviderId,
+  model: string | undefined
+): ProviderAccount[] {
+  return accounts.filter(
+    (account) => account.provider === provider && accountSupportsModel(account, model)
+  );
+}
+
+// Roadmap D6: paths carry classes of their own. A repo usually mixes public
+// docs with restricted cores, and a policy table lets the operator say "docs/**
+// is internal, .env* and deploy/** are restricted" without classifying every
+// task by hand — so a cheap agent may fix a UI button yet never even be
+// pointed at the payment core. FIRST MATCH WINS: the table is evaluated in
+// order and the first pattern covering the path decides its class; no match
+// leaves the caller's fallback in force.
+export interface PathPolicy {
+  /** Gitignore-flavored glob of at most 200 characters, non-blank: `**`
+   *  spans any depth, `*` stays within one segment, and a leading `/`
+   *  anchors the pattern to the repo root. Only [A-Za-z0-9.*_/-] are legal —
+   *  `..`, backslashes, empty segments, and a `**` inside a larger segment
+   *  ("src**") are all rejected. */
+  pattern: string;
+  dataClass: DataClass;
+}
+
+export const PATH_POLICY_PATTERN_MAX_LENGTH = 200;
+
+// Pattern grammar validation, shared by the settings normalizer and the
+// matcher: a pattern that violates the grammar is dropped at the settings
+// boundary and never matches anything.
+export function isValidPathPolicyPattern(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  if (value.length === 0 || value.length > PATH_POLICY_PATTERN_MAX_LENGTH) return false;
+  if (value.trim().length === 0) return false;
+  if (value.includes("..") || value.includes("\\")) return false;
+  if (!/^[A-Za-z0-9.*_/-]+$/u.test(value)) return false;
+  const segments = value.split("/");
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    // The single leading empty segment is the anchor marker; any other empty
+    // segment (a trailing slash or a "//") can only be a typo.
+    if (segment === "" && index !== 0) return false;
+    // A "." segment carries no meaning here — write the pattern without it.
+    if (segment === ".") return false;
+    // "**" is only meaningful as a whole segment; "src**" would silently read
+    // as two single-segment stars, so it is rejected instead.
+    if (segment.includes("**") && segment !== "**") return false;
+  }
+  return true;
+}
+
+// Pure path-class lookup, no I/O: the caller hands in a path (typically a
+// session cwd) and the fallback class that applies when no policy covers it.
+// Paths are normalized by treating "\" as "/" and stripping any leading "./",
+// then split into segments. Matching is suffix-based and case-sensitive:
+//   - a RELATIVE pattern ("docs/**") matches any path whose trailing segments
+//     satisfy it — any docs ancestor qualifies, whatever sits above it;
+//   - an ANCHORED pattern ("/src/core/**", leading slash) matches only from
+//     the repo root: at most one leading directory (the repo root itself in
+//     an absolute path like /repo/src/core/x.ts) may sit above the pattern,
+//     so /repo/vendor/src/core/x.ts does NOT match /src/core/**.
+// Within a segment `*` matches zero or more characters and never crosses a
+// "/"; a whole-segment `**` matches zero or more whole segments. A pattern
+// must consume the entire remaining suffix — write "docs/**" (not "docs") to
+// cover a subtree. The FIRST matching policy wins; a policy with an invalid
+// pattern never matches; a malformed path argument falls straight through to
+// the fallback. This function never throws.
+export function dataClassForPath(
+  policies: readonly PathPolicy[],
+  path: string,
+  fallback: DataClass
+): DataClass {
+  if (typeof path !== "string" || path.length === 0) return fallback;
+  for (const policy of policies) {
+    if (!policy || typeof policy !== "object") continue;
+    if (pathPolicyMatches(policy.pattern, path)) return policy.dataClass;
+  }
+  return fallback;
+}
+
+function pathPolicyMatches(pattern: string, path: string): boolean {
+  if (!isValidPathPolicyPattern(pattern)) return false;
+  const patternSegments = splitPolicySegments(pattern);
+  const anchored = patternSegments[0] === "";
+  const patternBody = anchored ? patternSegments.slice(1) : patternSegments;
+  const rootless = splitPolicySegments(path);
+  const withoutRootMarker = rootless[0] === "" ? rootless.slice(1) : rootless;
+  // A relative pattern tries every suffix position; an anchored pattern only
+  // the first two — the path either starts at the repo root (a relative path,
+  // or an absolute path equal to root + content) or carries the repo root as
+  // its single leading directory (/repo/src/core/x.ts under /src/core/**).
+  const lastStart = anchored ? Math.min(1, withoutRootMarker.length) : withoutRootMarker.length;
+  for (let start = 0; start <= lastStart; start += 1) {
+    if (matchPolicySegments(patternBody, withoutRootMarker.slice(start), 0, 0)) return true;
+  }
+  return false;
+}
+
+// "\" reads as "/", a leading "./" falls away; the leading "/" of an absolute
+// value survives as an empty first segment (the root marker).
+function splitPolicySegments(value: string): string[] {
+  let normalized = value.replace(/\\/gu, "/");
+  while (normalized.startsWith("./")) normalized = normalized.slice(2);
+  return normalized.split("/");
+}
+
+function matchPolicySegments(
+  pattern: readonly string[],
+  path: readonly string[],
+  patternIndex: number,
+  pathIndex: number
+): boolean {
+  if (patternIndex === pattern.length) return pathIndex === path.length;
+  const segment = pattern[patternIndex]!;
+  if (segment === "**") {
+    // Zero or more whole segments.
+    if (matchPolicySegments(pattern, path, patternIndex + 1, pathIndex)) return true;
+    return pathIndex < path.length && matchPolicySegments(pattern, path, patternIndex, pathIndex + 1);
+  }
+  if (pathIndex >= path.length) return false;
+  return segmentMatches(segment, path[pathIndex]!)
+    && matchPolicySegments(pattern, path, patternIndex + 1, pathIndex + 1);
+}
+
+function segmentMatches(patternSegment: string, pathSegment: string): boolean {
+  if (!patternSegment.includes("*")) return patternSegment === pathSegment;
+  const expression = new RegExp(`^${patternSegment.split("*").map(escapeForRegExp).join(".*")}$`, "u");
+  return expression.test(pathSegment);
+}
+
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+export const API_PROFILE_PRESETS: readonly ApiProfile[] = Object.freeze([
+  Object.freeze({
+    id: "openai", name: "OpenAI", protocol: "openai-compatible",
+    baseUrl: "https://api.openai.com/v1", secretRef: "OPENAI_API_KEY"
+  }),
+  Object.freeze({
+    id: "anthropic", name: "Anthropic", protocol: "anthropic-compatible",
+    baseUrl: "https://api.anthropic.com", secretRef: "ANTHROPIC_API_KEY"
+  }),
+  Object.freeze({
+    id: "google", name: "Google AI", protocol: "google",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta", secretRef: "GOOGLE_API_KEY"
+  }),
+  Object.freeze({
+    id: "xai", name: "xAI", protocol: "openai-compatible",
+    baseUrl: "https://api.x.ai/v1", secretRef: "XAI_API_KEY"
+  }),
+  Object.freeze({
+    id: "zai", name: "Z.AI", protocol: "openai-compatible",
+    baseUrl: "https://api.z.ai/api/paas/v4", secretRef: "ZAI_API_KEY"
+  }),
+  Object.freeze({
+    id: "minimax", name: "MiniMax Open Platform", protocol: "openai-compatible",
+    baseUrl: "https://api.minimax.io/v1", secretRef: "MINIMAX_API_KEY"
+  }),
+  Object.freeze({
+    id: "openrouter", name: "OpenRouter", protocol: "openai-compatible",
+    baseUrl: "https://openrouter.ai/api/v1", secretRef: "OPENROUTER_API_KEY"
+  }),
+  Object.freeze({
+    id: "deepseek", name: "DeepSeek", protocol: "openai-compatible",
+    baseUrl: "https://api.deepseek.com", secretRef: "DEEPSEEK_API_KEY"
+  }),
+  Object.freeze({
+    id: "custom-openai", name: "Custom OpenAI-compatible", protocol: "openai-compatible",
+    secretRef: "OPENAI_API_KEY"
+  }),
+  Object.freeze({
+    id: "custom-anthropic", name: "Custom Anthropic-compatible", protocol: "anthropic-compatible",
+    secretRef: "ANTHROPIC_API_KEY"
+  })
+].map((preset) => Object.freeze({ ...preset })));
+
 export const BROWSER_PROVIDER_COLORS: Record<BrowserAgentProvider, string> = {
   claude: "#D97757",
   codex: "#10A37F",
@@ -563,10 +1378,14 @@ export const BROWSER_PROVIDER_COLORS: Record<BrowserAgentProvider, string> = {
   opencode: "#5A5858",
   hermes: "#D6A700",
   grok: "#111111",
-  // OMP and Pi never reach the browser bridge, so these two values are never
-  // rendered; they exist only to keep the record total over the provider union.
+  // OMP, Pi, Cursor, and MiniMax never reach the browser bridge, so these values
+  // are never rendered; they exist only to keep the record total over the provider union.
   omp: "#6E6A8A",
   pi: "#4F7C8A",
+  cursor: "#1F1F1F",
+  minimax: "#3C2A6B",
+  devin: "#4E5BA6",
+  antigravity: "#1A73E8",
   unknown: "#7A8291"
 };
 
@@ -931,6 +1750,11 @@ export interface CanvasTTYApi {
   limits: {
     get(): Promise<LimitsSnapshot>;
   };
+  providerSecrets: {
+    status(): Promise<Record<ProviderSecretId, boolean>>;
+    set(secretId: ProviderSecretId, value: string): Promise<void>;
+    clear(secretId: ProviderSecretId): Promise<void>;
+  };
   plugins: {
     list(): Promise<InstalledPlugin[]>;
     search(query: string): Promise<GithubPluginSearchResult[]>;
@@ -1065,6 +1889,9 @@ export const IPC = {
   pluginsStorageGet: "plugins:storage-get",
   pluginsStorageSet: "plugins:storage-set",
   pluginsSecretsGet: "plugins:secrets-get",
+  providerSecretsStatus: "provider-secrets:status",
+  providerSecretsSet: "provider-secrets:set",
+  providerSecretsClear: "provider-secrets:clear",
   pluginsSecretsSet: "plugins:secrets-set",
   pluginsSecretsDelete: "plugins:secrets-delete",
   pluginsMediaPickLibrary: "plugins:media-pick-library",

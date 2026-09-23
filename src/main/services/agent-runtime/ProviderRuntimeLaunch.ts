@@ -84,6 +84,8 @@ export interface PreparedProviderRuntimeLaunch {
   releaseConfiguration(): void;
 }
 
+const HOOK_PROVIDERS: ReadonlySet<string> = new Set(["claude", "codex", "qwen", "opencode", "kimi", "hermes", "grok"]);
+
 export class ProviderRuntimeLaunchAdapters {
   private readonly options: ProviderRuntimeLaunchOptions;
   private readonly environment: Readonly<Record<string, string | undefined>>;
@@ -148,9 +150,9 @@ export class ProviderRuntimeLaunchAdapters {
   ): PreparedProviderRuntimeLaunch {
     const pluginRegistrations = this.options.pluginHooks?.list(provider) ?? [];
     const pluginCommands = this.pluginHookCommands(provider, pluginRegistrations);
-    // omp and pi have no hook adapter. Without this they would fall through to the Grok
-    // overlay at the end of this method and write Grok hook configuration for them.
-    const hasHooks = provider !== "omp" && provider !== "pi"
+    // Only providers with a hook adapter get lifecycle configuration. Anything else (omp, pi,
+    // cursor, minimax, devin, antigravity) must never reach Grok's shared hook overlay.
+    const hasHooks = HOOK_PROVIDERS.has(provider)
       && (coreHooksEnabled || pluginCommands.length > 0 || (provider === "opencode" && pluginRegistrations.length > 0));
     const environment = hasHooks
       ? {
@@ -201,7 +203,8 @@ export class ProviderRuntimeLaunchAdapters {
     if (provider === "hermes") {
       return prepared([], environment, this.acquireHermes(coreHooksEnabled, pluginCommands));
     }
-    return prepared([], environment, this.acquireGrok(coreHooksEnabled, pluginCommands));
+    if (provider === "grok") return prepared([], environment, this.acquireGrok(coreHooksEnabled, pluginCommands));
+    return prepared([], environment);
   }
 
   recoverConfigurations(): void {
@@ -468,7 +471,16 @@ const PLUGIN_HOOK_TRIGGERS: Record<AgentProvider, Partial<Record<PluginAgentHook
   opencode: {},
   // omp and pi expose no lifecycle hooks, so no plugin events map onto them.
   omp: {},
-  pi: {}
+  pi: {},
+  // The Cursor CLI has no measured CanvasTTY hook events yet.
+  cursor: {},
+  // MiniMax Code has plugin hooks, but CanvasTTY does not write its
+  // settings.json yet; plain PTY integration only.
+  minimax: {},
+  // The Devin CLI hook surface is not measured yet.
+  devin: {},
+  // Antigravity hook surface is not measured yet either.
+  antigravity: {}
 };
 
 export function claudeLifecycleArgs(

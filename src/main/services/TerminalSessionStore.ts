@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import type {
   LaunchProfileId,
+  SessionRole,
   Point,
   ProviderId,
   SessionMetadata,
@@ -20,7 +21,11 @@ const PROVIDERS = new Set<ProviderId>([
   "hermes",
   "grok",
   "omp",
-  "pi"
+  "pi",
+  "cursor",
+  "minimax",
+  "devin",
+  "antigravity"
 ]);
 
 export interface PersistedTerminalSession {
@@ -32,6 +37,13 @@ export interface PersistedTerminalSession {
   cwd: string;
   position: Point;
   size: Size;
+  role?: SessionRole;
+  parentSessionId?: string;
+  /** Remote host for shell sessions; same id space as AppSettings.remoteHosts. */
+  hostId?: string;
+  /** Provider account chosen by spawn routing; same id space as
+   *  AppSettings.providerAccounts. Bookkeeping only. */
+  accountId?: string;
 }
 
 interface PersistedTerminalSessionState {
@@ -107,7 +119,15 @@ export function persistedTerminalSession(metadata: SessionMetadata): PersistedTe
     titleCustomized: metadata.titleCustomized,
     cwd: metadata.cwd,
     position: { ...metadata.position },
-    size: { ...metadata.size }
+    size: { ...metadata.size },
+    ...(metadata.role !== "interactive" || metadata.parentSessionId !== undefined
+      ? {
+        role: metadata.role,
+        ...(metadata.parentSessionId !== undefined ? { parentSessionId: metadata.parentSessionId } : {})
+      }
+      : {}),
+    ...(metadata.hostId !== undefined ? { hostId: metadata.hostId } : {}),
+    ...(metadata.accountId !== undefined ? { accountId: metadata.accountId } : {})
   };
 }
 
@@ -130,6 +150,33 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
     if (typeof session.titleCustomized !== "boolean") continue;
     if (typeof session.cwd !== "string" || session.cwd.length === 0 || session.cwd.length > 4_096) continue;
     if (!isFinitePoint(session.position) || !isFiniteSize(session.size)) continue;
+    const roleKnown = session.role === undefined
+      || session.role === "interactive"
+      || session.role === "orchestrator"
+      || session.role === "subagent";
+    if (!roleKnown) continue;
+    const role = session.role;
+    const parentSessionId = typeof session.parentSessionId === "string"
+      ? session.parentSessionId
+      : undefined;
+    if (session.parentSessionId !== undefined && parentSessionId === undefined) continue;
+    if (role === "subagent" && parentSessionId === undefined) continue;
+    // hostId follows the same drop-invalid discipline as parentSessionId: a
+    // non-empty string of at most 64 characters (the RemoteHost id schema in
+    // shared/contracts) or the whole entry disappears rather than silently
+    // re-aiming the session at another machine.
+    const hostId = typeof session.hostId === "string" && session.hostId.length > 0 && session.hostId.length <= 64
+      ? session.hostId
+      : undefined;
+    if (session.hostId !== undefined && hostId === undefined) continue;
+    // accountId follows the same drop-invalid discipline as hostId: a
+    // non-empty string of at most 64 characters (the ProviderAccount id
+    // schema) or the whole entry disappears rather than silently crediting
+    // the session to another subscription.
+    const accountId = typeof session.accountId === "string" && session.accountId.length > 0 && session.accountId.length <= 64
+      ? session.accountId
+      : undefined;
+    if (session.accountId !== undefined && accountId === undefined) continue;
     sessions.push({
       id: session.id,
       provider: session.provider as ProviderId,
@@ -141,7 +188,11 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
       size: {
         width: clamp(session.size.width, 420, 1_600),
         height: clamp(session.size.height, 260, 1_100)
-      }
+      },
+      ...(role !== undefined ? { role } : {}),
+      ...(parentSessionId !== undefined ? { parentSessionId } : {}),
+      ...(hostId !== undefined ? { hostId } : {}),
+      ...(accountId !== undefined ? { accountId } : {})
     });
     ids.add(session.id);
   }

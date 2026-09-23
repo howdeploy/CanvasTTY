@@ -74,6 +74,8 @@ import {
 } from "./appearanceSettings";
 import { CanvasNavigationShortcutEditor } from "./CanvasNavigationShortcutEditor";
 import { AgentHooksSettings } from "./AgentHooksSettings";
+import { ProviderSecretsSettings } from "./ProviderSecretsSettings";
+import { ApiProfilesSettings } from "./ApiProfilesSettings";
 import { AboutSettings } from "./AboutSettings";
 import { setCanvasLauncherItemEnabled } from "../launcher/canvasLauncher";
 import { itemLabel } from "../launcher/QuickRadialMenu";
@@ -706,6 +708,20 @@ export function SettingsPanel({
                     );
                   })}
                 </div>
+              </SettingGroup>
+              <SettingGroup
+                layout="stacked"
+                label={t(locale, "providerApiKeys")}
+                description={t(locale, "providerApiKeysDescription")}
+              >
+                <ProviderSecretsSettings locale={locale} />
+              </SettingGroup>
+              <SettingGroup
+                layout="stacked"
+                label={t(locale, "apiProfiles")}
+                description={t(locale, "apiProfilesDescription")}
+              >
+                <ApiProfilesSettings settings={settings} onChange={onChange} />
               </SettingGroup>
             </>
           )}

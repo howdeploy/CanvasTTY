@@ -1,4 +1,6 @@
+import { ORCHESTRATION_MCP_SERVER_NAME } from "../../agent-browser/orchestration-catalog.mjs";
 import { MCP_SERVER_NAME } from "../../agent-browser/tool-catalog.mjs";
+import { ORCHESTRATION_ENV } from "./agent-browser/orchestration-protocol.ts";
 
 export const OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT";
 
@@ -12,7 +14,8 @@ type OpenCodeConfig = Record<string, unknown>;
 
 export function openCodeBrowserEnvironment(
   helper: OpenCodeStdioHelper,
-  environment: Readonly<Record<string, string | undefined>> = process.env
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  orchestrationHelper?: OpenCodeStdioHelper
 ): Record<string, string> {
   const config = parseInlineConfig(environment[OPENCODE_CONFIG_CONTENT]);
   const mcp = objectField(config.mcp, "mcp");
@@ -28,10 +31,32 @@ export function openCodeBrowserEnvironment(
           ...(helper.env && Object.keys(helper.env).length > 0
             ? { environment: helper.env }
             : {})
-        }
+        },
+        ...(orchestrationHelper
+          ? { [ORCHESTRATION_MCP_SERVER_NAME]: openCodeOrchestrationEntry(orchestrationHelper) }
+          : {})
       },
       permission: allowBrowserTools(config.permission)
     })
+  };
+}
+
+// OpenCode merges the parent environment into local MCP servers, so the
+// orchestration variables reach the helper through inheritance exactly like
+// the browser variables do. The {env:NAME} references pin them explicitly:
+// OpenCode substitutes those tokens from its own environment while loading the
+// inline config, which resolves to the inherited value when the variables are
+// present and keeps the helper reachable even if a future version stopped
+// passing the full parent environment.
+function openCodeOrchestrationEntry(helper: OpenCodeStdioHelper): Record<string, unknown> {
+  return {
+    type: "local",
+    command: [helper.command, ...helper.args],
+    enabled: true,
+    environment: {
+      ...helper.env,
+      ...Object.fromEntries(Object.values(ORCHESTRATION_ENV).map((key) => [key, `{env:${key}}`]))
+    }
   };
 }
 

@@ -21,3 +21,12 @@ export type {
   WindowsPipeHostTransportOptions
 } from "./WindowsPipeHostTransport.ts";
 export type { BrowserCoreLike } from "./protocol.ts";
+export { OrchestrationGateway } from "./OrchestrationGateway.ts";
+export type { OrchestrationGatewayOptions } from "./OrchestrationGateway.ts";
+export { OrchestrationBridge } from "./OrchestrationBridge.ts";
+export type {
+  OrchestrationLaunchCoordinator,
+  PrepareOrchestrationLaunchInput,
+  PreparedOrchestrationPtyLaunch
+} from "./OrchestrationBridge.ts";
+export { ScopedOrchestrationHandler } from "./OrchestrationTools.ts";

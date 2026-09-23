@@ -26,6 +26,7 @@ import {
   MCP_SERVER_NAME,
   canonicalStringify
 } from "../../../agent-browser/tool-catalog.mjs";
+import { ORCHESTRATION_MCP_SERVER_NAME, ORCHESTRATION_TOOL_NAMES } from "../../../agent-browser/orchestration-catalog.mjs";
 import { AGENT_BROWSER_ENV, type AgentProvider } from "./protocol.ts";
 import {
   HermesTemporaryConfiguration,
@@ -59,6 +60,8 @@ export interface PreparedProviderLaunch {
 
 export interface ProviderLaunchOptions {
   helper: StdioHelperLaunch;
+  /** Optional second MCP server (orchestration) injected into capable providers. */
+  orchestrationHelper?: StdioHelperLaunch;
   providerClis: ProviderCliRegistry;
   hermesHomeDirectory?: string;
   kimiHomeDirectory?: string;
@@ -103,26 +106,28 @@ export class ProviderLaunchAdapters {
     this.kimiSupportsPerRunConfig = null;
   }
 
-  prepare(provider: AgentProvider, connectionId: string): PreparedProviderLaunch {
+  prepare(provider: AgentProvider, connectionId: string, options?: { orchestration?: boolean }): PreparedProviderLaunch {
     const providerCli = this.providerClis.get(provider);
     if (providerCli.state === "unavailable") throw new Error(providerCli.diagnostic);
+    const orchestrationHelper = orchestrationHelperFor(this.options, options);
+    if (orchestrationHelper) validateStdioHelperLaunch(orchestrationHelper);
     if (provider === "claude") {
       return {
-        args: claudeMcpArgs(this.options.helper),
+        args: claudeMcpArgs(this.options.helper, orchestrationHelper),
         environment: {},
         releaseConfiguration() {}
       };
     }
     if (provider === "codex") {
       return {
-        args: codexMcpArgs(this.options.helper),
+        args: codexMcpArgs(this.options.helper, orchestrationHelper),
         environment: {},
         releaseConfiguration() {}
       };
     }
     if (provider === "qwen") {
       return {
-        args: qwenMcpArgs(this.options.helper),
+        args: qwenMcpArgs(this.options.helper, orchestrationHelper),
         environment: {},
         releaseConfiguration() {}
       };
@@ -130,7 +135,7 @@ export class ProviderLaunchAdapters {
     if (provider === "opencode") {
       return {
         args: [],
-        environment: openCodeBrowserEnvironment(this.options.helper, this.environment),
+        environment: openCodeBrowserEnvironment(this.options.helper, this.environment, orchestrationHelper),
         releaseConfiguration() {}
       };
     }
@@ -138,10 +143,10 @@ export class ProviderLaunchAdapters {
       return {
         args: [],
         environment: {},
-        releaseConfiguration: this.acquireHermesConfiguration()
+        releaseConfiguration: this.acquireHermesConfiguration(orchestrationHelper)
       };
     }
-    return this.prepareKimi(connectionId);
+    return this.prepareKimi(connectionId, orchestrationHelper);
   }
 
   recoverKimiConfiguration(): void {
@@ -152,12 +157,20 @@ export class ProviderLaunchAdapters {
     HermesTemporaryConfiguration.recover(this.hermesHomeDirectory);
   }
 
-  private acquireHermesConfiguration(): () => void {
+  private acquireHermesConfiguration(orchestrationHelper?: StdioHelperLaunch): () => void {
+    const requiresOrchestration = orchestrationHelper !== undefined;
     if (!this.hermesConfiguration) {
       this.hermesConfiguration = HermesTemporaryConfiguration.begin({
         homeDirectory: this.hermesHomeDirectory,
-        helper: this.options.helper
+        helper: this.options.helper,
+        ...(requiresOrchestration ? { orchestrationHelper } : {})
       });
+    } else if (requiresOrchestration && !this.hermesConfiguration.hasOrchestrationEntry) {
+      // The shared temporary config.yaml cannot be extended under active
+      // launches. Failing loudly beats silently launching an orchestrator
+      // without its canvastty_agents tools; the extra entry in the other
+      // direction (orchestration config, plain launch) is harmless.
+      throw new Error("Hermes MCP orchestration cannot be enabled while a temporary Hermes configuration is active.");
     }
     this.hermesConfigurationUsers += 1;
     let released = false;
@@ -172,7 +185,7 @@ export class ProviderLaunchAdapters {
     };
   }
 
-  private prepareKimi(connectionId: string): PreparedProviderLaunch {
+  private prepareKimi(connectionId: string, orchestrationHelper?: StdioHelperLaunch): PreparedProviderLaunch {
     const kimiCli = this.providerClis.get("kimi");
     if (kimiCli.state === "unavailable") throw new Error(kimiCli.diagnostic);
     if (this.kimiProbedExecutable !== kimiCli.executable) {
@@ -184,7 +197,12 @@ export class ProviderLaunchAdapters {
       KimiTemporaryConfiguration.recover(this.kimiHomeDirectory);
     }
     const supportsPerRun = this.kimiSupportsPerRunConfig;
-    const releaseShared = this.acquireKimiConfiguration(!supportsPerRun);
+    // The per-run document carries orchestration per launch, so the shared
+    // fallback configuration only tracks it when mcp.json is actually mutated.
+    const releaseShared = this.acquireKimiConfiguration(
+      !supportsPerRun,
+      supportsPerRun ? undefined : orchestrationHelper
+    );
     let perRunPath: string | null = null;
 
     try {
@@ -193,7 +211,7 @@ export class ProviderLaunchAdapters {
         mkdirSync(this.options.runtimeDirectory, { recursive: true, mode: CONFIG_DIRECTORY_MODE });
         chmodSync(this.options.runtimeDirectory, CONFIG_DIRECTORY_MODE);
         perRunPath = join(this.options.runtimeDirectory, `kimi-mcp-${safeId(connectionId)}.json`);
-        atomicWrite(perRunPath, `${JSON.stringify(mcpDocument(this.options.helper), null, 2)}\n`);
+        atomicWrite(perRunPath, `${JSON.stringify(mcpDocument(this.options.helper, orchestrationHelper), null, 2)}\n`);
         args.push("--mcp-config-file", perRunPath);
       }
       let released = false;
@@ -214,15 +232,24 @@ export class ProviderLaunchAdapters {
     }
   }
 
-  private acquireKimiConfiguration(includeMcpEntry: boolean): () => void {
+  private acquireKimiConfiguration(
+    includeMcpEntry: boolean,
+    orchestrationHelper?: StdioHelperLaunch
+  ): () => void {
+    const requiresOrchestration = includeMcpEntry && orchestrationHelper !== undefined;
     if (!this.kimiConfiguration) {
       this.kimiConfiguration = KimiTemporaryConfiguration.begin({
         homeDirectory: this.kimiHomeDirectory,
         helper: this.options.helper,
-        includeMcpEntry
+        includeMcpEntry,
+        ...(requiresOrchestration && orchestrationHelper ? { orchestrationHelper } : {})
       });
     } else if (this.kimiConfiguration.includeMcpEntry !== includeMcpEntry) {
       throw new Error("Kimi MCP capability changed while temporary configuration is active.");
+    } else if (requiresOrchestration && !this.kimiConfiguration.hasOrchestrationEntry) {
+      // Mirrors the Hermes guard: never silently drop the canvastty_agents
+      // entry an orchestrator needs because a plain launch owns the config.
+      throw new Error("Kimi MCP orchestration cannot be enabled while a temporary Kimi configuration is active.");
     }
     this.kimiConfigurationUsers += 1;
     let released = false;
@@ -238,8 +265,9 @@ export class ProviderLaunchAdapters {
   }
 }
 
-export function claudeMcpArgs(helper: StdioHelperLaunch): string[] {
+export function claudeMcpArgs(helper: StdioHelperLaunch, orchestrationHelper?: StdioHelperLaunch): string[] {
   validateStdioHelperLaunch(helper);
+  if (orchestrationHelper) validateStdioHelperLaunch(orchestrationHelper);
   const config = {
     mcpServers: {
       [MCP_SERVER_NAME]: {
@@ -247,7 +275,8 @@ export function claudeMcpArgs(helper: StdioHelperLaunch): string[] {
         command: helper.command,
         args: helper.args,
         ...(helper.env && Object.keys(helper.env).length > 0 ? { env: helper.env } : {})
-      }
+      },
+      ...(orchestrationHelper ? orchestrationServerEntry(orchestrationHelper) : {})
     }
   };
   return [
@@ -258,8 +287,9 @@ export function claudeMcpArgs(helper: StdioHelperLaunch): string[] {
   ];
 }
 
-export function codexMcpArgs(helper: StdioHelperLaunch): string[] {
+export function codexMcpArgs(helper: StdioHelperLaunch, orchestrationHelper?: StdioHelperLaunch): string[] {
   validateStdioHelperLaunch(helper);
+  if (orchestrationHelper) validateStdioHelperLaunch(orchestrationHelper);
   const prefix = `mcp_servers.${MCP_SERVER_NAME}`;
   const table = [
     `command=${tomlString(helper.command)}`,
@@ -272,14 +302,32 @@ export function codexMcpArgs(helper: StdioHelperLaunch): string[] {
     `enabled_tools=${tomlStringArray([...APPROVED_BROWSER_TOOL_NAMES])}`,
     "disabled_tools=[]"
   ].join(",");
-  return ["-c", `${prefix}={${table}}`];
+  const args = ["-c", `${prefix}={${table}}`];
+  if (orchestrationHelper) {
+    const orchestrationPrefix = `mcp_servers.${ORCHESTRATION_MCP_SERVER_NAME}`;
+    const orchestrationTable = [
+      `command=${tomlString(orchestrationHelper.command)}`,
+      `args=${tomlStringArray(orchestrationHelper.args)}`,
+      `env=${tomlStringTable(orchestrationHelper.env ?? {})}`,
+      `env_vars=${tomlStringArray(["CANVASTTY_ORCHESTRATION_ADDRESS", "CANVASTTY_ORCHESTRATION_CAPABILITY", "CANVASTTY_TERMINAL_SESSION_ID"])}`,
+      "enabled=true",
+      "required=false",
+      'default_tools_approval_mode="approve"',
+      `enabled_tools=${tomlStringArray([...ORCHESTRATION_TOOL_NAMES])}`,
+      "disabled_tools=[]"
+    ].join(",");
+    args.push("-c", `${orchestrationPrefix}={${orchestrationTable}}`);
+  }
+  return args;
 }
 
-export function qwenMcpArgs(helper: StdioHelperLaunch): string[] {
+export function qwenMcpArgs(helper: StdioHelperLaunch, orchestrationHelper?: StdioHelperLaunch): string[] {
   validateStdioHelperLaunch(helper);
-  const allowedTools = APPROVED_BROWSER_TOOL_NAMES
-    .map((tool) => `mcp__${MCP_SERVER_NAME}__${tool}`)
-    .join(",");
+  if (orchestrationHelper) validateStdioHelperLaunch(orchestrationHelper);
+  const allowedTools = [
+    ...APPROVED_BROWSER_TOOL_NAMES.map((tool) => `mcp__${MCP_SERVER_NAME}__${tool}`),
+    ...(orchestrationHelper ? ORCHESTRATION_TOOL_NAMES.map((tool: string) => `mcp__${ORCHESTRATION_MCP_SERVER_NAME}__${tool}`) : [])
+  ].join(",");
   const config = {
     mcpServers: {
       [MCP_SERVER_NAME]: {
@@ -287,7 +335,8 @@ export function qwenMcpArgs(helper: StdioHelperLaunch): string[] {
         args: helper.args,
         ...(helper.env && Object.keys(helper.env).length > 0 ? { env: helper.env } : {}),
         includeTools: [...APPROVED_BROWSER_TOOL_NAMES]
-      }
+      },
+      ...(orchestrationHelper ? orchestrationServerEntry(orchestrationHelper) : {})
     }
   };
   return [
@@ -296,6 +345,24 @@ export function qwenMcpArgs(helper: StdioHelperLaunch): string[] {
     "--allowed-tools",
     allowedTools
   ];
+}
+
+function orchestrationHelperFor(
+  options: ProviderLaunchOptions,
+  request?: { orchestration?: boolean }
+): StdioHelperLaunch | undefined {
+  return request?.orchestration ? options.orchestrationHelper : undefined;
+}
+
+function orchestrationServerEntry(helper: StdioHelperLaunch): Record<string, unknown> {
+  return {
+    [ORCHESTRATION_MCP_SERVER_NAME]: {
+      type: "stdio",
+      command: helper.command,
+      args: helper.args,
+      ...(helper.env && Object.keys(helper.env).length > 0 ? { env: helper.env } : {})
+    }
+  };
 }
 
 export function probeKimiPerRunMcpConfig(cli: AvailableProviderCli): boolean {
@@ -352,6 +419,8 @@ interface KimiTemporaryConfigurationOptions {
   homeDirectory: string;
   helper: StdioHelperLaunch;
   includeMcpEntry: boolean;
+  /** Optional second MCP server (canvastty_agents) written next to the browser one. */
+  orchestrationHelper?: StdioHelperLaunch;
   lockHooks?: ConfigurationLockHooks;
 }
 
@@ -360,6 +429,8 @@ interface RecoveryJournal {
   ownershipId: string;
   includeMcpEntry: boolean;
   mcpEntryHash: string;
+  /** Absent in journals written before orchestration support; never undefined when set. */
+  orchestrationEntryHash?: string;
   mcpOriginalHash: string | null;
   mcpMutatedHash: string | null;
   configOriginalHash: string | null;
@@ -369,6 +440,7 @@ interface RecoveryJournal {
 
 export class KimiTemporaryConfiguration {
   readonly includeMcpEntry: boolean;
+  readonly hasOrchestrationEntry: boolean;
   private readonly paths: ReturnType<typeof kimiPaths>;
   private readonly journal: RecoveryJournal;
   private cleaned = false;
@@ -377,10 +449,12 @@ export class KimiTemporaryConfiguration {
     this.paths = paths;
     this.journal = journal;
     this.includeMcpEntry = journal.includeMcpEntry;
+    this.hasOrchestrationEntry = journal.orchestrationEntryHash !== undefined;
   }
 
   static begin(options: KimiTemporaryConfigurationOptions): KimiTemporaryConfiguration {
     validateStdioHelperLaunch(options.helper);
+    if (options.orchestrationHelper) validateStdioHelperLaunch(options.orchestrationHelper);
     mkdirSync(options.homeDirectory, { recursive: true, mode: CONFIG_DIRECTORY_MODE });
     const paths = kimiPaths(options.homeDirectory);
     const lock = acquireLock(paths.lock, options.lockHooks);
@@ -388,6 +462,9 @@ export class KimiTemporaryConfiguration {
       this.recoverLocked(paths);
       const ownershipId = randomUUID();
       const entry = mcpEntry(options.helper);
+      const orchestrationEntry = options.orchestrationHelper
+        ? kimiOrchestrationEntry(options.orchestrationHelper)
+        : null;
       const mcpOriginal = options.includeMcpEntry ? readOptional(paths.mcp) : null;
       const configOriginal = readOptional(paths.config);
       let mcpMutated: string | null = null;
@@ -397,9 +474,16 @@ export class KimiTemporaryConfiguration {
         if (MCP_SERVER_NAME in servers) {
           throw new Error(`Kimi MCP server name ${MCP_SERVER_NAME} is already configured.`);
         }
+        if (orchestrationEntry && ORCHESTRATION_MCP_SERVER_NAME in servers) {
+          throw new Error(`Kimi MCP server name ${ORCHESTRATION_MCP_SERVER_NAME} is already configured.`);
+        }
         mcpMutated = `${JSON.stringify({
           ...document,
-          mcpServers: { ...servers, [MCP_SERVER_NAME]: entry }
+          mcpServers: {
+            ...servers,
+            [MCP_SERVER_NAME]: entry,
+            ...(orchestrationEntry ? { [ORCHESTRATION_MCP_SERVER_NAME]: orchestrationEntry } : {})
+          }
         }, null, 2)}\n`;
       }
       const configBase = configOriginal ?? "";
@@ -418,6 +502,7 @@ export class KimiTemporaryConfiguration {
         ownershipId,
         includeMcpEntry: options.includeMcpEntry,
         mcpEntryHash: hashCanonical(entry),
+        ...(orchestrationEntry ? { orchestrationEntryHash: hashCanonical(orchestrationEntry) } : {}),
         mcpOriginalHash: mcpOriginal === null ? null : hashText(mcpOriginal),
         mcpMutatedHash: mcpMutated === null ? null : hashText(mcpMutated),
         configOriginalHash: configOriginal === null ? null : hashText(configOriginal),
@@ -479,8 +564,15 @@ export class KimiTemporaryConfiguration {
   }
 }
 
-function mcpDocument(helper: StdioHelperLaunch): Record<string, unknown> {
-  return { mcpServers: { [MCP_SERVER_NAME]: mcpEntry(helper) } };
+function mcpDocument(helper: StdioHelperLaunch, orchestrationHelper?: StdioHelperLaunch): Record<string, unknown> {
+  return {
+    mcpServers: {
+      [MCP_SERVER_NAME]: mcpEntry(helper),
+      ...(orchestrationHelper
+        ? { [ORCHESTRATION_MCP_SERVER_NAME]: kimiOrchestrationEntry(orchestrationHelper) }
+        : {})
+    }
+  };
 }
 
 function mcpEntry(helper: StdioHelperLaunch): Record<string, unknown> {
@@ -491,6 +583,20 @@ function mcpEntry(helper: StdioHelperLaunch): Record<string, unknown> {
     ...(helper.env && Object.keys(helper.env).length > 0 ? { env: helper.env } : {}),
     enabled: true,
     enabledTools: [...APPROVED_BROWSER_TOOL_NAMES]
+  };
+}
+
+// Kimi launches stdio MCP servers with the parent environment (the browser
+// entry relies on the same inheritance for CANVASTTY_AGENT_*), so the
+// orchestration variables reach the helper without being listed here.
+function kimiOrchestrationEntry(helper: StdioHelperLaunch): Record<string, unknown> {
+  return {
+    transport: "stdio",
+    command: helper.command,
+    args: helper.args,
+    ...(helper.env && Object.keys(helper.env).length > 0 ? { env: helper.env } : {}),
+    enabled: true,
+    enabledTools: [...ORCHESTRATION_TOOL_NAMES]
   };
 }
 
@@ -524,10 +630,19 @@ function cleanupOwnedChanges(paths: ReturnType<typeof kimiPaths>, journal: Recov
     } else {
       mutateJsonWithCas(paths.mcp, (document) => {
         const servers = asMcpServers(document);
-        const owned = servers[MCP_SERVER_NAME];
-        if (owned === undefined || hashCanonical(owned) !== journal.mcpEntryHash) return document;
+        const ownedEntries: Array<[string, string]> = [[MCP_SERVER_NAME, journal.mcpEntryHash]];
+        if (journal.orchestrationEntryHash) {
+          ownedEntries.push([ORCHESTRATION_MCP_SERVER_NAME, journal.orchestrationEntryHash]);
+        }
         const nextServers = { ...servers };
-        delete nextServers[MCP_SERVER_NAME];
+        let removed = false;
+        for (const [name, expectedHash] of ownedEntries) {
+          const owned = servers[name];
+          if (owned === undefined || hashCanonical(owned) !== expectedHash) continue;
+          delete nextServers[name];
+          removed = true;
+        }
+        if (!removed) return document;
         return { ...document, mcpServers: nextServers };
       });
     }
@@ -652,6 +767,7 @@ function parseJournal(raw: string, paths: ReturnType<typeof kimiPaths>): Recover
     || typeof value.ownershipId !== "string"
     || typeof value.includeMcpEntry !== "boolean"
     || typeof value.mcpEntryHash !== "string"
+    || (value.orchestrationEntryHash !== undefined && typeof value.orchestrationEntryHash !== "string")
     || (value.mcpMutatedHash !== null && typeof value.mcpMutatedHash !== "string")
     || typeof value.configMutatedHash !== "string"
     || typeof value.backupDirectory !== "string"

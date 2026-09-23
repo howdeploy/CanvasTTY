@@ -84,7 +84,14 @@ const RESUME_ARGUMENTS: Record<Exclude<ProviderId, "terminal">, string[]> = {
   hermes: ["--continue"],
   grok: ["--continue"],
   omp: ["--continue"],
-  pi: ["--continue"]
+  pi: ["--continue"],
+  cursor: ["--continue"],
+  minimax: ["--continue"],
+  devin: ["--continue"],
+  // Antigravity resumes only via the interactive /resume command or
+  // `--conversation <id>`; there is no latest-session launch flag, so
+  // restore starts a fresh session.
+  antigravity: []
 };
 
 const DANGEROUS_ARGUMENTS: Record<Exclude<ProviderId, "terminal" | "opencode">, string[]> = {
@@ -99,7 +106,21 @@ const DANGEROUS_ARGUMENTS: Record<Exclude<ProviderId, "terminal" | "opencode">, 
   omp: ["--auto-approve"],
   // pi 0.85.1 has no permission system, so it has no auto-approve flag. `-a, --approve`
   // only skips its one prompt (trust project-local settings for this run).
-  pi: ["--approve"]
+  pi: ["--approve"],
+  // The Cursor CLI follows Claude Code conventions; its permission bypass is the
+  // same flag Claude Code documents.
+  cursor: ["--dangerously-skip-permissions"],
+  // Measured on @minimax-ai/code 0.5.1: the CLI has no permission bypass flag.
+  // Permission modes (default/auto/bypassPermissions/off) are settings.json and
+  // TUI state (/permission, Alt+M) only, so YOLO launches the stock CLI.
+  minimax: [],
+  // Devin CLI documents --permission-mode; `dangerous` (aliases yolo/bypass)
+  // auto-approves every tool call. `smart` (an AI gatekeeper that approves only
+  // clearly-safe actions) is a supervised mode, deliberately NOT mapped here.
+  devin: ["--permission-mode", "dangerous"],
+  // Documented on antigravity.google/docs/cli: --dangerously-skip-permissions
+  // and --sandbox exist; no --yolo spelling.
+  antigravity: ["--dangerously-skip-permissions"]
 };
 
 function resolveWindowsShell(

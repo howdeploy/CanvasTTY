@@ -1,6 +1,7 @@
 import appManifest from "../../../../../package.json";
 import type { LocaleId } from "../../../../shared/contracts";
 import { t, type TranslationKey } from "../../lib/i18n";
+import { UpdateSettings } from "./UpdateSettings";
 
 const FAQ: ReadonlyArray<readonly [TranslationKey, TranslationKey]> = [
   ["aboutFaqStatusQuestion", "aboutFaqStatusAnswer"],
@@ -20,6 +21,8 @@ export function AboutSettings({ locale }: { locale: LocaleId }): React.JSX.Eleme
         </span>
         <p>{t(locale, "aboutDescription")}</p>
       </header>
+
+      <UpdateSettings locale={locale} />
 
       <div className="about-settings__faq">
         <h3>{t(locale, "aboutFaq")}</h3>

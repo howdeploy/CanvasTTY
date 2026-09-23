@@ -1,11 +1,16 @@
 import { ipcMain } from "electron";
 import { randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import { EvenG2Controller } from "./services/companion/EvenG2Controller";
 import { join } from "node:path";
-import { app, BrowserWindow, dialog, net, protocol, safeStorage } from "electron";
+import { app, BrowserWindow, dialog, Menu, net, protocol, safeStorage } from "electron";
 import { IPC, type PluginCanvasRequest } from "../shared/contracts";
 import { registerIpc } from "./ipc/registerIpc";
+import { registerUpdateIpc } from "./ipc/updateIpc";
+import { UpdateController, type UpdateAdapter } from "./services/updates/UpdateController";
+import { ElectronUpdaterAdapter } from "./services/updates/ElectronUpdaterAdapter";
+import { ManualReleaseAdapter } from "./services/updates/ManualReleaseAdapter";
+import { MacSparkleUpdater } from "./services/updates/MacSparkleUpdater";
 import { SettingsStore } from "./services/SettingsStore";
 import { TerminalManager } from "./services/TerminalManager";
 import { TerminalSessionStore } from "./services/TerminalSessionStore";
@@ -51,6 +56,7 @@ import {
 } from "./services/hermesConfig";
 import { startupPageUrl } from "./startupPage";
 import { mainWindowChromeOptions } from "./windowChrome";
+import { macApplicationMenuTemplate } from "./macApplicationMenu";
 
 if (process.env.CANVASTTY_USER_DATA_DIR) {
   if (!isAbsolute(process.env.CANVASTTY_USER_DATA_DIR)) throw new Error("CANVASTTY_USER_DATA_DIR must be absolute");
@@ -120,6 +126,12 @@ let agentRuntimeHelper: RuntimeHookHelperLaunch | null = null;
 let providerClis: ProviderCliRegistry | null = null;
 const pluginWindows = new Map<BrowserWindow, string>();
 let servicesReady = false;
+let appSurfaceReady = false;
+let pendingMenuUpdateCheck = false;
+let checkUpdatesFromMenu: (() => void) | null = null;
+let installMacMenu: (() => void) | null = null;
+let updateTimer: ReturnType<typeof setTimeout> | null = null;
+let updateInterval: ReturnType<typeof setInterval> | null = null;
 let startupRunning = false;
 let shutdownRunning = false;
 let shutdownComplete = false;
@@ -150,6 +162,7 @@ async function createWindow(): Promise<BrowserWindow> {
     }
   });
   mainWindow = window;
+  appSurfaceReady = false;
   // A fresh window is not closing; the previous one's flag must not leak in.
   mainWindowClosing = false;
 
@@ -172,7 +185,7 @@ async function createWindow(): Promise<BrowserWindow> {
   });
   window.on("closed", () => {
     mainWindowClosing = true;
-    if (mainWindow === window) mainWindow = null;
+    if (mainWindow === window) { mainWindow = null; appSurfaceReady = false; }
   });
 
   try {
@@ -387,6 +400,7 @@ async function initializeServices(): Promise<void> {
     hermesHud: hermesHudService,
     getMainWindow: () => mainWindow,
     applyBrowserSettings: async (next) => {
+      installMacMenu?.();
       agentRuntimeBridge?.setCoreHooksEnabled(next.agentLifecycleHooksEnabled);
       terminalManager?.setLifecycleHooksEnabled(next.agentLifecycleHooksEnabled);
       agentBrowserBridge?.setEnabled(next.browserAgentAccess);
@@ -412,6 +426,54 @@ async function initializeServices(): Promise<void> {
     requestPluginCanvas,
     broadcastPluginStorageChange
   });
+  const manuallyInstalled = !app.isPackaged || (process.platform === "win32" && Boolean(process.env.PORTABLE_EXECUTABLE_FILE));
+  let updateAdapter: UpdateAdapter;
+  if (manuallyInstalled || (process.platform === "darwin" && process.arch !== "arm64")) {
+    updateAdapter = new ManualReleaseAdapter();
+  } else if (process.platform === "darwin") {
+    updateAdapter = new MacSparkleUpdater(userDataPath, dirname(dirname(dirname(app.getPath("exe")))),
+      join(process.resourcesPath, "..", "MacOS", "canvastty-update-helper"),
+      join(process.resourcesPath, "updates", "mac-update-server.mjs"), app.getVersion());
+  } else {
+    updateAdapter = new ElectronUpdaterAdapter();
+  }
+  const update = new UpdateController(updateAdapter, app.getVersion());
+  registerUpdateIpc(update, settings, terminalManager, () => mainWindow);
+  if (process.platform === "darwin") {
+    checkUpdatesFromMenu = () => {
+      const window = mainWindow;
+      if (!appSurfaceReady || !window || window.isDestroyed() || window.webContents.isDestroyed()) {
+        pendingMenuUpdateCheck = true;
+        if (!startupRunning && !shutdownRunning && !shutdownComplete) void startApplication();
+        return;
+      }
+      if (window.isMinimized()) window.restore();
+      window.show();
+      app.focus({ steal: true });
+      window.focus();
+      window.webContents.send(IPC.windowOpenUpdates);
+      void update.check().catch(error => console.warn("Menu update check failed:", error));
+    };
+    let installedLocale: string | null = null;
+    installMacMenu = () => {
+      const locale = settings.get().locale;
+      if (locale === installedLocale) return;
+      Menu.setApplicationMenu(Menu.buildFromTemplate(
+        macApplicationMenuTemplate("CanvasTTY", locale, () => checkUpdatesFromMenu?.())
+      ));
+      installedLocale = locale;
+    };
+  }
+  if (app.isPackaged) {
+    updateTimer = setTimeout(() => {
+      if (update.status().type !== "idle") return;
+      void update.check().catch(error => console.warn("Automatic update check failed:", error));
+    }, 30_000);
+    updateInterval = setInterval(() => {
+      if (["checking", "downloading", "ready", "installing"].includes(update.status().type)) return;
+      void update.check().catch(error => console.warn("Automatic update check failed:", error));
+    }, 60 * 60 * 1000);
+  }
   servicesReady = true;
 }
 
@@ -428,6 +490,13 @@ async function loadApplication(window: BrowserWindow): Promise<void> {
     if (!shellWindowGone(window)) throw error;
     console.warn("CanvasTTY application surface load stopped: its window is gone, the application is closing.", error);
     return;
+  }
+
+  appSurfaceReady = true;
+  installMacMenu?.();
+  if (pendingMenuUpdateCheck) {
+    pendingMenuUpdateCheck = false;
+    checkUpdatesFromMenu?.();
   }
 
   if (process.env.CANVASTTY_SMOKE_TEST === "1") {
@@ -624,6 +693,8 @@ app.on("window-all-closed", () => {
 void IPC.terminalData;
 
 async function shutdownServices(): Promise<void> {
+  if (updateTimer) clearTimeout(updateTimer);
+  if (updateInterval) clearInterval(updateInterval);
   for (const request of browserRequests.values()) { clearTimeout(request.timer); request.reject(new Error("App closing")); }
   browserRequests.clear();
   await evenG2?.close();

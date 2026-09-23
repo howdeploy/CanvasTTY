@@ -72,6 +72,10 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
       - name: Build the packaged macOS application
+        # Public test key keeps fork PR packaging independent of release-owner configuration.
+        # Only release.yml uses the owner's key to produce publishable artifacts.
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY || 'iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=' }}
         run: npm run package:mac
       - name: Smoke-test packaged macOS CLI resolution
         run: npm run smoke:cli-resolution:mac

@@ -108,6 +108,7 @@ const CANVAS_COLOR_PREVIEWS: Record<CanvasColorId, string> = {
 
 interface SettingsPanelProps {
   open: boolean;
+  openUpdatesRequest: number;
   settings: AppSettings;
   agentAvailability: AgentCliAvailability | null;
   onRecheckAgentClis(): Promise<void>;
@@ -135,6 +136,7 @@ interface SettingsPanelProps {
 
 export function SettingsPanel({
   open,
+  openUpdatesRequest,
   settings,
   agentAvailability,
   onRecheckAgentClis,
@@ -164,6 +166,10 @@ export function SettingsPanel({
   const homeLauncherProviders = resolveHomeLauncherProviders(settings);
   const homeLimitProviders = resolveHomeLimitProviders(settings);
   const [section, setSection] = useState<SettingsSection>("general");
+
+  useEffect(() => {
+    if (openUpdatesRequest > 0) setSection("about");
+  }, [openUpdatesRequest]);
   const [capturing, setCapturing] = useState<ShortcutAction | null>(null);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
   const [activity, setActivity] = useState<BrowserActivityEvent[]>([]);

@@ -2,6 +2,12 @@
 
 [English](ARCHITECTURE.md) · [Русский](ARCHITECTURE.ru.md) · [简体中文](ARCHITECTURE.zh-CN.md)
 
+## Application updates
+
+The main process owns one update service and the `idle`, `checking`, `available`, `downloading`, `ready`, `installing`, `upToDate`, and `error` states. Preload exposes only check, download, install, the current status, and status subscription to the trusted renderer. The source is stable `howdeploy/CanvasTTY` releases. A check runs 30 seconds after startup, then hourly, and is also available on demand. Download and installation require separate user actions.
+
+On macOS, the adapter caches the archive before starting Sparkle; Sparkle 2 verifies its Ed25519 signature before replacement. Windows NSIS and Linux AppImage/deb use `electron-updater` with automatic downloading and install-on-quit disabled. Windows portable uses a release link for manual installation.
+
 ## Process boundaries
 
 CanvasTTY follows Electron's three-layer model:

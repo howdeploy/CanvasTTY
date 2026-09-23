@@ -2,6 +2,12 @@
 
 [English](UI_CONTRACT.md) · [Русский](UI_CONTRACT.ru.md) · [简体中文](UI_CONTRACT.zh-CN.md)
 
+## CanvasTTY updates
+
+About shows the current version, manual check, available stable version and release notes, download progress, readiness to install, and errors. When a check finds an update, the workspace shows a compact dismissible notice with its version and a Download action. The notice shows progress while downloading, then an Install action when ready; its title opens About for details. Windows portable opens the release instead of offering an in-app download. Dismissing a notice suppresses repeated notices for that version and stage during the current window session, while a new version or ready stage can appear. Installation and restart happen only after the user's explicit action; live sessions require a confirmation before they close. Reopening Settings immediately shows the current main-process status. Background checks do not open dialogs or start a download.
+
+On macOS, the CanvasTTY application menu includes **Check for Updates…**. It opens About and runs the same manual check as the in-app button. The label follows the selected language; selecting the menu item never starts a download or installation.
+
 This contract preserves the approved MVP concept and prevents feature ownership from drifting.
 
 ## Home zone

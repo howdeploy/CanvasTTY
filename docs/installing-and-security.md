@@ -2,6 +2,36 @@
 
 [English](installing-and-security.md) · [Русский](installing-and-security.ru.md) · [简体中文](installing-and-security.zh-CN.md) · [Docs home](README.md)
 
+## Application updates
+
+The first release with built-in updating must be installed manually. Later updates come from stable `howdeploy/CanvasTTY` releases. macOS retains ad-hoc application signing and uses Sparkle's separate Ed25519 archive signature. Publishing an update requires a signed appcast and the release owner's private signing key.
+
+The release owner must configure `SPARKLE_PUBLIC_ED_KEY` as a GitHub Actions variable and `SPARKLE_EDDSA_PRIVATE_KEY` as a secret in `howdeploy/CanvasTTY`. Both are base64 encoded 32-byte Ed25519 values from one Sparkle key pair. The private key must stay outside the repository. CI checks the pair, embeds the public key in the macOS app, signs `appcast.xml` and the ZIP, and checks the stable tag and complete artifact set before publishing. A release cannot be produced without the owner's keys.
+
+Pull-request macOS packaging uses a public test key when the owner's variable is unavailable; these CI packages are not release artifacts. Before a stable release is published, the release job also verifies that update metadata names, sizes, and SHA-512 hashes match the assembled files.
+
+### Maintainer setup for Sparkle signing (once)
+
+On a trusted Mac, use the pinned Sparkle 2.10.0 tools and an installed, authenticated GitHub CLI (`gh`). `generate_keys` stores the private key in the login Keychain; `--account` keeps the CanvasTTY key separate from keys for other organizations. Keep a secure backup of this key. Reuse the same pair for later releases: an app already shipped with its public key cannot verify updates signed by a different key without a planned key rotation or a manual reinstall.
+
+```bash
+npm ci
+npm run build:mac-updater
+gh auth status
+artifacts/sparkle/distribution/bin/generate_keys --account howdeploy.CanvasTTY
+gh variable set SPARKLE_PUBLIC_ED_KEY --repo howdeploy/CanvasTTY \
+  --body "$(artifacts/sparkle/distribution/bin/generate_keys --account howdeploy.CanvasTTY -p)"
+(
+  umask 077
+  key_dir="$(mktemp -d)"
+  trap 'rm -f "$key_dir/private.key"; rmdir "$key_dir"' EXIT
+  artifacts/sparkle/distribution/bin/generate_keys --account howdeploy.CanvasTTY -x "$key_dir/private.key"
+  gh secret set SPARKLE_EDDSA_PRIVATE_KEY --app actions --repo howdeploy/CanvasTTY < "$key_dir/private.key"
+)
+```
+
+After merging the update PR, run this once before creating the first release tag, using a GitHub account allowed to manage Actions variables and secrets in `howdeploy/CanvasTTY`. The exported seed is kept only in the temporary file during the upload; never commit it or use the public test key for a release. Check that both names appear under **Settings → Secrets and variables → Actions**. The release job verifies that the secret and variable form one pair before it signs the Mac update. Merging the PR does not publish a release; a `vX.Y.Z` tag does. Manual `workflow_dispatch` builds packages without publishing a release.
+
 ## User-facing packages
 
 Each `v*` tag starts native GitHub-hosted builds for all three operating systems:
@@ -76,10 +106,10 @@ Run each platform script on its matching operating system. Cross-compilation is 
 
 ## Release checklist
 
-1. Confirm `package.json` and the tag use the same semantic version.
+1. Confirm the Sparkle Actions variable and secret above are configured in `howdeploy/CanvasTTY`; do not generate a new pair for each release. Confirm `package.json` and the tag use the same semantic version.
 2. Run secret audit, tests, typecheck, production build, and a current-OS package build.
 3. Inspect the real packaged app and verify the package-content allowlist.
-4. Push `vX.Y.Z`; wait for all three GitHub Actions package jobs.
-5. Treat the automatically created release as a prerelease until real-device checks pass on Linux, Windows, and macOS.
+4. Complete real-device update checks with candidate packages on Linux, Windows, and macOS.
+5. Push `vX.Y.Z`; wait for all three GitHub Actions package jobs. The workflow publishes the tag as a stable release after its artifact checks pass.
 
 Browser storage, agent access, and audit retention are documented in [Built-in browser and audit log](browser.md). Security reports follow the repository [security policy](../SECURITY.md).

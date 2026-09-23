@@ -144,6 +144,19 @@ export class TerminalManager {
     if (this.sessionStore) await this.sessionStore.flush().catch(() => undefined);
   }
 
+  async shutdownForUpdate(): Promise<() => Promise<void>> {
+    const sessions = [...this.sessions.values()].map(session => persistedTerminalSession(session.metadata));
+    await this.shutdown();
+    let restored = false;
+    return async () => {
+      if (restored) return;
+      restored = true;
+      this.suppressPersistence = false;
+      for (const descriptor of sessions) this.restorePersistedSession(descriptor);
+      await this.persistSessions();
+    };
+  }
+
   list(): SessionSnapshot[] {
     return [...this.sessions.values()].map((session) => snapshot(session));
   }

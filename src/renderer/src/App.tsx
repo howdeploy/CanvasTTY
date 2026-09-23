@@ -24,6 +24,7 @@ import type {
   SessionBounds,
   SessionSnapshot,
   StickyNote,
+  UpdateStatus,
   WindowState
 } from "../../shared/contracts";
 import {
@@ -38,6 +39,7 @@ import {
 import { normalizeExternalUrl } from "../../shared/externalUrl";
 import { TitleBar } from "./components/TitleBar";
 import { Toast } from "./components/Toast";
+import { UpdateNotice } from "./components/UpdateNotice";
 import { AgentLaunchDialog } from "./features/launcher/AgentLaunchDialog";
 import { SettingsPanel } from "./features/settings/SettingsPanel";
 import { resolveAppearanceSettings } from "./features/settings/appearanceSettings";
@@ -47,6 +49,7 @@ import { TerminalLinkDialog } from "./features/terminal/TerminalLinkDialog";
 import { WorkspaceCanvas } from "./features/workspace/WorkspaceCanvas";
 import type { LimitsLoadState } from "./features/home/homeModel";
 import { t } from "./lib/i18n";
+import { updateNoticeForStatus, updateNoticeKey, type UpdateNoticeAction } from "./lib/updateNotice";
 import { AGENT_PROVIDERS } from "./lib/providers";
 import {
   mergeSessionSnapshots,
@@ -200,12 +203,17 @@ export function App(): React.JSX.Element {
   const [launchProvider, setLaunchProvider] = useState<AgentProviderId | null>(null);
   const [launchPosition, setLaunchPosition] = useState<Point | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [openUpdatesRequest, setOpenUpdatesRequest] = useState(0);
   const [homeEditDraft, setHomeEditDraft] = useState<HomeEditDraft | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [browserSelected, setBrowserSelected] = useState(false);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [pendingTerminalUrl, setPendingTerminalUrl] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ type: "idle" });
+  const [dismissedUpdateNotice, setDismissedUpdateNotice] = useState<string | null>(null);
+  const [updateNoticePending, setUpdateNoticePending] = useState(false);
+  const updateNoticePendingRef = useRef(false);
   const [ready, setReady] = useState(false);
   const [windowState, setWindowState] = useState<WindowState>({
     isMacOS: window.canvasTTY.window.isMacOS,
@@ -214,6 +222,46 @@ export function App(): React.JSX.Element {
   });
 
   const showToast = useCallback((message: string): void => setToast(message), []);
+
+  const openUpdates = useCallback((): void => {
+    setSettingsOpen(true);
+    setOpenUpdatesRequest(request => request + 1);
+  }, []);
+
+  const runUpdateNoticeAction = useCallback((action: UpdateNoticeAction): void => {
+    if (updateNoticePendingRef.current) return;
+    let operation: Promise<void>;
+    if (action === "manual") {
+      if (updateStatus.type !== "available" || !updateStatus.manualUrl) return;
+      operation = window.canvasTTY.external.openUrl(updateStatus.manualUrl);
+    } else {
+      operation = action === "download" ? window.canvasTTY.update.download() : window.canvasTTY.update.install();
+    }
+    updateNoticePendingRef.current = true;
+    setUpdateNoticePending(true);
+    void operation.catch((error: unknown) => {
+      showToast(error instanceof Error ? error.message : settings.locale === "ru" ? "Не удалось выполнить действие с обновлением" : "Update action failed");
+      if (action !== "manual") openUpdates();
+    }).finally(() => {
+      updateNoticePendingRef.current = false;
+      setUpdateNoticePending(false);
+    });
+  }, [openUpdates, settings.locale, showToast, updateStatus]);
+
+  useEffect(() => window.canvasTTY.window.onOpenUpdates(openUpdates), [openUpdates]);
+
+  useEffect(() => {
+    let live = true;
+    let eventSeen = false;
+    const unsubscribe = window.canvasTTY.update.onStatus(status => {
+      eventSeen = true;
+      if (live) setUpdateStatus(status);
+    });
+    void window.canvasTTY.update.status().then(status => {
+      if (live && !eventSeen) setUpdateStatus(status);
+    }).catch(() => undefined);
+    return () => { live = false; unsubscribe(); };
+  }, []);
 
   useEffect(() => {
     browserCanvasRef.current = settings.browserCanvas;
@@ -1126,6 +1174,7 @@ export function App(): React.JSX.Element {
       />
       <SettingsPanel
         open={settingsOpen}
+        openUpdatesRequest={openUpdatesRequest}
         settings={settings}
         agentAvailability={agentAvailability}
         onRecheckAgentClis={recheckAgentClis}
@@ -1149,6 +1198,19 @@ export function App(): React.JSX.Element {
         onToggleHomeWidget={toggleHomeWidget}
         onEditHome={startHomeEditor}
         onOpenBrowser={openBrowser}
+      />
+      <UpdateNotice
+        status={settingsOpen ? null : updateNoticeForStatus(updateStatus, dismissedUpdateNotice)}
+        locale={settings.locale}
+        pending={updateNoticePending}
+        onOpen={() => {
+          if (updateStatus.type === "available" || updateStatus.type === "ready") setDismissedUpdateNotice(updateNoticeKey(updateStatus));
+          openUpdates();
+        }}
+        onAction={runUpdateNoticeAction}
+        onDismiss={() => {
+          if (updateStatus.type === "available" || updateStatus.type === "ready") setDismissedUpdateNotice(updateNoticeKey(updateStatus));
+        }}
       />
       <Toast message={toast} />
     </div>

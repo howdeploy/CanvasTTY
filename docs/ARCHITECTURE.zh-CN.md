@@ -2,6 +2,12 @@
 
 [English](ARCHITECTURE.md) · [Русский](ARCHITECTURE.ru.md) · [简体中文](ARCHITECTURE.zh-CN.md)
 
+## 应用更新
+
+主进程管理统一的更新服务及 `idle`、`checking`、`available`、`downloading`、`ready`、`installing`、`upToDate`、`error` 状态。Preload 仅向可信 renderer 提供检查、下载、安装、当前状态和状态订阅。更新来源仅为 `howdeploy/CanvasTTY` 的稳定版发布。应用启动 30 秒后检查，此后每小时检查一次，也可手动检查。下载和安装分别需要用户操作。
+
+macOS 适配器先缓存归档，再启动 Sparkle；Sparkle 2 在替换应用前验证 Ed25519 签名。Windows NSIS 与 Linux AppImage/deb 使用 `electron-updater`，关闭自动下载和退出时自动安装。Windows 便携版提供手动安装的发布页链接。
+
 ## 进程边界
 
 CanvasTTY 遵循 Electron 的三层模型：

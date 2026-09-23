@@ -2,6 +2,12 @@
 
 [English](ARCHITECTURE.md) · [Русский](ARCHITECTURE.ru.md) · [简体中文](ARCHITECTURE.zh-CN.md)
 
+## Обновление приложения
+
+Main-процесс владеет единым `UpdateService` и состояниями `idle`, `checking`, `available`, `downloading`, `ready`, `installing`, `upToDate`, `error`. Preload открывает доверенному renderer только `check`, `download`, `install`, текущий снимок и подписку на статусы; пути к файлам и команды установки через IPC не принимаются. Источник — только стабильные релизы `howdeploy/CanvasTTY`. Проверка выполняется через 30 секунд после запуска и затем раз в час либо вручную. Скачивание и установка запускаются только пользователем.
+
+На macOS адаптер сохраняет архив до запуска Sparkle. Sparkle 2 проверяет Ed25519-подпись подписанного appcast и архива перед заменой приложения. На Windows NSIS и Linux AppImage/deb используется `electron-updater` без автоматического скачивания и установки при выходе. Portable Windows ведёт пользователя к релизу для ручной установки.
+
 ## Границы процессов
 
 CanvasTTY использует трёхслойную модель Electron:

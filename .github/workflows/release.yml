@@ -46,7 +46,28 @@ jobs:
       - name: Run tests
         run: npm test
       - name: Build installers
+        if: runner.os != 'macOS'
         run: npm run ${{ matrix.script }}
+      - name: Build macOS installers with owner public key
+        if: runner.os == 'macOS'
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: npm run package:mac
+      - name: Generate signed Sparkle appcast
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          test -n "$SPARKLE_EDDSA_PRIVATE_KEY"
+          node scripts/verify-sparkle-key.mjs
+          mkdir -p release/appcast-input
+          cp release/*-mac-arm64.zip release/appcast-input/
+          printf '%s' "$SPARKLE_EDDSA_PRIVATE_KEY" | artifacts/sparkle/distribution/bin/generate_appcast \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/howdeploy/CanvasTTY/releases/download/${GITHUB_REF_NAME}/" \
+            release/appcast-input
+          cp release/appcast-input/appcast.xml release/appcast.xml
       - name: Verify macOS app signature
         if: runner.os == 'macOS'
         run: |
@@ -73,6 +94,9 @@ jobs:
             release/*.exe
             release/*.dmg
             release/*.zip
+            release/*.yml
+            release/*.blockmap
+            release/appcast.xml
           if-no-files-found: error
 
   release:
@@ -83,11 +107,22 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
       - name: Download packaged artifacts
         uses: actions/download-artifact@v8
         with:
           path: release-artifacts
           merge-multiple: true
+      - name: Verify release tag and artifact set
+        run: node scripts/verify-release-artifacts.mjs "${GITHUB_REF_NAME}" release-artifacts
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

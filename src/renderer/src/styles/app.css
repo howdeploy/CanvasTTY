@@ -678,6 +678,13 @@ button { border: 0; }
 .shortcut-editor__error { margin: 9px 0 0; color: #8f3939; font-size: 12px; font-weight: 750; line-height: 1.35; }
 .shortcut-editor__warning { margin: 9px 0 0; color: #7b5b19; font-size: 12px; font-weight: 750; line-height: 1.35; }
 .about-settings { display: grid; gap: 24px; }
+.update-settings { display: grid; gap: 10px; padding: 16px; border-radius: 12px; background: var(--surface-soft); }
+.update-settings h3, .update-settings p { margin: 0; }
+.update-settings__notes { max-height: 160px; overflow-y: auto; white-space: pre-wrap; user-select: text; }
+.update-settings progress { width: min(100%, 360px); accent-color: var(--primary); }
+.update-settings__actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.update-settings__actions button { padding: 8px 12px; border-radius: 8px; color: var(--text); background: var(--surface); cursor: pointer; }
+.update-settings__actions button:disabled { opacity: .55; cursor: default; }
 .about-settings__header { min-height: 132px; padding: 20px; display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; border-radius: 18px; color: white; background: var(--surface); }
 .about-settings__header > span { display: flex; align-items: baseline; gap: 9px; }
 .about-settings__header strong { font: 900 27px/1 var(--font-mono); letter-spacing: -.045em; }
@@ -989,6 +996,15 @@ button { border: 0; }
 .settings-panel .plugin-showcase-lock span { color: var(--text); background: var(--surface-soft); box-shadow: var(--shadow-md); }
 .settings-panel .plugin-icon--fallback { color: var(--text-dark); background: var(--primary); }
 .settings-panel .canvas-launcher-settings-menu .canvas-menu__row--muted .canvas-menu__grow { color: var(--text-muted-on-dark); }
+.update-notice { position: fixed; top: calc(var(--titlebar-height) + 10px); right: 12px; z-index: 5900; width: min(310px, calc(100vw - 24px)); min-width: 0; min-height: 42px; padding: 7px 8px 7px 10px; display: flex; align-items: center; gap: 7px; border: 1px solid color-mix(in srgb, var(--primary) 45%, transparent); border-radius: 9px; color: var(--text); background: var(--surface); box-shadow: var(--shadow-md); font-size: 12px; }
+.update-notice__copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.update-notice__details { min-width: 0; padding: 0; overflow: hidden; color: var(--text); background: transparent; cursor: pointer; font-size: 12px; font-weight: 700; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.update-notice__details:hover, .update-notice__details:focus-visible { text-decoration: underline; }
+.update-notice__copy progress { width: 100%; height: 3px; accent-color: var(--primary); }
+.update-notice__action { flex: 0 0 auto; padding: 6px 8px; border-radius: 6px; color: var(--text-dark); background: var(--primary); cursor: pointer; font-size: 11px; font-weight: 700; }
+.update-notice__action:disabled { opacity: .55; cursor: wait; }
+.update-notice__dismiss { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border-radius: 4px; color: var(--text-muted-on-dark); background: transparent; cursor: pointer; font-size: 17px; line-height: 1; }
+.update-notice__dismiss:hover, .update-notice__dismiss:focus-visible { color: var(--text); background: var(--surface-soft); }
 .toast { position: fixed; z-index: 9999; left: 50%; bottom: 24px; max-width: min(540px, calc(100% - 40px)); padding: 12px 17px; border-radius: 11px; color: white; background: rgba(37,38,48,.94); box-shadow: var(--shadow-md); opacity: 0; transform: translate(-50%, 18px); pointer-events: none; transition: all .2s ease; }
 .toast--visible { opacity: 1; transform: translate(-50%, 0); }
 .loading-screen { position: absolute; inset: 0; z-index: 5000; display: grid; place-items: center; color: var(--text); background: var(--surface); font-size: 14px; font-weight: 900; letter-spacing: .05em; }
@@ -1006,6 +1022,7 @@ button { border: 0; }
 }
 
 @media (max-width: 480px) {
+  .update-notice { left: 12px; right: 12px; width: auto; }
   .settings-panel { grid-template-columns: 4.8em minmax(0, 1fr); border-radius: .9em; }
   .settings-panel__sidebar { padding: .55em; }
   .settings-panel__brand { justify-content: center; padding-right: 0; padding-left: 0; }

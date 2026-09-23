@@ -14,6 +14,7 @@ files:
   - "!**/*.map"
 
 asar: true
+afterPack: scripts/after-pack-updates.cjs
 asarUnpack:
   - node_modules/node-pty/**/*
 extraResources:
@@ -70,6 +71,13 @@ portable:
   artifactName: ${productName}-${version}-windows-${arch}-portable.${ext}
 
 mac:
+  extraFiles:
+    - from: artifacts/sparkle/Sparkle.framework
+      to: Frameworks/Sparkle.framework
+    - from: artifacts/sparkle/canvastty-update-helper
+      to: MacOS/canvastty-update-helper
+    - from: src/native/updates/mac-update-server.mjs
+      to: Resources/updates/mac-update-server.mjs
   extraResources:
     - from: artifacts/companion-speech/${arch}
       to: companion/speech

@@ -2,6 +2,36 @@
 
 [English](installing-and-security.md) · [Русский](installing-and-security.ru.md) · [简体中文](installing-and-security.zh-CN.md) · [文档首页](README.zh-CN.md)
 
+## 应用更新
+
+首个包含内置更新机制的版本需要手动安装。后续更新来自 `howdeploy/CanvasTTY` 的稳定版发布。macOS 保留应用的 ad-hoc 签名，并使用 Sparkle 独立的 Ed25519 归档签名。发布更新需要已签名的 appcast 和发布者持有的私钥。
+
+发布负责人须在 `howdeploy/CanvasTTY` 的 GitHub Actions 中设置变量 `SPARKLE_PUBLIC_ED_KEY` 和密钥 `SPARKLE_EDDSA_PRIVATE_KEY`。两者分别是同一 Sparkle Ed25519 密钥对中 32 字节公钥和私钥种子的 base64 编码。私钥不得存入仓库。CI 会核对密钥对，将公钥写入 macOS 应用，签署 `appcast.xml` 和 ZIP，并在发布前检查稳定版 tag 与完整产物。
+
+在 pull request 的 macOS CI 构建中，如无法读取发布负责人的变量，则使用测试公钥；这些构建不会作为正式发布产物上传。发布稳定版前，发布 job 还会核对更新元数据中的文件名、大小及 SHA-512 校验值是否与实际产物一致。
+
+### 维护者一次性配置 Sparkle 签名
+
+在可信的 Mac 上使用固定版本 Sparkle 2.10.0 的工具，以及已安装并完成登录的 GitHub CLI（`gh`）。`generate_keys` 将私钥保存在登录钥匙串中；`--account` 将 CanvasTTY 的密钥与其他组织的密钥分开。请安全备份此密钥。后续发布继续使用同一密钥对：已内置公钥的应用无法验证另一密钥对签署的更新，除非预先安排密钥轮换或让用户手动重新安装。
+
+```bash
+npm ci
+npm run build:mac-updater
+gh auth status
+artifacts/sparkle/distribution/bin/generate_keys --account howdeploy.CanvasTTY
+gh variable set SPARKLE_PUBLIC_ED_KEY --repo howdeploy/CanvasTTY \
+  --body "$(artifacts/sparkle/distribution/bin/generate_keys --account howdeploy.CanvasTTY -p)"
+(
+  umask 077
+  key_dir="$(mktemp -d)"
+  trap 'rm -f "$key_dir/private.key"; rmdir "$key_dir"' EXIT
+  artifacts/sparkle/distribution/bin/generate_keys --account howdeploy.CanvasTTY -x "$key_dir/private.key"
+  gh secret set SPARKLE_EDDSA_PRIVATE_KEY --app actions --repo howdeploy/CanvasTTY < "$key_dir/private.key"
+)
+```
+
+合并更新 PR 后、创建首个发布 tag 前，请使用有权管理 `howdeploy/CanvasTTY` 中 Actions variables 和 secrets 的 GitHub 账户执行一次这些命令。导出的种子仅在上传期间保存在临时文件中；不要提交它，也不要将测试公钥用于正式发布。在 **Settings → Secrets and variables → Actions** 中确认两个名称均已存在。发布 job 会在签署 Mac 更新前验证密钥对。仅合并 PR 不会发布 release；推送 `vX.Y.Z` tag 才会触发发布。手动 `workflow_dispatch` 只构建安装包。
+
 ## 面向用户的软件包
 
 每个 `v*` tag 都会在 GitHub 托管的对应系统 runner 上触发三大平台的原生构建：
@@ -76,10 +106,10 @@ npm run package:mac
 
 ## 发布检查清单
 
-1. 确认 `package.json` 与 tag 使用同一个语义化版本号。
+1. 确认已在 `howdeploy/CanvasTTY` 配置 Sparkle 的变量和密钥；不要为每次发布重新生成密钥对。确认 `package.json` 与 tag 使用同一个语义化版本号。
 2. 运行密钥审计、测试、typecheck、production build 以及当前系统的 package 构建。
 3. 检查真实打包出来的应用，并核对包内容白名单。
-4. 推送 `vX.Y.Z`，等待三个 GitHub Actions package job 全部完成。
-5. 在真实 Linux、Windows 和 macOS 设备上验证通过之前，将自动创建的 release 保持为预发布（prerelease）状态。
+4. 使用候选安装包在真实 Linux、Windows 和 macOS 设备上完成更新验证。
+5. 推送 `vX.Y.Z`，等待三个 GitHub Actions package job 全部完成。产物检查通过后，workflow 会立即将该 tag 发布为稳定版 release。
 
 浏览器存储、智能体访问与日志保留策略见[内置浏览器与审计日志](browser.zh-CN.md)。安全问题请按照仓库的[安全策略](../SECURITY.zh-CN.md)进行报告。

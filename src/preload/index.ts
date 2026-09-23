@@ -19,6 +19,7 @@ import type {
   PluginLauncherRequest,
   PluginStorageChangeEvent,
   PluginUpdateStatus,
+  UpdateStatus,
   SessionBounds,
   SessionEvent,
   SessionRemovedEvent,
@@ -33,7 +34,21 @@ function subscribe<T>(channel: string, listener: (event: T) => void): () => void
   return () => ipcRenderer.removeListener(channel, wrapped);
 }
 
+const openUpdateListeners = new Set<() => void>();
+let pendingOpenUpdates = false;
+ipcRenderer.on(IPC.windowOpenUpdates, () => {
+  if (openUpdateListeners.size === 0) pendingOpenUpdates = true;
+  else for (const listener of openUpdateListeners) listener();
+});
+
 const api: CanvasTTYApi = {
+  update: {
+    status: () => ipcRenderer.invoke(IPC.updateStatus),
+    check: () => ipcRenderer.invoke(IPC.updateCheck),
+    download: () => ipcRenderer.invoke(IPC.updateDownload),
+    install: () => ipcRenderer.invoke(IPC.updateInstall),
+    onStatus: (listener) => subscribe<UpdateStatus>(IPC.updateChanged, listener)
+  },
   evenG2: {
     state: () => ipcRenderer.invoke(IPC.evenG2State),
     command: (command) => ipcRenderer.invoke(IPC.evenG2Command, command),
@@ -186,6 +201,11 @@ const api: CanvasTTYApi = {
   },
   window: {
     isMacOS: process.platform === "darwin",
+    onOpenUpdates: (listener) => {
+      openUpdateListeners.add(listener);
+      if (pendingOpenUpdates) { pendingOpenUpdates = false; listener(); }
+      return () => { openUpdateListeners.delete(listener); };
+    },
     minimize: () => ipcRenderer.send(IPC.windowMinimize),
     toggleMaximize: () => ipcRenderer.invoke(IPC.windowToggleMaximize),
     close: () => ipcRenderer.send(IPC.windowClose),

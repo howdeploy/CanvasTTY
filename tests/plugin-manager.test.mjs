@@ -1639,3 +1639,12 @@ function writeOctal(header, offset, length, value) {
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
+
+test("the anonymous showcase search reports when GitHub's rate limit resets", async () => {
+  const { githubRateLimitMessage } = await import("../src/main/services/PluginManager.ts");
+  const reset = Math.floor(Date.UTC(2030, 0, 1, 12, 30) / 1000);
+  const message = githubRateLimitMessage(new Response("", { status: 403, headers: { "x-ratelimit-reset": String(reset) } }));
+  assert.match(message, /try again after \d{1,2}:\d{2}/u);
+  assert.match(message, /Signing in to GitHub raises the limit/u);
+  assert.match(githubRateLimitMessage(new Response("", { status: 429 })), /try again in a minute/u);
+});

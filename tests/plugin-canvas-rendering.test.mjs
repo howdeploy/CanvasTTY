@@ -24,3 +24,16 @@ test("plugin canvas iframe does not paint a bright host seam", async () => {
   assert.match(frameRule, /background:\s*transparent/);
   assert.doesNotMatch(frameRule, /background:\s*white/);
 });
+
+test("host image policy admits owned plugin icons without opening external or script sources", async () => {
+  const html = await readFile(new URL("../src/renderer/index.html", import.meta.url), "utf8");
+  const policy = html.match(/http-equiv="Content-Security-Policy"\s+content="([^"]+)"/)[1];
+  const directives = new Map(policy.split(";").filter(part => part.trim()).map(part => {
+    const [name, ...sources] = part.trim().split(/\s+/);
+    return [name, sources];
+  }));
+  assert.ok(directives.get("img-src").includes("canvastty-plugin:"));
+  for (const source of directives.get("img-src")) assert.ok(["'self'", "data:", "blob:", "canvastty-plugin:"].includes(source));
+  assert.deepEqual(directives.get("script-src"), ["'self'"]);
+  assert.deepEqual(directives.get("connect-src"), ["'self'", "ws:"]);
+});

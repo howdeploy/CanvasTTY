@@ -1,12 +1,30 @@
+import { DecisionCoordinator } from './services/decision/DecisionCoordinator';
+import { DecisionSecrets } from './services/decision/DecisionSecrets';
+import { PreferenceReviewService } from './services/PreferenceReviewService';
+import { ConventionValidatorService } from './services/ConventionValidatorService';
+import { ContextLaunchService } from './services/ContextLaunchService';
+import { ContextProfileStore } from "./services/ContextProfileStore";
+import { ContainerExecutionService } from "./services/ContainerExecutionService";
+import { ContainerPlacementService } from './services/ContainerPlacement';
+import { WorktreeService } from "./services/WorktreeService";
+import { SessionLaunchCoordinator } from "./services/SessionLaunchCoordinator";
+import { TaskCapsuleService } from "./services/TaskCapsuleService";
+import { CapsuleLaunchService } from "./services/CapsuleLaunchService";
+import { ScopedCapsuleControl } from './services/ScopedCapsuleControl';
+import { CapsuleTestService } from './services/CapsuleTestService';
+import { ProviderAccountLaunchService } from "./services/ProviderAccountLaunchService";
+import { LocalOperationalMetricsService } from "./services/LocalOperationalMetrics";
 import { ipcMain } from "electron";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { EvenG2Controller } from "./services/companion/EvenG2Controller";
 import { join } from "node:path";
-import { app, BrowserWindow, dialog, net, protocol, safeStorage } from "electron";
+import { app, BrowserWindow, dialog, net, protocol, safeStorage, session } from "electron";
 import { IPC, type PluginCanvasRequest } from "../shared/contracts";
 import { registerIpc } from "./ipc/registerIpc";
+import { SavedHostDiagnostics } from "./services/SavedHostDiagnostics";
 import { SettingsStore } from "./services/SettingsStore";
+import { SessionLaunchPolicy } from "./services/SessionLaunchPolicy";
 import { TerminalManager } from "./services/TerminalManager";
 import { TerminalSessionStore } from "./services/TerminalSessionStore";
 import { LimitsService } from "./services/LimitsService";
@@ -19,6 +37,15 @@ import { PluginManager } from "./services/PluginManager";
 import { GithubAuthService } from "./services/GithubAuthService";
 import { PluginMediaService } from "./services/PluginMediaService";
 import { PluginSecretsService } from "./services/PluginSecretsService";
+import { ProviderSecretsService } from "./services/ProviderSecretsService";
+import { AgentControlService } from "./services/AgentControlService";
+import { HostPlacementService } from "./services/HostPlacement";
+import { RemoteProviderDiscovery } from "./services/RemoteProviderDiscovery";
+import { RemoteProviderAccess } from "./services/RemoteProviderAccess";
+import { RemoteHostMetricsService } from "./services/RemoteHostMetrics";
+import { sshRunner } from "./services/RemoteHostsService";
+import { ServerProvisioning } from "./services/ServerProvisioning";
+import { AccountLoginService } from "./services/AccountLogin";
 import { HermesHudService } from "./services/HermesHudService";
 import { BrowserService } from "./services/BrowserService";
 import { CanvasNavigationInputController } from "./services/CanvasNavigationOverride";
@@ -30,6 +57,9 @@ import {
 } from "./services/browser/ProviderElectronSmoke";
 import {
   AgentBrowserBridge,
+  OrchestrationGateway,
+  OrchestrationBridge,
+  ScopedOrchestrationHandler,
   AgentGateway,
   WINDOWS_PIPE_HOST_FILENAME,
   WINDOWS_AGENT_GATEWAY_UNAVAILABLE,
@@ -108,10 +138,14 @@ let pluginManager: PluginManager | null = null;
 let githubAuth: GithubAuthService | null = null;
 let pluginMediaService: PluginMediaService | null = null;
 let pluginSecretsService: PluginSecretsService | null = null;
+let decisionCoordinator: DecisionCoordinator | null = null;
+let providerSecretsService: ProviderSecretsService | null = null;
 let hermesHudService: HermesHudService | null = null;
 let browserService: BrowserService | null = null;
 let canvasNavigationInput: CanvasNavigationInputController | null = null;
 let agentGateway: AgentGateway | null = null;
+let orchestrationGateway: OrchestrationGateway | null = null;
+let capsuleTestsService: CapsuleTestService | null = null;
 let agentBrowserBridge: AgentBrowserBridge | null = null;
 let agentBrowserHelper: StdioHelperLaunch | null = null;
 let runtimeGateway: RuntimeGateway | null = null;
@@ -159,6 +193,16 @@ async function createWindow(): Promise<BrowserWindow> {
     if (currentUrl && url !== currentUrl) event.preventDefault();
   });
   canvasNavigationInput?.attach(window.webContents, { preventMouseBindings: false });
+  // A dead renderer must not leave a blank window: reload the application surface in place.
+  // Services, sessions and scrollback live in this process and stay untouched. A clean exit is
+  // the normal teardown path.
+  window.webContents.on("render-process-gone", (_event, details) => {
+    if (details.reason === "clean-exit") return;
+    console.warn(`CanvasTTY renderer is gone (reason=${details.reason}, exitCode=${details.exitCode}). Reloading the application.`);
+    if (shellWindowGone(window) || window.webContents.isDestroyed()) return;
+    void reloadApplicationSurface(window)
+      .catch((error) => console.warn("CanvasTTY could not reload the application after a renderer crash.", error));
+  });
   window.on("blur", () => {
     canvasNavigationInput?.reset();
     browserService?.cancelCanvasNavigationGesture();
@@ -198,6 +242,12 @@ function shellWindowGone(window: BrowserWindow): boolean {
 }
 
 async function initializeServices(): Promise<void> {
+  // Deny-by-default web permissions on the default session: the app window and plugin windows
+  // never need camera, microphone, location, notifications or device access. The Browser card uses
+  // its own partition with its own policy in BrowserService.
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
+  session.defaultSession.setDevicePermissionHandler(() => false);
   providerClis = buildProviderCliRegistry();
   // Recovery is independent of gateway availability: interrupted provider config
   // overlays must be restored before any new terminal can launch, including on Windows.
@@ -261,8 +311,16 @@ async function initializeServices(): Promise<void> {
       args: [helperPath],
       env: { ELECTRON_RUN_AS_NODE: "1" }
     };
+    const orchestrationHelperPath = app.isPackaged
+      ? join(process.resourcesPath, "agent-browser", "orchestration-helper.mjs")
+      : join(app.getAppPath(), "src", "agent-browser", "orchestration-helper.mjs");
     agentBrowserBridge = new AgentBrowserBridge(agentGateway, {
       helper: agentBrowserHelper,
+      orchestrationHelper: {
+        command: process.execPath,
+        args: [orchestrationHelperPath],
+        env: { ELECTRON_RUN_AS_NODE: "1" }
+      },
       providerClis,
       runtimeDirectory,
       hermesHomeDirectory,
@@ -325,8 +383,109 @@ async function initializeServices(): Promise<void> {
       mainWindow.webContents.send(channel, payload);
     }
   }, providerClis, agentBrowserBridge ?? undefined, agentRuntimeBridge ?? undefined, settings.get().agentLifecycleHooksEnabled);
+  terminalManager.configureLaunchPolicy(new SessionLaunchPolicy(() => settings.get()));
+  settings.configureHostSessions(() => terminalManager!.listMetadata());
   const terminalSessionStore = new TerminalSessionStore(userDataPath);
   terminalManager.configureSessionPersistence(terminalSessionStore, settings.get().restoreTerminalSessions);
+
+  // The local gateway socket/timer is resident; capabilities and MCP config exist only for sessions explicitly launched with
+  // the orchestrator role; interactive sessions never receive capabilities.
+  const remoteMetrics = new RemoteHostMetricsService(sshRunner);
+  const remoteDiscovery = new RemoteProviderDiscovery(sshRunner);
+  const remoteAccess = new RemoteProviderAccess(sshRunner);
+  const localMetrics = new LocalOperationalMetricsService({
+    sessions: () => terminalManager!.listMetadata(),
+    processMetrics: () => app.getAppMetrics().map((metric) => ({ cpuPercent: metric.cpu.percentCPUUsage, workingSetKb: metric.memory.workingSetSize }))
+  });
+  const hostPlacement = new HostPlacementService({
+    metrics: (host) => remoteMetrics.collect(host),
+    discovery: (host, providers) => remoteDiscovery.discover(host, undefined, providers),
+    access: (host, providers) => remoteAccess.probe(host, undefined, providers),
+    capacity: (excludeSessionId) => {
+      const counts = new Map<string, { sessions: number; agents: number }>();
+      for (const session of terminalManager!.listMetadata()) {
+        if (session.id === excludeSessionId || session.hostId === undefined || session.exitCode !== null) continue;
+        const count = counts.get(session.hostId) ?? { sessions: 0, agents: 0 };
+        count.sessions++;
+        if (session.provider !== "terminal") count.agents++;
+        counts.set(session.hostId, count);
+      }
+      const limit = settings.get().agentBudgets.maxRemoteAgentsPerHost;
+      return {
+        activeSessions: (hostId) => counts.get(hostId)?.sessions ?? 0,
+        hasAgentCapacity: (hostId) => (counts.get(hostId)?.agents ?? 0) < limit
+      };
+    }
+  });
+  const agentControl = new AgentControlService(terminalManager, { place: request => hostPlacement.place(settings.get().remoteHosts, request) });
+  const orchestrationHandler = new ScopedOrchestrationHandler(agentControl);
+  orchestrationGateway = new OrchestrationGateway({
+    runtimeDirectory: join(userDataPath, "orchestration", "runtime"),
+    handler: orchestrationHandler
+  });
+  await orchestrationGateway.start();
+  terminalManager.configureAcp({ orchestrationCommand: {
+    command: process.execPath,
+    args: [app.isPackaged ? join(process.resourcesPath, "agent-browser", "orchestration-helper.mjs") : join(app.getAppPath(), "src", "agent-browser", "orchestration-helper.mjs")],
+    environment: { ELECTRON_RUN_AS_NODE: "1" }
+  } });
+  terminalManager.configureOrchestration(new OrchestrationBridge(orchestrationGateway));
+
+  // Remote shell sessions resolve their host from the live settings registry:
+  // a hostId with no matching entry fails the create instead of spawning.
+  terminalManager.configureRemoteHosts(
+    (hostId) => settings.hostForLaunch(hostId)
+  );
+
+  providerSecretsService = new ProviderSecretsService(userDataPath, {
+    isAvailable: securePluginStorageAvailable,
+    encrypt: (value) => safeStorage.encryptString(value),
+    decrypt: (value) => safeStorage.decryptString(value)
+  }, (owner, pendingCreation) => {
+    if (owner.hostId !== "local") return false;
+    const profile = settings.get().apiProfiles.find((candidate) => candidate.id === owner.profileId);
+    return profile ? (profile.hostId ?? "local") === owner.hostId : pendingCreation;
+  });
+  await providerSecretsService.load();
+  const worktrees = new WorktreeService({ rootDirectory: join(userDataPath, "execution-workspaces") });
+  await worktrees.recover().catch(() => { console.warn("CanvasTTY retained workspaces could not be verified; they remain on disk."); });
+  const capsuleStorage = new TaskCapsuleService({ rootDirectory: join(userDataPath, 'task-capsules') });
+  await capsuleStorage.recover().catch(() => { console.warn('CanvasTTY retained capsules could not be verified; they remain on disk.'); });
+  const capsules = new CapsuleLaunchService(capsuleStorage, () => settings.get());
+  const contextProfiles = new ContextProfileStore(join(userDataPath, "context-profiles"), () => settings.get().pathPolicies);
+  const contextLaunch = new ContextLaunchService(contextProfiles);
+  const conventionValidator = new ConventionValidatorService(capsules, contextProfiles);
+  terminalManager.configureContextLaunch(contextLaunch, () => settings.get().contextProfilesEnabled);
+  const launchPolicy = new SessionLaunchPolicy(() => settings.get(), { context: contextLaunch, capsulePolicy: request => capsules.classify(request) });
+  terminalManager.configureLaunchPolicy(launchPolicy);
+  const containers = new ContainerExecutionService(() => settings.get(), { rootDirectory: join(userDataPath, "container-generations"), onWorkspaceStopped: (id, lease, kind) => kind === 'capsule-test' ? capsuleTests.confirmStopped(id, lease) : (kind === 'capsule' || kind === 'advisory-review') ? capsuleStorage.confirmContainerStopped(id, lease) : worktrees.confirmContainerStopped(id, lease) });
+  const capsuleTests = new CapsuleTestService(capsules, containers, () => settings.get(), { rootDirectory: join(userDataPath, 'capsule-test-runs') });
+  capsuleTestsService = capsuleTests;
+  await capsuleTests.recover().catch(() => { console.warn('CanvasTTY retained tests could not be verified; their files remain on disk.'); });
+  const decisionSecrets = new DecisionSecrets(userDataPath, { isAvailable: securePluginStorageAvailable, encrypt: value => safeStorage.encryptString(value), decrypt: value => safeStorage.decryptString(value) }, () => decisionCoordinator?.invalidate());
+  const decisions = new DecisionCoordinator({ settings: () => settings.get(), terminals: terminalManager, control: agentControl, secrets: decisionSecrets, providerSecretGeneration: () => providerSecretsService!.generation,
+    remoteAvailable: (id, provider) => { const host = settings.get().remoteHosts.find(h => h.id === id); return !!host && remoteDiscovery.cachedAvailable(host, provider); },
+    localCliAvailable: provider => providerClis!.get(provider).state === 'available',
+    limits: () => limitsService ? limitsService.get() : Promise.resolve(null) });
+  decisionCoordinator = decisions;
+  providerSecretsService.onChanged(() => decisions.invalidate());
+  terminalManager.configureDecisionInvalidation(id => decisions.invalidate(id));
+  orchestrationHandler.configureDecisions(decisions);
+  const preferenceReview = new PreferenceReviewService(capsules, terminalManager, agentControl, containers, () => settings.get());
+  orchestrationHandler.configureCapsules(new ScopedCapsuleControl(terminalManager, agentControl, capsules, capsuleTests, conventionValidator, preferenceReview));
+  terminalManager.configureProviderLaunch(new SessionLaunchCoordinator(
+    new ProviderAccountLaunchService(() => settings.get(), providerSecretsService, { discovery: remoteDiscovery }), worktrees, () => settings.get(), hostPlacement, containers, capsules));
+  terminalManager.configureContainerPlacement(new ContainerPlacementService({
+    settings: () => settings.get(), sessions: () => terminalManager!.listMetadata(), policy: launchPolicy,
+    inventory: ids => containers.inventory(ids),
+    metrics: async host => {
+      if (host) return remoteMetrics.collect(host);
+      const local = localMetrics.collect();
+      return { hostId: 'local', reachable: true, collectedAt: local.collectedAt, load1: local.load1, cores: local.cores,
+        memoryTotalMb: local.memoryTotalMb, memoryAvailableMb: local.memoryAvailableMb, gpuVramTotalMb: null, gpuVramUsedMb: null };
+    }
+  }));
+
   await terminalManager.restorePersistedSessions();
   limitsService = new LimitsService(providerClis, app.getVersion());
   evenG2 = new EvenG2Controller({
@@ -367,6 +526,19 @@ async function initializeServices(): Promise<void> {
   protocol.handle("canvastty-plugin", (request) => pluginManager!.protocolResponse(request.url));
   protocol.handle("canvastty-media", (request) => pluginMediaService!.protocolResponse(request));
   registerIpc({
+    decisions, decisionSecrets,
+    contextProfiles,
+    capsuleTests,
+    conventionValidator,
+    preferenceReview,
+    capsules,
+    hostDiagnostics: new SavedHostDiagnostics(() => settings.get().remoteHosts, remoteDiscovery, remoteAccess, remoteMetrics),
+    accountLogin: new AccountLoginService({ settings: () => settings.get(), terminals: terminalManager, run: sshRunner, userDataPath }),
+    serverProvisioning: new ServerProvisioning({ hosts: () => settings.get().remoteHosts, run: sshRunner, access: remoteAccess, discovery: remoteDiscovery }),
+    containers,
+    worktrees,
+    localMetrics,
+    remoteMetrics,
     settings,
     providerClis,
     recheckProviderClis: async () => {
@@ -382,6 +554,7 @@ async function initializeServices(): Promise<void> {
     plugins: pluginManager,
     pluginMedia: pluginMediaService,
     pluginSecrets: pluginSecretsService,
+    providerSecrets: providerSecretsService!,
     browser: browserService,
     githubAuth: githubAuth!,
     hermesHud: hermesHudService,
@@ -413,6 +586,12 @@ async function initializeServices(): Promise<void> {
     broadcastPluginStorageChange
   });
   servicesReady = true;
+}
+
+/** Loads only the renderer entry; used to recover from a renderer crash. */
+async function reloadApplicationSurface(window: BrowserWindow): Promise<void> {
+  if (process.env.ELECTRON_RENDERER_URL) await window.loadURL(process.env.ELECTRON_RENDERER_URL);
+  else await window.loadFile(join(__dirname, "../renderer/index.html"));
 }
 
 async function loadApplication(window: BrowserWindow): Promise<void> {
@@ -619,15 +798,24 @@ app.on("before-quit", (event) => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+// Crash diagnostics: a lost GPU or utility child is logged with its reason; the window itself
+// recovers through render-process-gone.
+app.on("child-process-gone", (_event, details) => {
+  const service = details.serviceName ? `, service=${details.serviceName}` : "";
+  console.warn(`CanvasTTY child process exited: type=${details.type}, reason=${details.reason}, exitCode=${details.exitCode}${service}.`);
+});
 
 // Keep shared event names in the main bundle so accidental channel drift fails at build time.
 void IPC.terminalData;
 
 async function shutdownServices(): Promise<void> {
+  decisionCoordinator?.dispose();
   for (const request of browserRequests.values()) { clearTimeout(request.timer); request.reject(new Error("App closing")); }
   browserRequests.clear();
   await evenG2?.close();
+  await capsuleTestsService?.shutdown();
   if (terminalManager) await terminalManager.shutdown();
+  if (orchestrationGateway) await Promise.allSettled([orchestrationGateway.stop()]);
   limitsService?.dispose();
   if (agentGateway) await Promise.allSettled([agentGateway.close()]);
   if (runtimeGateway) await Promise.allSettled([runtimeGateway.close()]);

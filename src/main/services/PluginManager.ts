@@ -73,7 +73,7 @@ const MAX_RUNTIME_HOOK_REGISTRY_BYTES = 1024 * 1024;
 const MAX_PLUGIN_ICON_BYTES = 512 * 1024;
 const PLUGIN_INPUT_BRIDGE_URL = "canvastty-plugin://host/input-bridge.js";
 const AGENT_PROVIDERS = new Set<AgentProviderId>([
-  "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"
+  "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"
 ]);
 const PLUGIN_HOOK_EVENTS = new Set<PluginAgentHookEvent>([
   "session-start",
@@ -1620,9 +1620,7 @@ async function githubGraphqlSearchPage(
     body: JSON.stringify({ query: gql, variables }),
     signal
   });
-  if (response.status === 403 || response.status === 429) {
-    throw new Error("GitHub search rate limit reached; try again in a minute.");
-  }
+  if (response.status === 403 || response.status === 429) throw new Error(githubRateLimitMessage(response));
   if (!response.ok) {
     throw new Error(`GitHub plugin search failed with HTTP ${response.status}.`);
   }
@@ -1671,9 +1669,7 @@ async function fetchGithubSearchPage(url: URL, signal: AbortSignal): Promise<Git
     if (signal.aborted) throw new Error("GitHub plugin search timed out.");
     throw new Error("GitHub plugin search could not establish a connection.", { cause: error });
   }
-  if (response.status === 403 || response.status === 429) {
-    throw new Error("GitHub search rate limit reached; try again in a minute.");
-  }
+  if (response.status === 403 || response.status === 429) throw new Error(githubRateLimitMessage(response));
   if (!response.ok || !response.body) {
     throw new Error(`GitHub plugin search failed with HTTP ${response.status}.`);
   }
@@ -1684,6 +1680,15 @@ async function fetchGithubSearchPage(url: URL, signal: AbortSignal): Promise<Git
     if (isRecord(item)) items.push(item as GithubSearchItem);
   }
   return items;
+}
+
+/** Names the time GitHub's search quota resets, and that signing in raises the limit. */
+export function githubRateLimitMessage(response: Pick<Response, "headers">): string {
+  const reset = Number(response.headers.get("x-ratelimit-reset"));
+  const when = Number.isFinite(reset) && reset > 0
+    ? `after ${new Date(reset * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+    : "in a minute";
+  return `GitHub search rate limit reached; try again ${when}. Signing in to GitHub raises the limit.`;
 }
 
 function mapSearchResults(results: GithubSearchItem[]): GithubPluginSearchResult[] {

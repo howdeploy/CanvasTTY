@@ -5,6 +5,7 @@ import type {
   ProviderId,
   SessionSnapshot
 } from "../../../../shared/contracts";
+import { useDialogFocus } from "../../lib/useDialogFocus";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { UiIcon, type UiIconName } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
@@ -127,7 +128,8 @@ export function CanvasCommandPalette({
   const sessionCommands = filtered.filter((command) => command.group === "sessions");
   const actionCommands = filtered.filter((command) => command.group === "actions");
 
-  useEffect(() => input.current?.focus({ preventScroll: true }), []);
+  const dialog = useRef<HTMLElement>(null);
+  useDialogFocus(dialog, true, { onEscape: onClose, initialFocus: input });
   useEffect(() => setSelected(0), [query]);
 
   const run = (command: CommandItem | undefined): void => {
@@ -202,6 +204,7 @@ export function CanvasCommandPalette({
       }}
     >
       <section
+        ref={dialog}
         className="canvas-menu canvas-command-palette"
         role="dialog"
         aria-modal="true"

@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import type { LocaleId } from "../../../../shared/contracts";
+import { useDialogFocus } from "../../lib/useDialogFocus";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 
@@ -20,15 +21,8 @@ export function TerminalLinkDialog({
 }: TerminalLinkDialogProps): React.JSX.Element | null {
   const canvasButton = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    if (!url) return;
-    canvasButton.current?.focus({ preventScroll: true });
-    const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose, url]);
+  const dialog = useRef<HTMLElement>(null);
+  useDialogFocus(dialog, !!url, { onEscape: onClose, initialFocus: canvasButton });
 
   if (!url) return null;
 
@@ -36,7 +30,7 @@ export function TerminalLinkDialog({
     <div className="dialog-backdrop terminal-link-dialog__backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section className="terminal-link-dialog" role="dialog" aria-modal="true" aria-labelledby="terminal-link-dialog-title">
+      <section ref={dialog} className="terminal-link-dialog" role="dialog" aria-modal="true" aria-labelledby="terminal-link-dialog-title">
         <button className="terminal-link-dialog__close" type="button" onClick={onClose} aria-label={t(locale, "close")}>
           <UiIcon name="close" size={18} />
         </button>

@@ -34,6 +34,46 @@ function subscribe<T>(channel: string, listener: (event: T) => void): () => void
 }
 
 const api: CanvasTTYApi = {
+  decisions: {
+    recommend: input => ipcRenderer.invoke(IPC.decisionRecommend, input), launch: (id, position) => ipcRenderer.invoke(IPC.decisionLaunch, id, position), cancel: id => ipcRenderer.invoke(IPC.decisionCancel, id), assemble: efforts => ipcRenderer.invoke(IPC.decisionAssemble, efforts),
+    secretStatus: () => ipcRenderer.invoke(IPC.decisionSecretStatus), setSecret: value => ipcRenderer.invoke(IPC.decisionSecretSet, value), removeSecret: () => ipcRenderer.invoke(IPC.decisionSecretRemove)
+  },
+  context: {
+    source: cwd => ipcRenderer.invoke(IPC.contextSource, cwd),
+    previewLaunch: request => ipcRenderer.invoke(IPC.contextLaunchPreview, request),
+    get: () => ipcRenderer.invoke(IPC.contextGet),
+    saveProject: (project, revision) => ipcRenderer.invoke(IPC.contextProject, project, revision),
+    saveTask: (task, revision) => ipcRenderer.invoke(IPC.contextTask, task, revision),
+    saveRule: (rule, revision) => ipcRenderer.invoke(IPC.contextRule, rule, revision),
+    remove: (kind, id, revision) => ipcRenderer.invoke(IPC.contextRemove, kind, id, revision),
+    feedbackSessions: projectId => ipcRenderer.invoke(IPC.contextFeedbackSessions, projectId),
+    saveLearning: (projectId, settings, revision) => ipcRenderer.invoke(IPC.contextLearning, projectId, settings, revision),
+    captureFeedback: (input, revision) => ipcRenderer.invoke(IPC.contextFeedback, input, revision),
+    feedbackAction: (action, revision) => ipcRenderer.invoke(IPC.contextFeedbackAction, action, revision),
+    preview: selection => ipcRenderer.invoke(IPC.contextPreview, selection)
+  },
+  capsules: {
+    reviewAgentChoices: (id, review) => ipcRenderer.invoke(IPC.capsulesReviewAgentChoices, id, review),
+    previewReviewAgent: input => ipcRenderer.invoke(IPC.capsulesReviewAgentPreview, input),
+    launchReviewAgent: id => ipcRenderer.invoke(IPC.capsulesReviewAgentLaunch, id),
+    cancelReviewAgent: id => ipcRenderer.invoke(IPC.capsulesReviewAgentCancel, id),
+    validateConventions: (id, reviewId, maxDataClass) => ipcRenderer.invoke(IPC.capsulesConventions, id, reviewId, maxDataClass),
+    currentConventions: id => ipcRenderer.invoke(IPC.capsulesConventionsCurrent, id),
+    startTest: (id, review, profile) => ipcRenderer.invoke(IPC.capsulesTestStart, id, review, profile),
+    testRuns: () => ipcRenderer.invoke(IPC.capsulesTestList),
+    testResult: id => ipcRenderer.invoke(IPC.capsulesTestResult, id),
+    cancelTest: id => ipcRenderer.invoke(IPC.capsulesTestCancel, id),
+    cleanupTest: id => ipcRenderer.invoke(IPC.capsulesTestCleanup, id),
+    selectFiles: source => ipcRenderer.invoke(IPC.capsulesSelectFiles, source),
+    prepare: request => ipcRenderer.invoke(IPC.capsulesPrepare, request),
+    list: () => ipcRenderer.invoke(IPC.capsulesList),
+    review: id => ipcRenderer.invoke(IPC.capsulesReview, id),
+    exportPatch: (id, reviewId) => ipcRenderer.invoke(IPC.capsulesExport, id, reviewId),
+    apply: (id, reviewId) => ipcRenderer.invoke(IPC.capsulesApply, id, reviewId),
+    recoverApply: (id, reviewId) => ipcRenderer.invoke(IPC.capsulesRecover, id, reviewId),
+    cleanup: id => ipcRenderer.invoke(IPC.capsulesCleanup, id)
+  },
+  accountHomes: { inspect: directory => ipcRenderer.invoke(IPC.accountHomesInspect, directory) },
   evenG2: {
     state: () => ipcRenderer.invoke(IPC.evenG2State),
     command: (command) => ipcRenderer.invoke(IPC.evenG2Command, command),
@@ -41,6 +81,30 @@ const api: CanvasTTYApi = {
     completeOpenBrowser: (requestId, ok) => ipcRenderer.send(IPC.evenG2BrowserResponse, { requestId, ok })
   },
   appVersion: () => ipcRenderer.invoke(IPC.appVersion),
+  containers: {
+    probe: profileId => ipcRenderer.invoke(IPC.containersProbe, profileId),
+    inventory: (profileIds, force) => ipcRenderer.invoke(IPC.containersInventory, profileIds, force),
+    list: () => ipcRenderer.invoke(IPC.containersList),
+    cleanup: id => ipcRenderer.invoke(IPC.containersCleanup, id),
+    review: id => ipcRenderer.invoke(IPC.containersReview, id),
+    exportPatch: (id, reviewId) => ipcRenderer.invoke(IPC.containersExport, id, reviewId)
+  },
+  workspaces: {
+    list: () => ipcRenderer.invoke(IPC.workspacesList),
+    review: (id: string) => ipcRenderer.invoke(IPC.workspacesReview, id),
+    exportPatch: (id: string, reviewId: string) => ipcRenderer.invoke(IPC.workspacesExport, id, reviewId),
+    cleanup: (id: string) => ipcRenderer.invoke(IPC.workspacesCleanup, id)
+  },
+  operationalMetrics: {
+    local: () => ipcRenderer.invoke(IPC.operationalMetricsLocal),
+    remote: (hostId: string) => ipcRenderer.invoke(IPC.operationalMetricsRemote, hostId)
+  },
+  accountLogin: { start: request => ipcRenderer.invoke(IPC.accountLogin, request) },
+  hosts: {
+    inspect: (hostId: string) => ipcRenderer.invoke(IPC.hostsInspect, hostId),
+    prepare: (hostIds: string[]) => ipcRenderer.invoke(IPC.hostsPrepare, hostIds),
+    prepareStatus: (jobIds: string[]) => ipcRenderer.invoke(IPC.hostsPrepareStatus, jobIds)
+  },
   clipboard: {
     readText: () => ipcRenderer.invoke(IPC.clipboardRead),
     writeText: (text: string) => ipcRenderer.send(IPC.clipboardWrite, text)
@@ -65,6 +129,15 @@ const api: CanvasTTYApi = {
   },
   limits: {
     get: () => ipcRenderer.invoke(IPC.limitsGet)
+  },
+  providerSecrets: {
+    status: () => ipcRenderer.invoke(IPC.providerSecretsStatus),
+    set: (secretId: string, value: string) => ipcRenderer.invoke(IPC.providerSecretsSet, secretId, value),
+    clear: (secretId: string) => ipcRenderer.invoke(IPC.providerSecretsClear, secretId),
+    create: (owner, value) => ipcRenderer.invoke(IPC.providerSecretsCreate, owner, value),
+    scopedStatus: () => ipcRenderer.invoke(IPC.providerSecretsScopedStatus),
+    update: (ref, owner, value) => ipcRenderer.invoke(IPC.providerSecretsUpdate, ref, owner, value),
+    remove: (ref, owner) => ipcRenderer.invoke(IPC.providerSecretsRemove, ref, owner)
   },
   plugins: {
     list: () => ipcRenderer.invoke(IPC.pluginsList),
@@ -174,6 +247,11 @@ const api: CanvasTTYApi = {
     list: () => ipcRenderer.invoke(IPC.terminalList),
     readBuffer: (id: string) => ipcRenderer.invoke(IPC.terminalReadBuffer, id),
     create: (request: CreateSessionRequest) => ipcRenderer.invoke(IPC.terminalCreate, request),
+    previewContainerPlacement: (request) => ipcRenderer.invoke(IPC.terminalContainerPlacementPreview, request),
+    agentPrompt: (id: string, text: string) => ipcRenderer.invoke(IPC.terminalAgentPrompt, id, text),
+    cancelTurn: (id: string) => ipcRenderer.invoke(IPC.terminalCancelTurn, id),
+    acpPermission: (id: string, requestId: string, optionId: string) => ipcRenderer.invoke(IPC.terminalAcpPermission, id, requestId, optionId),
+    acpModel: (id: string, value: string) => ipcRenderer.invoke(IPC.terminalAcpModel, id, value),
     restart: (id: string) => ipcRenderer.invoke(IPC.terminalRestart, id),
     input: (id: string, data: string) => ipcRenderer.send(IPC.terminalInput, id, data),
     resize: (id: string, cols: number, rows: number) => ipcRenderer.send(IPC.terminalResize, id, cols, rows),

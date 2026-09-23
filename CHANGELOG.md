@@ -2,6 +2,18 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+- Added Cursor, MiniMax Code, Devin and Antigravity agents (PR #63).
+- Added provider API keys, API profiles and agent-to-agent delegation through the orchestration MCP (PR #64).
+- Added saved SSH servers with automatic placement, remote terminals and agents, data-handling classes D0–D3 and several accounts per provider (PR #65).
+- Added task capsules, isolated worktrees and Docker/Podman container runs on this computer and on servers (PRs #66 and #67).
+- Added ACP conversations for Kimi, Cursor and MiniMax Code, plus account connection settings (PR #67).
+- Added project context: scoped rules, convention imports and learning from explicit corrections (PR #68).
+- Added opt-in launch routing with rules and Jev, reasoning effort, one-click server preparation, per-launch API-key forwarding and sign-in through the app (PR #69).
+- The plugin showcase works without a GitHub account; signing in is optional and only raises GitHub's limits (issue #22). The HOME clock shows the date (issue #53).
+- The default session denies web permissions, a crashed renderer reloads, long agent answers keep their turn, and the secret audit also checks the built bundle (from PRs #35 and #51).
+
 ## 1.5.2
 
 - Fixed terminal history jumping to the beginning when Codex clears and redraws its history after a card resize. Readers retain their relative scroll position, while terminals at the bottom continue following new output.

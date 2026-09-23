@@ -11,5 +11,9 @@ These files are vendor-supplied marks. Do not redraw, recolor, or modify them.
 - `qwen.svg` — unmodified Qwen Code [`packages/desktop-shell/bootstrap/qwen-code-logo.svg`](https://github.com/QwenLM/qwen-code/blob/c3d9279932f592c39d8bf24de5da56c53d4ca60f/packages/desktop-shell/bootstrap/qwen-code-logo.svg).
 - `omp.svg` — unmodified oh-my-pi [`packages/collab-web/public/favicon.svg`](https://github.com/can1357/oh-my-pi/blob/d3606c36ec3e23d7b8dbd02bf1db50bd97a87cb6/packages/collab-web/public/favicon.svg), byte-identical to the mark served by <https://omp.sh/favicon.svg>.
 - `pi.svg` — unmodified Pi mark served by <https://pi.dev/favicon.svg>.
+- `cursor.ico` — official [Cursor favicon](https://www.cursor.com/favicon.ico), containing 32 and 16 px variants.
+- `minimax.ico` — official [MiniMax favicon](https://www.minimaxi.com/favicon.ico), 32 px.
+- `devin.ico` — official [Devin favicon](https://devin.ai/favicon.ico), containing 32 and 16 px variants.
+- `antigravity.ico` — official [Antigravity favicon](https://antigravity.google/favicon.ico), containing 32 and 32-bit plus 16 px variants.
 
 The marks remain property of their respective owners and must be used according to each vendor's brand terms.

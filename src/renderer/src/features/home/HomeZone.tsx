@@ -645,10 +645,12 @@ function isFocusableHomeWidget(widgetId: string, plugins: readonly InstalledPlug
 function ClockWidget({ locale, now }: { locale: LocaleId; now: Date }): React.JSX.Element {
   const formatLocale = locale === "ru" ? "ru-RU" : "en-GB";
   const time = now.toLocaleTimeString(formatLocale, { hour: "2-digit", minute: "2-digit" });
+  const date = now.toLocaleDateString(formatLocale, { weekday: "short", day: "numeric", month: "long", year: "numeric" });
 
   return (
     <section className="tile clock-tile">
-      <time className="clock-tile__time">{time}</time>
+      <time className="clock-tile__time" dateTime={now.toISOString()}>{time}</time>
+      <span className="clock-tile__date">{date}</span>
     </section>
   );
 }

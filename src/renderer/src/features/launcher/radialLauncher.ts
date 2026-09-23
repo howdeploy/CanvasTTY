@@ -3,6 +3,17 @@ import type { Point, RadialLauncherItemId } from "../../../../shared/contracts";
 export const RADIAL_LAUNCHER_RADIUS = 126;
 export const RADIAL_LAUNCHER_DEAD_ZONE = 28;
 
+export function radialLauncherLayout(anchor: Point, viewport: { width: number; height: number }, uiScale: number): { anchor: Point; radius: number; scale: number } {
+  // Include the expanded action, its focus ring and wrapped label, not just the radius.
+  const scale = Math.max(.1, Math.min(uiScale, (viewport.width - 16) / 360, (viewport.height - 16) / 360));
+  const margin = 180 * scale + 8;
+  return {
+    anchor: { x: Math.max(margin, Math.min(viewport.width - margin, anchor.x)), y: Math.max(margin, Math.min(viewport.height - margin, anchor.y)) },
+    radius: RADIAL_LAUNCHER_RADIUS * scale,
+    scale
+  };
+}
+
 export function radialItemOffset(index: number, count: number, radius = RADIAL_LAUNCHER_RADIUS): Point {
   if (count <= 0) return { x: 0, y: 0 };
   const angle = -Math.PI / 2 + index * (Math.PI * 2 / count);

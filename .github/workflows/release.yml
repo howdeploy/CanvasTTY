@@ -32,6 +32,9 @@ jobs:
             artifact: canvastty-macos
     runs-on: ${{ matrix.runner }}
     steps:
+      - name: Note plugin showcase sign-in availability
+        if: ${{ vars.CANVASTTY_GITHUB_CLIENT_ID == '' }}
+        run: echo "::warning::CANVASTTY_GITHUB_CLIENT_ID is not set. The plugin showcase still works anonymously; GitHub sign-in is unavailable in this build."
       - name: Check out repository
         uses: actions/checkout@v7
       - name: Set up Node.js
@@ -47,6 +50,8 @@ jobs:
         run: npm test
       - name: Build installers
         run: npm run ${{ matrix.script }}
+      - name: Audit built bundle secrets
+        run: npm run audit:secrets
       - name: Verify macOS app signature
         if: runner.os == 'macOS'
         run: |

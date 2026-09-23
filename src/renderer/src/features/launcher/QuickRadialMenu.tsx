@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   LocaleId,
   Point,
@@ -9,7 +9,7 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 import { PROVIDERS } from "../../lib/providers";
-import { radialItemAtPointer, radialItemOffset } from "./radialLauncher";
+import { radialItemAtPointer, radialItemOffset, radialLauncherLayout, RADIAL_LAUNCHER_DEAD_ZONE } from "./radialLauncher";
 
 interface RadialLauncherProps {
   anchor: Point;
@@ -17,12 +17,13 @@ interface RadialLauncherProps {
   items: RadialLauncherItemId[];
   locale: LocaleId;
   pointerId: number;
+  uiScale: number;
   onActivate(item: RadialLauncherItemId, fromPointerRelease?: boolean): void;
   onClose(reason?: "release" | "cancel"): void;
 }
 
 const PROVIDER_IDS = new Set<ProviderId>([
-  "terminal", "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"
+  "terminal", "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"
 ]);
 
 export function RadialLauncher({
@@ -31,6 +32,7 @@ export function RadialLauncher({
   items,
   locale,
   pointerId,
+  uiScale,
   onActivate,
   onClose
 }: RadialLauncherProps): React.JSX.Element {
@@ -38,6 +40,18 @@ export function RadialLauncher({
   const highlightedRef = useRef(highlighted);
   highlightedRef.current = highlighted;
   const menuRef = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
+  const layout = radialLauncherLayout(anchor, viewport, uiScale);
+
+  useLayoutEffect(() => {
+    const parent = menuRef.current?.parentElement;
+    if (!parent) return;
+    const measure = (): void => setViewport({ width: parent.clientWidth, height: parent.clientHeight });
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(parent);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     menuRef.current?.focus({ preventScroll: true });
@@ -46,7 +60,14 @@ export function RadialLauncher({
   useEffect(() => {
     const handleMove = (event: PointerEvent): void => {
       if (event.pointerId !== pointerId) return;
-      const next = radialItemAtPointer(pointerAnchor, { x: event.clientX, y: event.clientY }, items.length);
+      const origin = menuRef.current?.getBoundingClientRect();
+      if (!origin) return;
+      const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-radial-index]') : null;
+      // A click without movement still opens the context menu, even after edge clamping.
+      const next = Math.hypot(event.clientX - pointerAnchor.x, event.clientY - pointerAnchor.y) < RADIAL_LAUNCHER_DEAD_ZONE
+        ? null
+        : target && menuRef.current?.contains(target) ? Number(target.dataset.radialIndex)
+          : radialItemAtPointer({ x: origin.x, y: origin.y }, { x: event.clientX, y: event.clientY }, items.length, RADIAL_LAUNCHER_DEAD_ZONE * layout.scale);
       highlightedRef.current = next;
       setHighlighted(next);
     };
@@ -92,13 +113,13 @@ export function RadialLauncher({
       window.removeEventListener("pointerdown", handleDown, true);
       window.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [items, onActivate, onClose, pointerAnchor, pointerId]);
+  }, [items, onActivate, onClose, pointerAnchor, pointerId, layout.scale]);
 
   return (
     <div
       ref={menuRef}
       className="radial-launcher"
-      style={{ left: anchor.x, top: anchor.y }}
+      style={{ left: layout.anchor.x, top: layout.anchor.y, fontSize: 13 * layout.scale }}
       role="menu"
       aria-label={t(locale, "quickLauncher")}
       tabIndex={-1}
@@ -109,7 +130,7 @@ export function RadialLauncher({
         <span>{t(locale, "releaseToLaunch")}</span>
       </div>
       {items.map((item, index) => {
-        const offset = radialItemOffset(index, items.length);
+        const offset = radialItemOffset(index, items.length, layout.radius);
         const active = highlighted === index;
         return (
           <button
@@ -118,9 +139,10 @@ export function RadialLauncher({
             style={{ transform: `translate(calc(-50% + ${offset.x}px), calc(-50% + ${offset.y}px))` }}
             type="button"
             role="menuitem"
+            data-radial-index={index}
             aria-current={active ? "true" : undefined}
-            onPointerEnter={() => setHighlighted(index)}
-            onFocus={() => setHighlighted(index)}
+            onPointerEnter={() => { highlightedRef.current = index; setHighlighted(index); }}
+            onFocus={() => { highlightedRef.current = index; setHighlighted(index); }}
             onClick={() => onActivate(item)}
           >
             <span className="radial-launcher__icon">{renderIcon(item)}</span>

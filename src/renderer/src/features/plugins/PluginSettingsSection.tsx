@@ -159,7 +159,8 @@ export function PluginSettingsSection({
     setShowcasePage(page);
   };
   const installedPageCount = pageCount(plugins.length, INSTALLED_PAGE_SIZE);
-  const showcaseTotal = (searchResults ?? showcase)?.length ?? 0;
+  const visibleResults = searchResults ?? showcase ?? [];
+  const showcaseTotal = visibleResults.length;
   const showcasePageCount = pageCount(showcaseTotal, SHOWCASE_PAGE_SIZE);
   useEffect(() => {
     setInstalledPage((current) => clampPage(current, plugins.length, INSTALLED_PAGE_SIZE));
@@ -392,7 +393,7 @@ export function PluginSettingsSection({
     try {
       let preview = showcasePreviews[fullName];
       if (!preview) {
-        const result = showcase?.find((item) => item.fullName === fullName);
+        const result = visibleResults.find((item) => item.fullName === fullName);
         if (!result) throw new Error("Plugin showcase entry disappeared.");
         // Full preview (with install token) is only fetched at install time.
         preview = await onPreviewPlugin(result.url);
@@ -406,6 +407,7 @@ export function PluginSettingsSection({
       });
       setSelectedShowcase((current) => (current === fullName ? null : current));
       setShowcase((current) => current?.filter((result) => result.fullName !== fullName) ?? null);
+      setSearchResults((current) => current?.filter((result) => result.fullName !== fullName) ?? null);
     } catch (reason) {
       setError(errorMessage(reason, t(locale, "pluginInstallFailed")));
     } finally {
@@ -524,7 +526,7 @@ export function PluginSettingsSection({
     if (!selectedShowcase) {
       return <p className="plugin-settings__empty plugin-showcase-detail__empty">{t(locale, "showcaseEmpty")}</p>;
     }
-    const result = showcase?.find((item) => item.fullName === selectedShowcase);
+    const result = visibleResults.find((item) => item.fullName === selectedShowcase);
     const manifest = showcaseManifests[selectedShowcase];
     const modules = showcaseModules[selectedShowcase] ?? [];
     if (!result) return <p className="plugin-settings__empty">{t(locale, "noSearchResults")}</p>;
@@ -661,8 +663,14 @@ export function PluginSettingsSection({
               const remoteIcon = installedIcons[plugin.manifest.id];
               return (
               <article className={`installed-plugin ${plugin.enabled ? "" : "installed-plugin--disabled"} ${expanded ? "installed-plugin--expanded" : ""}`} key={plugin.manifest.id}>
-                <header className="installed-plugin__header" onClick={() => setExpandedInstalled((current) => ({ ...current, [plugin.manifest.id]: !current[plugin.manifest.id] }))}>
-                  <span className="installed-plugin__title">
+                <header className="installed-plugin__header">
+                  <button
+                    type="button"
+                    className="installed-plugin__title"
+                    aria-expanded={expanded}
+                    aria-controls={`plugin-details-${plugin.manifest.id}`}
+                    onClick={() => setExpandedInstalled((current) => ({ ...current, [plugin.manifest.id]: !current[plugin.manifest.id] }))}
+                  >
                     <PluginIcon pluginId={plugin.manifest.id} icon={plugin.manifest.icon} name={plugin.manifest.name} remoteIcon={remoteIcon} />
                     <span className="installed-plugin__version">
                       <strong>{plugin.manifest.name}</strong>
@@ -677,8 +685,9 @@ export function PluginSettingsSection({
                       </small>
                       {renderInstalledHostTag(plugin.manifest.minHostVersion)}
                     </span>
-                  </span>
-                  <div onClick={(event) => event.stopPropagation()}>
+                    <span className="installed-plugin__disclosure" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+                  </button>
+                  <div className="installed-plugin__actions">
                     {update && (
                       <button
                         className="plugin-primary-action installed-plugin__update"
@@ -724,7 +733,7 @@ export function PluginSettingsSection({
                     >{confirmUninstall === plugin.manifest.id ? t(locale, "uninstallConfirm") : t(locale, "uninstall")}</button>
                   </div>
                 </header>
-                <div className="installed-plugin__body">
+                <div className="installed-plugin__body" id={`plugin-details-${plugin.manifest.id}`} inert={!expanded} aria-hidden={!expanded}>
                   <div className="installed-plugin__details">
                     {plugin.manifest.author && (
                       <div className="installed-plugin__author-row">
@@ -898,12 +907,12 @@ export function PluginSettingsSection({
         </div>
         {(showcase !== null || searchResults !== null) && (
           <div className="plugin-showcase-layout">
-            {(searchResults ?? showcase)!.length === 0 ? (
+            {visibleResults.length === 0 ? (
               <p className="plugin-settings__empty">{t(locale, "noSearchResults")}</p>
             ) : (
               <>
                 <div className="plugin-showcase-list">
-                  {paginate(searchResults ?? showcase ?? [], showcasePage, SHOWCASE_PAGE_SIZE).map((result) => renderShowcaseTile(result))}
+                  {paginate(visibleResults, showcasePage, SHOWCASE_PAGE_SIZE).map((result) => renderShowcaseTile(result))}
                 </div>
                 <div className="plugin-showcase-panel">
                   {renderShowcaseDetail()}

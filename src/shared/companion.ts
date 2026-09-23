@@ -1,5 +1,5 @@
-import type { ProviderId, SessionStatus } from "./contracts.ts";
-import { CANVAS_LAUNCHER_ITEMS } from "./contracts.ts";
+import type { SessionStatus } from "./contracts.ts";
+import { CANVAS_LAUNCHER_ITEMS, type ProviderId } from "./providerCatalog.ts";
 
 export const COMPANION_PROTOCOL_VERSION = 1;
 

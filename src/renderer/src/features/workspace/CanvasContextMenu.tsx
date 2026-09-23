@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   CanvasLauncherItemId,
   LocaleId,
@@ -64,12 +64,41 @@ export function CanvasContextMenu({
   onClose
 }: CanvasContextMenuProps): React.JSX.Element {
   const menu = useRef<HTMLDivElement>(null);
+  const submenu = useRef<HTMLDivElement>(null);
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [submenuSide, setSubmenuSide] = useState<CanvasSubmenuSide>("right");
+  const [submenuStyle, setSubmenuStyle] = useState<React.CSSProperties>();
+
+  useLayoutEffect(() => {
+    const root = menu.current, child = submenu.current, workspace = root?.closest<HTMLElement>('.workspace');
+    if (!launcherOpen || !root || !child || !workspace) return;
+    const fit = (): void => {
+      const bounds = workspace.getBoundingClientRect(), anchor = child.parentElement!.getBoundingClientRect(), menuBounds = root.getBoundingClientRect();
+      const fontSize = Number.parseFloat(getComputedStyle(root).fontSize) || 13;
+      const width = Math.min(19 * fontSize, bounds.width - 24), maxHeight = Math.max(80, bounds.height - 24);
+      const height = Math.min(child.scrollHeight, maxHeight);
+      const desiredLeft = submenuSide === 'right' ? menuBounds.right + .55 * fontSize : menuBounds.left - width - .55 * fontSize;
+      setSubmenuStyle({
+        left: Math.max(bounds.left + 12, Math.min(bounds.right - width - 12, desiredLeft)) - anchor.left,
+        right: 'auto', top: Math.max(bounds.top + 12, Math.min(bounds.bottom - height - 12, anchor.top - .45 * fontSize)) - anchor.top,
+        width, minWidth: 0, maxHeight, overflowY: 'auto'
+      });
+    };
+    fit();
+    const observer = new ResizeObserver(fit); observer.observe(workspace);
+    return () => observer.disconnect();
+  }, [launcherOpen, launcherItems.length, submenuSide, position.x, position.y, locale]);
 
   useEffect(() => {
     menu.current?.querySelector<HTMLButtonElement>(".canvas-menu__row")?.focus({ preventScroll: true });
   }, [kind]);
+  useEffect(() => {
+    if (launcherOpen) submenu.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+  }, [launcherOpen]);
+  const closeLauncher = (): void => {
+    setLauncherOpen(false);
+    menu.current?.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')?.focus({ preventScroll: true });
+  };
 
   const toggleLauncher = (): void => {
     if (launcherOpen) {
@@ -100,6 +129,13 @@ export function CanvasContextMenu({
       style={{ left: position.x, top: position.y }}
       onContextMenu={(event) => event.preventDefault()}
       onKeyDown={(event) => {
+        const inSubmenu = event.target instanceof Element && !!event.target.closest('.canvas-menu__submenu');
+        if (inSubmenu && (event.key === 'Escape' || event.key === 'ArrowLeft')) {
+          event.preventDefault(); event.stopPropagation(); closeLauncher(); return;
+        }
+        if (!inSubmenu && event.key === 'ArrowRight' && event.target instanceof Element && event.target.closest('[aria-haspopup="menu"]')) {
+          event.preventDefault(); if (!launcherOpen) toggleLauncher(); else submenu.current?.querySelector<HTMLButtonElement>('button')?.focus(); return;
+        }
         if (event.key === "Escape") {
           event.preventDefault();
           onClose();
@@ -107,7 +143,7 @@ export function CanvasContextMenu({
         }
         if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
         event.preventDefault();
-        moveMenuFocus(event.currentTarget, event.key === "ArrowDown" ? 1 : -1);
+        moveMenuFocus(inSubmenu && submenu.current ? submenu.current : event.currentTarget, event.key === "ArrowDown" ? 1 : -1);
       }}
     >
       {kind === "empty" && (
@@ -135,7 +171,8 @@ export function CanvasContextMenu({
               onClick={toggleLauncher}
             >{t(locale, "canvasMenuLaunchAgent")}</CanvasMenuRow>
             {launcherOpen && (
-              <div className={`canvas-menu canvas-menu__submenu canvas-menu__submenu--${submenuSide}`} role="menu">
+              <div ref={submenu} style={submenuStyle} className={`canvas-menu canvas-menu__submenu canvas-menu__submenu--${submenuSide}`} role="menu">
+                <CanvasMenuRow role="menuitem" onClick={closeLauncher}>{locale === 'ru' ? '← Назад' : '← Back'}</CanvasMenuRow>
                 {launcherItems.map((provider) => (
                   provider === "terminal" ? (
                     <CanvasMenuRow
@@ -236,7 +273,7 @@ export function CanvasContextMenu({
 }
 
 function moveMenuFocus(menu: HTMLElement, direction: 1 | -1): void {
-  const rows = [...menu.querySelectorAll<HTMLButtonElement>(".canvas-menu__row:not(:disabled)")];
+  const rows = [...menu.querySelectorAll<HTMLButtonElement>(".canvas-menu__row:not(:disabled)")].filter(row => row.closest('[role="menu"]') === menu);
   if (rows.length === 0) return;
   const current = rows.indexOf(document.activeElement as HTMLButtonElement);
   const next = current < 0 ? 0 : (current + direction + rows.length) % rows.length;

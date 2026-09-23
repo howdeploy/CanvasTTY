@@ -1,5 +1,15 @@
+import { launchableProviders } from "../../../../shared/agentAvailability";
+import { DecisionSettings } from './DecisionSettings';
+import { useDialogFocus } from "../../lib/useDialogFocus";
+import { ContextSettings } from "./ContextSettings";
+import type { SettingsLocation } from "../../../../shared/settingsLocation";
+import type { SessionSnapshot } from "../../../../shared/contracts";
+import { RemoteHostsSettings } from "./RemoteHostsSettings";
+import { AgentBudgetsSettings } from "./ExecutionPolicySettings";
+import { ContainerProfilesSettings } from "./ContainerProfilesSettings";
+import { RetainedWorkspacesSettings } from "./RetainedWorkspacesSettings";
 import { EvenG2Controls } from "./EvenG2Controls";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   AppSettings,
   AgentCliAvailability,
@@ -74,12 +84,14 @@ import {
 } from "./appearanceSettings";
 import { CanvasNavigationShortcutEditor } from "./CanvasNavigationShortcutEditor";
 import { AgentHooksSettings } from "./AgentHooksSettings";
+import { ConnectionsSettings } from "./ConnectionsSettings";
+import { SettingsViewSelector } from "./SettingsViewSelector";
 import { AboutSettings } from "./AboutSettings";
 import { setCanvasLauncherItemEnabled } from "../launcher/canvasLauncher";
 import { itemLabel } from "../launcher/QuickRadialMenu";
 import { setRadialLauncherItemEnabled } from "../launcher/radialLauncher";
 
-type SettingsSection = "general" | "appearance" | "agents" | "controls" | "browser" | "plugins" | "about";
+type SettingsSection = "decisions" | "context" | "general" | "appearance" | "agents" | "connections" | "execution" | "controls" | "browser" | "plugins" | "about";
 
 const SETTINGS_SECTIONS: ReadonlyArray<{
   id: SettingsSection;
@@ -88,6 +100,10 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
   { id: "general", icon: "app-window" },
   { id: "appearance", icon: "palette" },
   { id: "agents", icon: "terminal" },
+  { id: "connections", icon: "blocks" },
+  { id: "execution", icon: "folder" },
+  { id: "context", icon: "sticky-note" },
+  { id: "decisions", icon: "arrow" },
   { id: "controls", icon: "sliders-horizontal" },
   { id: "browser", icon: "browser" },
   { id: "plugins", icon: "blocks" },
@@ -107,6 +123,9 @@ const CANVAS_COLOR_PREVIEWS: Record<CanvasColorId, string> = {
 };
 
 interface SettingsPanelProps {
+  location?: SettingsLocation | null;
+  onRevealSession?(id: string): void;
+  sessions: SessionSnapshot[];
   open: boolean;
   settings: AppSettings;
   agentAvailability: AgentCliAvailability | null;
@@ -115,6 +134,8 @@ interface SettingsPanelProps {
   browser: BrowserSnapshot;
   onClose(): void;
   onChange(patch: Partial<AppSettings>): Promise<void>;
+  /** Rejecting persistence for forms with secret-store rollback. */
+  onPersist(patch: Partial<AppSettings>): Promise<void>;
   onPreviewPlugin(sourceUrl: string): Promise<PluginInstallPreview>;
   onInstallPlugin(token: string, selectedModules: string[]): Promise<void>;
   onSearchPlugins(query: string): Promise<GithubPluginSearchResult[]>;
@@ -134,6 +155,9 @@ interface SettingsPanelProps {
 }
 
 export function SettingsPanel({
+  onRevealSession,
+  location,
+  sessions,
   open,
   settings,
   agentAvailability,
@@ -142,6 +166,7 @@ export function SettingsPanel({
   browser,
   onClose,
   onChange,
+  onPersist,
   onPreviewPlugin,
   onInstallPlugin,
   onSearchPlugins,
@@ -159,11 +184,25 @@ export function SettingsPanel({
   onEditHome,
   onOpenBrowser,
 }: SettingsPanelProps): React.JSX.Element {
+  const panel = useRef<HTMLElement>(null);
+  useDialogFocus(panel, open, { onEscape: onClose });
   const locale = settings.locale;
   const appearance = resolveAppearanceSettings(settings);
   const homeLauncherProviders = resolveHomeLauncherProviders(settings);
   const homeLimitProviders = resolveHomeLimitProviders(settings);
+  const [contextVisited, setContextVisited] = useState(false);
   const [section, setSection] = useState<SettingsSection>("general");
+  const [connectionsVisited, setConnectionsVisited] = useState(false);
+  const [agentView, setAgentView] = useState<"launch" | "status">("launch");
+  const [executionView, setExecutionView] = useState<"hosts" | "workspaces" | "containers" | "limits">("hosts");
+  useEffect(() => { if (section === "context") setContextVisited(true); }, [section]);
+  const [executionVisited, setExecutionVisited] = useState(false);
+  const [containersVisited, setContainersVisited] = useState(false);
+  const [workspacesVisited, setWorkspacesVisited] = useState(false);
+  useEffect(() => { if (section === 'execution' && executionView === 'workspaces') setWorkspacesVisited(true); }, [section, executionView]);
+  useEffect(() => { if (section === "execution") setExecutionVisited(true); if (section === "execution" && executionView === "containers") setContainersVisited(true); }, [section, executionView]);
+  useEffect(() => { if (!open || !location) return; setSection(location.section); if (location.section === "execution") setExecutionView(location.view); requestAnimationFrame(() => document.getElementById(`settings-tab-${location.section}`)?.focus()); }, [open, location]);
+  useEffect(() => { if (section === "connections") setConnectionsVisited(true); }, [section]);
   const [capturing, setCapturing] = useState<ShortcutAction | null>(null);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
   const [activity, setActivity] = useState<BrowserActivityEvent[]>([]);
@@ -192,6 +231,7 @@ export function SettingsPanel({
     }
   };
 
+  const launchable = launchableProviders(AGENT_PROVIDERS, agentAvailability, settings);
   const missingAgentRow = (provider: AgentProviderId, label = PROVIDERS[provider].label): React.JSX.Element => (
     <div className="agent-launcher-settings__row" key={provider}>
       <span className="agent-launcher-settings__identity">
@@ -330,11 +370,13 @@ export function SettingsPanel({
       if (event.target === event.currentTarget) onClose();
     }}>
       <aside
+        ref={panel}
         className={`settings-panel ${open ? "settings-panel--open" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={t(locale, "settings")}
         aria-hidden={!open}
+        inert={!open}
       >
         <div className="settings-panel__sidebar">
           <header className="settings-panel__brand">
@@ -352,6 +394,14 @@ export function SettingsPanel({
                 aria-controls={`settings-panel-${id}`}
                 aria-selected={section === id}
                 title={t(locale, id)}
+                tabIndex={section === id ? 0 : -1}
+                onKeyDown={event => {
+                  const index = SETTINGS_SECTIONS.findIndex(item => item.id === id);
+                  const next = event.key === "ArrowDown" ? (index + 1) % SETTINGS_SECTIONS.length : event.key === "ArrowUp" ? (index - 1 + SETTINGS_SECTIONS.length) % SETTINGS_SECTIONS.length : event.key === "Home" ? 0 : event.key === "End" ? SETTINGS_SECTIONS.length - 1 : undefined;
+                  if (next === undefined) return;
+                  event.preventDefault(); const nextId = SETTINGS_SECTIONS[next]!.id; setSection(nextId);
+                  document.getElementById(`settings-tab-${nextId}`)?.focus();
+                }}
                 onClick={() => setSection(id)}
               >
                 <span className="settings-tabs__icon"><UiIcon name={icon} size="1.05em" /></span>
@@ -381,6 +431,8 @@ export function SettingsPanel({
             role="tabpanel"
             aria-labelledby={`settings-tab-${section}`}
           >
+          {section === "decisions" && <DecisionSettings settings={settings} onPersist={onPersist} />}
+          {(contextVisited || section === "context") && <div hidden={section !== "context"} inert={!open || section !== "context"}><ContextSettings settings={settings} active={open && section === "context"} onPersist={onPersist} /></div>}
           {section === "general" && (
             <>
               <SettingGroup label={t(locale, "language")}>
@@ -553,19 +605,23 @@ export function SettingsPanel({
           )}
 
           {section === "agents" && (
-            <>
+            <div className="settings-section">
+              <SettingsViewSelector<"launch" | "status"> name="agents" locale={locale} value={agentView} onChange={setAgentView} options={[["launch", "settingsLaunchView"], ["status", "settingsStatusView"]]} />
               <div className="agent-cli-recheck">
                 <button className="setting-inline-action" type="button" disabled={checkingAgentClis} onClick={() => void recheckAgentClis()}>
                   {t(locale, checkingAgentClis ? "agentCliRechecking" : "agentCliRecheck")}
                 </button>
                 {agentCliError && <span role="alert">{agentCliError}</span>}
               </div>
+              <div id="settings-view-agents-status" role="tabpanel" aria-label={t(locale, "settingsStatusView")} hidden={agentView !== "status"}>
               <AgentHooksSettings
                 settings={settings}
                 plugins={plugins}
                 onChange={onChange}
                 onSetPluginHookEnabled={onSetPluginHookEnabled}
               />
+              </div>
+              <div id="settings-view-agents-launch" role="tabpanel" aria-label={t(locale, "settingsLaunchView")} hidden={agentView !== "launch"}>
               <SettingGroup
                 layout="stacked"
                 label={t(locale, "canvasLauncherItems")}
@@ -574,7 +630,7 @@ export function SettingsPanel({
                 <div className="canvas-menu canvas-launcher-settings-menu">
                   <CanvasMenuLabel>{t(locale, "canvasLauncherSettingsLabel")}</CanvasMenuLabel>
                   {CANVAS_LAUNCHER_ITEMS.map((item: CanvasLauncherItemId) => {
-                    if (item !== "terminal" && !agentAvailability?.[item]) return missingAgentRow(item);
+                    if (item !== "terminal" && !launchable.has(item)) return missingAgentRow(item);
                     const enabled = settings.canvasLauncherItems.includes(item);
                     return (
                       <CanvasMenuRow
@@ -615,7 +671,7 @@ export function SettingsPanel({
                 <div className="canvas-menu canvas-launcher-settings-menu">
                   <CanvasMenuLabel>{t(locale, "quickLauncherCount").replace("{count}", String(settings.radialLauncherItems.length))}</CanvasMenuLabel>
                   {RADIAL_LAUNCHER_ITEMS.map((item: RadialLauncherItemId) => {
-                    if (item !== "terminal" && item !== "note" && item !== "browser" && item !== "settings" && !agentAvailability?.[item]) {
+                    if (item !== "terminal" && item !== "note" && item !== "browser" && item !== "settings" && !launchable.has(item)) {
                       return missingAgentRow(item);
                     }
                     const enabled = settings.radialLauncherItems.includes(item);
@@ -652,7 +708,7 @@ export function SettingsPanel({
               >
                 <div className="agent-launcher-settings">
                   {AGENT_PROVIDERS.map((provider) => {
-                    if (!agentAvailability?.[provider]) return missingAgentRow(provider);
+                    if (!launchable.has(provider)) return missingAgentRow(provider);
                     const enabled = homeLauncherProviders.includes(provider);
                     return (
                       <div className="agent-launcher-settings__row" key={provider}>
@@ -707,8 +763,17 @@ export function SettingsPanel({
                   })}
                 </div>
               </SettingGroup>
-            </>
+              </div>
+            </div>
           )}
+          {(connectionsVisited || section === "connections") && <div hidden={section !== "connections"} inert={!open || section !== "connections"}><ConnectionsSettings location={location?.section === "connections" ? location : undefined} settings={settings} active={open && section === "connections"} onPersist={onPersist} /></div>}
+          {(executionVisited || section === "execution") && <div className="settings-section" hidden={section !== "execution"} inert={!open || section !== "execution"}>
+            <SettingsViewSelector<"hosts" | "workspaces" | "containers" | "limits"> name="execution" locale={locale} value={executionView} onChange={setExecutionView} options={[["hosts", "hosts"], ["workspaces", "retainedWorkspaces"], ["containers", "containers"], ["limits", "agentLimits"]]} />
+            <div id="settings-view-execution-hosts" role="tabpanel" aria-label={t(locale, "hosts")} hidden={executionView !== "hosts"} inert={!open || section !== "execution" || executionView !== "hosts"}><RemoteHostsSettings settings={settings} sessions={sessions} active={open && section === "execution" && executionView === "hosts"} recordId={location?.section === "execution" && location.view === "hosts" ? location.recordId : undefined} selectionRequest={location} onPersist={onPersist} /></div>
+            <div id="settings-view-execution-limits" role="tabpanel" aria-label={t(locale, "agentLimits")} hidden={executionView !== "limits"} inert={!open || section !== "execution" || executionView !== "limits"}><AgentBudgetsSettings settings={settings} onPersist={onPersist} /></div>
+            {(workspacesVisited || executionView === 'workspaces') && <div id="settings-view-execution-workspaces" role="tabpanel" aria-label={t(locale, "retainedWorkspaces")} hidden={executionView !== 'workspaces'} inert={!open || section !== 'execution' || executionView !== 'workspaces'}><RetainedWorkspacesSettings onRevealSession={onRevealSession} settings={settings} onChange={onPersist} active={open && section === 'execution' && executionView === 'workspaces'} /></div>}
+            {(containersVisited || executionView === "containers") && <div id="settings-view-execution-containers" role="tabpanel" aria-label={t(locale, "containers")} hidden={executionView !== "containers"} inert={!open || section !== "execution" || executionView !== "containers"}><ContainerProfilesSettings settings={settings} active={open && section === "execution" && executionView === "containers"} recordId={location?.section === "execution" && location.view === "containers" ? location.recordId : undefined} selectionRequest={location} onPersist={onPersist} /></div>}
+          </div>}
 
           {section === "controls" && (
             <>

@@ -1,3 +1,4 @@
+import { AcpSessionPanel } from "./AcpSessionPanel";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -17,6 +18,7 @@ import type {
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
+import { effortLabel } from "../../lib/effort";
 import { sessionStatusLabel } from "../../lib/sessionStatus";
 import { attachTerminalMouseCoordinateAdapter, attachTerminalScrollbarCoordinateAdapter } from "./terminalMouseCoordinates";
 import {
@@ -307,7 +309,7 @@ export function TerminalCard({
   }, []);
 
   const startDrag = (event: React.PointerEvent<HTMLElement>): void => {
-    if ((event.target as HTMLElement).closest("button, input")) return;
+    if ((event.target as HTMLElement).closest("button, input, select, textarea")) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     dragState.current = {
       pointerId: event.pointerId,
@@ -449,7 +451,7 @@ export function TerminalCard({
       tabIndex={-1}
       onPointerDownCapture={(event) => {
         onSelect(session.id);
-        if (!renaming && !summaryMode && !(event.target as HTMLElement).closest("button, input")) {
+        if (!renaming && !summaryMode && !(event.target as HTMLElement).closest("button, input, select, textarea")) {
           terminalRef.current?.focus();
         }
       }}
@@ -519,12 +521,23 @@ export function TerminalCard({
               }}
             />
           ) : (
-            <strong title={session.titleCustomized ? session.title : session.cwd}>
+            <strong title={[session.titleCustomized ? session.title : session.cwd, session.integrationNote].filter(Boolean).join("\n")}>
               {session.titleCustomized ? session.title : compactPath(session.cwd)}
             </strong>
           )}
         </div>
         <div className="terminal-card__actions">
+          {session.role === 'subagent' && <span className="terminal-card__context-status terminal-card__role" title={locale === 'ru' ? 'Запущен оркестратором; управляется им в пределах правил и лимитов' : 'Launched by an orchestrator and controlled by it within rules and limits'}>{locale === 'ru' ? 'Субагент' : 'Subagent'}</span>}
+          {session.role !== 'subagent' && (session.allowSubagents || session.role === 'orchestrator') && <span className="terminal-card__context-status terminal-card__role" title={locale === 'ru' ? 'Оркестратор: может запускать дочерние сессии в пределах правил и лимитов' : 'Orchestrator: may launch child sessions within rules and limits'}>{locale === 'ru' ? 'Оркестратор' : 'Orchestrator'}</span>}
+          {session.contextSummary && <span className="terminal-card__context-status" title={`${session.contextSummary.highestDisclosedClass}${session.contextSummary.policyModel ? ` · ${session.contextSummary.policyModel}` : ''}`}>
+            {session.contextSummary.status === 'delivered' ? (locale === 'ru' ? 'Контекст передан' : 'Context sent') : session.contextSummary.status === 'waiting' ? (locale === 'ru' ? (session.transport === 'acp' ? 'Контекст: ждёт задачи' : 'Контекст: ожидает передачи') : (session.transport === 'acp' ? 'Context: next task' : 'Context pending')) : (locale === 'ru' ? 'Контекст: нет правил' : 'Context: no rules')}
+          </span>}
+          {session.execution && <span className="terminal-card__workspace-status" title={[t(locale, "workspaceSource") + ": " + session.cwd, t(locale, "workspaceExecution") + ": " + (session.execution.executionCwd ?? t(locale, "workspacePreparing")), session.isolation?.mode === 'container' ? [t(locale, 'launchHost') + ': ' + (session.hostId ?? 'local'), t(locale, 'launchAccount') + ': ' + (session.accountId ?? '—'), t(locale, 'containers') + ': ' + session.isolation.profileId].join('\n') : undefined, session.execution.baseCommit, session.failureDetails].filter(Boolean).join("\n")}>
+            {session.execution.mode === 'container' ? t(locale, 'containers') : session.execution.state === "preparing" ? t(locale, "workspacePreparing") : session.execution.mode === "worktree" ? "Git worktree" : "ⓘ"}
+          </span>}
+          {session.integrationNote && <span title={session.integrationNote} aria-label={session.integrationNote}>ⓘ</span>}
+          {session.effort && <span className="terminal-card__context-status" title={`${t(locale, "launchEffort")}: ${effortLabel(locale, session.effort)}`}>{session.effort}</span>}
+          {session.privacyNotice && <span className="terminal-card__privacy-notice" role="note" title={t(locale, "sessionPrivacyNotice").replace("{class}", session.privacyNotice.dataClass).replace("{cap}", session.privacyNotice.cap)} aria-label={t(locale, "sessionPrivacyNotice").replace("{class}", session.privacyNotice.dataClass).replace("{cap}", session.privacyNotice.cap)}>{session.privacyNotice.dataClass}↑</span>}
           {session.exitCode !== null && (
             <button
               className="terminal-card__action terminal-card__action--restart"
@@ -540,7 +553,8 @@ export function TerminalCard({
           <button className="terminal-card__action terminal-card__action--close" type="button" onClick={() => onDispose(session.id)} title={t(locale, "close")} aria-label={t(locale, "close")}><UiIcon name="close" size="1.23em" /></button>
         </div>
       </header>
-      <div className="terminal-card__surface" ref={terminalHost} />
+      {session.execution?.state === "failed" && session.failureDetails && <div className="terminal-card__launch-error" role="alert">{session.failureDetails}</div>}
+      {session.transport === "acp" ? <AcpSessionPanel session={session} locale={locale} /> : <div className="terminal-card__surface" ref={terminalHost} />}
       <button
         className="terminal-card__summary"
         type="button"
@@ -589,5 +603,5 @@ function compactPath(path: string): string {
 }
 
 function isCardControl(target: EventTarget): boolean {
-  return target instanceof Element && Boolean(target.closest("button, input, .terminal-card__resize-handle"));
+  return target instanceof Element && Boolean(target.closest("button, input, select, textarea, .terminal-card__resize-handle"));
 }

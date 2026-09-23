@@ -1,0 +1,11 @@
+{
+ "version": 1,
+ "provenance": {"kind":"synthetic","language":"ru","author":"CanvasTTY G implementation","purpose":"Actual coordinator and ordinary policy regression timings. No evidence of model quality or token/cost savings.","liveModelCalls":0},
+ "cases": [
+  {"id":"stable-rules","task":"Проверь публичный проект","category":"review","dataClass":"D0","expected":"claude"},
+  {"id":"category-rule","task":"Проверь обработку данных","category":"code","dataClass":"D0","preferCodex":true,"expected":"codex"},
+  {"id":"single-eligible","task":"Выбери установленный агент","category":"general","dataClass":"D0","single":true,"expected":"claude"},
+  {"id":"no-eligible","task":"Разбери закрытый проект","category":"research","dataClass":"D3","expected":null},
+  {"id":"revoked-after-review","task":"Проверь повторно после смены политики","category":"review","dataClass":"D0","revoke":true,"expected":"stale-rejected"}
+ ]
+}

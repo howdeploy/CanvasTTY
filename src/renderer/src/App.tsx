@@ -1,3 +1,6 @@
+import { DEFAULT_DECISION_SETTINGS } from '../../shared/decisions';
+import type { SettingsLocation } from "../../shared/settingsLocation";
+import type { AgentLaunchOptions, CreateSessionRequest } from "../../shared/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentProviderId,
@@ -47,7 +50,8 @@ import { TerminalLinkDialog } from "./features/terminal/TerminalLinkDialog";
 import { WorkspaceCanvas } from "./features/workspace/WorkspaceCanvas";
 import type { LimitsLoadState } from "./features/home/homeModel";
 import { t } from "./lib/i18n";
-import { AGENT_PROVIDERS } from "./lib/providers";
+import { AGENT_PROVIDERS, PROVIDERS } from "./lib/providers";
+import { launchableProviders } from "../../shared/agentAvailability";
 import {
   mergeSessionSnapshots,
   upsertSession,
@@ -70,13 +74,19 @@ interface HomeEditDraft {
 const FALLBACK_SETTINGS: AppSettings = {
   locale: "ru",
   restoreTerminalSessions: false,
+  decisions: structuredClone(DEFAULT_DECISION_SETTINGS),
+  contextProfilesEnabled: false,
   persistCanvasRegions: true,
   persistStickyNotes: true,
   palette: "sage",
   homeAccentPreset: "classic",
   homeAccentColors: { ...DEFAULT_HOME_ACCENT_COLORS },
   sessionRowColorMode: "status",
-  homeLauncherProviders: ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"],
+  homeLauncherProviders: ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"],
+  apiProfiles: [],
+  remoteHosts: [],
+  providerAccounts: [],
+  pathPolicies: [],
   homeLimitProviders: ["codex", "claude", "qwen", "kimi", "opencode", "grok"],
   canvasLauncherItems: [...DEFAULT_CANVAS_LAUNCHER_ITEMS],
   radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS],
@@ -108,6 +118,12 @@ const FALLBACK_SETTINGS: AppSettings = {
   mediaFit: "cover",
   lastDirectory: "/",
   acknowledgedDangerousProfiles: [],
+  defaultDataClass: "D2",
+  agentBudgets: { maxLocalAgents: 4, maxRemoteAgentsPerHost: 4, maxChildren: 4, maxDepth: 2 },
+  maxAccountsPerProviderPerHost: 1,
+  requiresSandboxProfiles: [],
+  containerProfiles: [],
+  capsuleTestProfiles: [],
   homeGridSize: { ...DEFAULT_HOME_GRID_SIZE },
   homeLayout: structuredClone(DEFAULT_HOME_LAYOUT),
   canvasRegions: [],
@@ -178,6 +194,7 @@ function contrastRatio(left: number, right: number): number {
 
 export function App(): React.JSX.Element {
   const [settings, setSettings] = useState(FALLBACK_SETTINGS);
+  useEffect(() => { document.documentElement.lang = settings.locale; }, [settings.locale]);
   const [sessions, setSessions] = useState<SessionSnapshot[]>([]);
   const [limits, setLimits] = useState<LimitsSnapshot | null>(null);
   const [limitsLoadState, setLimitsLoadState] = useState<LimitsLoadState>("loading");
@@ -200,6 +217,9 @@ export function App(): React.JSX.Element {
   const [launchProvider, setLaunchProvider] = useState<AgentProviderId | null>(null);
   const [launchPosition, setLaunchPosition] = useState<Point | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsLocation, setSettingsLocation] = useState<SettingsLocation | null>(null);
+  // A location is a one-shot jump; every close path drops it so reopening never replays it.
+  useEffect(() => { if (!settingsOpen) setSettingsLocation(null); }, [settingsOpen]);
   const [homeEditDraft, setHomeEditDraft] = useState<HomeEditDraft | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [browserSelected, setBrowserSelected] = useState(false);
@@ -352,15 +372,14 @@ export function App(): React.JSX.Element {
   }, []);
 
   const createSession = useCallback(async (
-    provider: ProviderId,
-    profile: LaunchProfileId,
-    cwd: string,
+    options: AgentLaunchOptions,
     requestedCenter?: Point
   ): Promise<SessionSnapshot> => {
+    const { cwd } = options;
     const position = requestedCenter
       ? centeredWindowPosition(requestedCenter, { width: 700, height: 430 })
       : nextSessionPosition(sessions.length, settings.homeGridSize);
-    const session = await window.canvasTTY.terminal.create({ provider, profile, cwd, position });
+    const session = await window.canvasTTY.terminal.create({ ...options, position });
     setSessions((current) => upsertSnapshot(current, session));
     setActiveSessionId(session.id);
     await saveSettings({ lastDirectory: cwd });
@@ -371,7 +390,7 @@ export function App(): React.JSX.Element {
 
   const openTerminal = useCallback(async (position?: Point): Promise<void> => {
     try {
-      await createSession("terminal", "normal", settings.lastDirectory, position);
+      await createSession({ provider: "terminal", profile: "normal", cwd: settings.lastDirectory }, position);
       showToast(t(settings.locale, "terminalStarted"));
     } catch (error) {
       showToast(error instanceof Error ? error.message : t(settings.locale, "launchFailed"));
@@ -379,13 +398,13 @@ export function App(): React.JSX.Element {
   }, [createSession, settings.lastDirectory, settings.locale, showToast]);
 
   const openAgent = useCallback((provider: AgentProviderId, position?: Point): void => {
-    if (!agentAvailability?.[provider]) {
-      showToast(t(settings.locale, "agentCliNotFound"));
+    if (!launchableProviders([provider], agentAvailability, settings).has(provider)) {
+      showToast(t(settings.locale, "agentCliNotFoundHint").replace("{agent}", PROVIDERS[provider].label));
       return;
     }
     setLaunchPosition(position ?? null);
     setLaunchProvider(provider);
-  }, [agentAvailability, settings.locale, showToast]);
+  }, [agentAvailability, settings, showToast]);
 
   useEffect(() => window.canvasTTY.plugins.onOpenLauncher(({ provider }) => {
     if (provider === "terminal") void openTerminal();
@@ -394,14 +413,18 @@ export function App(): React.JSX.Element {
 
 
   const launchAgent = useCallback(async (
-    provider: AgentProviderId,
-    profile: LaunchProfileId,
-    cwd: string
+    options: AgentLaunchOptions
   ): Promise<void> => {
-    await createSession(provider, profile, cwd, launchPosition ?? undefined);
+    const created = await createSession(options, launchPosition ?? undefined);
     setLaunchPosition(null);
-    showToast(`${t(settings.locale, "sessionStarted")}: ${provider}`);
-  }, [createSession, launchPosition, settings.locale, showToast]);
+    const isolation = created.isolation;
+    const route = isolation?.mode === 'container' ? [
+      created.hostId ? settings.remoteHosts.find(h => h.id === created.hostId)?.label ?? created.hostId : t(settings.locale, 'accountLocalHost'),
+      settings.providerAccounts.find(a => a.id === created.accountId)?.label ?? created.accountId,
+      settings.containerProfiles.find(p => p.id === isolation.profileId)?.label ?? isolation.profileId
+    ].filter(Boolean).join(' · ') : '';
+    showToast(`${t(settings.locale, "launchPreparing")}: ${created.provider}${route ? ` · ${route}` : ''}`);
+  }, [createSession, launchPosition, settings.locale, settings.remoteHosts, settings.providerAccounts, settings.containerProfiles, showToast]);
 
   const restartSession = useCallback(async (id: string): Promise<void> => {
     try {
@@ -1010,12 +1033,13 @@ export function App(): React.JSX.Element {
     [appearance.homeAccentColors, appearance.homeAccentPreset, settings.uiScale]
   );
   const workspaceSettings = useMemo(() => {
-    const available = new Set(AGENT_PROVIDERS.filter((provider) => agentAvailability?.[provider]));
+    const available = launchableProviders(AGENT_PROVIDERS, agentAvailability, settings);
+    const cliFound = new Set(AGENT_PROVIDERS.filter((provider) => agentAvailability?.[provider]));
     return {
       ...settings,
       ...(homeEditDraft ? { homeGridSize: homeEditDraft.homeGridSize, homeLayout: homeEditDraft.homeLayout } : {}),
       homeLauncherProviders: settings.homeLauncherProviders.filter((provider) => available.has(provider)),
-      homeLimitProviders: settings.homeLimitProviders.filter((provider) => available.has(provider)),
+      homeLimitProviders: settings.homeLimitProviders.filter((provider) => cliFound.has(provider)),
       canvasLauncherItems: settings.canvasLauncherItems.filter((provider) => provider === "terminal" || available.has(provider)),
       radialLauncherItems: settings.radialLauncherItems.filter((provider) => (
         provider === "terminal" || provider === "note" || provider === "browser" || provider === "settings" || available.has(provider)
@@ -1099,12 +1123,22 @@ export function App(): React.JSX.Element {
 
       <AgentLaunchDialog
         provider={launchProvider}
+        suspended={settingsOpen}
+        onOpenSettings={location => { setSettingsLocation(location); setSettingsOpen(true); }}
         settings={settings}
         onClose={() => {
           setLaunchProvider(null);
           setLaunchPosition(null);
         }}
         onAcknowledge={acknowledgeDanger}
+        onLaunchRecommended={async id => {
+          const position = launchPosition ? centeredWindowPosition(launchPosition, { width: 700, height: 430 }) : nextSessionPosition(sessions.length, settings.homeGridSize);
+          const session = await window.canvasTTY.decisions.launch(id, position);
+          setSessions(current => upsertSnapshot(current, session)); setActiveSessionId(session.id); setLaunchPosition(null);
+          isHomeCamera.current = false; setCamera(focusCamera(position, session.size));
+          await saveSettings({ lastDirectory: session.cwd });
+          showToast(`${t(settings.locale, 'launchPreparing')}: ${session.provider}`);
+        }}
         onLaunch={launchAgent}
       />
       <TerminalLinkDialog
@@ -1125,14 +1159,18 @@ export function App(): React.JSX.Element {
         }}
       />
       <SettingsPanel
+        onRevealSession={id => { const session = sessions.find(s => s.id === id); if (session) { setSettingsOpen(false); focusSession(session); } }}
         open={settingsOpen}
+        location={settingsLocation}
+        sessions={sessions}
         settings={settings}
         agentAvailability={agentAvailability}
         onRecheckAgentClis={recheckAgentClis}
         plugins={plugins}
         browser={browser}
-        onClose={() => setSettingsOpen(false)}
+        onClose={() => { setSettingsOpen(false); setSettingsLocation(null); }}
         onChange={saveSettings}
+        onPersist={persistSettings}
         onPreviewPlugin={previewPlugin}
         onInstallPlugin={installPlugin}
         onSearchPlugins={searchPlugins}
@@ -1193,10 +1231,25 @@ function focusCamera(
   zoom = DEFAULT_FOCUS_ZOOM
 ): CameraState {
   const { width: viewportWidth, height: viewportHeight } = canvasViewportSize();
+  const initialZoom = Math.max(0.2, Math.min(zoom, (viewportWidth - 48) / size.width, (viewportHeight - 72) / size.height));
+  let top = 24, bottom = 24;
+  const viewport = document.querySelector<HTMLElement>(".app__content")?.getBoundingClientRect();
+  if (viewport) {
+    const left = viewport.left + (viewportWidth - size.width * initialZoom) / 2;
+    const right = left + size.width * initialZoom;
+    for (const slot of document.querySelectorAll<HTMLElement>(".canvas-overlay-slot")) {
+      if (!slot.children.length) continue;
+      const bounds = slot.getBoundingClientRect();
+      if (bounds.right <= left || bounds.left >= right) continue;
+      if (slot.className.includes("--top-")) top = Math.max(top, bounds.bottom - viewport.top + 12);
+      else bottom = Math.max(bottom, viewport.bottom - bounds.top + 12);
+    }
+  }
+  const fittedZoom = Math.max(0.2, Math.min(initialZoom, (viewportHeight - top - bottom) / size.height));
   return {
-    zoom,
-    x: viewportWidth / 2 - (position.x + size.width / 2) * zoom,
-    y: viewportHeight / 2 - (position.y + size.height / 2) * zoom
+    zoom: fittedZoom,
+    x: viewportWidth / 2 - (position.x + size.width / 2) * fittedZoom,
+    y: top + (viewportHeight - top - bottom) / 2 - (position.y + size.height / 2) * fittedZoom
   };
 }
 

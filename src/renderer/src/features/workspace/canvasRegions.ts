@@ -1,5 +1,5 @@
-import type { CanvasRegion, Point, SessionBounds } from "../../../../shared/contracts";
-import type { ResizeDirection } from "./snap";
+import type { CanvasRegion, Point, SessionBounds, Size } from "../../../../shared/contracts";
+import { snapResize, type ResizeDirection } from "./snap.ts";
 
 export const DEFAULT_CANVAS_REGION_SIZE = { width: 960, height: 600 } as const;
 export const CANVAS_REGION_COLORS = [
@@ -11,8 +11,8 @@ export const CANVAS_REGION_COLORS = [
   "#D9A69A"
 ] as const;
 
-const MIN_REGION_SIZE = { width: 360, height: 240 };
-const MAX_REGION_SIZE = { width: 4_000, height: 3_000 };
+export const MIN_REGION_SIZE: Size = { width: 360, height: 240 };
+export const MAX_REGION_SIZE: Size = { width: 4_000, height: 3_000 };
 
 export function canvasRegionAtPoint(
   title: string,
@@ -59,6 +59,17 @@ export function constrainCanvasRegionBounds(
     },
     size: { width: nextWidth, height: nextHeight }
   };
+}
+
+export function snapCanvasRegionBounds(
+  bounds: SessionBounds,
+  direction: ResizeDirection,
+  targets: readonly SessionBounds[]
+): SessionBounds {
+  return snapResize(bounds, direction, targets, {
+    min: MIN_REGION_SIZE,
+    max: MAX_REGION_SIZE
+  });
 }
 
 function clamp(value: number, min: number, max: number): number {

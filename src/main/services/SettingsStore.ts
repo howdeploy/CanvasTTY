@@ -1,9 +1,19 @@
+import { validatedConnectionsPatch } from "../../shared/connectionsSettings.ts";
+import { copyRemoteApiCredential, validApiProfileCredential, validRemoteApiCredential } from "../../shared/apiProfileCredentials.ts";
+import { assertUnusedHostMutation, sshTargetIdentity } from "../../shared/executionSettings.ts";
+import type { SessionMetadata } from "../../shared/contracts.ts";
+import { normalizeContainerProfiles } from "../../shared/containerProfiles.ts";
+import { normalizeCapsuleTestProfiles } from '../../shared/capsules.ts';
+import { canonicalApiUrl, copyAssessment, isProviderSecretRef, validAccountBinding, validAssessment } from "../../shared/providerAccountPolicy.ts";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import type {
   AgentProviderId,
   AgentCliAvailability,
+  AgentBudgets,
+  ApiProfile,
+  ApiProfileProtocol,
   AppSettings,
   BrowserCanvasState,
   CanvasLauncherItemId,
@@ -12,6 +22,7 @@ import type {
   CanvasOverlayPlacement,
   CanvasWheelCaptureMode,
   CanvasPatternId,
+  DataClass,
   EdgePanSpeed,
   FocusActivation,
   HomeAccentColors,
@@ -23,16 +34,23 @@ import type {
   MediaFit,
   MinimapInteractionMode,
   PaletteId,
+  PathPolicy,
   PluginCanvasInstance,
+  ProviderAccount,
+  ProviderSecretId,
   RadialLauncherItemId,
+  RemoteHost,
   SessionRowColorMode,
   ShortcutBindings,
   StickyNote,
   ZoomSensitivity
 } from "../../shared/contracts";
 import {
+  API_PROFILE_PROTOCOLS,
   CANVAS_LAUNCHER_ITEMS,
+  DATA_CLASSES,
   DEFAULT_CANVAS_LAUNCHER_ITEMS,
+  DEFAULT_AGENT_BUDGETS,
   DEFAULT_HOME_ACCENT_COLORS,
   DEFAULT_HOME_GRID_SIZE,
   DEFAULT_HOME_LAYOUT,
@@ -40,8 +58,11 @@ import {
   DEFAULT_UI_SCALE,
   HOME_GRID_MAX_COLUMNS,
   HOME_GRID_MAX_ROWS,
+  PROVIDER_SECRET_IDS,
   HOME_GRID_MIN_COLUMNS,
   HOME_GRID_MIN_ROWS,
+  isValidPathPolicyPattern,
+  isValidRemoteHost,
   RADIAL_LAUNCHER_ITEMS,
   STICKY_NOTE_MAX_SIZE,
   STICKY_NOTE_MIN_SIZE,
@@ -63,16 +84,17 @@ const SESSION_ROW_COLOR_MODES = new Set<SessionRowColorMode>(["monochrome", "sta
 const CANVAS_COLORS = new Set<CanvasColorId>(["sage", "lilac", "night", "sand", "mist", "rose", "slate"]);
 const PATTERNS = new Set<CanvasPatternId>(["dots", "grid", "waves", "diagonal", "rings", "none"]);
 const MEDIA_FITS = new Set<MediaFit>(["cover", "contain"]);
-const SETTINGS_VERSION = 15;
+const SETTINGS_VERSION = 24;
+const DATA_CLASS_SET = new Set<DataClass>(DATA_CLASSES);
 const GROK_LAUNCHER_SETTINGS_VERSION = 3;
 const EXPANDED_LIMIT_SETTINGS_VERSION = 5;
 const QWEN_SETTINGS_VERSION = 6;
-const PROVIDER_ADDITIONS_SETTINGS_VERSION = 15;
+const PROVIDER_ADDITIONS_SETTINGS_VERSION = 19;
 // Providers appended to the persisted HOME dock for operators whose profile predates them.
-const ADDED_AGENT_PROVIDERS: AgentProviderId[] = ["omp", "pi"];
+const ADDED_AGENT_PROVIDERS: AgentProviderId[] = ["omp", "pi", "cursor", "minimax", "devin", "antigravity"];
 const LEGACY_AGENT_PROVIDERS: AgentProviderId[] = ["codex", "claude", "kimi", "opencode", "hermes"];
 const PRE_QWEN_AGENT_PROVIDERS: AgentProviderId[] = [...LEGACY_AGENT_PROVIDERS, "grok"];
-const AGENT_PROVIDERS = new Set<AgentProviderId>(["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]);
+const AGENT_PROVIDERS = new Set<AgentProviderId>(["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"]);
 const LEGACY_LIMIT_PROVIDERS: LimitProviderId[] = ["codex", "claude", "kimi"];
 const PRE_QWEN_LIMIT_PROVIDERS: LimitProviderId[] = [...LEGACY_LIMIT_PROVIDERS, "opencode", "grok"];
 const LIMIT_PROVIDERS: LimitProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "grok"];
@@ -100,6 +122,19 @@ export class SettingsStore {
   private hasPersistedLegacyWheelCapture = false;
   private writeQueue = Promise.resolve();
   private availableProviders: ReadonlySet<AgentProviderId>;
+  private updateQueue = Promise.resolve();
+  private hostSessions: () => readonly Pick<SessionMetadata, "hostId" | "exitCode" | "title">[] = () => [];
+  private readonly changingHosts = new Set<string>();
+
+  configureHostSessions(sessions: () => readonly Pick<SessionMetadata, "hostId" | "exitCode" | "title">[]): void { this.hostSessions = sessions; }
+
+  /** The launch resolver fences registration while an SSH target change or removal is awaiting disk.
+   * get() remains confirmed UI truth throughout the transaction. */
+  hostForLaunch(id: string): RemoteHost | null {
+    if (this.changingHosts.has(id)) throw new Error("This server is being removed or retargeted. Wait for the settings save to finish.");
+    const host = this.value.remoteHosts.find(item => item.id === id);
+    return host ? structuredClone(host) : null;
+  }
 
   constructor(userDataPath: string, systemLocale: string, platform: string = process.platform, availability?: AgentCliAvailability) {
     this.filePath = join(userDataPath, "settings.json");
@@ -162,6 +197,13 @@ export class SettingsStore {
         || !("persistStickyNotes" in source)
         || !("canvasRegions" in source)
         || !("stickyNotes" in source)
+        || !("apiProfiles" in source)
+        || !("remoteHosts" in source)
+        || !("defaultDataClass" in source)
+        || !("providerAccounts" in source)
+        || !("pathPolicies" in source)
+        || !("agentBudgets" in source)
+        || !("maxAccountsPerProviderPerHost" in source)
         || source.canvasColor === "palette"
         || source.settingsVersion !== SETTINGS_VERSION;
       let migratedCandidate: Record<string, unknown> = source;
@@ -219,43 +261,59 @@ export class SettingsStore {
     return structuredClone(this.value);
   }
 
-  async setAvailableProviders(availability: AgentCliAvailability): Promise<AppSettings> {
-    this.availableProviders = new Set([...AGENT_PROVIDERS].filter((provider) => availability[provider]));
-    const filtered = filterUnavailableProviders(this.value, this.availableProviders);
-    if (providerSelectionsChanged(this.value, filtered)) {
-      this.value = filtered;
-      await this.persist();
-    }
-    return this.get();
+  /** Local CLI detection hides launcher entries for agents that are not installed. */
+  setAvailableProviders(availability: AgentCliAvailability): Promise<AppSettings> {
+    const operation = async (): Promise<AppSettings> => {
+      this.availableProviders = new Set([...AGENT_PROVIDERS].filter((provider) => availability[provider]));
+      const filtered = filterUnavailableProviders(this.value, this.availableProviders);
+      if (providerSelectionsChanged(this.value, filtered)) {
+        await this.persist(filtered);
+        this.value = filtered;
+      }
+      return this.get();
+    };
+    const result = this.updateQueue.then(operation, operation);
+    this.updateQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
-  async update(patch: Partial<AppSettings>): Promise<AppSettings> {
-    if (patch.canvasWheelCaptureMode !== undefined) this.hasPersistedLegacyWheelCapture = true;
-    const nextPatch = patch.canvasWheelCaptureMode === "key"
-      && patch.canvasWheelOverride === undefined
-      && this.value.canvasWheelOverride === null
-      ? { ...patch, canvasWheelOverride: defaultCanvasWheelBinding(this.platform) }
-      : patch;
-    this.value = filterUnavailableProviders(
-      normalizeSettings({ ...this.value, ...nextPatch }, this.value, this.platform),
-      this.availableProviders
-    );
-    await this.persist();
-    return this.get();
+  update(patch: Partial<AppSettings>): Promise<AppSettings> {
+    const captured = structuredClone(patch);
+    const operation = async (): Promise<AppSettings> => {
+      const checked = validatedConnectionsPatch(this.value, captured);
+      assertUnusedHostMutation(this.value, checked, this.hostSessions());
+      const hasLegacy = this.hasPersistedLegacyWheelCapture || checked.canvasWheelCaptureMode !== undefined;
+      const nextPatch = checked.canvasWheelCaptureMode === "key"
+        && checked.canvasWheelOverride === undefined && this.value.canvasWheelOverride === null
+        ? { ...checked, canvasWheelOverride: defaultCanvasWheelBinding(this.platform) } : checked;
+      const normalized = normalizeSettings({ ...this.value, ...nextPatch }, this.value, this.platform);
+      const next = filterUnavailableProviders(normalized, this.availableProviders);
+      const removed = this.value.remoteHosts.filter(host => { const after = next.remoteHosts.find(item => item.id === host.id); return !after || sshTargetIdentity(host) !== sshTargetIdentity(after); });
+      for (const host of removed) this.changingHosts.add(host.id);
+      try {
+        await this.persist(next, hasLegacy);
+        this.value = next;
+        this.hasPersistedLegacyWheelCapture = hasLegacy;
+        return this.get();
+      } finally { for (const host of removed) this.changingHosts.delete(host.id); }
+    };
+    const result = this.updateQueue.then(operation, operation);
+    this.updateQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
-  private persist(): Promise<void> {
+  private persist(value = this.value, hasLegacy = this.hasPersistedLegacyWheelCapture): Promise<void> {
     const persistedValue: Partial<AppSettings> & {
       settingsVersion: number;
       zoomOverApplications?: boolean;
     } = {
-      ...this.value,
-      canvasRegions: this.value.persistCanvasRegions ? this.value.canvasRegions : [],
-      stickyNotes: this.value.persistStickyNotes ? this.value.stickyNotes : [],
+      ...value,
+      canvasRegions: value.persistCanvasRegions ? value.canvasRegions : [],
+      stickyNotes: value.persistStickyNotes ? value.stickyNotes : [],
       settingsVersion: SETTINGS_VERSION
     };
-    if (this.hasPersistedLegacyWheelCapture) {
-      persistedValue.zoomOverApplications = this.value.canvasWheelCaptureMode === "always";
+    if (hasLegacy) {
+      persistedValue.zoomOverApplications = value.canvasWheelCaptureMode === "always";
     }
     const snapshot = JSON.stringify(persistedValue, null, 2);
     const temporaryPath = `${this.filePath}.tmp`;
@@ -325,6 +383,16 @@ function createDefaults(systemLocale: string, platform: CanvasNavigationPlatform
     mediaFit: "cover",
     lastDirectory: homedir(),
     acknowledgedDangerousProfiles: [],
+    defaultDataClass: "D2",
+    apiProfiles: [],
+    remoteHosts: [],
+    providerAccounts: [],
+    pathPolicies: [],
+    agentBudgets: { ...DEFAULT_AGENT_BUDGETS },
+    maxAccountsPerProviderPerHost: 1,
+    requiresSandboxProfiles: [],
+    containerProfiles: [],
+    capsuleTestProfiles: [],
     homeGridSize: { ...DEFAULT_HOME_GRID_SIZE },
     homeLayout: structuredClone(DEFAULT_HOME_LAYOUT),
     canvasRegions: [],
@@ -335,6 +403,235 @@ function createDefaults(systemLocale: string, platform: CanvasNavigationPlatform
     browserShowAgentPresence: true,
     browserRestoreTabs: true
   };
+}
+
+const API_PROFILE_PROTOCOL_SET = new Set<ApiProfileProtocol>(API_PROFILE_PROTOCOLS);
+const MAX_API_PROFILES = 512;
+
+// Invalid entries are dropped, never repaired: a profile that no longer matches
+// the schema must disappear rather than silently point a runtime at a wrong
+// endpoint or credential.
+export function normalizeApiProfiles(
+  value: unknown,
+  fallback: readonly ApiProfile[]
+): ApiProfile[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const seen = new Set<string>();
+  const profiles: ApiProfile[] = [];
+  for (const candidate of value) {
+    if (profiles.length >= MAX_API_PROFILES) break;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const record = candidate as Record<string, unknown>;
+    const id = typeof record.id === "string" && record.id.length > 0 && record.id.length <= 64 ? record.id : null;
+    const name = typeof record.name === "string" && record.name.trim().length > 0 && record.name.length <= 80 ? record.name : null;
+    const protocol = API_PROFILE_PROTOCOL_SET.has(record.protocol as ApiProfileProtocol)
+      ? record.protocol as ApiProfileProtocol
+      : null;
+    const secretRef = isProviderSecretRef(record.secretRef) ? record.secretRef : null;
+    if (!validApiProfileCredential(record as unknown as ApiProfile)) continue;
+    const remoteCredential = validRemoteApiCredential(record.remoteCredential) ? copyRemoteApiCredential(record.remoteCredential) : undefined;
+    const baseUrl = record.baseUrl === undefined
+      ? undefined
+      : typeof record.baseUrl === "string" && record.baseUrl.length <= 500
+        ? record.baseUrl
+        : "invalid";
+    const defaultModel = typeof record.defaultModel === "string" && record.defaultModel.trim().length > 0 && record.defaultModel.length <= 200
+      ? record.defaultModel
+      : undefined;
+    if (!id || seen.has(id) || !name || !protocol || baseUrl === "invalid") continue;
+    if (baseUrl) { try { canonicalApiUrl(baseUrl); } catch { continue; } }
+    if (record.hostId !== undefined && (typeof record.hostId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(record.hostId))) continue;
+    seen.add(id);
+    profiles.push({ id, name, protocol, ...(baseUrl ? { baseUrl } : {}), ...(secretRef ? { secretRef } : { remoteCredential }), ...(defaultModel ? { defaultModel } : {}),
+      ...(record.hostId !== undefined ? { hostId: record.hostId as string } : {}), ...normalizedAssessment(record) });
+  }
+  return profiles;
+}
+
+// Invalid or absent classifications read as D2 (confidential): a tier nobody
+// can parse must fail toward protection, never toward public.
+export function normalizeDataClass(candidate: unknown): DataClass {
+  return typeof candidate === "string" && DATA_CLASS_SET.has(candidate as DataClass)
+    ? candidate as DataClass
+    : "D2";
+}
+
+const MAX_REMOTE_HOSTS = 512;
+
+// Invalid entries are dropped, never repaired: a host that no longer matches
+// the schema must disappear rather than silently aim orchestration at the
+// wrong machine. Field rules live in shared/contracts (remoteHostInvalidReason)
+// so the connectivity service enforces exactly the same shape.
+export function normalizeRemoteHosts(
+  value: unknown,
+  fallback: readonly RemoteHost[]
+): RemoteHost[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const seen = new Set<string>();
+  const hosts: RemoteHost[] = [];
+  for (const candidate of value) {
+    if (hosts.length >= MAX_REMOTE_HOSTS) break;
+    if (!isValidRemoteHost(candidate) || seen.has(candidate.id)) continue;
+    seen.add(candidate.id);
+    // Workspaces ride along only as rebuilt two-key rows: an invalid mapping
+    // already dropped the whole host above, and an empty array falls away the
+    // same way absent optional fields do.
+    const workspaces = candidate.workspaces && candidate.workspaces.length > 0
+      ? candidate.workspaces.map((workspace) => ({
+        localPath: workspace.localPath,
+        remotePath: workspace.remotePath
+      }))
+      : null;
+    hosts.push(candidate.sshUser
+      || candidate.sshPort !== undefined
+      || candidate.priority !== undefined
+      || candidate.maxSessions !== undefined
+      || candidate.minFreeMemoryMb !== undefined
+      || candidate.maxLoadPerCore !== undefined
+      || workspaces !== null
+      || candidate.providerAccess !== undefined
+      || candidate.maxDataClass !== undefined
+      ? {
+        id: candidate.id,
+        label: candidate.label,
+        sshHost: candidate.sshHost,
+        ...(candidate.sshUser ? { sshUser: candidate.sshUser } : {}),
+        ...(candidate.sshPort !== undefined ? { sshPort: candidate.sshPort } : {}),
+        ...(candidate.priority !== undefined ? { priority: candidate.priority } : {}),
+        ...(candidate.maxSessions !== undefined ? { maxSessions: candidate.maxSessions } : {}),
+        ...(candidate.minFreeMemoryMb !== undefined ? { minFreeMemoryMb: candidate.minFreeMemoryMb } : {}),
+        ...(candidate.maxLoadPerCore !== undefined ? { maxLoadPerCore: candidate.maxLoadPerCore } : {}),
+        ...(workspaces ? { workspaces } : {}),
+        ...(candidate.providerAccess
+          ? {
+            providerAccess: {
+              mode: candidate.providerAccess.mode,
+              providers: [...candidate.providerAccess.providers]
+            }
+          }
+          : {}),
+        ...(candidate.maxDataClass !== undefined ? { maxDataClass: candidate.maxDataClass } : {})
+      }
+      : { id: candidate.id, label: candidate.label, sshHost: candidate.sshHost });
+  }
+  return hosts;
+}
+
+const MAX_PROVIDER_ACCOUNTS = 512;
+const MAX_ACCOUNT_MODELS = 64;
+const MAX_PATH_POLICIES = 64;
+
+// Invalid account identities are dropped. Model allowlists are narrowed only:
+// malformed or empty lists remain explicit deny-all, never unrestricted.
+// Ambiguous legacy host bindings are retained but disabled for explicit repair.
+export function normalizeProviderAccounts(
+  value: unknown,
+  fallback: readonly ProviderAccount[]
+): ProviderAccount[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const seen = new Set<string>();
+  const accounts: ProviderAccount[] = [];
+  for (const candidate of value) {
+    if (accounts.length >= MAX_PROVIDER_ACCOUNTS) break;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const record = candidate as Record<string, unknown>;
+    const id = typeof record.id === "string" && record.id.length > 0 && record.id.length <= 64
+      ? record.id
+      : null;
+    if (!id || seen.has(id)) continue;
+    const label = typeof record.label === "string"
+      && record.label.trim().length > 0
+      && record.label.length <= 80
+      ? record.label
+      : null;
+    if (!label) continue;
+    if (!AGENT_PROVIDERS.has(record.provider as AgentProviderId)) continue;
+    const tier = record.tier === undefined
+      ? undefined
+      : typeof record.tier === "string" && record.tier.trim().length > 0 && record.tier.length <= 40
+        ? record.tier
+        : null;
+    if (tier === null) continue;
+    let models: string[] | null = null;
+    if (record.models !== undefined) {
+      // Keep malformed allowlists as deny-all instead of losing the account
+      // and accidentally falling back to ambient CLI credentials.
+      const candidates = Array.isArray(record.models) && record.models.length <= MAX_ACCOUNT_MODELS
+        ? record.models : [];
+      const collected: string[] = [];
+      const seenModels = new Set<string>();
+      for (const model of candidates) {
+        if (typeof model !== "string" || model.trim().length === 0 || model.length > 100) continue;
+        const key = model.toLowerCase();
+        if (seenModels.has(key)) continue;
+        seenModels.add(key);
+        collected.push(model);
+      }
+      models = collected;
+    }
+    const validHostId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(value);
+    let hostId = validHostId(record.hostId) ? record.hostId : undefined;
+    let bindingRequired = record.bindingRequired === true || (record.hostId !== undefined && hostId === undefined) || (record.binding !== undefined && !validAccountBinding(record.binding));
+    if (record.hostIds !== undefined) {
+      const legacy = record.hostIds;
+      if (Array.isArray(legacy) && legacy.length === 1 && validHostId(legacy[0]) && (hostId === undefined || hostId === legacy[0])) hostId = legacy[0];
+      else bindingRequired = true;
+    }
+    const shared = record.shared;
+    if (shared !== undefined && typeof shared !== "boolean") continue;
+    const maxDataClass = record.maxDataClass;
+    if (maxDataClass !== undefined && !DATA_CLASS_SET.has(maxDataClass as DataClass)) continue;
+    accounts.push({
+      id,
+      provider: record.provider as AgentProviderId,
+      label,
+      ...(validAccountBinding(record.binding) ? { binding: record.binding.kind === "cli-home" ? { kind: "cli-home" as const, directory: record.binding.directory } : { kind: "api-profile" as const, profileId: record.binding.profileId } } : {}),
+      ...normalizedAssessment(record),
+      ...(tier !== undefined ? { tier } : {}),
+      ...(models !== null ? { models } : {}),
+      ...(shared === true ? { shared } : {}),
+      ...(hostId !== undefined ? { hostId } : {}),
+      ...(bindingRequired ? { bindingRequired: true } : {}),
+      ...(maxDataClass !== undefined ? { maxDataClass: maxDataClass as DataClass } : {})
+    });
+    seen.add(id);
+  }
+  return accounts;
+}
+
+// Same drop-don't-repair discipline as the other policy tables: a policy that
+// violates the pattern grammar or names an unknown class disappears rather
+// than silently classifying paths by a repaired guess. Duplicate patterns are
+// dropped (the first occurrence wins, matching the FIRST-MATCH-WINS lookup in
+// dataClassForPath), and the table holds at most 64 policies.
+export function normalizePathPolicies(
+  value: unknown,
+  fallback: readonly PathPolicy[]
+): PathPolicy[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const seen = new Set<string>();
+  const policies: PathPolicy[] = [];
+  for (const candidate of value) {
+    if (policies.length >= MAX_PATH_POLICIES) break;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const record = candidate as Record<string, unknown>;
+    if (!isValidPathPolicyPattern(record.pattern)) continue;
+    if (typeof record.dataClass !== "string" || !DATA_CLASS_SET.has(record.dataClass as DataClass)) continue;
+    if (seen.has(record.pattern)) continue;
+    seen.add(record.pattern);
+    policies.push({ pattern: record.pattern, dataClass: record.dataClass as DataClass });
+  }
+  return policies;
+}
+
+export function normalizeAgentBudgets(value: unknown, fallback: AgentBudgets = { ...DEFAULT_AGENT_BUDGETS }): AgentBudgets {
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const bounded = (key: keyof AgentBudgets, maximum: number): number => {
+    const candidate = source[key];
+    return Number.isInteger(candidate) && (candidate as number) >= 1 && (candidate as number) <= maximum
+      ? candidate as number : fallback[key] ?? DEFAULT_AGENT_BUDGETS[key];
+  };
+  return { maxLocalAgents: bounded("maxLocalAgents", 64), maxRemoteAgentsPerHost: bounded("maxRemoteAgentsPerHost", 64), maxChildren: bounded("maxChildren", 64), maxDepth: bounded("maxDepth", 8) };
 }
 
 export function normalizeSettings(
@@ -492,6 +789,16 @@ export function normalizeSettings(
       ? source.lastDirectory
       : fallback.lastDirectory,
     acknowledgedDangerousProfiles: [...new Set(acknowledged)],
+    defaultDataClass: normalizeDataClass(source.defaultDataClass),
+  containerProfiles: normalizeContainerProfiles(source.containerProfiles ?? fallback.containerProfiles),
+  capsuleTestProfiles: normalizeCapsuleTestProfiles(source.capsuleTestProfiles ?? fallback.capsuleTestProfiles),
+  requiresSandboxProfiles: Array.isArray(source.requiresSandboxProfiles) ? [...new Set(source.requiresSandboxProfiles.filter((value) => value === "normal" || value === "yolo"))] : fallback.requiresSandboxProfiles ?? [],
+  apiProfiles: normalizeApiProfiles(source.apiProfiles, fallback.apiProfiles ?? []),
+    remoteHosts: normalizeRemoteHosts(source.remoteHosts, fallback.remoteHosts ?? []),
+    providerAccounts: normalizeProviderAccounts(source.providerAccounts, fallback.providerAccounts ?? []),
+    agentBudgets: normalizeAgentBudgets(source.agentBudgets, fallback.agentBudgets),
+    maxAccountsPerProviderPerHost: source.maxAccountsPerProviderPerHost === 2 ? 2 : 1,
+    pathPolicies: normalizePathPolicies(source.pathPolicies, fallback.pathPolicies ?? []),
     homeGridSize,
     homeLayout,
     canvasRegions,
@@ -907,4 +1214,9 @@ function clamp(value: number, min: number, max: number): number {
 
 function isMissingFile(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}
+
+function normalizedAssessment(record: Record<string, unknown>): Pick<ProviderAccount, "assessment" | "assessmentInvalid"> {
+  if (record.assessmentInvalid === true || (record.assessment !== undefined && !validAssessment(record.assessment))) return { assessmentInvalid: true, ...(validAssessment(record.assessment) ? { assessment: copyAssessment(record.assessment) } : {}) };
+  return validAssessment(record.assessment) ? { assessment: copyAssessment(record.assessment) } : {};
 }

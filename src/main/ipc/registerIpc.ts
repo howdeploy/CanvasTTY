@@ -1,5 +1,16 @@
+import { isProviderSecretRef } from "../../shared/providerAccountPolicy";
+import { mutateProviderCredential } from "../services/ProviderCredentialSettings";
+import { inspectAccountHome } from "../services/AccountHomeInspection";
+import type { SavedHostDiagnostics } from "../services/SavedHostDiagnostics";
+import type { ContainerExecutionService } from "../services/ContainerExecutionService";
+import type { CapsuleLaunchService } from '../services/CapsuleLaunchService';
+import type { CapsuleTestService } from '../services/CapsuleTestService';
+import type { PrepareCapsuleRequest } from '../../shared/capsules';
+import type { WorktreeService } from "../services/WorktreeService";
+import type { LocalOperationalMetricsService } from "../services/LocalOperationalMetrics";
+import type { RemoteHostMetricsService } from "../services/RemoteHostMetrics";
 import { extname } from "node:path";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
 import type { IpcMainEvent, IpcMainInvokeEvent, OpenDialogOptions } from "electron";
 import type {
@@ -11,9 +22,10 @@ import type {
   PluginBrowserOpenResponse,
   PluginCanvasRequest,
   ProviderId,
+  ProviderSecretId,
   SessionBounds
 } from "../../shared/contracts";
-import { IPC } from "../../shared/contracts";
+import { IPC, PROVIDER_SECRET_IDS } from "../../shared/contracts";
 import { isCanvasNavigationMouseButton } from "../../shared/canvasNavigation";
 import { observeWindowState, readWindowState } from "../windowState";
 import type { SettingsStore } from "../services/SettingsStore";
@@ -23,6 +35,7 @@ import type { LimitsService } from "../services/LimitsService";
 import type { PluginManager } from "../services/PluginManager";
 import type { PluginMediaService } from "../services/PluginMediaService";
 import type { PluginSecretsService } from "../services/PluginSecretsService";
+import type { ProviderSecretsService } from "../services/ProviderSecretsService";
 import type { BrowserService } from "../services/BrowserService";
 import { normalizePluginBrowserUrl } from "../services/browser/PluginBrowserOpenPolicy";
 import { PluginBrowserOpenBroker } from "./PluginBrowserOpenBroker";
@@ -40,6 +53,13 @@ const MEDIA_MIME: Record<string, string> = {
 };
 
 interface Dependencies {
+  capsuleTests: CapsuleTestService;
+  capsules: CapsuleLaunchService;
+  hostDiagnostics: SavedHostDiagnostics;
+  containers: ContainerExecutionService;
+  worktrees: WorktreeService;
+  localMetrics: LocalOperationalMetricsService;
+  remoteMetrics: RemoteHostMetricsService;
   settings: SettingsStore;
   providerClis: ProviderCliRegistry;
   recheckProviderClis(): Promise<{ availability: AgentCliAvailability; settings: AppSettings }>;
@@ -48,6 +68,7 @@ interface Dependencies {
   plugins: PluginManager;
   pluginMedia: PluginMediaService;
   pluginSecrets: PluginSecretsService;
+  providerSecrets: ProviderSecretsService;
   browser: BrowserService;
   githubAuth: GithubAuthService;
   hermesHud: HermesHudService;
@@ -63,6 +84,13 @@ interface Dependencies {
 }
 
 export function registerIpc({
+  capsuleTests,
+  capsules,
+  hostDiagnostics,
+  containers,
+  worktrees,
+  localMetrics,
+  remoteMetrics,
   settings,
   providerClis,
   recheckProviderClis,
@@ -71,6 +99,7 @@ export function registerIpc({
   plugins,
   pluginMedia,
   pluginSecrets,
+  providerSecrets,
   browser,
   githubAuth,
   hermesHud,
@@ -103,6 +132,88 @@ export function registerIpc({
     assertMainRenderer(event, getMainWindow);
     return app.getVersion();
   });
+  ipcMain.handle(IPC.operationalMetricsLocal, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    return localMetrics.collect();
+  });
+  ipcMain.handle(IPC.hostsInspect, (event, id: unknown) => { assertMainRenderer(event, getMainWindow); return hostDiagnostics.inspect(id); });
+  ipcMain.handle(IPC.operationalMetricsRemote, (event, hostId: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    if (typeof hostId !== "string" || hostId.length > 64) throw new Error("A configured remote host id is required.");
+    const host = settings.get().remoteHosts.find((candidate) => candidate.id === hostId);
+    if (!host) throw new Error("Remote host is not configured.");
+    return remoteMetrics.collect(host);
+  });
+  const workspaceId = (value: unknown): string => {
+    if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(value)) throw new Error("Invalid workspace identity.");
+    return value;
+  };
+  ipcMain.handle(IPC.containersProbe, (event, id: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(id)) throw new Error("A saved container profile is required.");
+    return containers.probe(id);
+  });
+  ipcMain.handle(IPC.containersList, event => { assertMainRenderer(event, getMainWindow); return containers.list(); });
+  ipcMain.handle(IPC.containersCleanup, (event, id: unknown) => { assertMainRenderer(event, getMainWindow); return containers.cleanup(workspaceId(id)); });
+  ipcMain.handle(IPC.containersReview, (event, id: unknown) => { assertMainRenderer(event, getMainWindow); return containers.review(workspaceId(id)); });
+  ipcMain.handle(IPC.containersExport, async (event, id: unknown, reviewId: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    const generation = workspaceId(id), token = workspaceId(reviewId);
+    const cached = containers.cachedReview(generation, token);
+    const options = { defaultPath: `canvastty-remote-${cached.workspaceId}.patch`, filters: [{ name: "Git patch", extensions: ["patch"] }] };
+    const window = getMainWindow();
+    const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) return false;
+    const review = await containers.exportReview(generation, token);
+    await writeFile(result.filePath, review.patch, { mode: 0o600 });
+    return true;
+  });
+  ipcMain.handle(IPC.workspacesList, (event) => { assertMainRenderer(event, getMainWindow); return worktrees.list(); });
+  ipcMain.handle(IPC.capsulesSelectFiles, async (event, source: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    const directory = await capsules.sourceDirectory(source), window = getMainWindow();
+    const options: OpenDialogOptions = { defaultPath: directory, properties: ['openFile', 'multiSelections', 'dontAddToRecent'] };
+    const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? null : capsules.selectedFiles(directory, result.filePaths);
+  });
+  ipcMain.handle(IPC.capsulesPrepare, async (event, input: PrepareCapsuleRequest) => { assertMainRenderer(event, getMainWindow); const result = await capsules.prepare(input); return capsules.summary(result.id); });
+  ipcMain.handle(IPC.capsulesList, event => { assertMainRenderer(event, getMainWindow); return capsules.list(); });
+  ipcMain.handle(IPC.capsulesTestStart, (event, id: unknown, review: unknown, profile: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    if (typeof profile !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(profile)) throw new Error('A saved test profile is required.');
+    return capsuleTests.start(workspaceId(id), workspaceId(review), profile);
+  });
+  ipcMain.handle(IPC.capsulesTestList, event => { assertMainRenderer(event, getMainWindow); return capsuleTests.list(); });
+  ipcMain.handle(IPC.capsulesTestResult, (event, id: unknown) => { assertMainRenderer(event, getMainWindow); return capsuleTests.get(workspaceId(id)); });
+  ipcMain.handle(IPC.capsulesTestCancel, (event, id: unknown) => { assertMainRenderer(event, getMainWindow); return capsuleTests.cancel(workspaceId(id)); });
+  ipcMain.handle(IPC.capsulesTestCleanup, (event, id: unknown) => { assertMainRenderer(event, getMainWindow); return capsuleTests.cleanup(workspaceId(id)); });
+  ipcMain.handle(IPC.capsulesReview, (event, id: unknown) => { assertMainRenderer(event, getMainWindow); return capsules.review(workspaceId(id)); });
+  ipcMain.handle(IPC.capsulesApply, (event, id: unknown, review: unknown) => { assertMainRenderer(event, getMainWindow); return capsules.apply(workspaceId(id), workspaceId(review)); });
+  ipcMain.handle(IPC.capsulesRecover, (event, id: unknown, review: unknown) => { assertMainRenderer(event, getMainWindow); return capsules.recoverApply(workspaceId(id), workspaceId(review)); });
+  ipcMain.handle(IPC.capsulesCleanup, (event, id: unknown) => { assertMainRenderer(event, getMainWindow); return capsules.cleanup(workspaceId(id)); });
+  ipcMain.handle(IPC.capsulesExport, async (event, id: unknown, reviewId: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    const capsuleId = workspaceId(id), token = workspaceId(reviewId);
+    await capsules.exportReview(capsuleId, token);
+    const options = { defaultPath: `canvastty-capsule-${capsuleId}.patch`, filters: [{ name: 'Git patch', extensions: ['patch'] }] }, window = getMainWindow();
+    const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) return false;
+    const review = await capsules.exportReview(capsuleId, token);
+    await writeFile(result.filePath, review.patch, { mode: 0o600 }); return true;
+  });
+  ipcMain.handle(IPC.workspacesReview, (event, id: unknown) => { assertMainRenderer(event, getMainWindow); return worktrees.review(workspaceId(id)); });
+  ipcMain.handle(IPC.workspacesCleanup, (event, id: unknown) => { assertMainRenderer(event, getMainWindow); return worktrees.cleanup(workspaceId(id)); });
+  ipcMain.handle(IPC.workspacesExport, async (event, id: unknown, reviewId: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    const review = worktrees.exportReview(workspaceId(id), workspaceId(reviewId));
+    const options = { defaultPath: `canvastty-${review.workspaceId}.patch`, filters: [{ name: "Git patch", extensions: ["patch"] }] };
+    const window = getMainWindow();
+    const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) return false;
+    await writeFile(result.filePath, review.patch, { mode: 0o600 });
+    return true;
+  });
+  ipcMain.handle(IPC.accountHomesInspect, (event, directory: unknown) => { assertMainRenderer(event, getMainWindow); return inspectAccountHome(directory); });
   ipcMain.handle(IPC.settingsGet, () => settings.get());
   ipcMain.handle(IPC.agentsAvailability, (event) => {
     assertMainRenderer(event, getMainWindow);
@@ -112,7 +223,8 @@ export function registerIpc({
     assertMainRenderer(event, getMainWindow);
     return recheckProviderClis();
   });
-  ipcMain.handle(IPC.settingsUpdate, async (_event, patch: Partial<AppSettings>) => {
+  ipcMain.handle(IPC.settingsUpdate, async (event, patch: Partial<AppSettings>) => {
+    assertMainRenderer(event, getMainWindow);
     const next = await settings.update(patch);
     await applyBrowserSettings(next);
     return next;
@@ -305,6 +417,18 @@ export function registerIpc({
   ipcMain.handle(IPC.pluginsSecretsDelete, (_event, pluginId: string, key: string) => (
     pluginSecrets.delete(pluginId, key)
   ));
+  ipcMain.handle(IPC.providerSecretsStatus, (event) => { assertMainRenderer(event, getMainWindow); return providerSecrets.status(); });
+  ipcMain.handle(IPC.providerSecretsSet, (event, secretId: string, value: string) => { assertMainRenderer(event, getMainWindow); const ref = providerSecretValue(secretId); return mutateProviderCredential(settings, ref, () => providerSecrets.set(ref, value)); });
+  ipcMain.handle(IPC.providerSecretsClear, (event, secretId: string) => { assertMainRenderer(event, getMainWindow); const ref = providerSecretValue(secretId); return mutateProviderCredential(settings, ref, () => providerSecrets.delete(ref)); });
+  ipcMain.handle(IPC.providerSecretsCreate, (event, owner, value) => { assertMainRenderer(event, getMainWindow); return providerSecrets.create(owner, value); });
+  ipcMain.handle(IPC.providerSecretsScopedStatus, (event) => { assertMainRenderer(event, getMainWindow); return providerSecrets.scopedStatus(); });
+  ipcMain.handle(IPC.providerSecretsUpdate, (event, ref, owner, value) => { assertMainRenderer(event, getMainWindow); const profile = settings.get().apiProfiles.find(profile => profile.id === owner?.profileId && (profile.hostId ?? "local") === owner?.hostId && profile.secretRef === ref);
+    if (!profile || owner?.hostId !== "local") throw new Error("Credential does not belong to this local API profile.");
+    return mutateProviderCredential(settings, ref, () => providerSecrets.update(ref, owner, value)); });
+  ipcMain.handle(IPC.providerSecretsRemove, (event, ref, owner) => { assertMainRenderer(event, getMainWindow); if (!isProviderSecretRef(ref) || !ref.startsWith("secret:")) throw new Error("Only a profile-owned credential can be removed here.");
+    const profile = settings.get().apiProfiles.find(profile => profile.secretRef === ref);
+    if (profile && (profile.id !== owner?.profileId || (profile.hostId ?? "local") !== owner?.hostId)) throw new Error("Credential does not belong to this profile.");
+    return mutateProviderCredential(settings, ref, () => providerSecrets.remove(ref, owner)); });
   ipcMain.handle(IPC.pluginsMediaPickLibrary, (event, pluginId: string) => (
     pickPluginMediaLibrary(event, pluginId, plugins, pluginMedia)
   ));
@@ -596,7 +720,11 @@ export function registerIpc({
     if (typeof id !== "string") throw new Error("Terminal session ID is required.");
     return terminals.readBuffer(id);
   });
-  ipcMain.handle(IPC.terminalCreate, (_event, request: CreateSessionRequest) => terminals.create(request));
+  ipcMain.handle(IPC.terminalCreate, (event, request: CreateSessionRequest) => { assertMainRenderer(event, getMainWindow); return terminals.create(request); });
+  ipcMain.handle(IPC.terminalAgentPrompt, (event, id: string, text: string) => { assertMainRenderer(event, getMainWindow); return terminals.sendAgentPrompt(id, text); });
+  ipcMain.handle(IPC.terminalCancelTurn, (event, id: string) => { assertMainRenderer(event, getMainWindow); return terminals.cancelAgentTurn(id); });
+  ipcMain.handle(IPC.terminalAcpPermission, (event, id: string, requestId: string, optionId: string) => { assertMainRenderer(event, getMainWindow); return terminals.decideAcpPermission(id, requestId, optionId); });
+  ipcMain.handle(IPC.terminalAcpModel, (event, id: string, value: string) => { assertMainRenderer(event, getMainWindow); return terminals.selectAcpModel(id, value); });
   ipcMain.handle(IPC.terminalRestart, (_event, id: string) => terminals.restart(id));
   ipcMain.on(IPC.terminalInput, (_event, id: string, data: string) => terminals.input(id, data));
   ipcMain.on(IPC.terminalResize, (_event, id: string, cols: number, rows: number) => {
@@ -738,7 +866,7 @@ async function pickPluginMediaLibrary(
 }
 
 function providerValue(value: unknown): ProviderId {
-  if (value === "terminal" || value === "codex" || value === "claude" || value === "qwen" || value === "kimi" || value === "opencode" || value === "hermes" || value === "grok" || value === "omp" || value === "pi") return value;
+  if (value === "terminal" || value === "codex" || value === "claude" || value === "qwen" || value === "kimi" || value === "opencode" || value === "hermes" || value === "grok" || value === "omp" || value === "pi" || value === "cursor" || value === "minimax" || value === "devin" || value === "antigravity") return value;
   throw new Error("Plugin requested an unknown launcher provider.");
 }
 
@@ -753,4 +881,9 @@ async function readMedia(path: string): Promise<string> {
 
   const content = await readFile(path);
   return `data:${mime};base64,${content.toString("base64")}`;
+}
+
+function providerSecretValue(value: string): ProviderSecretId {
+  if ((PROVIDER_SECRET_IDS as readonly string[]).includes(value)) return value as ProviderSecretId;
+  throw new Error("Provider secret id is unknown.");
 }

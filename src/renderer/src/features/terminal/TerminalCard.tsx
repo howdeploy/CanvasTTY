@@ -1,3 +1,4 @@
+import { AcpSessionPanel } from "./AcpSessionPanel";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -307,7 +308,7 @@ export function TerminalCard({
   }, []);
 
   const startDrag = (event: React.PointerEvent<HTMLElement>): void => {
-    if ((event.target as HTMLElement).closest("button, input")) return;
+    if ((event.target as HTMLElement).closest("button, input, select, textarea")) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     dragState.current = {
       pointerId: event.pointerId,
@@ -449,7 +450,7 @@ export function TerminalCard({
       tabIndex={-1}
       onPointerDownCapture={(event) => {
         onSelect(session.id);
-        if (!renaming && !summaryMode && !(event.target as HTMLElement).closest("button, input")) {
+        if (!renaming && !summaryMode && !(event.target as HTMLElement).closest("button, input, select, textarea")) {
           terminalRef.current?.focus();
         }
       }}
@@ -519,12 +520,16 @@ export function TerminalCard({
               }}
             />
           ) : (
-            <strong title={session.titleCustomized ? session.title : session.cwd}>
+            <strong title={[session.titleCustomized ? session.title : session.cwd, session.integrationNote].filter(Boolean).join("\n")}>
               {session.titleCustomized ? session.title : compactPath(session.cwd)}
             </strong>
           )}
         </div>
         <div className="terminal-card__actions">
+          {session.execution && <span className="terminal-card__workspace-status" title={[t(locale, "workspaceSource") + ": " + session.cwd, t(locale, "workspaceExecution") + ": " + (session.execution.executionCwd ?? t(locale, "workspacePreparing")), session.execution.baseCommit, session.failureDetails].filter(Boolean).join("\n")}>
+            {session.execution.state === "preparing" ? t(locale, "workspacePreparing") : session.execution.mode === "worktree" ? "Git worktree" : "ⓘ"}
+          </span>}
+          {session.integrationNote && <span title={session.integrationNote} aria-label={session.integrationNote}>ⓘ</span>}
           {session.exitCode !== null && (
             <button
               className="terminal-card__action terminal-card__action--restart"
@@ -540,7 +545,8 @@ export function TerminalCard({
           <button className="terminal-card__action terminal-card__action--close" type="button" onClick={() => onDispose(session.id)} title={t(locale, "close")} aria-label={t(locale, "close")}><UiIcon name="close" size="1.23em" /></button>
         </div>
       </header>
-      <div className="terminal-card__surface" ref={terminalHost} />
+      {session.execution?.state === "failed" && session.failureDetails && <div className="terminal-card__launch-error" role="alert">{session.failureDetails}</div>}
+      {session.transport === "acp" ? <AcpSessionPanel session={session} locale={locale} /> : <div className="terminal-card__surface" ref={terminalHost} />}
       <button
         className="terminal-card__summary"
         type="button"
@@ -589,5 +595,5 @@ function compactPath(path: string): string {
 }
 
 function isCardControl(target: EventTarget): boolean {
-  return target instanceof Element && Boolean(target.closest("button, input, .terminal-card__resize-handle"));
+  return target instanceof Element && Boolean(target.closest("button, input, select, textarea, .terminal-card__resize-handle"));
 }

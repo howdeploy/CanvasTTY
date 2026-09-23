@@ -1,9 +1,6 @@
-export type ProviderId = "terminal" | "codex" | "claude" | "qwen" | "kimi" | "opencode" | "hermes" | "grok" | "omp" | "pi";
-export const PROVIDER_LABELS: Record<ProviderId, string> = {
-  terminal: "Terminal", codex: "Codex", claude: "Claude", qwen: "Qwen Code",
-  kimi: "Kimi", opencode: "OpenCode", hermes: "Hermes", grok: "Grok Build",
-  omp: "OMP", pi: "Pi",
-};
+import { CANVAS_LAUNCHER_ITEMS, PROVIDER_LABELS, type CanvasLauncherItemId, type ProviderId } from "./providerCatalog.ts";
+export { CANVAS_LAUNCHER_ITEMS, PROVIDER_LABELS };
+export type { CanvasLauncherItemId, ProviderId };
 export type AgentProviderId = Exclude<ProviderId, "terminal">;
 export type AgentCliAvailability = Record<AgentProviderId, boolean>;
 export type LimitProviderId = Extract<AgentProviderId, "codex" | "claude" | "qwen" | "kimi" | "opencode" | "grok">;
@@ -31,27 +28,12 @@ export type MinimapInteractionMode = "click" | "drag";
 export type BrowserViewportSurface = "native" | "placeholder" | "hidden";
 export type FocusActivation = "off" | "single" | "double";
 export type ShortcutAction = "home" | "renameWindow";
-export type CanvasLauncherItemId = ProviderId;
 export type RadialLauncherActionId = "note" | "browser" | "settings";
 export type RadialLauncherItemId = ProviderId | RadialLauncherActionId;
-
-export const CANVAS_LAUNCHER_ITEMS: readonly CanvasLauncherItemId[] = [
-  "codex",
-  "claude",
-  "qwen",
-  "kimi",
-  "opencode",
-  "hermes",
-  "grok",
-  "omp",
-  "pi",
-  "terminal"
-];
 
 /** Every agent provider (the launcher list without the plain terminal). */
 export const AGENT_PROVIDERS: readonly AgentProviderId[] = CANVAS_LAUNCHER_ITEMS
   .filter((item): item is AgentProviderId => item !== "terminal");
-
 // Keeps the safe provider subset proposed by @TroopJostle in PR #23 while
 // region, note, Browser, and Settings remain fixed top-level menu actions.
 export const DEFAULT_CANVAS_LAUNCHER_ITEMS: readonly CanvasLauncherItemId[] = [
@@ -72,6 +54,10 @@ export const RADIAL_LAUNCHER_ITEMS: readonly RadialLauncherItemId[] = [
   "grok",
   "omp",
   "pi",
+  "cursor",
+  "minimax",
+  "devin",
+  "antigravity",
   "terminal",
   "note",
   "browser",
@@ -603,10 +589,14 @@ export const BROWSER_PROVIDER_COLORS: Record<BrowserAgentProvider, string> = {
   opencode: "#5A5858",
   hermes: "#D6A700",
   grok: "#111111",
-  // OMP and Pi never reach the browser bridge, so these two values are never
-  // rendered; they exist only to keep the record total over the provider union.
+  // OMP, Pi, Cursor, and MiniMax never reach the browser bridge, so these values
+  // are never rendered; they exist only to keep the record total over the provider union.
   omp: "#6E6A8A",
   pi: "#4F7C8A",
+  cursor: "#1F1F1F",
+  minimax: "#3C2A6B",
+  devin: "#4E5BA6",
+  antigravity: "#1A73E8",
   unknown: "#7A8291"
 };
 

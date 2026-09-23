@@ -25,7 +25,7 @@ const fallback = {
     media: "#D5A2C9"
   },
   sessionRowColorMode: "status",
-  homeLauncherProviders: ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"],
+  homeLauncherProviders: ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"],
   homeLimitProviders: ["codex", "claude", "qwen", "kimi", "opencode", "grok"],
   canvasLauncherItems: ["codex", "claude", "qwen", "opencode", "terminal"],
   radialLauncherItems: ["codex", "claude", "qwen", "opencode", "note", "terminal", "browser", "settings"],
@@ -363,7 +363,7 @@ test("a persisted pre-Grok launcher subset gains Grok exactly once", async () =>
     }));
     const store = new SettingsStore(dir, "en");
     const loaded = await store.load();
-    assert.deepEqual(loaded.homeLauncherProviders, ["codex", "kimi", "hermes", "grok", "omp", "pi"]);
+    assert.deepEqual(loaded.homeLauncherProviders, ["codex", "kimi", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"]);
 
     await store.update({ homeLauncherProviders: ["codex", "claude", "kimi", "opencode", "hermes"] });
     const reloaded = new SettingsStore(dir, "en");
@@ -397,7 +397,7 @@ test("the pre-Qwen default selections gain Qwen while curated subsets remain unc
       homeLimitProviders: ["kimi"]
     }));
     const curated = await new SettingsStore(curatedDir, "en").load();
-    assert.deepEqual(curated.homeLauncherProviders, ["codex", "hermes", "omp", "pi"]);
+    assert.deepEqual(curated.homeLauncherProviders, ["codex", "hermes", "omp", "pi", "cursor", "minimax", "devin", "antigravity"]);
     assert.deepEqual(curated.homeLimitProviders, ["kimi"]);
   } finally {
     await Promise.all([
@@ -419,7 +419,7 @@ test("the Qwen migration does not rerun the older expanded-limit migration", asy
     assert.deepEqual(loaded.homeLimitProviders, ["codex", "claude", "kimi"]);
 
     const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 15);
+    assert.equal(persisted.settingsVersion, 19);
     assert.equal(persisted.agentLifecycleHooksEnabled, true);
     assert.deepEqual(persisted.homeLimitProviders, ["codex", "claude", "kimi"]);
   } finally {
@@ -438,11 +438,11 @@ test("the limit-display migration preserves a version-three launcher subset", as
     }));
     const store = new SettingsStore(dir, "en");
     const loaded = await store.load();
-    assert.deepEqual(loaded.homeLauncherProviders, ["codex", "kimi", "omp", "pi"]);
+    assert.deepEqual(loaded.homeLauncherProviders, ["codex", "kimi", "omp", "pi", "cursor", "minimax", "devin", "antigravity"]);
     assert.deepEqual(loaded.homeLimitProviders, fallback.homeLimitProviders);
 
     const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 15);
+    assert.equal(persisted.settingsVersion, 19);
     assert.equal(persisted.agentLifecycleHooksEnabled, true);
     assert.deepEqual(persisted.homeLimitProviders, fallback.homeLimitProviders);
   } finally {
@@ -462,7 +462,7 @@ test("the expanded limit migration preserves a curated version-four subset", asy
     assert.deepEqual(loaded.homeLimitProviders, ["kimi"]);
 
     const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 15);
+    assert.equal(persisted.settingsVersion, 19);
     assert.equal(persisted.agentLifecycleHooksEnabled, true);
     assert.deepEqual(persisted.homeLimitProviders, ["kimi"]);
   } finally {
@@ -614,7 +614,7 @@ test("existing profiles migrate minimap interaction to click and persist later c
     const store = new SettingsStore(dir, "en");
     assert.equal((await store.load()).minimapInteractionMode, "click");
     let persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 15);
+    assert.equal(persisted.settingsVersion, 19);
     assert.equal(persisted.minimapInteractionMode, "click");
 
     await store.update({ minimapInteractionMode: "drag" });

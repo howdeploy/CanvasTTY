@@ -693,7 +693,11 @@ export class TerminalManager {
     try {
       // omp and pi take no browser bridge, exactly like grok: the adapter chain below
       // ends in the Kimi MCP configuration, which would hand them foreign launch flags.
-      agentBrowser = provider === "terminal" || provider === "grok" || provider === "omp" || provider === "pi"
+      // cursor stays out too until its CLI grows a measured browser adapter,
+      // and minimax until its MCP configuration is wired (plain PTY for now).
+      // devin is cloud-session oriented and takes no browser adapter yet,
+      // and antigravity keeps plain PTY integration for the same reason.
+      agentBrowser = provider === "terminal" || provider === "grok" || provider === "omp" || provider === "pi" || provider === "cursor" || provider === "minimax" || provider === "devin" || provider === "antigravity"
         ? null
         : this.agentBrowser?.prepareLaunch({ terminalSessionId: id, provider, cwd }) ?? null;
       const baseEnvironment = terminalEnvironment();

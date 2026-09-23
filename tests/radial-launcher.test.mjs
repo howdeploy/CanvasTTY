@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   radialItemAtPointer,
   radialItemOffset,
+  radialLauncherLayout,
   setRadialLauncherItemEnabled
 } from "../src/renderer/src/features/launcher/radialLauncher.ts";
 import { normalizeRadialLauncherItems, normalizeSettings, SettingsStore } from "../src/main/services/SettingsStore.ts";
@@ -53,6 +54,24 @@ test("direction selection follows the visual radial positions", () => {
     );
   }
   assert.equal(radialItemAtPointer(anchor, anchor, 8), null);
+});
+
+test("radial actions stay inside every viewport corner across UI scales and resize", () => {
+  for (const size of [{ width: 920, height: 640 }, { width: 1440, height: 900 }, { width: 360, height: 488 }]) {
+    for (const scale of [1, 1.5, 2]) for (const anchor of [{ x: 0, y: 0 }, { x: size.width, y: 0 }, { x: 0, y: size.height }, { x: size.width, y: size.height }]) {
+      const layout = radialLauncherLayout(anchor, size, scale);
+      for (let index = 0; index < 8; index++) {
+        const offset = radialItemOffset(index, 8, layout.radius);
+        const center = { x: layout.anchor.x + offset.x, y: layout.anchor.y + offset.y };
+        const half = 45 * layout.scale;
+        assert.ok(center.x - half >= 8 && center.x + half <= size.width - 8);
+        assert.ok(center.y - half >= 8 && center.y + half <= size.height - 8);
+        assert.equal(radialItemAtPointer(layout.anchor, center, 8), index);
+      }
+      assert.ok(layout.scale <= scale);
+    }
+  }
+  assert.deepEqual(radialLauncherLayout({ x: 500, y: 400 }, { width: 1440, height: 900 }, 1).anchor, { x: 500, y: 400 });
 });
 
 test("custom launcher contents preserve user order and enforce the eight-item limit", () => {

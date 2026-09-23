@@ -9,6 +9,10 @@ import grokIcon from "../assets/providers/grok.png";
 import ompIcon from "../assets/providers/omp.svg";
 import piIcon from "../assets/providers/pi.svg";
 import qwenIcon from "../assets/providers/qwen.svg";
+import cursorIcon from "../assets/providers/cursor.ico";
+import minimaxIcon from "../assets/providers/minimax.ico";
+import devinIcon from "../assets/providers/devin.ico";
+import antigravityIcon from "../assets/providers/antigravity.ico";
 
 interface ProviderIconProps {
   provider: ProviderId;
@@ -24,7 +28,11 @@ const PROVIDER_ASSETS = {
   hermes: hermesIcon,
   grok: grokIcon,
   omp: ompIcon,
-  pi: piIcon
+  pi: piIcon,
+  cursor: cursorIcon,
+  minimax: minimaxIcon,
+  devin: devinIcon,
+  antigravity: antigravityIcon
 } as const;
 
 export function ProviderIcon({ provider, size = "medium" }: ProviderIconProps): React.JSX.Element {

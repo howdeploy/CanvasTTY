@@ -33,6 +33,7 @@ import { TerminalCard } from "../terminal/TerminalCard";
 import { CanvasCommandPalette } from "./CanvasCommandPalette";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasMinimap } from "./CanvasMinimap";
+import { CanvasOverlayPanel } from "./CanvasOverlayPanel";
 import { CanvasRegionCard } from "./CanvasRegionCard";
 import { CanvasRegionMenu } from "./CanvasRegionMenu";
 import {
@@ -972,6 +973,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           items={settings.radialLauncherItems}
           locale={settings.locale}
           pointerId={radialLauncher.pointerId}
+          uiScale={settings.uiScale}
           onActivate={activateRadialItem}
           onClose={closeRadialLauncher}
         />
@@ -1024,11 +1026,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         {CANVAS_OVERLAY_PLACEMENTS.map((placement) => (
           <div className={`canvas-overlay-slot canvas-overlay-slot--${placement}`} key={placement}>
             {settings.minimapPlacement === placement && (
-              <CanvasMinimap viewport={viewport} camera={camera} homeBounds={homeBounds}
+              <CanvasOverlayPanel label={t(settings.locale, "minimap")}><CanvasMinimap viewport={viewport} camera={camera} homeBounds={homeBounds}
                 canvasRegions={renderedCanvasRegions} sessions={renderedSessions} stickyNotes={renderedStickyNotes}
                 pluginCanvas={renderedPluginCanvas} browserCanvas={renderedBrowserCanvas}
                 locale={settings.locale} interactionMode={settings.minimapInteractionMode}
-                onCameraChange={commitCamera} />
+                onCameraChange={commitCamera} /></CanvasOverlayPanel>
             )}
             {settings.canvasControlsPlacement === placement && (
               <div className="canvas-controls" data-interactive="true">
@@ -1038,7 +1040,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               </div>
             )}
             {settings.showShortcutHints && settings.shortcutHintsPlacement === placement && (
-              <aside className="shortcut-hints" aria-label={t(settings.locale, "keyboardShortcuts")}>
+              <CanvasOverlayPanel label={t(settings.locale, "keyboardShortcuts")}><aside className="shortcut-hints" aria-label={t(settings.locale, "keyboardShortcuts")}>
                 <div><kbd>{settings.shortcuts.home}</kbd><span>{t(settings.locale, "homeShortcut")}</span></div>
                 <div><kbd>{settings.shortcuts.renameWindow}</kbd><span>{t(settings.locale, "renameWindow")}</span></div>
                 {settings.canvasWheelCaptureMode === "key" && settings.canvasWheelOverride !== null && (
@@ -1049,7 +1051,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                   <div><kbd>{displayCanvasNavigationBinding(settings.canvasNavigationOverride, window.canvasTTY.window.isMacOS)}</kbd>
                     <span>{t(settings.locale, "canvasNavigationOverrideHint")}</span></div>
                 )}
-              </aside>
+              </aside></CanvasOverlayPanel>
             )}
           </div>
         ))}

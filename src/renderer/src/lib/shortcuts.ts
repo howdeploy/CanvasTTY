@@ -54,7 +54,7 @@ export function matchesPointerShortcut(
 }
 
 export function isShortcutCaptureTarget(target: EventTarget | null): boolean {
-  return target instanceof Element && Boolean(target.closest('[data-shortcut-capture="true"]'));
+  return target instanceof Element && Boolean(target.closest('[data-shortcut-capture="true"], input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="alertdialog"], [role="menu"]'));
 }
 
 export function isRenameInputTarget(target: EventTarget | null): boolean {

@@ -1,0 +1,20 @@
+import type { ContextImport } from '../../../../shared/contextProfiles';
+import type { DataClass } from '../../../../shared/contracts';
+
+/** Edits only source selections. Actual content is read by main on each preview and launch. */
+export function ContextImportFields({ entries, enabled, ru, onChange }: { entries: ContextImport[]; enabled: boolean; ru: boolean; onChange(entries: ContextImport[], enabled: boolean): void }): React.JSX.Element {
+  const set = (index: number, patch: Partial<ContextImport>): void => onChange(entries.map((entry, i) => i === index ? { ...entry, ...patch } : entry), enabled);
+  return <details className="agent-settings-field--wide"><summary>{ru ? 'Файлы правил и CSS-токены' : 'Convention files and CSS tokens'} ({entries.length}/32)</summary>
+    <label className="context-settings__switch"><input type="checkbox" checked={enabled} onChange={e => onChange(entries, e.target.checked)} /><span>{ru ? 'Читать выбранные файлы при предпросмотре и запуске' : 'Read selected files on preview and launch'}</span></label>
+    <p className="agent-settings-hint">{ru ? 'Относительные пути внутри выбранного проекта. Файлы остаются источником правил; редактор не меняет их. Неизвестный класс — D2, класс раздела может только повысить его. До 64 КиБ на файл и 256 КиБ всего.' : 'Paths are relative to this project. Files remain authoritative and are never edited here. Unknown classification is D2; a section class can only raise it. Up to 64 KiB per file and 256 KiB total.'}</p>
+    {entries.map((entry, index) => <div className="context-settings__import agent-settings-grid" key={index}>
+      <label className="agent-settings-field agent-settings-field--wide"><span>{ru ? 'Путь к выбранному файлу' : 'Selected file path'}</span><input value={entry.path} placeholder="AGENTS.md" onChange={e => set(index, { path: e.target.value })} /></label>
+      <label className="agent-settings-field"><span>{ru ? 'Тип файла' : 'File kind'}</span><select value={entry.kind} onChange={e => set(index, { kind: e.target.value as ContextImport['kind'], selectors: undefined })}><option value="instructions">AGENTS / CLAUDE / CONTRIBUTING / .cursor/rules</option><option value="readme">README — {ru ? 'разработка' : 'development sections'}</option><option value="editorconfig">.editorconfig</option><option value="config">Prettier / ESLint (JSON / YAML)</option><option value="css">CSS {ru ? 'переменные' : 'variables'}</option></select></label>
+      <label className="agent-settings-field"><span>{ru ? 'Минимальный класс раздела' : 'Section minimum class'}</span><select value={entry.dataClass ?? ''} onChange={e => set(index, { dataClass: e.target.value ? e.target.value as DataClass : undefined })}><option value="">{ru ? 'Класс файла' : 'File classification'}</option>{['D0', 'D1', 'D2', 'D3'].map(c => <option key={c}>{c}</option>)}</select></label>
+      {entry.kind === 'css' && <label className="agent-settings-field agent-settings-field--wide"><span>{ru ? 'Статические темы через запятую' : 'Static theme selectors, comma separated'}</span><input value={(entry.selectors ?? [':root']).join(', ')} onChange={e => set(index, { selectors: e.target.value.split(',').map(s => s.trim()) })} placeholder=":root, .dark, [data-theme=dark]" /></label>}
+      <button type="button" className="agent-settings-button" onClick={() => onChange(entries.filter((_, i) => i !== index), enabled)}>{ru ? 'Убрать источник' : 'Remove source'}</button>
+    </div>)}
+    <button type="button" className="agent-settings-button" disabled={entries.length >= 32} onClick={() => onChange([...entries, { path: '', kind: 'instructions' }], enabled)}>{ru ? 'Выбрать ещё файл' : 'Select another file'}</button>
+    <p className="agent-settings-hint">{ru ? 'JS/TS — только ссылка, без выполнения. CSS: выбранные блоки верхнего уровня, без вычисления каскада; var() сохраняется как ссылка. Cursor: только alwaysApply: true, без globs.' : 'JS/TS remain references and never execute. CSS uses selected top-level blocks without computing the cascade; var() remains a reference. Cursor supports alwaysApply: true only, without globs.'}</p>
+  </details>;
+}

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { AgentGateway } from "./AgentGateway.ts";
 import { ProviderLaunchAdapters } from "./ProviderLaunch.ts";
 import type { ProviderLaunchOptions } from "./ProviderLaunch.ts";
@@ -9,6 +10,8 @@ export interface PrepareAgentBrowserLaunchInput {
   terminalSessionId: string;
   provider: AgentProvider;
   cwd: string;
+  /** Include the separately authorized canvastty_agents MCP server. */
+  includeOrchestration?: boolean;
 }
 
 export interface PreparedAgentBrowserPtyLaunch {
@@ -20,6 +23,7 @@ export interface PreparedAgentBrowserPtyLaunch {
 }
 
 export interface AgentBrowserLaunchCoordinator {
+  assertOrchestrationAvailable(provider: AgentProvider): void;
   prepareLaunch(input: PrepareAgentBrowserLaunchInput): PreparedAgentBrowserPtyLaunch | null;
 }
 
@@ -50,15 +54,22 @@ export class AgentBrowserBridge implements AgentBrowserLaunchCoordinator {
   providerClisRefreshed(): void {
     this.providers.providerClisRefreshed();
   }
+  assertOrchestrationAvailable(provider: AgentProvider): void { this.providers.assertOrchestrationAvailable(provider); }
 
   prepareLaunch(input: PrepareAgentBrowserLaunchInput): PreparedAgentBrowserPtyLaunch | null {
-    if (!this.gateway.isEnabled) return null;
-    const capability = this.gateway.registerAgent(input);
+    const browser = this.gateway.isEnabled;
+    if (!browser && !input.includeOrchestration) return null;
+    if (input.includeOrchestration) this.assertOrchestrationAvailable(input.provider);
+    const capability = browser ? this.gateway.registerAgent(input) : null;
+    const connectionId = capability?.connectionId ?? randomUUID();
     let providerLaunch;
     try {
-      providerLaunch = this.providers.prepare(input.provider, capability.connectionId);
+      providerLaunch = this.providers.prepare(input.provider, connectionId, {
+        browser,
+        ...(input.includeOrchestration ? { orchestration: true } : {})
+      });
     } catch (error) {
-      this.gateway.revokeTerminalSession(input.terminalSessionId);
+      if (capability) this.gateway.revokeTerminalSession(input.terminalSessionId);
       throw error;
     }
 
@@ -77,17 +88,19 @@ export class AgentBrowserBridge implements AgentBrowserLaunchCoordinator {
     };
     let cleaned = false;
     return {
-      agentId: capability.agentId,
-      connectionId: capability.connectionId,
+      agentId: capability?.agentId ?? "",
+      connectionId,
       args: providerLaunch.args,
       environment: {
         ...providerLaunch.environment,
-        [AGENT_BROWSER_ENV.address]: capability.address,
-        [AGENT_BROWSER_ENV.agentId]: capability.agentId,
-        [AGENT_BROWSER_ENV.connectionId]: capability.connectionId,
-        [AGENT_BROWSER_ENV.terminalSessionId]: capability.terminalSessionId,
-        [AGENT_BROWSER_ENV.provider]: capability.provider,
-        [AGENT_BROWSER_ENV.capabilityToken]: capability.capabilityToken
+        ...(capability ? {
+          [AGENT_BROWSER_ENV.address]: capability.address,
+          [AGENT_BROWSER_ENV.agentId]: capability.agentId,
+          [AGENT_BROWSER_ENV.connectionId]: capability.connectionId,
+          [AGENT_BROWSER_ENV.terminalSessionId]: capability.terminalSessionId,
+          [AGENT_BROWSER_ENV.provider]: capability.provider,
+          [AGENT_BROWSER_ENV.capabilityToken]: capability.capabilityToken
+        } : {})
       },
       cleanup: () => {
         if (cleaned) return;
@@ -95,7 +108,7 @@ export class AgentBrowserBridge implements AgentBrowserLaunchCoordinator {
         try {
           releaseConfigurationSafely();
         } finally {
-          this.gateway.revokeTerminalSession(input.terminalSessionId);
+          if (capability) this.gateway.revokeTerminalSession(input.terminalSessionId);
         }
       }
     };

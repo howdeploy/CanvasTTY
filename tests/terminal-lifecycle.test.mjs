@@ -74,7 +74,8 @@ test("Grok waits for the measured xterm grid before its first TUI draw", async (
   assert.match(manager, /session\.cols = safeCols;\s*session\.rows = safeRows/);
   assert.match(manager, /request\.provider === "grok"[\s\S]*?awaitingInitialResize: awaitMeasuredGrid/);
   assert.match(manager, /if \(session\.awaitingInitialResize\) \{\s*this\.launchAwaitingSession\(id, session\)/);
-  assert.match(manager, /session\.metadata\.cwd,\s*session\.cols,\s*session\.rows/);
+  // The fake-PTY runtime regression verifies the measured grid reaches the
+  // process; avoid coupling this renderer check to spawnProcess parameters.
   assert.match(manager, /session\.metadata\.provider === "grok"[\s\S]*?session\.awaitingInitialResize = true/);
   assert.match(styles, /\.terminal-card--grok \.terminal-card__surface \{ padding: 6px 8px 8px; \}/);
 });

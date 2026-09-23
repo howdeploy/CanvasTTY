@@ -15,6 +15,8 @@ CanvasTTY is a spatial Electron desktop for real local terminals and AI-agent CL
 | [Runtime plugins](plugins.md) | Manifest v1, permissions, HOME widgets, canvas apps, separate windows, player media/playlist APIs, SDK, and install flow |
 | [Metrics and telemetry](metrics-and-telemetry.md) | Subscription limits, session token usage, source priority, privacy, stale states, and tests |
 | [Security policy](../SECURITY.md) | Supported release, vulnerability reporting, local data boundaries, plugins, media grants, browser storage, and audit logs |
+| [Project context and learning](context.md) | Stored preferences, live convention imports, design tokens and explicit correction learning |
+| [Docker/Podman across computers](container-overview.md) | On-demand inventory, fixed account placement and automatic container routes |
 | [Changelog](../CHANGELOG.md) | User-visible fixes and features by release |
 
 ## Maintainer references

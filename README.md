@@ -53,6 +53,7 @@ npm run dev
 | [Built-in browser and audit log](docs/browser.md) | [Bundled agent browser skill](agent/browser/SKILL.md) |
 | [Install, releases, and local data](docs/installing-and-security.md) | [Security policy](SECURITY.md) |
 | [Architecture](docs/ARCHITECTURE.md) | [UI contract](docs/UI_CONTRACT.md) |
+| [Project context and learning](docs/context.md) | [Docker/Podman across computers](docs/container-overview.md) |
 | [Runtime plugin authoring](docs/plugins.md) | [Typed plugin SDK](docs/plugin-api.d.ts) |
 | [Changelog](CHANGELOG.md) | [MIT license](LICENSE) |
 

@@ -11,6 +11,7 @@ export type LaunchProfileId = "normal" | "yolo";
  * agent-control endpoint (it receives the control descriptor in its environment).
  */
 export type LaunchRole = "agent" | "orchestrator";
+export type SessionRole = LaunchRole | "subagent";
 export type SessionStatus = "idle" | "working" | "needs_approval" | "unavailable" | "done" | "failed";
 export type PaletteId = "sage" | "lilac" | "night";
 export type HomeAccentPresetId = "classic" | "warm" | "cool" | "mono" | "custom";
@@ -221,6 +222,7 @@ export interface AppSettings {
   mediaFit: MediaFit;
   lastDirectory: string;
   acknowledgedDangerousProfiles: AgentProviderId[];
+  apiProfiles: ApiProfile[];
   homeGridSize: HomeGridSize;
   homeLayout: HomeWidgetPlacement[];
   canvasRegions: CanvasRegion[];
@@ -254,7 +256,10 @@ export interface CreateSessionRequest {
   position: Point;
   title?: string;
   /** Defaults to "agent"; "orchestrator" is only meaningful for agent providers. */
-  role?: LaunchRole;
+  role?: SessionRole;
+  /** Owning session; required for subagents. Cycles are impossible because a
+   * parent must already exist when the child is created. */
+  parentSessionId?: string;
 }
 
 export interface SessionMetadata {
@@ -262,12 +267,13 @@ export interface SessionMetadata {
   revision: number;
   provider: ProviderId;
   profile: LaunchProfileId;
-  role: LaunchRole;
   title: string;
   titleCustomized: boolean;
   cwd: string;
   position: Point;
   size: Size;
+  role: SessionRole;
+  parentSessionId?: string;
   status: SessionStatus;
   startedAt: number;
   exitCode: number | null;
@@ -580,6 +586,114 @@ export interface BrowserViewportBounds extends Size {
 export type BrowserTabStatus = "loading" | "ready" | "error" | "crashed";
 export type BrowserConnectionState = "connected" | "stale";
 export type BrowserAgentProvider = AgentProviderId | "unknown";
+
+// API keys CanvasTTY stores for BYOK-capable provider CLIs. The renderer only
+// ever learns which of them are configured; values stay in the main process.
+export const PROVIDER_SECRET_IDS = [
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "XAI_API_KEY",
+  "GOOGLE_API_KEY",
+  "ZAI_API_KEY",
+  "MINIMAX_API_KEY",
+  "OPENROUTER_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "DEVIN_API_KEY",
+  "CURSOR_API_KEY"
+] as const;
+export type ProviderSecretId = (typeof PROVIDER_SECRET_IDS)[number];
+
+// An ApiProfile names a model backend for BYOK-capable provider CLIs. It is
+// deliberately not an agent provider: it never appears in launchers or session
+// restore, it only supplies endpoint and credential references to runtimes
+// that accept custom backends.
+export type ApiProfileProtocol = "openai-compatible" | "anthropic-compatible" | "google";
+
+export interface ApiProfile {
+  id: string;
+  name: string;
+  protocol: ApiProfileProtocol;
+  baseUrl?: string;
+  secretRef: ProviderSecretId;
+  defaultModel?: string;
+}
+
+export const API_PROFILE_PROTOCOLS: readonly ApiProfileProtocol[] = ["openai-compatible", "anthropic-compatible", "google"];
+
+// What CanvasTTY can actually do with each provider's session today. A
+// capability is only declared when the integration exists; "none"/"terminal"
+// values are explicit instead of pretending every provider is the same.
+export interface AgentCapabilities {
+  /** Prompt text can be written into the live PTY. */
+  send: boolean;
+  /** Scrollback can be read back from the session buffer. */
+  observe: boolean;
+  lifecycle: "structured" | "hooks" | "process" | "none";
+  result: "structured" | "final-message" | "terminal" | "none";
+  approvals: "structured" | "terminal" | "none";
+  browser: "mcp" | "none";
+  acp: boolean;
+}
+
+export const PROVIDER_CAPABILITIES: Readonly<Record<AgentProviderId, AgentCapabilities>> = Object.freeze({
+  codex: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  claude: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  qwen: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  kimi: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  // OpenCode reports status through its structured event plugin.
+  opencode: Object.freeze({ send: true, observe: true, lifecycle: "structured", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  hermes: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  grok: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  omp: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  pi: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  cursor: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  minimax: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  devin: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  antigravity: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false })
+});
+
+export const API_PROFILE_PRESETS: readonly ApiProfile[] = Object.freeze([
+  Object.freeze({
+    id: "openai", name: "OpenAI", protocol: "openai-compatible",
+    baseUrl: "https://api.openai.com/v1", secretRef: "OPENAI_API_KEY"
+  }),
+  Object.freeze({
+    id: "anthropic", name: "Anthropic", protocol: "anthropic-compatible",
+    baseUrl: "https://api.anthropic.com", secretRef: "ANTHROPIC_API_KEY"
+  }),
+  Object.freeze({
+    id: "google", name: "Google AI", protocol: "google",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta", secretRef: "GOOGLE_API_KEY"
+  }),
+  Object.freeze({
+    id: "xai", name: "xAI", protocol: "openai-compatible",
+    baseUrl: "https://api.x.ai/v1", secretRef: "XAI_API_KEY"
+  }),
+  Object.freeze({
+    id: "zai", name: "Z.AI", protocol: "openai-compatible",
+    baseUrl: "https://api.z.ai/api/paas/v4", secretRef: "ZAI_API_KEY"
+  }),
+  Object.freeze({
+    id: "minimax", name: "MiniMax Open Platform", protocol: "openai-compatible",
+    baseUrl: "https://api.minimax.io/v1", secretRef: "MINIMAX_API_KEY"
+  }),
+  Object.freeze({
+    id: "openrouter", name: "OpenRouter", protocol: "openai-compatible",
+    baseUrl: "https://openrouter.ai/api/v1", secretRef: "OPENROUTER_API_KEY"
+  }),
+  Object.freeze({
+    id: "deepseek", name: "DeepSeek", protocol: "openai-compatible",
+    baseUrl: "https://api.deepseek.com", secretRef: "DEEPSEEK_API_KEY"
+  }),
+  Object.freeze({
+    id: "custom-openai", name: "Custom OpenAI-compatible", protocol: "openai-compatible",
+    secretRef: "OPENAI_API_KEY"
+  }),
+  Object.freeze({
+    id: "custom-anthropic", name: "Custom Anthropic-compatible", protocol: "anthropic-compatible",
+    secretRef: "ANTHROPIC_API_KEY"
+  })
+].map((preset) => Object.freeze({ ...preset })));
 
 export const BROWSER_PROVIDER_COLORS: Record<BrowserAgentProvider, string> = {
   claude: "#D97757",
@@ -974,6 +1088,11 @@ export interface CanvasTTYApi {
   limits: {
     get(): Promise<LimitsSnapshot>;
   };
+  providerSecrets: {
+    status(): Promise<Record<ProviderSecretId, boolean>>;
+    set(secretId: ProviderSecretId, value: string): Promise<void>;
+    clear(secretId: ProviderSecretId): Promise<void>;
+  };
   plugins: {
     list(): Promise<InstalledPlugin[]>;
     search(query: string): Promise<GithubPluginSearchResult[]>;
@@ -1120,6 +1239,9 @@ export const IPC = {
   pluginsStorageGet: "plugins:storage-get",
   pluginsStorageSet: "plugins:storage-set",
   pluginsSecretsGet: "plugins:secrets-get",
+  providerSecretsStatus: "provider-secrets:status",
+  providerSecretsSet: "provider-secrets:set",
+  providerSecretsClear: "provider-secrets:clear",
   pluginsSecretsSet: "plugins:secrets-set",
   pluginsSecretsDelete: "plugins:secrets-delete",
   pluginsMediaPickLibrary: "plugins:media-pick-library",

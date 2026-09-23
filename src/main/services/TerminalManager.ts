@@ -5,10 +5,10 @@ import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import type {
   CreateSessionRequest,
-  LaunchRole,
   Point,
   ProviderId,
   SessionBounds,
+  SessionRole,
   SessionEvent,
   SessionMetadata,
   SessionRemovedEvent,
@@ -17,6 +17,7 @@ import type {
   TerminalDataEvent
 } from "../../shared/contracts.ts";
 import {
+  CANVAS_LAUNCHER_ITEMS,
   INITIAL_TERMINAL_COLS,
   INITIAL_TERMINAL_ROWS,
   IPC
@@ -26,6 +27,7 @@ import type {
   PreparedAgentBrowserPtyLaunch
 } from "./agent-browser/AgentBrowserBridge.ts";
 import { AGENT_BROWSER_ENV } from "./agent-browser/AgentBrowserBridge.ts";
+import type { OrchestrationLaunchCoordinator, PreparedOrchestrationPtyLaunch } from "./agent-browser/OrchestrationBridge.ts";
 import type {
   AgentRuntimeLaunchCoordinator,
   PreparedAgentRuntimePtyLaunch
@@ -40,8 +42,6 @@ import {
   CONTROL_CLI_ENV,
   CONTROL_CONNECTION_ENV,
   controlEnvironment,
-  isLaunchRole,
-  launchRole,
   type ControlConnection
 } from "./agent-control/controlCapabilities.ts";
 import { mergeOpenCodeLaunchEnvironment } from "./agent-runtime/ProviderRuntimeLaunch.ts";
@@ -79,6 +79,7 @@ interface ManagedSession {
   outputTimer: ReturnType<typeof setTimeout> | null;
   agentBrowser: PreparedAgentBrowserPtyLaunch | null;
   agentRuntime: PreparedAgentRuntimePtyLaunch | null;
+  agentOrchestration: PreparedOrchestrationPtyLaunch | null;
   lifecycle: ProviderLifecycleParser | null;
   awaitingInitialResize: boolean;
   resumeOnLaunch: boolean;
@@ -116,6 +117,7 @@ export class TerminalManager {
   // only (see flushOutput), so the batch queue never holds renderer output.
   private readonly hiddenSinceOffset = new Map<string, number>();
   private lifecycleHooksEnabled: boolean;
+  private agentOrchestration: OrchestrationLaunchCoordinator | null = null;
   private sessionStore: TerminalSessionStore | null = null;
   private sessionPersistenceEnabled = false;
   private suppressPersistence = false;
@@ -143,6 +145,10 @@ export class TerminalManager {
     this.lifecycleHooksEnabled = lifecycleHooksEnabled;
   }
 
+  configureOrchestration(coordinator: OrchestrationLaunchCoordinator | null): void {
+    this.agentOrchestration = coordinator;
+  }
+
   configureSessionPersistence(store: TerminalSessionStore, enabled: boolean): void {
     this.sessionStore = store;
     this.sessionPersistenceEnabled = Boolean(enabled);
@@ -157,7 +163,14 @@ export class TerminalManager {
       return;
     }
 
-    for (const descriptor of persisted) this.restorePersistedSession(descriptor);
+    // A subagent whose owning session is gone restores as nothing: its
+    // parent's runtime state no longer exists to collect its result.
+    const restorable = persisted.filter((descriptor) => (
+      descriptor.role !== "subagent"
+      || persisted.some((candidate) => candidate.id === descriptor.parentSessionId)
+      || this.sessions.has(descriptor.parentSessionId ?? "")
+    ));
+    for (const descriptor of restorable) this.restorePersistedSession(descriptor);
     await this.persistSessions();
   }
 
@@ -231,19 +244,24 @@ export class TerminalManager {
     }
     assertDirectory(request.cwd);
 
+    const role = request.role ?? "agent";
+    if (request.parentSessionId !== undefined && !this.sessions.has(request.parentSessionId)) {
+      throw new Error("Parent terminal session does not exist.");
+    }
+
     const id = randomUUID();
-    const role = launchRole(request.role);
     const metadata: SessionMetadata = {
       id,
       revision: 0,
       provider: request.provider,
       profile: request.profile,
-      role,
       title: request.title?.trim() || defaultTitle(request.provider, request.cwd),
       titleCustomized: Boolean(request.title?.trim()),
       cwd: request.cwd,
       position: request.position,
       size: DEFAULT_TERMINAL_SIZE,
+      role,
+      ...(request.parentSessionId !== undefined ? { parentSessionId: request.parentSessionId } : {}),
       status: initialSessionStatus(request.provider),
       startedAt: Date.now(),
       exitCode: null,
@@ -252,7 +270,7 @@ export class TerminalManager {
     const awaitMeasuredGrid = request.provider === "grok"
       && this.providerClis.get(request.provider).state === "available";
     const launched = awaitMeasuredGrid
-      ? { process: null, agentBrowser: null, agentRuntime: null, failure: null }
+      ? { process: null, agentBrowser: null, agentRuntime: null, agentOrchestration: null, failure: null }
       : this.spawnProcess(id, request.provider, request.profile, request.cwd,
         INITIAL_TERMINAL_COLS, INITIAL_TERMINAL_ROWS, false, control.captureResult, role,
         control.answerCaptureGrantExpiresAt);
@@ -271,6 +289,7 @@ export class TerminalManager {
       outputTimer: null,
       agentBrowser: launched.agentBrowser,
       agentRuntime: launched.agentRuntime,
+      agentOrchestration: launched.agentOrchestration,
       lifecycle: this.lifecycleHooksEnabled
         ? createProviderLifecycleParser(request.provider, request.cwd)
         : null,
@@ -296,6 +315,7 @@ export class TerminalManager {
     if (session.metadata.provider === "grok") {
       session.agentBrowser?.cleanup();
       session.agentRuntime?.cleanup();
+      session.agentOrchestration?.cleanup();
       session.process = null;
       session.agentBrowser = null;
       session.agentRuntime = null;
@@ -312,6 +332,7 @@ export class TerminalManager {
       return snapshot(session);
     }
 
+    session.agentOrchestration?.cleanup();
     const launched = this.spawnProcess(
       id,
       session.metadata.provider,
@@ -326,6 +347,7 @@ export class TerminalManager {
     session.process = launched.process;
     session.agentBrowser = launched.agentBrowser;
     session.agentRuntime = launched.agentRuntime;
+    session.agentOrchestration = launched.agentOrchestration;
     session.awaitingInitialResize = false;
     session.lifecycle = this.lifecycleHooksEnabled
       ? createProviderLifecycleParser(session.metadata.provider, session.metadata.cwd)
@@ -492,6 +514,7 @@ export class TerminalManager {
     this.hiddenSinceOffset.delete(id);
     session.agentBrowser?.cleanup();
     session.agentRuntime?.cleanup();
+    session.agentOrchestration?.cleanup();
     if (session.process) {
       try {
         session.process.kill();
@@ -516,12 +539,13 @@ export class TerminalManager {
       revision: 0,
       provider: descriptor.provider,
       profile: descriptor.profile,
-      role: descriptor.role,
       title: descriptor.title,
       titleCustomized: descriptor.titleCustomized,
       cwd: descriptor.cwd,
       position: descriptor.position,
       size: descriptor.size,
+      role: descriptor.role,
+      ...(descriptor.parentSessionId !== undefined ? { parentSessionId: descriptor.parentSessionId } : {}),
       status: initialSessionStatus(descriptor.provider),
       startedAt: Date.now(),
       exitCode: null,
@@ -531,6 +555,7 @@ export class TerminalManager {
     let process: IPty | null = null;
     let agentBrowser: PreparedAgentBrowserPtyLaunch | null = null;
     let agentRuntime: PreparedAgentRuntimePtyLaunch | null = null;
+    let agentOrchestration: PreparedOrchestrationPtyLaunch | null = null;
     let directoryReady = true;
     try {
       assertDirectory(descriptor.cwd);
@@ -560,6 +585,7 @@ export class TerminalManager {
         process = launched.process;
         agentBrowser = launched.agentBrowser;
         agentRuntime = launched.agentRuntime;
+        agentOrchestration = launched.agentOrchestration;
         if (launched.failure) applyLaunchFailure(metadata, launched.failure);
       } catch (error) {
         metadata.status = "failed";
@@ -581,6 +607,7 @@ export class TerminalManager {
       outputTimer: null,
       agentBrowser,
       agentRuntime,
+      agentOrchestration,
       lifecycle: this.lifecycleHooksEnabled
         ? createProviderLifecycleParser(descriptor.provider, descriptor.cwd)
         : null,
@@ -642,6 +669,7 @@ export class TerminalManager {
       session.process = launched.process;
       session.agentBrowser = launched.agentBrowser;
       session.agentRuntime = launched.agentRuntime;
+      session.agentOrchestration = launched.agentOrchestration;
       if (launched.failure) {
         applyLaunchFailure(session.metadata, launched.failure);
       } else {
@@ -672,23 +700,27 @@ export class TerminalManager {
     rows = INITIAL_TERMINAL_ROWS,
     resumePrevious = false,
     captureResult = false,
-    role: LaunchRole = "agent",
+    role: SessionRole = "agent",
     answerCaptureGrantExpiresAt?: number
   ): {
     process: IPty | null;
     agentBrowser: PreparedAgentBrowserPtyLaunch | null;
     agentRuntime: PreparedAgentRuntimePtyLaunch | null;
+    agentOrchestration: PreparedOrchestrationPtyLaunch | null;
     failure: UnavailableProviderCli | null;
   } {
     const providerCli = provider === "terminal" ? undefined : this.providerClis.get(provider);
     if (providerCli?.state === "unavailable") {
-      return { process: null, agentBrowser: null, agentRuntime: null, failure: providerCli };
+      return { process: null, agentBrowser: null, agentRuntime: null, agentOrchestration: null, failure: providerCli };
     }
     const agentRuntime = provider === "terminal"
       ? null
       : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd,
         ...(captureResult ? { captureResult: true } : {}),
         ...(answerCaptureGrantExpiresAt === undefined ? {} : { answerCaptureGrantExpiresAt }) }) ?? null;
+    const agentOrchestration = role === "orchestrator" && this.agentOrchestration?.isEnabled
+      ? this.agentOrchestration.prepareLaunch({ terminalSessionId: id })
+      : null;
     let agentBrowser: PreparedAgentBrowserPtyLaunch | null = null;
     try {
       // omp and pi take no browser bridge, exactly like grok: the adapter chain below
@@ -699,14 +731,21 @@ export class TerminalManager {
       // and antigravity keeps plain PTY integration for the same reason.
       agentBrowser = provider === "terminal" || provider === "grok" || provider === "omp" || provider === "pi" || provider === "cursor" || provider === "minimax" || provider === "devin" || provider === "antigravity"
         ? null
-        : this.agentBrowser?.prepareLaunch({ terminalSessionId: id, provider, cwd }) ?? null;
+        : this.agentBrowser?.prepareLaunch({
+          terminalSessionId: id,
+          provider,
+          cwd,
+          ...(role === "orchestrator" ? { includeOrchestration: true } : {})
+        }) ?? null;
       const baseEnvironment = terminalEnvironment();
       const browserEnvironment = agentBrowser?.environment ?? {};
       const runtimeEnvironment = agentRuntime?.environment ?? {};
+      const orchestrationEnvironment = agentOrchestration?.environment ?? {};
       const providerEnvironment = {
         ...(provider === "opencode"
           ? mergeOpenCodeLaunchEnvironment(browserEnvironment, runtimeEnvironment)
           : { ...browserEnvironment, ...runtimeEnvironment }),
+        ...orchestrationEnvironment,
         // Orchestrators alone learn where the control descriptor and CLI are.
         ...controlEnvironment(role, this.controlConnection)
       };
@@ -728,11 +767,13 @@ export class TerminalManager {
         }),
         agentBrowser,
         agentRuntime,
+        agentOrchestration,
         failure: null
       };
     } catch (error) {
       agentBrowser?.cleanup();
       agentRuntime?.cleanup();
+      agentOrchestration?.cleanup();
       throw error;
     }
   }
@@ -762,6 +803,8 @@ export class TerminalManager {
       current.agentBrowser = null;
       current.agentRuntime?.cleanup();
       current.agentRuntime = null;
+      current.agentOrchestration?.cleanup();
+      current.agentOrchestration = null;
       this.emitSession(current.metadata);
     });
   }
@@ -854,14 +897,23 @@ function assertDirectory(cwd: string): void {
   }
 }
 
+const SESSION_PROVIDERS = new Set<ProviderId>(CANVAS_LAUNCHER_ITEMS);
+const SESSION_ROLES = new Set<SessionRole>(["agent", "orchestrator", "subagent"]);
+
 function assertCreateRequest(request: CreateSessionRequest): void {
-  const providers = new Set<ProviderId>(["terminal", "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]);
-  if (!request || !providers.has(request.provider)) throw new Error("Unknown terminal provider.");
+  if (!request || !SESSION_PROVIDERS.has(request.provider)) throw new Error("Unknown terminal provider.");
   if (request.profile !== "normal" && request.profile !== "yolo") throw new Error("Unknown launch profile.");
-  if (request.role !== undefined && !isLaunchRole(request.role)) throw new Error("Unknown launch role.");
   if (request.role === "orchestrator" && request.provider === "terminal") throw new Error("A plain terminal cannot be an orchestrator.");
   if (typeof request.cwd !== "string" || request.cwd.length === 0) throw new Error("Project folder is required.");
   if (!isPoint(request.position)) throw new Error("Session position is invalid.");
+  const role = request.role ?? "agent";
+  if (!SESSION_ROLES.has(role)) throw new Error("Unknown session role.");
+  if (role === "subagent" && typeof request.parentSessionId !== "string") {
+    throw new Error("A subagent session requires a parent session.");
+  }
+  if (request.parentSessionId !== undefined && typeof request.parentSessionId !== "string") {
+    throw new Error("Session parent id must be a string.");
+  }
 }
 
 function isPoint(value: unknown): value is Point {

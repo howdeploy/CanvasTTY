@@ -76,6 +76,8 @@ import {
 } from "./appearanceSettings";
 import { CanvasNavigationShortcutEditor } from "./CanvasNavigationShortcutEditor";
 import { AgentHooksSettings } from "./AgentHooksSettings";
+import { ProviderSecretsSettings } from "./ProviderSecretsSettings";
+import { ApiProfilesSettings } from "./ApiProfilesSettings";
 import { AboutSettings } from "./AboutSettings";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { setCanvasLauncherItemEnabled } from "../launcher/canvasLauncher";
@@ -768,6 +770,20 @@ export function SettingsPanel({
                   </button>
                   {agentCliError && <span role="alert">{agentCliError}</span>}
                 </div>
+              </SettingGroup>
+              <SettingGroup
+                layout="stacked"
+                label={t(locale, "providerApiKeys")}
+                description={t(locale, "providerApiKeysDescription")}
+              >
+                <ProviderSecretsSettings locale={locale} />
+              </SettingGroup>
+              <SettingGroup
+                layout="stacked"
+                label={t(locale, "apiProfiles")}
+                description={t(locale, "apiProfilesDescription")}
+              >
+                <ApiProfilesSettings settings={settings} onChange={onChange} />
               </SettingGroup>
             </>
           )}

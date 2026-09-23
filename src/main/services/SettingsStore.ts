@@ -4,6 +4,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import type {
   AgentProviderId,
   AgentCliAvailability,
+  ApiProfile,
+  ApiProfileProtocol,
   AppSettings,
   BrowserCanvasState,
   CanvasLauncherItemId,
@@ -24,6 +26,7 @@ import type {
   MinimapInteractionMode,
   PaletteId,
   PluginCanvasInstance,
+  ProviderSecretId,
   RadialLauncherItemId,
   SessionRowColorMode,
   ShortcutBindings,
@@ -31,6 +34,7 @@ import type {
   ZoomSensitivity
 } from "../../shared/contracts";
 import {
+  API_PROFILE_PROTOCOLS,
   CANVAS_LAUNCHER_ITEMS,
   DEFAULT_CANVAS_LAUNCHER_ITEMS,
   DEFAULT_HOME_ACCENT_COLORS,
@@ -40,6 +44,7 @@ import {
   DEFAULT_UI_SCALE,
   HOME_GRID_MAX_COLUMNS,
   HOME_GRID_MAX_ROWS,
+  PROVIDER_SECRET_IDS,
   HOME_GRID_MIN_COLUMNS,
   HOME_GRID_MIN_ROWS,
   RADIAL_LAUNCHER_ITEMS,
@@ -63,7 +68,7 @@ const SESSION_ROW_COLOR_MODES = new Set<SessionRowColorMode>(["monochrome", "sta
 const CANVAS_COLORS = new Set<CanvasColorId>(["sage", "lilac", "night", "sand", "mist", "rose", "slate"]);
 const PATTERNS = new Set<CanvasPatternId>(["dots", "grid", "waves", "diagonal", "rings", "none"]);
 const MEDIA_FITS = new Set<MediaFit>(["cover", "contain"]);
-const SETTINGS_VERSION = 19;
+const SETTINGS_VERSION = 20;
 const GROK_LAUNCHER_SETTINGS_VERSION = 3;
 const EXPANDED_LIMIT_SETTINGS_VERSION = 5;
 const QWEN_SETTINGS_VERSION = 6;
@@ -165,6 +170,7 @@ export class SettingsStore {
         || !("persistStickyNotes" in source)
         || !("canvasRegions" in source)
         || !("stickyNotes" in source)
+        || !("apiProfiles" in source)
         || source.canvasColor === "palette"
         || source.settingsVersion !== SETTINGS_VERSION;
       let migratedCandidate: Record<string, unknown> = source;
@@ -347,6 +353,7 @@ function createDefaults(systemLocale: string, platform: CanvasNavigationPlatform
     mediaFit: "cover",
     lastDirectory: homedir(),
     acknowledgedDangerousProfiles: [],
+    apiProfiles: [],
     homeGridSize: { ...DEFAULT_HOME_GRID_SIZE },
     homeLayout: structuredClone(DEFAULT_HOME_LAYOUT),
     canvasRegions: [],
@@ -361,6 +368,48 @@ function createDefaults(systemLocale: string, platform: CanvasNavigationPlatform
     attentionQueuePlacement: "bottom-right",
     agentControlEnabled: false
   };
+}
+
+const API_PROFILE_PROTOCOL_SET = new Set<ApiProfileProtocol>(API_PROFILE_PROTOCOLS);
+const MAX_API_PROFILES = 32;
+
+// Invalid entries are dropped, never repaired: a profile that no longer matches
+// the schema must disappear rather than silently point a runtime at a wrong
+// endpoint or credential.
+export function normalizeApiProfiles(
+  value: unknown,
+  fallback: readonly ApiProfile[]
+): ApiProfile[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const seen = new Set<string>();
+  const profiles: ApiProfile[] = [];
+  for (const candidate of value) {
+    if (profiles.length >= MAX_API_PROFILES) break;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const record = candidate as Record<string, unknown>;
+    const id = typeof record.id === "string" && record.id.length > 0 && record.id.length <= 64 ? record.id : null;
+    const name = typeof record.name === "string" && record.name.trim().length > 0 && record.name.length <= 80 ? record.name : null;
+    const protocol = API_PROFILE_PROTOCOL_SET.has(record.protocol as ApiProfileProtocol)
+      ? record.protocol as ApiProfileProtocol
+      : null;
+    const secretRef = (PROVIDER_SECRET_IDS as readonly string[]).includes(record.secretRef as string)
+      ? record.secretRef as ProviderSecretId
+      : null;
+    const baseUrl = record.baseUrl === undefined
+      ? undefined
+      : typeof record.baseUrl === "string" && /^https:\/\//u.test(record.baseUrl) && record.baseUrl.length <= 500
+        ? record.baseUrl
+        : "invalid";
+    const defaultModel = typeof record.defaultModel === "string" && record.defaultModel.trim().length > 0 && record.defaultModel.length <= 200
+      ? record.defaultModel
+      : undefined;
+    if (!id || seen.has(id) || !name || !protocol || !secretRef || baseUrl === "invalid") continue;
+    seen.add(id);
+    profiles.push(baseUrl || defaultModel
+      ? { id, name, protocol, ...(baseUrl ? { baseUrl } : {}), secretRef, ...(defaultModel ? { defaultModel } : {}) }
+      : { id, name, protocol, secretRef });
+  }
+  return profiles;
 }
 
 export function normalizeSettings(
@@ -518,6 +567,7 @@ export function normalizeSettings(
       ? source.lastDirectory
       : fallback.lastDirectory,
     acknowledgedDangerousProfiles: [...new Set(acknowledged)],
+  apiProfiles: normalizeApiProfiles(source.apiProfiles, fallback.apiProfiles ?? []),
     homeGridSize,
     homeLayout,
     canvasRegions,

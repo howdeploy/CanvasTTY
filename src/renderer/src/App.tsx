@@ -78,6 +78,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   homeAccentColors: { ...DEFAULT_HOME_ACCENT_COLORS },
   sessionRowColorMode: "status",
   homeLauncherProviders: ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"],
+  apiProfiles: [],
   homeLimitProviders: ["codex", "claude", "qwen", "kimi", "opencode", "grok"],
   canvasLauncherItems: [...DEFAULT_CANVAS_LAUNCHER_ITEMS],
   radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS],

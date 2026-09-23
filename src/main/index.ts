@@ -28,6 +28,8 @@ import { PluginManager } from "./services/PluginManager";
 import { GithubAuthService } from "./services/GithubAuthService";
 import { PluginMediaService } from "./services/PluginMediaService";
 import { PluginSecretsService } from "./services/PluginSecretsService";
+import { ProviderSecretsService } from "./services/ProviderSecretsService";
+import { AgentControlService } from "./services/AgentControlService";
 import { HermesHudService } from "./services/HermesHudService";
 import { BrowserService } from "./services/BrowserService";
 import { CanvasNavigationInputController } from "./services/CanvasNavigationOverride";
@@ -39,6 +41,9 @@ import {
 } from "./services/browser/ProviderElectronSmoke";
 import {
   AgentBrowserBridge,
+  OrchestrationGateway,
+  OrchestrationBridge,
+  ScopedOrchestrationHandler,
   AgentGateway,
   WINDOWS_PIPE_HOST_FILENAME,
   WINDOWS_AGENT_GATEWAY_UNAVAILABLE,
@@ -120,10 +125,12 @@ let pluginManager: PluginManager | null = null;
 let githubAuth: GithubAuthService | null = null;
 let pluginMediaService: PluginMediaService | null = null;
 let pluginSecretsService: PluginSecretsService | null = null;
+let providerSecretsService: ProviderSecretsService | null = null;
 let hermesHudService: HermesHudService | null = null;
 let browserService: BrowserService | null = null;
 let canvasNavigationInput: CanvasNavigationInputController | null = null;
 let agentGateway: AgentGateway | null = null;
+let orchestrationGateway: OrchestrationGateway | null = null;
 let agentBrowserBridge: AgentBrowserBridge | null = null;
 let agentBrowserHelper: StdioHelperLaunch | null = null;
 let runtimeGateway: RuntimeGateway | null = null;
@@ -312,8 +319,16 @@ async function initializeServices(): Promise<void> {
       args: [helperPath],
       env: { ELECTRON_RUN_AS_NODE: "1" }
     };
+    const orchestrationHelperPath = app.isPackaged
+      ? join(process.resourcesPath, "agent-browser", "orchestration-helper.mjs")
+      : join(app.getAppPath(), "src", "agent-browser", "orchestration-helper.mjs");
     agentBrowserBridge = new AgentBrowserBridge(agentGateway, {
       helper: agentBrowserHelper,
+      orchestrationHelper: {
+        command: process.execPath,
+        args: [orchestrationHelperPath],
+        env: { ELECTRON_RUN_AS_NODE: "1" }
+      },
       providerClis,
       runtimeDirectory,
       hermesHomeDirectory,
@@ -418,6 +433,16 @@ async function initializeServices(): Promise<void> {
   }, providerClis, agentBrowserBridge ?? undefined, agentRuntimeBridge ?? undefined, settings.get().agentLifecycleHooksEnabled);
   const terminalSessionStore = new TerminalSessionStore(userDataPath);
   terminalManager.configureSessionPersistence(terminalSessionStore, settings.get().restoreTerminalSessions);
+
+  // The orchestration bridge exists only for sessions explicitly launched with
+  // the orchestrator role; interactive sessions never receive capabilities.
+  orchestrationGateway = new OrchestrationGateway({
+    runtimeDirectory: join(userDataPath, "orchestration", "runtime"),
+    handler: new ScopedOrchestrationHandler(new AgentControlService(terminalManager))
+  });
+  await orchestrationGateway.start();
+  terminalManager.configureOrchestration(new OrchestrationBridge(orchestrationGateway));
+
   await terminalManager.restorePersistedSessions();
   // The agent-control endpoint follows Settings → Agents → "Agent orchestration
   // endpoint"; the start flag / env var force it on for one launch (CI smoke)
@@ -500,6 +525,12 @@ async function initializeServices(): Promise<void> {
     }
   );
   await pluginSecretsService.load();
+  providerSecretsService = new ProviderSecretsService(app.getPath("userData"), {
+    isAvailable: securePluginStorageAvailable,
+    encrypt: (value) => safeStorage.encryptString(value),
+    decrypt: (value) => safeStorage.decryptString(value)
+  });
+  await providerSecretsService.load();
   protocol.handle("canvastty-plugin", (request) => pluginManager!.protocolResponse(request.url));
   protocol.handle("canvastty-media", (request) => pluginMediaService!.protocolResponse(request));
   observeMainWindowState = registerIpc({
@@ -518,6 +549,7 @@ async function initializeServices(): Promise<void> {
     plugins: pluginManager,
     pluginMedia: pluginMediaService,
     pluginSecrets: pluginSecretsService,
+    providerSecrets: providerSecretsService!,
     browser: browserService,
     githubAuth: githubAuth!,
     hermesHud: hermesHudService,

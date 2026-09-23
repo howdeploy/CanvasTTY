@@ -1,4 +1,4 @@
-import type { AgentProviderId, LaunchRole, ProviderId } from "../../../shared/contracts.ts";
+import type { AgentProviderId, LaunchRole, ProviderId, SessionRole } from "../../../shared/contracts.ts";
 import { AGENT_PROVIDERS } from "../../../shared/contracts.ts";
 
 /**
@@ -57,7 +57,7 @@ export interface ControlConnection {
  * without setup; ordinary sessions get nothing and inherit nothing (see
  * `terminalEnvironment`, which strips both variables from the parent).
  */
-export function controlEnvironment(role: LaunchRole, connection: ControlConnection | null): Record<string, string> {
+export function controlEnvironment(role: SessionRole, connection: ControlConnection | null): Record<string, string> {
   if (role !== "orchestrator" || !connection) return {};
   return { [CONTROL_CONNECTION_ENV]: connection.connectionPath, [CONTROL_CLI_ENV]: connection.cliPath };
 }

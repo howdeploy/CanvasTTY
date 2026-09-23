@@ -419,7 +419,7 @@ test("the Qwen migration does not rerun the older expanded-limit migration", asy
     assert.deepEqual(loaded.homeLimitProviders, ["codex", "claude", "kimi"]);
 
     const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 19);
+    assert.equal(persisted.settingsVersion, 20);
     assert.equal(persisted.agentLifecycleHooksEnabled, true);
     assert.deepEqual(persisted.homeLimitProviders, ["codex", "claude", "kimi"]);
   } finally {
@@ -442,7 +442,7 @@ test("the limit-display migration preserves a version-three launcher subset", as
     assert.deepEqual(loaded.homeLimitProviders, fallback.homeLimitProviders);
 
     const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 19);
+    assert.equal(persisted.settingsVersion, 20);
     assert.equal(persisted.agentLifecycleHooksEnabled, true);
     assert.deepEqual(persisted.homeLimitProviders, fallback.homeLimitProviders);
   } finally {
@@ -462,7 +462,7 @@ test("the expanded limit migration preserves a curated version-four subset", asy
     assert.deepEqual(loaded.homeLimitProviders, ["kimi"]);
 
     const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 19);
+    assert.equal(persisted.settingsVersion, 20);
     assert.equal(persisted.agentLifecycleHooksEnabled, true);
     assert.deepEqual(persisted.homeLimitProviders, ["kimi"]);
   } finally {
@@ -614,7 +614,7 @@ test("existing profiles migrate minimap interaction to click and persist later c
     const store = new SettingsStore(dir, "en");
     assert.equal((await store.load()).minimapInteractionMode, "click");
     let persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 19);
+    assert.equal(persisted.settingsVersion, 20);
     assert.equal(persisted.minimapInteractionMode, "click");
 
     await store.update({ minimapInteractionMode: "drag" });

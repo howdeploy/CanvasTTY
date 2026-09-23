@@ -15,7 +15,7 @@ import type {
 } from "../../shared/contracts";
 import { IPC } from "../../shared/contracts";
 import { isCanvasNavigationMouseButton } from "../../shared/canvasNavigation";
-import { observeWindowState, readWindowState } from "../windowState";
+import { createWindowStateObserver, readWindowState } from "../windowState";
 import type { SettingsStore } from "../services/SettingsStore";
 import { providerCliAvailability, type ProviderCliRegistry } from "../services/providerCliRegistry";
 import type { TerminalManager } from "../services/TerminalManager";
@@ -92,7 +92,7 @@ export function registerIpc({
   requestPluginCanvas,
   broadcastPluginStorageChange,
   updater
-}: Dependencies): void {
+}: Dependencies): (window: BrowserWindow | null) => void {
   const pluginBrowserOpenBroker = new PluginBrowserOpenBroker(getMainWindow);
   const requestPluginBrowserOpen = async (pluginId: string, value: unknown): Promise<void> => {
     plugins.assertPermission(pluginId, "browser:open");
@@ -621,12 +621,10 @@ export function registerIpc({
     terminals.setVisible(id, visible);
   });
 
-  const publishWindowState = (window: BrowserWindow): void => {
-    if (!window.isDestroyed()) window.webContents.send(IPC.windowState, readWindowState(window));
-  };
-
-  const mainWindow = getMainWindow();
-  if (mainWindow) observeWindowState(mainWindow, () => publishWindowState(mainWindow));
+  const observeMainWindow = createWindowStateObserver<BrowserWindow>((window, state) => {
+    if (!window.isDestroyed()) window.webContents.send(IPC.windowState, state);
+  });
+  observeMainWindow(getMainWindow());
 
   ipcMain.on(IPC.windowMinimize, (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.handle(IPC.windowToggleMaximize, (event) => {
@@ -646,6 +644,8 @@ export function registerIpc({
     assertMainRenderer(event, getMainWindow);
     updater.install();
   });
+
+  return observeMainWindow;
 }
 
 function isCanvasNavigationPointerBindingInput(

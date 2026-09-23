@@ -1317,6 +1317,148 @@ test("updatePlugin restores the previous package when metadata persistence fails
   }
 });
 
+test("concurrent updatePlugin calls for one plugin share one in-flight update", async () => {
+  const userData = await mkdtemp(join(tmpdir(), "canvastty-plugin-update-singleflight-"));
+  const fixture = await mkdtemp(join(tmpdir(), "canvastty-plugin-update-singleflight-fixture-"));
+  let version = "1.0.0";
+  let updateDownloads = 0;
+  const writeFixture = async () => {
+    await rm(fixture, { recursive: true, force: true });
+    await mkdir(fixture, { recursive: true });
+    await writeFile(join(fixture, "app.html"), `<h1>${version}</h1>`, "utf8");
+    await writeFile(join(fixture, "canvastty.plugin.json"), JSON.stringify({
+      apiVersion: 1,
+      id: "com.example.update-singleflight",
+      name: "Update Singleflight",
+      version,
+      description: "Concurrent update fixture.",
+      permissions: [],
+      contributions: [{
+        id: "app",
+        kind: "canvas-app",
+        title: "App",
+        entry: "app.html",
+        defaultSize: { width: 480, height: 300 }
+      }]
+    }), "utf8");
+  };
+  await writeFixture();
+  let trackUpdateDownloads = false;
+  const manager = new PluginManager(userData, async (_url, destination) => {
+    if (trackUpdateDownloads) updateDownloads += 1;
+    await cp(fixture, destination, { recursive: true });
+  });
+  try {
+    await manager.load();
+    await manager.install((await manager.previewInstall("https://github.com/example/update-singleflight")).token);
+    version = "2.0.0";
+    await writeFixture();
+    trackUpdateDownloads = true;
+
+    const results = await Promise.allSettled([
+      manager.updatePlugin("com.example.update-singleflight"),
+      manager.updatePlugin("com.example.update-singleflight")
+    ]);
+
+    assert.deepEqual(results.map((result) => result.status), ["fulfilled", "fulfilled"]);
+    const [first, second] = results.map((result) => result.value);
+    assert.equal(updateDownloads, 1);
+    assert.equal(first.manifest.version, "2.0.0");
+    assert.equal(second.manifest.version, "2.0.0");
+    assert.equal(manager.list()[0].manifest.version, "2.0.0");
+    const versions = JSON.parse(await readFile(join(userData, "plugin-versions.json"), "utf8"));
+    assert.equal(versions["com.example.update-singleflight"].installedVersion, "2.0.0");
+  } finally {
+    await manager.dispose();
+    await rm(userData, { recursive: true, force: true });
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("checkForUpdates keeps installed version current when an update finishes during its fetch", async () => {
+  const originalFetch = globalThis.fetch;
+  const previousToken = process.env.GITHUB_TOKEN;
+  const previousCanvasToken = process.env.CANVASTTY_GITHUB_TOKEN;
+  delete process.env.GITHUB_TOKEN;
+  delete process.env.CANVASTTY_GITHUB_TOKEN;
+  const userData = await mkdtemp(join(tmpdir(), "canvastty-plugin-update-check-race-"));
+  const fixture = await mkdtemp(join(tmpdir(), "canvastty-plugin-update-check-race-fixture-"));
+  let version = "1.0.0";
+  let remoteVersion = "1.0.0";
+  let pauseRemoteFetch = false;
+  let signalRemoteStarted;
+  const remoteStarted = new Promise((resolve) => { signalRemoteStarted = resolve; });
+  let releaseRemoteFetch;
+  const remoteGate = new Promise((resolve) => { releaseRemoteFetch = resolve; });
+  const manifestFor = (manifestVersion) => ({
+    apiVersion: 1,
+    id: "com.example.update-check-race",
+    name: "Update Check Race",
+    version: manifestVersion,
+    description: "Version state race fixture.",
+    permissions: [],
+    contributions: [{
+      id: "app",
+      kind: "canvas-app",
+      title: "App",
+      entry: "app.html",
+      defaultSize: { width: 480, height: 300 }
+    }]
+  });
+  const writeFixture = async () => {
+    await rm(fixture, { recursive: true, force: true });
+    await mkdir(fixture, { recursive: true });
+    await writeFile(join(fixture, "app.html"), `<h1>${version}</h1>`, "utf8");
+    await writeFile(join(fixture, "canvastty.plugin.json"), JSON.stringify(manifestFor(version)), "utf8");
+  };
+  await writeFixture();
+  const manager = new PluginManager(userData, async (_url, destination) => {
+    await cp(fixture, destination, { recursive: true });
+  });
+  try {
+    globalThis.fetch = async (url) => {
+      const text = String(url);
+      if (text === "https://api.github.com/repos/example/update-check-race") {
+        return Response.json({ default_branch: "main" });
+      }
+      if (text === "https://raw.githubusercontent.com/example/update-check-race/main/canvastty.plugin.json") {
+        if (pauseRemoteFetch) {
+          signalRemoteStarted();
+          await remoteGate;
+        }
+        return Response.json(manifestFor(remoteVersion));
+      }
+      return new Response("missing", { status: 404 });
+    };
+    await manager.load();
+    await manager.install((await manager.previewInstall("https://github.com/example/update-check-race")).token);
+
+    version = "2.0.0";
+    remoteVersion = "2.0.0";
+    await writeFixture();
+    pauseRemoteFetch = true;
+    const checking = manager.checkForUpdates();
+    await remoteStarted;
+    await manager.updatePlugin("com.example.update-check-race");
+    releaseRemoteFetch();
+
+    assert.deepEqual(await checking, []);
+    const versions = JSON.parse(await readFile(join(userData, "plugin-versions.json"), "utf8"));
+    assert.equal(versions["com.example.update-check-race"].installedVersion, "2.0.0");
+    assert.equal(versions["com.example.update-check-race"].latestVersion, "2.0.0");
+  } finally {
+    releaseRemoteFetch();
+    globalThis.fetch = originalFetch;
+    if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = previousToken;
+    if (previousCanvasToken === undefined) delete process.env.CANVASTTY_GITHUB_TOKEN;
+    else process.env.CANVASTTY_GITHUB_TOKEN = previousCanvasToken;
+    await manager.dispose();
+    await rm(userData, { recursive: true, force: true });
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
 test("validatePluginManifest accepts icon and localized descriptions", () => {
   const valid = validatePluginManifest({
     apiVersion: 1,

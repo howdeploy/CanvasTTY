@@ -164,12 +164,14 @@ export class PluginManager {
   private readonly hookRegistryPath: string;
   private readonly plugins = new Map<string, InstalledPlugin>();
   private readonly pending = new Map<string, PendingInstall>();
+  private readonly updatingPlugins = new Map<string, Promise<InstalledPlugin>>();
   private readonly storageWrites = new Map<string, Promise<void>>();
   private readonly downloadRepository: DownloadRepository;
   private readonly downloadFullRepository: DownloadRepository;
   private readonly downloadModuleFiles: DownloadModuleFiles;
   private tokenProvider: () => Promise<string | null>;
   private registryWrite = Promise.resolve();
+  private versionsWrite = Promise.resolve();
 
   constructor(
     userDataPath: string,
@@ -647,38 +649,54 @@ export class PluginManager {
   }
 
   async checkForUpdates(): Promise<PluginUpdateStatus[]> {
-    const installed = [...this.plugins.values()]
+    const sources = [...this.plugins.values()]
       .filter((plugin) => plugin.enabled && plugin.sourceUrl)
       .sort((left, right) => left.manifest.id.localeCompare(right.manifest.id));
-    const versions = await this.readVersions();
-    const updates: PluginUpdateStatus[] = [];
     // Batch: one GraphQL metadata round-trip for all manifests, then raw
     // fetches for present files — far fewer requests than one per plugin.
-    const remoteVersions = await fetchRemoteManifestVersions(installed.map((plugin) => plugin.sourceUrl));
-    for (const plugin of installed) {
-      const latest = remoteVersions.get(plugin.sourceUrl);
-      if (latest === undefined) {
-        console.warn(`CanvasTTY could not check plugin update: ${plugin.manifest.id}.`);
-        continue;
-      }
-      versions[plugin.manifest.id] = {
-        installedVersion: plugin.manifest.version,
-        latestVersion: latest,
-        checkedAt: Date.now()
-      };
-      if (latest !== plugin.manifest.version) {
-        updates.push({
-          pluginId: plugin.manifest.id,
+    const remoteVersions = await fetchRemoteManifestVersions(sources.map((plugin) => plugin.sourceUrl));
+    return this.withVersionsLock((versions) => {
+      const installed = [...this.plugins.values()]
+        .filter((plugin) => plugin.enabled && plugin.sourceUrl)
+        .sort((left, right) => left.manifest.id.localeCompare(right.manifest.id));
+      const updates: PluginUpdateStatus[] = [];
+      for (const plugin of installed) {
+        const latest = remoteVersions.get(plugin.sourceUrl);
+        if (latest === undefined) {
+          console.warn(`CanvasTTY could not check plugin update: ${plugin.manifest.id}.`);
+          continue;
+        }
+        versions[plugin.manifest.id] = {
           installedVersion: plugin.manifest.version,
-          latestVersion: latest
-        });
+          latestVersion: latest,
+          checkedAt: Date.now()
+        };
+        if (latest !== plugin.manifest.version) {
+          updates.push({
+            pluginId: plugin.manifest.id,
+            installedVersion: plugin.manifest.version,
+            latestVersion: latest
+          });
+        }
       }
-    }
-    await this.persistVersions(versions);
-    return updates;
+      return updates;
+    });
   }
 
-  async updatePlugin(pluginId: string): Promise<InstalledPlugin> {
+  updatePlugin(pluginId: string): Promise<InstalledPlugin> {
+    const inFlight = this.updatingPlugins.get(pluginId);
+    if (inFlight) return inFlight;
+
+    const update = this.performPluginUpdate(pluginId);
+    this.updatingPlugins.set(pluginId, update);
+    const clearInFlight = () => {
+      if (this.updatingPlugins.get(pluginId) === update) this.updatingPlugins.delete(pluginId);
+    };
+    void update.then(clearInFlight, clearInFlight);
+    return update;
+  }
+
+  private async performPluginUpdate(pluginId: string): Promise<InstalledPlugin> {
     const plugin = this.requirePlugin(pluginId);
     if (plugin.enabledHooks.length > 0) {
       plugin.enabledHooks = [];
@@ -729,13 +747,13 @@ export class PluginManager {
       };
       this.plugins.set(pluginId, updated);
       await this.persistRegistry();
-      const versions = await this.readVersions();
-      versions[pluginId] = {
-        installedVersion: manifest.version,
-        latestVersion: manifest.version,
-        checkedAt: Date.now()
-      };
-      await this.persistVersions(versions);
+      await this.withVersionsLock((versions) => {
+        versions[pluginId] = {
+          installedVersion: manifest.version,
+          latestVersion: manifest.version,
+          checkedAt: Date.now()
+        };
+      });
       return structuredClone(activePlugin(updated));
     } catch (error) {
       if (currentBackedUp) {
@@ -784,6 +802,19 @@ export class PluginManager {
     const temporaryPath = `${this.versionsPath}.tmp`;
     await writeFile(temporaryPath, JSON.stringify(versions, null, 2), "utf8");
     await rename(temporaryPath, this.versionsPath);
+  }
+
+  private withVersionsLock<T>(
+    update: (versions: Record<string, StoredVersionRecord>) => T | Promise<T>
+  ): Promise<T> {
+    const operation = this.versionsWrite.catch(() => undefined).then(async () => {
+      const versions = await this.readVersions();
+      const result = await update(versions);
+      await this.persistVersions(versions);
+      return result;
+    });
+    this.versionsWrite = operation.then(() => undefined, () => undefined);
+    return operation;
   }
 
   contribution(pluginId: string, contributionId: string): PluginContribution {

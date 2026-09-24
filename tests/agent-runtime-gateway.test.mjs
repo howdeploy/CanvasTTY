@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { AGENT_RUNTIME_ENV, RUNTIME_PROTOCOL_VERSION } from "../src/agent-runtime/runtime-protocol.mjs";
+import {
+  AGENT_RUNTIME_ENV,
+  CAPTURE_ANSWER_ENV,
+  CAPTURE_ANSWER_EXPIRES_AT_ENV,
+  RUNTIME_PROTOCOL_VERSION
+} from "../src/agent-runtime/runtime-protocol.mjs";
 import { RuntimeGateway } from "../src/main/services/agent-runtime/RuntimeGateway.ts";
 
 const POSIX_RUNTIME_GATEWAY_TEST = {
@@ -68,6 +73,99 @@ test("RuntimeGateway rejects a wrong capability and ignores a stale turn complet
 
   assert.deepEqual(signals.map(({ signal }) => signal.state), ["working"]);
   assert.equal(gateway.currentStatus("terminal-two"), "working");
+});
+
+test("ordinary Codex Stop reports omit answer text without an explicit capture grant", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
+  const root = await fixture(t);
+  const signals = [];
+  const gateway = new RuntimeGateway({ runtimeDirectory: root, onSignal: (id, signal) => signals.push({ id, signal }) });
+  await gateway.start();
+  t.after(() => gateway.close());
+  const capability = gateway.registerSession("terminal-default-deny", "codex");
+
+  const result = await reportStop(capability, false);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(signals, [{
+    id: "terminal-default-deny",
+    signal: { state: "idle", event: "Stop", turnId: "turn-answer" }
+  }]);
+  assert.equal(gateway.currentStatus("terminal-default-deny"), "idle");
+});
+
+test("answer capture requires a live per-session grant and is bound to its runtime generation", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
+  const root = await fixture(t);
+  let now = Date.now();
+  const signals = [];
+  const revokedAnswers = [];
+  const gateway = new RuntimeGateway({
+    runtimeDirectory: root,
+    now: () => now,
+    onSignal: (id, signal) => signals.push({ id, signal }),
+    onAnswerCaptureRevoked: (id) => revokedAnswers.push(id)
+  });
+  await gateway.start();
+  t.after(() => gateway.close());
+
+  const grantExpiresAt = now + 60_000;
+  const granted = gateway.registerSession("terminal-owned", "codex", grantExpiresAt);
+  const result = await reportStop(granted, grantExpiresAt);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(signals[0], {
+    id: "terminal-owned",
+    signal: {
+      state: "idle",
+      event: "Stop",
+      turnId: "turn-answer",
+      lastAssistantMessage: "authorized answer",
+      answerCaptureGrantExpiresAt: grantExpiresAt
+    }
+  });
+  assert.equal(gateway.currentStatus("terminal-owned"), "idle");
+  assert.equal(JSON.stringify(gateway.currentStatus("terminal-owned")).includes("authorized answer"), false);
+
+  const expiredHook = await reportStop(granted, Date.now() - 1);
+  assert.equal(expiredHook.code, 0, expiredHook.stderr);
+  assert.equal("lastAssistantMessage" in signals[1].signal, false);
+
+  now = grantExpiresAt;
+  await send(granted.address, {
+    ...message(granted, "idle", "Stop", "turn-answer"),
+    lastAssistantMessage: "expired answer"
+  });
+  assert.equal(signals.length, 2);
+  assert.deepEqual(revokedAnswers, ["terminal-owned"]);
+
+  now = grantExpiresAt + 100;
+  const revocable = gateway.registerSession("terminal-owned", "codex", now + 60_000);
+  gateway.revokeTerminalSession("terminal-owned");
+  assert.deepEqual(revokedAnswers, ["terminal-owned", "terminal-owned"]);
+  assert.deepEqual(await sendAndRead(revocable.address, captureCheck(revocable)), {
+    v: RUNTIME_PROTOCOL_VERSION,
+    type: "ack",
+    answerCapture: false
+  });
+  const stoppedAfterRevoke = await reportStop(revocable, now + 60_000);
+  assert.equal(stoppedAfterRevoke.code, 0, stoppedAfterRevoke.stderr);
+  assert.equal(signals.length, 2);
+
+  const nextGeneration = gateway.registerSession("terminal-owned", "codex");
+  const stoppedWithoutGrant = await reportStop(nextGeneration, now + 60_000);
+  assert.equal(stoppedWithoutGrant.code, 0, stoppedWithoutGrant.stderr);
+  assert.equal(signals.length, 3);
+  assert.equal("lastAssistantMessage" in signals[2].signal, false);
+  await send(granted.address, {
+    ...message(granted, "idle", "Stop", "turn-answer"),
+    lastAssistantMessage: "stale generation answer"
+  });
+  await send(nextGeneration.address, {
+    ...message(nextGeneration, "idle", "Stop", "turn-answer"),
+    lastAssistantMessage: "ungranted new generation answer"
+  });
+  await send(revocable.address, {
+    ...message(revocable, "idle", "Stop", "turn-answer"),
+    lastAssistantMessage: "revoked grant answer"
+  });
+  assert.equal(signals.length, 3);
 });
 
 test("OpenCode question dialogs report needs-input and resume working afterward", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
@@ -136,13 +234,62 @@ function message(capability, state, event, turnId) {
   };
 }
 
+function captureCheck(capability) {
+  return {
+    v: RUNTIME_PROTOCOL_VERSION,
+    type: "answer-capture-check",
+    terminalSessionId: capability.terminalSessionId,
+    provider: capability.provider,
+    capabilityToken: capability.capabilityToken
+  };
+}
+
+function reportStop(capability, grantExpiresAt) {
+  const helper = new URL("../src/agent-runtime/hook-helper.mjs", import.meta.url);
+  const environment = {
+    ...process.env,
+    [AGENT_RUNTIME_ENV.address]: capability.address,
+    [AGENT_RUNTIME_ENV.terminalSessionId]: capability.terminalSessionId,
+    [AGENT_RUNTIME_ENV.provider]: capability.provider,
+    [AGENT_RUNTIME_ENV.capabilityToken]: capability.capabilityToken
+  };
+  if (grantExpiresAt !== false && Number.isFinite(grantExpiresAt)) {
+    environment[CAPTURE_ANSWER_ENV] = "1";
+    environment[CAPTURE_ANSWER_EXPIRES_AT_ENV] = String(grantExpiresAt);
+  } else {
+    delete environment[CAPTURE_ANSWER_ENV];
+    delete environment[CAPTURE_ANSWER_EXPIRES_AT_ENV];
+  }
+  const child = spawn(process.execPath, [helper.pathname, "idle", "Stop"], {
+    env: environment,
+    stdio: ["pipe", "ignore", "pipe"]
+  });
+  child.stdin.end(JSON.stringify({ turn_id: "turn-answer", last_assistant_message: "authorized answer" }));
+  return childResult(child);
+}
+
 function send(address, value) {
+  return sendAndRead(address, value).then(() => undefined);
+}
+
+function sendAndRead(address, value) {
   return new Promise((resolve) => {
     const socket = createConnection(address);
+    let response = "";
     socket.on("connect", () => socket.write(`${JSON.stringify(value)}\n`));
-    socket.on("data", () => socket.destroy());
-    socket.on("error", () => resolve());
-    socket.on("close", () => resolve());
+    socket.on("data", (chunk) => {
+      response += chunk.toString("utf8");
+      const newline = response.indexOf("\n");
+      if (newline < 0) return;
+      try {
+        resolve(JSON.parse(response.slice(0, newline)));
+      } catch {
+        resolve(null);
+      }
+      socket.destroy();
+    });
+    socket.on("error", () => resolve(null));
+    socket.on("close", () => resolve(null));
   });
 }
 

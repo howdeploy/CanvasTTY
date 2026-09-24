@@ -326,8 +326,16 @@ async function initializeServices(): Promise<void> {
           ...(signal.turnId ? { requestId: signal.turnId } : {})
         });
         agentControl?.onSignal(terminalSessionId, signal);
-        if (signal.lastAssistantMessage !== undefined) evenG2?.answer(terminalSessionId, signal.lastAssistantMessage, signal.turnId);
-      }
+        if (signal.lastAssistantMessage !== undefined && signal.answerCaptureGrantExpiresAt !== undefined) {
+          evenG2?.answer(
+            terminalSessionId,
+            signal.lastAssistantMessage,
+            signal.turnId,
+            signal.answerCaptureGrantExpiresAt
+          );
+        }
+      },
+      onAnswerCaptureRevoked: (terminalSessionId) => evenG2?.clearAnswer(terminalSessionId)
     });
     await runtimeGateway.start();
     const runtimeHelperPath = app.isPackaged
@@ -402,9 +410,7 @@ async function initializeServices(): Promise<void> {
     } else if (channel === IPC.terminalRemoved && "id" in payload) {
       notifiedAttentionStatus.delete(payload.id);
     }
-  }, providerClis, agentBrowserBridge ?? undefined, agentRuntimeBridge ?? undefined, settings.get().agentLifecycleHooksEnabled,
-  // Final answers reach the runtime hook only for sessions spawned while Even G2 is on.
-  undefined, () => evenG2?.enabled() === true);
+  }, providerClis, agentBrowserBridge ?? undefined, agentRuntimeBridge ?? undefined, settings.get().agentLifecycleHooksEnabled);
   const terminalSessionStore = new TerminalSessionStore(userDataPath);
   terminalManager.configureSessionPersistence(terminalSessionStore, settings.get().restoreTerminalSessions);
   await terminalManager.restorePersistedSessions();

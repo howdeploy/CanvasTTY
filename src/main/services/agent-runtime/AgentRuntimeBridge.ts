@@ -1,5 +1,10 @@
 import type { ProviderId } from "../../../shared/contracts.ts";
-import { AGENT_RUNTIME_ENV, CAPTURE_ANSWER_ENV, CAPTURE_RESULT_ENV } from "../../../agent-runtime/runtime-protocol.mjs";
+import {
+  AGENT_RUNTIME_ENV,
+  CAPTURE_ANSWER_ENV,
+  CAPTURE_ANSWER_EXPIRES_AT_ENV,
+  CAPTURE_RESULT_ENV
+} from "../../../agent-runtime/runtime-protocol.mjs";
 import type { RuntimeGateway, RuntimeLifecycleState } from "./RuntimeGateway.ts";
 import {
   ProviderRuntimeLaunchAdapters,
@@ -11,8 +16,8 @@ export interface PrepareAgentRuntimeLaunchInput {
   provider: Exclude<ProviderId, "terminal">;
   cwd: string;
   captureResult?: boolean;
-  /** Report the bounded final answer of each turn for a companion display. */
-  captureAnswer?: boolean;
+  /** Owner-issued, per-session answer-capture grant expiry (Unix milliseconds). */
+  answerCaptureGrantExpiresAt?: number;
 }
 
 export interface PreparedAgentRuntimePtyLaunch {
@@ -47,7 +52,11 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
   prepareLaunch(input: PrepareAgentRuntimeLaunchInput): PreparedAgentRuntimePtyLaunch {
     const capability = this.coreHooksEnabled
       ? this.gateway.registerSession(
-        input.terminalSessionId, input.provider, input.captureResult === true, input.captureAnswer === true)
+        input.terminalSessionId,
+        input.provider,
+        input.captureResult === true,
+        isLiveGrant(input.answerCaptureGrantExpiresAt) ? input.answerCaptureGrantExpiresAt : undefined
+      )
       : null;
     let prepared;
     try {
@@ -63,7 +72,10 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
       environment: {
         ...prepared.environment,
         ...(input.captureResult ? { [CAPTURE_RESULT_ENV]: "1" } : {}),
-        ...(input.captureAnswer ? { [CAPTURE_ANSWER_ENV]: "1" } : {}),
+        ...(isLiveGrant(input.answerCaptureGrantExpiresAt) ? {
+          [CAPTURE_ANSWER_ENV]: "1",
+          [CAPTURE_ANSWER_EXPIRES_AT_ENV]: String(input.answerCaptureGrantExpiresAt)
+        } : {}),
         ...(capability ? {
           [AGENT_RUNTIME_ENV.address]: capability.address,
           [AGENT_RUNTIME_ENV.terminalSessionId]: capability.terminalSessionId,
@@ -97,4 +109,8 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
       this.gateway.revokeTerminalSession(terminalSessionId);
     }
   }
+}
+
+function isLiveGrant(expiresAt: number | undefined): expiresAt is number {
+  return typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt > Date.now();
 }

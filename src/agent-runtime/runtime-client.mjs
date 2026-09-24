@@ -1,6 +1,8 @@
 import { createConnection } from "node:net";
 import {
   AGENT_RUNTIME_ENV,
+  CAPTURE_ANSWER_ENV,
+  CAPTURE_ANSWER_EXPIRES_AT_ENV,
   MAX_ANSWER_CHARS,
   MAX_RUNTIME_MESSAGE_BYTES,
   RUNTIME_PROTOCOL_VERSION,
@@ -29,14 +31,39 @@ export async function reportLifecycle({ state, event, turnId = null, result, las
     turnId: normalizedId(turnId),
     ...(result === undefined ? {} : { result })
   };
-  // The final answer only rides a Codex Stop event; anything else is dropped here
-  // so a misconfigured hook can never smuggle page text under that field.
-  if (provider === "codex" && event === "Stop" && typeof lastAssistantMessage === "string") {
+  const answerCaptureExpiresAt = Number(process.env[CAPTURE_ANSWER_EXPIRES_AT_ENV]);
+  const shouldCheckAnswerGrant = process.env[CAPTURE_ANSWER_ENV] === "1"
+    && Number.isFinite(answerCaptureExpiresAt) && answerCaptureExpiresAt > Date.now()
+    && provider === "codex" && event === "Stop"
+    && state === "idle" && typeof lastAssistantMessage === "string";
+  if (shouldCheckAnswerGrant && await answerCaptureIsActive({
+    address,
+    terminalSessionId,
+    provider,
+    capabilityToken
+  })) {
     message.lastAssistantMessage = lastAssistantMessage.slice(0, MAX_ANSWER_CHARS);
   }
   const payload = Buffer.from(`${JSON.stringify(message)}\n`, "utf8");
   if (payload.length > MAX_RUNTIME_MESSAGE_BYTES) return false;
 
+  return sendMessage(address, payload, (parsed) => parsed?.type === "ack");
+}
+
+async function answerCaptureIsActive({ address, terminalSessionId, provider, capabilityToken }) {
+  const request = {
+    v: RUNTIME_PROTOCOL_VERSION,
+    type: "answer-capture-check",
+    terminalSessionId,
+    provider,
+    capabilityToken
+  };
+  return sendMessage(address, Buffer.from(`${JSON.stringify(request)}\n`, "utf8"),
+    (parsed) => parsed?.type === "ack" && parsed?.answerCapture === true);
+}
+
+function sendMessage(address, payload, accepted) {
+  if (payload.length > MAX_RUNTIME_MESSAGE_BYTES) return Promise.resolve(false);
   return new Promise((resolve) => {
     const socket = createConnection(address);
     let settled = false;
@@ -58,7 +85,7 @@ export async function reportLifecycle({ state, event, turnId = null, result, las
       if (newline < 0) return;
       try {
         const parsed = JSON.parse(response.slice(0, newline));
-        finish(parsed?.v === RUNTIME_PROTOCOL_VERSION && parsed?.type === "ack");
+        finish(parsed?.v === RUNTIME_PROTOCOL_VERSION && accepted(parsed));
       } catch {
         finish(false);
       }

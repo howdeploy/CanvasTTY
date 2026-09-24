@@ -6,7 +6,11 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
 
-import { AGENT_RUNTIME_ENV } from "../src/agent-runtime/runtime-protocol.mjs";
+import {
+  AGENT_RUNTIME_ENV,
+  CAPTURE_ANSWER_ENV,
+  CAPTURE_ANSWER_EXPIRES_AT_ENV
+} from "../src/agent-runtime/runtime-protocol.mjs";
 import { AgentRuntimeBridge } from "../src/main/services/agent-runtime/AgentRuntimeBridge.ts";
 import {
   ProviderRuntimeLaunchAdapters,
@@ -133,10 +137,21 @@ test("revoking CanvasTTY lifecycle hooks immediately detaches live capabilities 
     cwd: root
   });
   assert.equal(active.environment[AGENT_RUNTIME_ENV.terminalSessionId], "session-active");
+  assert.equal(active.environment[CAPTURE_ANSWER_ENV], undefined);
+  assert.equal(active.environment[CAPTURE_ANSWER_EXPIRES_AT_ENV], undefined);
   assert.equal(bridge.currentStatus("session-active"), "idle");
 
+  const granted = bridge.prepareLaunch({
+    terminalSessionId: "session-answer-granted",
+    provider: "codex",
+    cwd: root,
+    answerCaptureGrantExpiresAt: Date.now() + 60_000
+  });
+  assert.equal(granted.environment[CAPTURE_ANSWER_ENV], "1");
+  assert.equal(Number(granted.environment[CAPTURE_ANSWER_EXPIRES_AT_ENV]) > Date.now(), true);
+
   bridge.setCoreHooksEnabled(false);
-  assert.deepEqual(revocations, ["session-active"]);
+  assert.deepEqual(revocations, ["session-active", "session-answer-granted"]);
   assert.equal(bridge.currentStatus("session-active"), null);
 
   const revoked = bridge.prepareLaunch({
@@ -146,11 +161,11 @@ test("revoking CanvasTTY lifecycle hooks immediately detaches live capabilities 
   });
   assert.equal(AGENT_RUNTIME_ENV.address in revoked.environment, false);
   assert.deepEqual(revoked.args, []);
-  assert.deepEqual(registrations, ["session-active"]);
+  assert.deepEqual(registrations, ["session-active", "session-answer-granted"]);
 
   bridge.setCoreHooksEnabled(true);
   assert.equal(bridge.currentStatus("session-revoked"), null);
-  assert.deepEqual(registrations, ["session-active"]);
+  assert.deepEqual(registrations, ["session-active", "session-answer-granted"]);
 
   const restarted = bridge.prepareLaunch({
     terminalSessionId: "session-restarted",
@@ -158,9 +173,10 @@ test("revoking CanvasTTY lifecycle hooks immediately detaches live capabilities 
     cwd: root
   });
   assert.equal(restarted.environment[AGENT_RUNTIME_ENV.terminalSessionId], "session-restarted");
-  assert.deepEqual(registrations, ["session-active", "session-restarted"]);
+  assert.deepEqual(registrations, ["session-active", "session-answer-granted", "session-restarted"]);
 
   active.cleanup();
+  granted.cleanup();
   revoked.cleanup();
   restarted.cleanup();
 });

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {
   CAPTURE_ANSWER_ENV,
+  CAPTURE_ANSWER_EXPIRES_AT_ENV,
   CAPTURE_RESULT_ENV,
   MAX_ANSWER_CHARS,
   MAX_HOOK_INPUT_BYTES,
@@ -16,7 +17,9 @@ if (!RUNTIME_STATES.includes(state) || typeof event !== "string" || event.length
 
 let raw = "";
 const captureResult = process.env[CAPTURE_RESULT_ENV] === "1";
-const captureAnswer = process.env[CAPTURE_ANSWER_ENV] === "1";
+const answerCaptureExpiresAt = Number(process.env[CAPTURE_ANSWER_EXPIRES_AT_ENV]);
+const captureAnswer = process.env[CAPTURE_ANSWER_ENV] === "1"
+  && Number.isFinite(answerCaptureExpiresAt) && answerCaptureExpiresAt > Date.now();
 for await (const chunk of process.stdin) {
   raw += chunk.toString("utf8");
   if (Buffer.byteLength(raw, "utf8") > MAX_HOOK_INPUT_BYTES) {
@@ -61,7 +64,6 @@ function boundedText(value, limit) {
   const text = value.slice(0, limit);
   return /[\uD800-\uDBFF]$/.test(text) ? text.slice(0, -1) : text;
 }
-
 function firstString(...values) {
   return values.find((value) => typeof value === "string" && value.length > 0) ?? null;
 }

@@ -271,8 +271,11 @@ export class EvenG2Controller {
   observe(channel: string, payload: unknown): void {
     if (this.config.enabled) this.presentation.observe(channel, payload);
   }
-  answer(id: string, text: string, turnId: string | null): void {
-    if (this.config.enabled) this.presentation.answer(id, text, turnId);
+  answer(id: string, text: string, turnId: string | null, expiresAt: number): void {
+    if (this.config.enabled) this.presentation.answer(id, text, turnId, expiresAt);
+  }
+  clearAnswer(id: string): void {
+    this.presentation.clearAnswer(id);
   }
   private async validateConfig(value: EvenG2Config): Promise<EvenG2Config> {
     for (const key of [

@@ -30,7 +30,12 @@ import type {
   AgentRuntimeLaunchCoordinator,
   PreparedAgentRuntimePtyLaunch
 } from "./agent-runtime/AgentRuntimeBridge.ts";
-import { AGENT_RUNTIME_ENV, CAPTURE_ANSWER_ENV, CAPTURE_RESULT_ENV } from "../../agent-runtime/runtime-protocol.mjs";
+import {
+  AGENT_RUNTIME_ENV,
+  CAPTURE_ANSWER_ENV,
+  CAPTURE_ANSWER_EXPIRES_AT_ENV,
+  CAPTURE_RESULT_ENV
+} from "../../agent-runtime/runtime-protocol.mjs";
 import {
   CONTROL_CLI_ENV,
   CONTROL_CONNECTION_ENV,
@@ -105,8 +110,6 @@ export class TerminalManager {
   private readonly agentBrowser?: AgentBrowserLaunchCoordinator;
   private readonly agentRuntime?: AgentRuntimeLaunchCoordinator;
   private readonly spawnPty: typeof pty.spawn;
-  /** Whether a Codex session spawned now should report its bounded final answers. */
-  private readonly captureAnswer: (provider: ProviderId) => boolean;
   // Renderer-reported card visibility, keyed by session and holding the
   // outputOffset at the moment it was hidden: the last offset the card saw.
   // Output keeps flowing through emit while hidden, addressed to the observers
@@ -130,10 +133,8 @@ export class TerminalManager {
     agentBrowser?: AgentBrowserLaunchCoordinator,
     agentRuntime?: AgentRuntimeLaunchCoordinator,
     lifecycleHooksEnabled = true,
-    spawnPty: typeof pty.spawn = pty.spawn,
-    captureAnswer: (provider: ProviderId) => boolean = () => false
+    spawnPty: typeof pty.spawn = pty.spawn
   ) {
-    this.captureAnswer = captureAnswer;
     this.emit = emit;
     this.providerClis = providerClis;
     this.agentBrowser = agentBrowser;
@@ -220,7 +221,10 @@ export class TerminalManager {
     this.controlConnection = connection ? { ...connection } : null;
   }
 
-  create(request: CreateSessionRequest, control: { captureResult?: boolean } = {}): SessionSnapshot {
+  create(
+    request: CreateSessionRequest,
+    control: { captureResult?: boolean; answerCaptureGrantExpiresAt?: number } = {}
+  ): SessionSnapshot {
     assertCreateRequest(request);
     if (control.captureResult && request.provider !== "codex") {
       throw new Error("Result capture requires a Codex session.");
@@ -250,7 +254,8 @@ export class TerminalManager {
     const launched = awaitMeasuredGrid
       ? { process: null, agentBrowser: null, agentRuntime: null, failure: null }
       : this.spawnProcess(id, request.provider, request.profile, request.cwd,
-        INITIAL_TERMINAL_COLS, INITIAL_TERMINAL_ROWS, false, control.captureResult, role);
+        INITIAL_TERMINAL_COLS, INITIAL_TERMINAL_ROWS, false, control.captureResult, role,
+        control.answerCaptureGrantExpiresAt);
     if (launched.failure) applyLaunchFailure(metadata, launched.failure);
 
     const session: ManagedSession = {
@@ -667,7 +672,8 @@ export class TerminalManager {
     rows = INITIAL_TERMINAL_ROWS,
     resumePrevious = false,
     captureResult = false,
-    role: LaunchRole = "agent"
+    role: LaunchRole = "agent",
+    answerCaptureGrantExpiresAt?: number
   ): {
     process: IPty | null;
     agentBrowser: PreparedAgentBrowserPtyLaunch | null;
@@ -682,9 +688,7 @@ export class TerminalManager {
       ? null
       : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd,
         ...(captureResult ? { captureResult: true } : {}),
-        // Decided at spawn time, like result capture: the answer of a session
-        // launched while no companion was enabled stays with that session.
-        ...(provider === "codex" && this.captureAnswer(provider) ? { captureAnswer: true } : {}) }) ?? null;
+        ...(answerCaptureGrantExpiresAt === undefined ? {} : { answerCaptureGrantExpiresAt }) }) ?? null;
     let agentBrowser: PreparedAgentBrowserPtyLaunch | null = null;
     try {
       // omp and pi take no browser bridge, exactly like grok: the adapter chain below
@@ -809,6 +813,7 @@ export function terminalEnvironment(
     ...Object.values(AGENT_RUNTIME_ENV),
     CAPTURE_RESULT_ENV,
     CAPTURE_ANSWER_ENV,
+    CAPTURE_ANSWER_EXPIRES_AT_ENV,
     // An orchestrator that launches the app must not leak its own control grant.
     CONTROL_CONNECTION_ENV,
     CONTROL_CLI_ENV

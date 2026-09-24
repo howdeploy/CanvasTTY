@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { TerminalPresentation } from "../src/main/services/companion/TerminalPresentation.ts";
 import {
   latestCodexReply,
   cleanTerminalText,
@@ -7,6 +8,30 @@ import {
   codexMenu,
 } from "../src/main/services/companion/presentation.ts";
 const before = `• Старый ответ.\n\n› Пинг\n\n• Понг. Связь работает.\n\n› Сколько будет 120 умножить на 365?\n\n• 120 × 365 = 43 800.\n\n────────────────────────\n\n› Ask Codex to do anything\n\n  gpt-6-astra xhigh · ~/project`;
+
+test("G2 answer cache expires with its capture grant and clears on revocation", async () => {
+  const now = Date.now;
+  let clock = 10_000;
+  Date.now = () => clock;
+  try {
+    const session = { id: "codex-one", provider: "codex", status: "idle" };
+    const presentation = new TerminalPresentation({
+      listMetadata: () => [session],
+      geometry: () => ({ cols: 80, rows: 24 }),
+      readBuffer: () => ({ buffer: "› Ask Codex to do anything", outputOffset: 0 })
+    });
+    presentation.answer(session.id, "private captured answer", "turn-one", 10_100);
+    assert.match((await presentation.read(session.id)).body, /private captured answer/u);
+    clock = 10_100;
+    assert.doesNotMatch((await presentation.read(session.id)).body, /private captured answer/u);
+    presentation.answer(session.id, "revoked answer", "turn-two", 20_000);
+    presentation.clearAnswer(session.id);
+    assert.doesNotMatch((await presentation.read(session.id)).body, /revoked answer/u);
+  } finally {
+    Date.now = now;
+  }
+});
+
 test("latest answer excludes all old questions, old answers, separators and model footer", () => {
   assert.equal(latestCodexReply(before), "120 × 365 = 43 800.");
 });

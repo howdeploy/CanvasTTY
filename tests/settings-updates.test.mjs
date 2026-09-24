@@ -113,5 +113,6 @@ test("the Updates layout keeps the icon, status and actions on one grid", async 
   assert.match(styles, /\.settings-updates__status \{[^}]*min-width: 0;[^}]*overflow-wrap: anywhere;/);
   assert.match(styles, /\.settings-updates__actions \{[^}]*flex-wrap: wrap;/);
   assert.match(styles, /\.settings-updates__button \{[^}]*min-width: 9em;/);
-  assert.match(styles, /@media \(max-width: 760px\) \{[^}]*\.settings-updates__card \{[^}]*grid-template-columns: 2\.3em minmax\(0, 1fr\);/);
+  assert.match(styles, /\.settings-updates \{[^}]*container-type: inline-size;/);
+  assert.match(styles, /@container \(max-width: 46rem\) \{[^}]*\.settings-updates__card \{[^}]*grid-template-columns: 2\.3em minmax\(0, 1fr\);/);
 });

@@ -16,6 +16,7 @@ import { RuntimeGateway } from "../src/main/services/agent-runtime/RuntimeGatewa
 import {
   AGENT_RUNTIME_ENV,
   CAPTURE_ANSWER_ENV,
+  CAPTURE_ANSWER_EXPIRES_AT_ENV,
   CAPTURE_RESULT_ENV,
   MAX_ANSWER_CHARS,
   MAX_RESULT_CHARS,
@@ -327,11 +328,13 @@ test("opt-in hook result capture is authenticated, bounded and absent for ordina
   await gateway.start();
   t.after(() => gateway.close());
   async function hook(id, capture, leaseCapture, text, answer = false, leaseAnswer = false) {
-    const cap = gateway.registerSession(id, "codex", leaseCapture, leaseAnswer);
+    const grantExpiresAt = Date.now() + 60_000;
+    const cap = gateway.registerSession(id, "codex", leaseCapture, leaseAnswer ? grantExpiresAt : undefined);
     const env = { ...process.env, [AGENT_RUNTIME_ENV.address]: cap.address,
       [AGENT_RUNTIME_ENV.terminalSessionId]: cap.terminalSessionId, [AGENT_RUNTIME_ENV.provider]: cap.provider,
       [AGENT_RUNTIME_ENV.capabilityToken]: cap.capabilityToken, [CAPTURE_RESULT_ENV]: capture ? "1" : "0",
-      [CAPTURE_ANSWER_ENV]: answer ? "1" : "0" };
+      [CAPTURE_ANSWER_ENV]: answer ? "1" : "0",
+      [CAPTURE_ANSWER_EXPIRES_AT_ENV]: answer ? String(grantExpiresAt) : "" };
     const child = spawn(process.execPath, [resolve("src/agent-runtime/hook-helper.mjs"), "idle", "Stop"], { env, stdio: ["pipe", "ignore", "pipe"] });
     child.stdin.end(JSON.stringify({ turn_id: "turn", last_assistant_message: text }));
     await new Promise((done, reject) => { child.on("error", reject); child.on("exit", (code) => code === 0 ? done() : reject(new Error("Hook failed"))); });

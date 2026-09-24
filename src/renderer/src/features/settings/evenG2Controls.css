@@ -1,5 +1,6 @@
 .g2-settings {
   --g2-inset: 22px;
+  container-type: inline-size;
   border: 1px solid color-mix(in srgb, var(--text) 13%, transparent);
   border-radius: 14px;
   background: var(--surface-soft);
@@ -382,8 +383,8 @@
 .g2-settings > button.g2-link {
   margin: 0 var(--g2-inset) var(--g2-inset);
 }
-@media (max-width: 950px) {
-  .g2-settings {
+@container (max-width: 42rem) {
+  .g2-settings > * {
     --g2-inset: 17px;
   }
   .g2-settings__heading {
@@ -403,6 +404,16 @@
     align-items: flex-start;
     flex-direction: column;
     padding: 17px var(--g2-inset);
+  }
+  .g2-settings__entry button {
+    margin-left: 0;
+  }
+  .g2-settings__network {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .g2-settings__network button {
+    margin-left: 0;
   }
   .g2-settings__body {
     padding: var(--g2-inset);

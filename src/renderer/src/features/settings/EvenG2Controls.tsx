@@ -26,7 +26,7 @@ export function EvenG2Controls({
   const initialized = useRef(false);
   const pairRequested = useRef(false);
   const preparingSpeech = useRef(false);
-  useEffect(() => { panelRef.current?.scrollIntoView({ block: "start" }); }, [stage]);
+  useEffect(() => { if (panelRef.current?.parentElement) panelRef.current.parentElement.scrollTop = 0; }, [stage]);
   useEffect(() => {
     let active = true;
     const read = () =>
@@ -153,7 +153,7 @@ export function EvenG2Controls({
     ["pair", t(locale, "evenG2Connect")],
   ];
   return (
-    <section className="g2-settings" aria-label="Even G2">
+    <section className="g2-settings" aria-label="Even G2" ref={panelRef}>
       <header className="g2-settings__heading">
         <span className="g2-settings__icon">
           <svg

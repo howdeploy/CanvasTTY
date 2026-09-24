@@ -78,9 +78,9 @@ button { border: 0; }
   position: absolute;
   left: 0;
   top: 0;
-  width: 6.6em;
-  height: 6.6em;
-  padding: 1.05em;
+  width: 8em;
+  height: 8em;
+  padding: .75em;
   display: grid;
   place-items: center;
   border: .08em solid color-mix(in srgb, var(--text) 18%, transparent);
@@ -93,6 +93,7 @@ button { border: 0; }
   transform: translate(-50%, -50%);
   backdrop-filter: blur(.9em);
 }
+.radial-launcher__center > span { min-width: 0; width: 100%; overflow-wrap: anywhere; text-align: center; }
 .radial-launcher__item {
   position: absolute;
   left: 0;
@@ -655,6 +656,7 @@ button { border: 0; }
 .agent-cli-recheck [role="alert"] { color: var(--text-muted); font-size: 12px; }
 .canvas-launcher-settings-menu { position: relative; left: auto; top: auto; z-index: auto; width: 100%; min-width: 0; max-width: 100%; display: grid; gap: .15em; padding: .4em; border-radius: .9em; background: var(--surface-soft); box-shadow: none; }
 .canvas-launcher-settings-menu .canvas-menu__icon { background: var(--surface); }
+.canvas-launcher-settings-menu .canvas-menu__provider .provider-icon--small { --provider-icon-art-size: 1.45em; width: 1.7em; height: 1.7em; }
 .canvas-launcher-settings-menu .canvas-menu__row,
 .canvas-launcher-settings-menu .agent-launcher-settings__row { min-height: 2.75em; }
 .canvas-launcher-settings-menu .agent-launcher-settings__row { grid-template-columns: minmax(0, 1fr) auto; padding: .35em .55em .35em .7em; background: transparent; }

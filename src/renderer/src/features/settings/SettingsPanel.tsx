@@ -1,5 +1,5 @@
 import { EvenG2Controls } from "./EvenG2Controls";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import appManifest from "../../../../../package.json";
 import type {
   AppSettings,
@@ -168,6 +168,7 @@ export function SettingsPanel({
   const homeLauncherProviders = resolveHomeLauncherProviders(settings);
   const homeLimitProviders = resolveHomeLimitProviders(settings);
   const [section, setSection] = useState<SettingsSection>("general");
+  const contentRef = useRef<HTMLDivElement>(null);
   const [capturing, setCapturing] = useState<ShortcutAction | null>(null);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
   const [activity, setActivity] = useState<BrowserActivityEvent[]>([]);
@@ -184,6 +185,10 @@ export function SettingsPanel({
   }, []);
   const [checkingAgentClis, setCheckingAgentClis] = useState(false);
   const [agentCliError, setAgentCliError] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    if (open && contentRef.current) contentRef.current.scrollTop = 0;
+  }, [open, section]);
 
   const openAgentInstall = (provider: AgentProviderId): void => {
     const url = PROVIDERS[provider].installUrl;
@@ -388,6 +393,7 @@ export function SettingsPanel({
 
           <div
             id={`settings-panel-${section}`}
+            ref={contentRef}
             className="settings-panel__content"
             role="tabpanel"
             aria-labelledby={`settings-tab-${section}`}
@@ -411,25 +417,6 @@ export function SettingsPanel({
                   onChange={(value) => void onChange({ attentionNotifications: value === "on" })}
                 />
               </SettingGroup>
-              <SettingGroup
-                label={t(locale, "attentionQueue")}
-                description={t(locale, "attentionQueueDescription")}
-              >
-                <Segmented
-                  value={settings.attentionQueueVisible ? "on" : "off"}
-                  options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
-                  onChange={(value) => void onChange({ attentionQueueVisible: value === "on" })}
-                />
-              </SettingGroup>
-              {settings.attentionQueueVisible && (
-                <SettingGroup layout="stacked" label={t(locale, "attentionQueuePlacement")}>
-                  <PlacementChoices
-                    value={settings.attentionQueuePlacement}
-                    locale={locale}
-                    onChange={(attentionQueuePlacement) => void onChange({ attentionQueuePlacement })}
-                  />
-                </SettingGroup>
-              )}
               <SettingGroup
                 label={t(locale, "terminalSessionRestore")}
                 description={t(locale, "terminalSessionRestoreDescription")}
@@ -583,6 +570,25 @@ export function SettingsPanel({
                   onChange={(canvasControlsPlacement) => void onChange({ canvasControlsPlacement })}
                 />
               </SettingGroup>
+              <SettingGroup
+                label={t(locale, "attentionQueue")}
+                description={t(locale, "attentionQueueDescription")}
+              >
+                <Segmented
+                  value={settings.attentionQueueVisible ? "on" : "off"}
+                  options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
+                  onChange={(value) => void onChange({ attentionQueueVisible: value === "on" })}
+                />
+              </SettingGroup>
+              {settings.attentionQueueVisible && (
+                <SettingGroup layout="stacked" label={t(locale, "attentionQueuePlacement")}>
+                  <PlacementChoices
+                    value={settings.attentionQueuePlacement}
+                    locale={locale}
+                    onChange={(attentionQueuePlacement) => void onChange({ attentionQueuePlacement })}
+                  />
+                </SettingGroup>
+              )}
               <HomeAppearanceSettings
                 settings={settings}
                 plugins={plugins}
@@ -594,12 +600,6 @@ export function SettingsPanel({
 
           {section === "agents" && (
             <>
-              <div className="agent-cli-recheck">
-                <button className="setting-inline-action" type="button" disabled={checkingAgentClis} onClick={() => void recheckAgentClis()}>
-                  {t(locale, checkingAgentClis ? "agentCliRechecking" : "agentCliRecheck")}
-                </button>
-                {agentCliError && <span role="alert">{agentCliError}</span>}
-              </div>
               <AgentHooksSettings
                 settings={settings}
                 plugins={plugins}
@@ -641,7 +641,7 @@ export function SettingsPanel({
                             !enabled
                           )
                         })}
-                      >{PROVIDERS[item].label}</CanvasMenuRow>
+                      ><span className="canvas-menu__provider"><ProviderIcon provider={item} size="small" />{PROVIDERS[item].label}</span></CanvasMenuRow>
                     );
                   })}
                   <CanvasMenuDivider />
@@ -685,7 +685,9 @@ export function SettingsPanel({
                             !enabled
                           )
                         })}
-                      >{itemLabel(locale, item)}</CanvasMenuRow>
+                      >{item === "note" || item === "browser" || item === "settings"
+                        ? itemLabel(locale, item)
+                        : <span className="canvas-menu__provider"><ProviderIcon provider={item} size="small" />{itemLabel(locale, item)}</span>}</CanvasMenuRow>
                     );
                   })}
                   <CanvasMenuDivider />
@@ -757,6 +759,14 @@ export function SettingsPanel({
                       </div>
                     );
                   })}
+                </div>
+              </SettingGroup>
+              <SettingGroup layout="stacked" label={t(locale, "agentCliDetection")} description={t(locale, "agentCliDetectionDescription")}>
+                <div className="agent-cli-recheck">
+                  <button className="setting-inline-action" type="button" disabled={checkingAgentClis} onClick={() => void recheckAgentClis()}>
+                    {t(locale, checkingAgentClis ? "agentCliRechecking" : "agentCliRecheck")}
+                  </button>
+                  {agentCliError && <span role="alert">{agentCliError}</span>}
                 </div>
               </SettingGroup>
             </>

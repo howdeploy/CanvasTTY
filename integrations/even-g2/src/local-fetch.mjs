@@ -101,6 +101,17 @@ export function localFetcher(
       );
       const result = await exchange(origin, packet, options.signal);
       if (
+        url.pathname === "/g2/api/pair" &&
+        result.status === 202 &&
+        validated.bootstrapId &&
+        /^[a-f0-9]{32}$/.test(result.body?.id) &&
+        /^[a-f0-9]{64}$/.test(result.body?.transportKey)
+      ) {
+        validated.deviceId = result.body.id;
+        validated.key = result.body.transportKey;
+        delete validated.bootstrapId;
+      }
+      if (
         url.pathname === "/g2/api/home" &&
         result.status === 200 &&
         Array.isArray(result.body?.localOrigins)

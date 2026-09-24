@@ -5,11 +5,15 @@ export interface LocalConnection {
   version: 1;
   computer: string;
   key: string;
+  deviceId?: string;
+  bootstrapId?: string;
   origins: string[];
 }
 export interface LocalPacket {
   version: 1;
   id: string;
+  deviceId?: string;
+  bootstrapId?: string;
   iv: string;
   data: string;
 }
@@ -68,6 +72,9 @@ export function validateLocalConnection(
     v.version !== 1 ||
     !KEY.test(v.computer) ||
     !KEY.test(v.key) ||
+    (v.deviceId !== undefined && !/^[a-f0-9]{32}$/.test(v.deviceId)) ||
+    (v.bootstrapId !== undefined && !/^[a-f0-9]{64}$/.test(v.bootstrapId)) ||
+    (v.deviceId !== undefined) === (v.bootstrapId !== undefined) ||
     !Array.isArray(v.origins) ||
     !v.origins.length ||
     v.origins.length > 8
@@ -77,6 +84,8 @@ export function validateLocalConnection(
     version: 1,
     computer: v.computer,
     key: v.key,
+    ...(v.deviceId ? { deviceId: v.deviceId } : {}),
+    ...(v.bootstrapId ? { bootstrapId: v.bootstrapId } : {}),
     origins: [
       ...new Set(v.origins.map((origin) => localOrigin(origin, allowLoopback))),
     ],
@@ -97,6 +106,9 @@ export function validLocalPacket(value: unknown): value is LocalPacket {
     !!p &&
     p.version === 1 &&
     /^[a-f0-9]{32}$/.test(p.id) &&
+    (p.deviceId === undefined || /^[a-f0-9]{32}$/.test(p.deviceId)) &&
+    (p.bootstrapId === undefined || /^[a-f0-9]{64}$/.test(p.bootstrapId)) &&
+    !(p.deviceId && p.bootstrapId) &&
     /^[a-f0-9]{24}$/.test(p.iv) &&
     typeof p.data === "string" &&
     p.data.length >= 24 &&
@@ -111,9 +123,21 @@ async function cipherKey(value: string) {
     "decrypt",
   ]);
 }
-function aad(computer: string, id: string, direction: "request" | "response") {
+function aad(
+  computer: string,
+  id: string,
+  direction: "request" | "response",
+  deviceId?: string,
+  bootstrapId?: string,
+) {
   return new TextEncoder().encode(
-    `CanvasTTY/local/1/${computer}/${id}/${direction}`,
+    `CanvasTTY/local/1/${computer}/${
+      deviceId
+        ? `device/${deviceId}`
+        : bootstrapId
+          ? `bootstrap/${bootstrapId}`
+          : "legacy"
+    }/${id}/${direction}`,
   );
 }
 export async function sealLocal(
@@ -131,12 +155,25 @@ export async function sealLocal(
     {
       name: "AES-GCM",
       iv: bytes(iv),
-      additionalData: aad(connection.computer, id, direction),
+      additionalData: aad(
+        connection.computer,
+        id,
+        direction,
+        connection.deviceId,
+        connection.bootstrapId,
+      ),
     },
     await cipherKey(connection.key),
     plain,
   );
-  return { version: 1, id, iv, data: base64(new Uint8Array(encrypted)) };
+  return {
+    version: 1,
+    id,
+    ...(connection.deviceId ? { deviceId: connection.deviceId } : {}),
+    ...(connection.bootstrapId ? { bootstrapId: connection.bootstrapId } : {}),
+    iv,
+    data: base64(new Uint8Array(encrypted)),
+  };
 }
 export async function unsealLocal<T>(
   connection: LocalConnection,
@@ -144,12 +181,23 @@ export async function unsealLocal<T>(
   direction: "request" | "response",
 ): Promise<T> {
   if (!validLocalPacket(packet)) throw new Error("invalid-local-packet");
+  if (
+    packet.deviceId !== connection.deviceId ||
+    packet.bootstrapId !== connection.bootstrapId
+  )
+    throw new Error("local-route-mismatch");
   const encrypted = Uint8Array.from(atob(packet.data), (c) => c.charCodeAt(0));
   const plain = await crypto.subtle.decrypt(
     {
       name: "AES-GCM",
       iv: bytes(packet.iv),
-      additionalData: aad(connection.computer, packet.id, direction),
+      additionalData: aad(
+        connection.computer,
+        packet.id,
+        direction,
+        packet.deviceId,
+        packet.bootstrapId,
+      ),
     },
     await cipherKey(connection.key),
     encrypted,

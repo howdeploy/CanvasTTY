@@ -85,6 +85,7 @@ test("opt-in restore preserves card identity and relaunches the agent in native 
       id: created.id,
       provider: "codex",
       profile: "normal",
+      role: "agent",
       title: "Backend agent",
       titleCustomized: true,
       cwd: process.cwd(),

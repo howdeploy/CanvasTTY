@@ -25,6 +25,7 @@ interface CanvasCommandPaletteProps {
   onLaunch(provider: ProviderId): void;
   onCreateRegion(): void;
   onCreateNote(): void;
+  onFitCanvas(): void;
   onOpenBrowser(): void;
   onOpenSettings(): void;
   onClose(): void;
@@ -50,6 +51,7 @@ export function CanvasCommandPalette({
   onLaunch,
   onCreateRegion,
   onCreateNote,
+  onFitCanvas,
   onOpenBrowser,
   onOpenSettings,
   onClose
@@ -63,7 +65,7 @@ export function CanvasCommandPalette({
       group: "sessions" as const,
       kind: "session" as const,
       label: session.title,
-      searchDetail: PROVIDERS[session.provider].label,
+      searchDetail: `${PROVIDERS[session.provider].label} ${session.cwd}`,
       provider: session.provider,
       run: () => onFocusSession(session)
     })),
@@ -75,6 +77,15 @@ export function CanvasCommandPalette({
       searchDetail: t(locale, "canvasMenuActions"),
       icon: "maximize",
       run: onCreateRegion
+    },
+    {
+      id: "view:fit",
+      group: "actions",
+      kind: "action",
+      label: t(locale, "fitCanvas"),
+      searchDetail: t(locale, "canvasMenuActions"),
+      icon: "maximize",
+      run: onFitCanvas
     },
     {
       id: "create:note",
@@ -115,7 +126,7 @@ export function CanvasCommandPalette({
       shortcut: window.canvasTTY.window.isMacOS ? "⌘," : "Ctrl+,",
       run: onOpenSettings
     }
-  ], [launcherItems, locale, onCreateNote, onCreateRegion, onFocusSession, onLaunch, onOpenBrowser, onOpenSettings, sessions]);
+  ], [launcherItems, locale, onCreateNote, onCreateRegion, onFitCanvas, onFocusSession, onLaunch, onOpenBrowser, onOpenSettings, sessions]);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase(locale);
     if (!normalized) return commands;

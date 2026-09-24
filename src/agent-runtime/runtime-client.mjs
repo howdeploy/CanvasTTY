@@ -1,6 +1,9 @@
 import { createConnection } from "node:net";
 import {
   AGENT_RUNTIME_ENV,
+  CAPTURE_ANSWER_ENV,
+  CAPTURE_ANSWER_EXPIRES_AT_ENV,
+  MAX_ANSWER_CHARS,
   MAX_RUNTIME_MESSAGE_BYTES,
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_STATES
@@ -8,7 +11,7 @@ import {
 
 const CONNECT_TIMEOUT_MS = 1_000;
 
-export async function reportLifecycle({ state, event, turnId = null, lastAssistantMessage = undefined }) {
+export async function reportLifecycle({ state, event, turnId = null, result, lastAssistantMessage }) {
   if (!RUNTIME_STATES.includes(state)) return false;
   if (typeof event !== "string" || event.length === 0 || event.length > 80) return false;
   const address = process.env[AGENT_RUNTIME_ENV.address];
@@ -25,12 +28,42 @@ export async function reportLifecycle({ state, event, turnId = null, lastAssista
     capabilityToken,
     state,
     event,
-    turnId: normalizedId(turnId)
+    turnId: normalizedId(turnId),
+    ...(result === undefined ? {} : { result })
   };
-  if(provider==='codex'&&event==='Stop'&&typeof lastAssistantMessage==='string') message.lastAssistantMessage=lastAssistantMessage.slice(0,4000);
+  const answerCaptureExpiresAt = Number(process.env[CAPTURE_ANSWER_EXPIRES_AT_ENV]);
+  const shouldCheckAnswerGrant = process.env[CAPTURE_ANSWER_ENV] === "1"
+    && Number.isFinite(answerCaptureExpiresAt) && answerCaptureExpiresAt > Date.now()
+    && provider === "codex" && event === "Stop"
+    && state === "idle" && typeof lastAssistantMessage === "string";
+  if (shouldCheckAnswerGrant && await answerCaptureIsActive({
+    address,
+    terminalSessionId,
+    provider,
+    capabilityToken
+  })) {
+    message.lastAssistantMessage = lastAssistantMessage.slice(0, MAX_ANSWER_CHARS);
+  }
   const payload = Buffer.from(`${JSON.stringify(message)}\n`, "utf8");
   if (payload.length > MAX_RUNTIME_MESSAGE_BYTES) return false;
 
+  return sendMessage(address, payload, (parsed) => parsed?.type === "ack");
+}
+
+async function answerCaptureIsActive({ address, terminalSessionId, provider, capabilityToken }) {
+  const request = {
+    v: RUNTIME_PROTOCOL_VERSION,
+    type: "answer-capture-check",
+    terminalSessionId,
+    provider,
+    capabilityToken
+  };
+  return sendMessage(address, Buffer.from(`${JSON.stringify(request)}\n`, "utf8"),
+    (parsed) => parsed?.type === "ack" && parsed?.answerCapture === true);
+}
+
+function sendMessage(address, payload, accepted) {
+  if (payload.length > MAX_RUNTIME_MESSAGE_BYTES) return Promise.resolve(false);
   return new Promise((resolve) => {
     const socket = createConnection(address);
     let settled = false;
@@ -52,7 +85,7 @@ export async function reportLifecycle({ state, event, turnId = null, lastAssista
       if (newline < 0) return;
       try {
         const parsed = JSON.parse(response.slice(0, newline));
-        finish(parsed?.v === RUNTIME_PROTOCOL_VERSION && parsed?.type === "ack");
+        finish(parsed?.v === RUNTIME_PROTOCOL_VERSION && accepted(parsed));
       } catch {
         finish(false);
       }

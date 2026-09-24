@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -18,6 +18,7 @@ const connection = () => ({
   version: 1,
   computer: randomLocalHex(),
   key: randomLocalHex(),
+  deviceId: randomLocalHex(16),
   origins: [
     "http://192.168.2.3:3481",
     "http://[fdea::123]:3481",
@@ -98,10 +99,11 @@ test("local encrypted duplicate is idempotent and identity survives restart", as
   t.after(() => rm(path, { recursive: true, force: true }));
   const link = new LocalLink(path);
   await link.load();
-  const c = link.connection(["http://192.168.1.2:3481"]);
+  const id = randomLocalHex(16);
+  const c = link.deviceConnection(id, ["http://192.168.1.2:3481"]);
   const next = new LocalLink(path);
   await next.load();
-  assert.deepEqual(next.connection(c.origins), c);
+  assert.deepEqual(next.deviceConnection(id, c.origins), c);
   const packet = await sealLocal(
     c,
     { path: "/g2/api/home", method: "GET", token: "", sentAt: Date.now() },
@@ -113,10 +115,49 @@ test("local encrypted duplicate is idempotent and identity survives restart", as
     return { status: 401, body: {} };
   };
   await Promise.all([
-    link.receive(packet, forward),
-    link.receive(packet, forward),
+    link.receive(packet, forward, () => true),
+    link.receive(packet, forward, () => true),
   ]);
   assert.equal(calls, 1);
+});
+test("legacy shared transport identity rotates before deriving device keys", async (t) => {
+  const path = await mkdtemp(join(tmpdir(), "local-link-legacy-"));
+  t.after(() => rm(path, { recursive: true, force: true }));
+  const computer = randomLocalHex(), oldKey = randomLocalHex();
+  await writeFile(join(path, "even-g2-local.json"), JSON.stringify({ computer, key: oldKey }));
+  const link = new LocalLink(path);
+  await link.load();
+  const device = link.deviceConnection(randomLocalHex(16), []);
+  assert.equal(device.computer, computer);
+  assert.notEqual(device.key, oldKey);
+  const migrated = JSON.parse(await readFile(join(path, "even-g2-local.json"), "utf8"));
+  assert.equal(migrated.version, 2);
+  assert.notEqual(migrated.key, oldKey);
+});
+test("bootstrap keys cannot forward authenticated API actions and are cleared after pairing", async (t) => {
+  const path = await mkdtemp(join(tmpdir(), "local-link-bootstrap-"));
+  t.after(() => rm(path, { recursive: true, force: true }));
+  const link = new LocalLink(path);
+  await link.load();
+  const id = randomLocalHex(), key = randomLocalHex();
+  const connection = link.bootstrapConnection(id, key, ["http://192.168.1.2:3481"]);
+  link.registerBootstrap(id, key, Date.now() + 120_000);
+  let forwarded = 0;
+  const packet = await sealLocal(connection, {
+    path: "/g2/api/control",
+    method: "POST",
+    token: randomLocalHex(),
+    body: { sessionId: "one", action: "text", text: "blocked" },
+    sentAt: Date.now(),
+  }, "request");
+  const reply = await link.receive(packet, async () => {
+    forwarded++;
+    return { status: 200, body: {} };
+  }, () => false);
+  assert.equal((await unsealLocal(connection, reply, "response")).status, 409);
+  assert.equal(forwarded, 0);
+  link.clearBootstraps();
+  await assert.rejects(link.receive(packet, async () => ({ status: 200, body: {} }), () => false));
 });
 test("speech preparation checks model bytes before accepting a download; bad download stays unavailable", async (t) => {
   const path = await mkdtemp(join(tmpdir(), "speech-setup-"));

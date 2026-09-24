@@ -113,3 +113,36 @@ test("other providers retain immediate startup and subsequent PTY resize", () =>
   assert.deepEqual(calls[0].process.lastResize, { cols: 92, rows: 27 });
   manager.disposeAll();
 });
+
+test("answer-capture grants are passed only to the explicitly granted session generation", () => {
+  const calls = [];
+  const grants = [];
+  const runtime = {
+    prepareLaunch(input) {
+      grants.push(input.answerCaptureGrantExpiresAt);
+      return { args: [], environment: {}, cleanup() {} };
+    },
+    currentStatus() { return null; }
+  };
+  const manager = new TerminalManager(
+    () => undefined,
+    availableRegistry(),
+    undefined,
+    runtime,
+    true,
+    fakeSpawner(calls)
+  );
+  const expiresAt = Date.now() + 60_000;
+  const session = manager.create({
+    provider: "codex",
+    cwd: process.cwd(),
+    profile: "normal",
+    position: { x: 0, y: 0 }
+  }, { answerCaptureGrantExpiresAt: expiresAt });
+  assert.deepEqual(grants, [expiresAt]);
+
+  calls[0].process.emitExit(0);
+  manager.restart(session.id);
+  assert.deepEqual(grants, [expiresAt, undefined]);
+  manager.disposeAll();
+});

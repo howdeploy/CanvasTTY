@@ -64,6 +64,7 @@ type StoredPeer = {
   id: string;
   name: string;
   tokenHash: string;
+  transportVersion: 2;
   grant: CompanionGrant;
 };
 const MODEL =
@@ -227,6 +228,7 @@ export class EvenG2Controller {
             typeof peer.id === "string" &&
             /^[a-f0-9]{32}$/.test(peer.id) &&
             /^[a-f0-9]{64}$/.test(peer.tokenHash) &&
+            peer.transportVersion === 2 &&
             Array.isArray(peer.grant?.sessionIds)
           ) {
             const grant = this.access.share({
@@ -243,6 +245,7 @@ export class EvenG2Controller {
               id: peer.id,
               name: String(peer.name || "Even App").slice(0, 80),
               tokenHash: peer.tokenHash,
+              transportVersion: 2,
               grant,
             });
           }
@@ -268,8 +271,11 @@ export class EvenG2Controller {
   observe(channel: string, payload: unknown): void {
     if (this.config.enabled) this.presentation.observe(channel, payload);
   }
-  answer(id: string, text: string, turnId: string | null): void {
-    if (this.config.enabled) this.presentation.answer(id, text, turnId);
+  answer(id: string, text: string, turnId: string | null, expiresAt: number): void {
+    if (this.config.enabled) this.presentation.answer(id, text, turnId, expiresAt);
+  }
+  clearAnswer(id: string): void {
+    this.presentation.clearAnswer(id);
   }
   private async validateConfig(value: EvenG2Config): Promise<EvenG2Config> {
     for (const key of [
@@ -353,6 +359,10 @@ export class EvenG2Controller {
     this.saveQueue = operation.catch(() => undefined);
     return operation;
   }
+  /** Whether the companion is switched on; decides answer capture for sessions spawned now. */
+  enabled(): boolean {
+    return this.config.enabled;
+  }
   state(): EvenG2State {
     if (this.pairing && Date.now() > this.pairing.expiresAt)
       this.pairing = null;
@@ -402,6 +412,7 @@ export class EvenG2Controller {
         this.speech.cancelAll();
         this.config = config;
         this.pairing = null;
+        this.localLink.clearBootstraps();
         for (const peer of this.peers) peer.grant = this.grant(peer.id);
         this.speech.configure(config.speechExecutable, config.speechModel);
         if (config.enabled) await this.start();
@@ -440,6 +451,7 @@ export class EvenG2Controller {
           throw new Error("choose-sessions");
         if (this.peers.length >= 8) throw new Error("device-limit");
         if (this.discovery && !this.discovery.host) throw new Error("local-discovery-unavailable");
+        this.localLink.clearBootstraps();
         const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
         const expiresAt = Date.now() + 120000;
         this.pairing = {
@@ -447,9 +459,10 @@ export class EvenG2Controller {
           local: new LocalPairing(code, expiresAt),
           pending: null,
         };
-      } else if (command.type === "cancel-pairing" || command.type === "reject")
+      } else if (command.type === "cancel-pairing" || command.type === "reject") {
         this.pairing = null;
-      else if (command.type === "approve") {
+        this.localLink.clearBootstraps();
+      } else if (command.type === "approve") {
         const pending = this.pairing?.pending;
         if (
           !pending ||
@@ -460,6 +473,7 @@ export class EvenG2Controller {
         pending.grant = this.grant(pending.id);
         this.peers.push(pending);
         this.pairing = null;
+        this.localLink.clearBootstraps();
         try {
           await this.save();
         } catch (error) {
@@ -707,11 +721,15 @@ export class EvenG2Controller {
         if (url.pathname === "/g2/pair-start")
           return this.json(res, 200, pair.local.start(data.public));
         const session = pair.local.finish(data.id, data.proof);
-        const connection = this.localLink.connection(this.localOrigins());
+        const pairedConnection = this.localLink.bootstrapConnection(
+          String(data.id), session.key, this.localOrigins(),
+        );
         const packet = await sealLocal({ version: 1, computer: String(data.id),
-          key: session.key, origins: connection.origins }, { connection, code: pair.code }, "response");
+          key: session.key, origins: this.localOrigins() },
+        { connection: pairedConnection, code: pair.code }, "response");
         if (this.pairing !== pair || pair.expiresAt <= Date.now())
           return this.json(res, 403, { error: "pairing-unavailable" });
+        this.localLink.registerBootstrap(String(data.id), session.key, pair.expiresAt);
         return this.json(res, 200, { proof: session.proof, packet });
       } catch { return this.json(res, 403, { error: "pairing-unavailable" }); }
     }
@@ -744,6 +762,9 @@ export class EvenG2Controller {
           );
           return { status: response.status, body: await response.json() };
         },
+        (id) =>
+          this.peers.some((peer) => peer.id === id) ||
+          this.pairing?.pending?.id === id,
       );
       return this.json(res, 200, result);
     }
@@ -789,6 +810,7 @@ export class EvenG2Controller {
         name:
           typeof data.name === "string" ? data.name.slice(0, 80) : "Even App",
         tokenHash: hash(token),
+        transportVersion: 2,
         grant: {
           deviceId: id,
           revision: 0,
@@ -799,7 +821,12 @@ export class EvenG2Controller {
           allowBrowser: false,
         },
       };
-      return this.json(res, 202, { token, id, state: "pending" });
+      return this.json(res, 202, {
+        token,
+        id,
+        state: "pending",
+        transportKey: this.localLink.deviceConnection(id, []).key,
+      });
     }
     const token = req.headers.authorization?.startsWith("Bearer ")
       ? req.headers.authorization.slice(7)

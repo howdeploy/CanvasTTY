@@ -2,11 +2,13 @@ import { dirname, join } from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import type {
   LaunchProfileId,
+  LaunchRole,
   Point,
   ProviderId,
   SessionMetadata,
   Size
 } from "../../shared/contracts.ts";
+import { launchRole } from "./agent-control/controlCapabilities.ts";
 
 export const TERMINAL_SESSION_STORE_VERSION = 1;
 const MAX_PERSISTED_SESSIONS = 64;
@@ -27,6 +29,8 @@ export interface PersistedTerminalSession {
   id: string;
   provider: ProviderId;
   profile: LaunchProfileId;
+  /** Records written before roles existed restore as ordinary agents. */
+  role: LaunchRole;
   title: string;
   titleCustomized: boolean;
   cwd: string;
@@ -103,6 +107,7 @@ export function persistedTerminalSession(metadata: SessionMetadata): PersistedTe
     id: metadata.id,
     provider: metadata.provider,
     profile: metadata.profile,
+    role: metadata.role,
     title: metadata.title,
     titleCustomized: metadata.titleCustomized,
     cwd: metadata.cwd,
@@ -134,6 +139,7 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
       id: session.id,
       provider: session.provider as ProviderId,
       profile: session.profile,
+      role: session.provider === "terminal" ? "agent" : launchRole(session.role),
       title: session.title.trim().slice(0, 80),
       titleCustomized: session.titleCustomized,
       cwd: session.cwd,

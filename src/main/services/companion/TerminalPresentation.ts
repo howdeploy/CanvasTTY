@@ -23,6 +23,7 @@ interface Screen {
   offset: number;
   lastAnswer: string;
   answerTurn: string | null;
+  answerExpiresAt: number | null;
   authoritative: boolean;
   sequence: number;
   turnPending: boolean;
@@ -52,6 +53,7 @@ export class TerminalPresentation {
       offset: buffer.outputOffset,
       lastAnswer: "",
       answerTurn: null,
+      answerExpiresAt: null,
       authoritative: false,
       sequence: 0,
       turnPending: false,
@@ -100,16 +102,27 @@ export class TerminalPresentation {
           new Promise<void>((resolve) => screen.terminal.write(data, resolve)),
       );
   }
-  answer(id: string, text: string, turnId: string | null): void {
+  answer(id: string, text: string, turnId: string | null, expiresAt: number): void {
     if (!this.port.listMetadata().some((s) => s.id === id) || !text.trim())
       return;
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
     const screen = this.screen(id);
     if (turnId && screen.answerTurn === turnId) return;
     screen.answerTurn = turnId;
+    screen.answerExpiresAt = expiresAt;
     screen.lastAnswer = text.trim();
     screen.authoritative = true;
     screen.sequence++;
     screen.turnPending = false;
+  }
+  clearAnswer(id: string): void {
+    const screen = this.screens.get(id);
+    if (!screen) return;
+    screen.lastAnswer = "";
+    screen.answerTurn = null;
+    screen.answerExpiresAt = null;
+    screen.authoritative = true;
+    screen.sequence++;
   }
   pending(id: string): void {
     const screen = this.screen(id);
@@ -144,6 +157,13 @@ export class TerminalPresentation {
     const screen = this.screen(id),
       viewport = await this.text(id),
       menu = session.provider === "codex" ? codexMenu(viewport) : null;
+    if (screen.answerExpiresAt !== null && screen.answerExpiresAt <= Date.now()) {
+      screen.lastAnswer = "";
+      screen.answerTurn = null;
+      screen.answerExpiresAt = null;
+      screen.authoritative = true;
+      screen.sequence++;
+    }
     if (menu) {
       const fingerprint = createHash("sha256")
         .update(JSON.stringify([menu.title, menu.options]))

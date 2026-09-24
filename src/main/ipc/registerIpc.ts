@@ -60,6 +60,14 @@ interface Dependencies {
   requestPluginLauncher(provider: ProviderId): void;
   requestPluginCanvas(request: PluginCanvasRequest): void;
   broadcastPluginStorageChange(pluginId: string, key: string, value: unknown): void;
+  /**
+   * Self-update actions owned by the main entry point (it holds the updater
+   * state machine); the IPC layer only forwards renderer intent.
+   */
+  updater: {
+    check(): Promise<void>;
+    install(): void;
+  };
 }
 
 export function registerIpc({
@@ -82,7 +90,8 @@ export function registerIpc({
   closePluginWindows,
   requestPluginLauncher,
   requestPluginCanvas,
-  broadcastPluginStorageChange
+  broadcastPluginStorageChange,
+  updater
 }: Dependencies): void {
   const pluginBrowserOpenBroker = new PluginBrowserOpenBroker(getMainWindow);
   const requestPluginBrowserOpen = async (pluginId: string, value: unknown): Promise<void> => {
@@ -605,6 +614,12 @@ export function registerIpc({
   ipcMain.on(IPC.terminalBounds, (_event, id: string, bounds: SessionBounds) => terminals.setBounds(id, bounds));
   ipcMain.handle(IPC.terminalRename, (_event, id: string, title: string) => terminals.rename(id, title));
   ipcMain.handle(IPC.terminalDispose, (_event, id: string) => terminals.dispose(id));
+  // Fire-and-forget, like the other stream-reporting channels: a malformed
+  // report is ignored rather than rejecting into the renderer.
+  ipcMain.on(IPC.terminalSetVisible, (_event, id: unknown, visible: unknown) => {
+    if (typeof id !== "string" || typeof visible !== "boolean") return;
+    terminals.setVisible(id, visible);
+  });
 
   const publishWindowState = (window: BrowserWindow): void => {
     if (!window.isDestroyed()) window.webContents.send(IPC.windowState, readWindowState(window));
@@ -622,6 +637,15 @@ export function registerIpc({
   });
   ipcMain.on(IPC.windowClose, (event) => BrowserWindow.fromWebContents(event.sender)?.close());
   ipcMain.handle(IPC.windowGetState, (event) => readWindowState(BrowserWindow.fromWebContents(event.sender)));
+
+  ipcMain.handle(IPC.updaterCheck, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    return updater.check();
+  });
+  ipcMain.on(IPC.updaterInstall, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    updater.install();
+  });
 }
 
 function isCanvasNavigationPointerBindingInput(

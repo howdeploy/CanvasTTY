@@ -22,7 +22,9 @@ import type {
   SessionBounds,
   SessionEvent,
   SessionRemovedEvent,
-  TerminalDataEvent
+  TerminalDataEvent,
+  UpdaterState,
+  UpdaterStateEvent
 } from "../shared/contracts";
 import { IPC } from "../shared/contracts";
 import { terminalFileDropText } from "../shared/terminalFileDrop";
@@ -32,6 +34,13 @@ function subscribe<T>(channel: string, listener: (event: T) => void): () => void
   ipcRenderer.on(channel, wrapped);
   return () => ipcRenderer.removeListener(channel, wrapped);
 }
+
+// Main pushes the updater state on every transition and on each renderer load,
+// so `state()` can answer from this cache instead of asking over IPC.
+let latestUpdaterState: UpdaterState = { status: "idle" };
+ipcRenderer.on(IPC.updaterState, (_event: Electron.IpcRendererEvent, payload: UpdaterStateEvent) => {
+  latestUpdaterState = payload.state;
+});
 
 const api: CanvasTTYApi = {
   evenG2: {
@@ -180,9 +189,16 @@ const api: CanvasTTYApi = {
     setBounds: (id: string, bounds: SessionBounds) => ipcRenderer.send(IPC.terminalBounds, id, bounds),
     rename: (id: string, title: string) => ipcRenderer.invoke(IPC.terminalRename, id, title),
     dispose: (id: string) => ipcRenderer.invoke(IPC.terminalDispose, id),
+    setVisible: (id: string, visible: boolean) => ipcRenderer.send(IPC.terminalSetVisible, id, visible),
     onData: (listener: (event: TerminalDataEvent) => void) => subscribe(IPC.terminalData, listener),
     onSession: (listener: (event: SessionEvent) => void) => subscribe(IPC.terminalSession, listener),
     onRemoved: (listener: (event: SessionRemovedEvent) => void) => subscribe(IPC.terminalRemoved, listener)
+  },
+  updater: {
+    state: () => Promise.resolve(latestUpdaterState),
+    check: () => ipcRenderer.invoke(IPC.updaterCheck),
+    install: () => ipcRenderer.send(IPC.updaterInstall),
+    onState: (listener: (event: UpdaterStateEvent) => void) => subscribe(IPC.updaterState, listener)
   },
   window: {
     isMacOS: process.platform === "darwin",

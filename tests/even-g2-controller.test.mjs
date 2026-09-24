@@ -338,9 +338,8 @@ test("peer persistence contains only a private token hash and revocation survive
     saved = await readFile(path, "utf8");
   assert.equal(saved.includes(token), false);
   assert.match(saved, /tokenHash/);
-  if (process.platform !== "win32") {
-    assert.equal((await stat(path)).mode & 0o777, 0o600);
-  }
+  assert.match(saved, /transportVersion/);
+  if (process.platform !== "win32") assert.equal((await stat(path)).mode & 0o777, 0o600);
   await f.controller.command({ type: "revoke", id });
   assert.equal((await f.call("/g2/api/home", { token })).status, 401);
   await f.controller.command({
@@ -352,6 +351,27 @@ test("peer persistence contains only a private token hash and revocation survive
   await restored.load();
   assert.equal(restored.state().listening, false);
   assert.deepEqual(restored.state().peers, []);
+  await restored.close();
+});
+
+test("legacy shared-key peers are invalidated on upgrade and must pair again", async (t) => {
+  const f = await fixture(t);
+  await f.enable();
+  const { token } = await f.pair();
+  const path = join(f.directory, "even-g2.json");
+  const saved = JSON.parse(await readFile(path, "utf8"));
+  delete saved.peers[0].transportVersion;
+  await writeFile(path, JSON.stringify(saved));
+  await f.controller.close();
+
+  const restored = new EvenG2Controller(f.options);
+  await restored.load();
+  assert.deepEqual(restored.state().peers, []);
+  const response = await fetch(
+    "http://127.0.0.1:" + restored.state().port + "/g2/api/home",
+    { headers: { Authorization: "Bearer " + token } },
+  );
+  assert.equal(response.status, 401);
   await restored.close();
 });
 
@@ -583,18 +603,16 @@ test("voice used for a rename is only a preview and cannot be replayed as a shel
 });
 
 test("local encrypted pairing and session rename use the real controller with unchanged authorization", async (t) => {
-  const { LocalLink } =
-    await import("../src/main/services/companion/LocalLink.ts");
-  const { localFetcher } =
+  const { localFetcher, connectionFromCode } =
     await import("../integrations/even-g2/src/local-fetch.mjs");
   const f = await fixture(t);
   await f.enable();
-  const link = new LocalLink(f.directory);
-  await link.load();
   const origin = f.controller.state().transport.origin;
-  const connection = link.connection([origin]);
-  const send = localFetcher(connection, { allowLoopback: true });
   await f.controller.command({ type: "begin-pairing" });
+  const resolved = await connectionFromCode(f.controller.state().pairing.code, {
+    origins: [origin], allowLoopback: true,
+  });
+  const send = localFetcher(resolved.connection, { allowLoopback: true });
   const pairedResponse = await send(origin + "/g2/api/pair", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -627,7 +645,117 @@ test("local encrypted pairing and session rename use the real controller with un
   assert.equal((await renamed.json()).session.title, "Локальная сессия");
   assert.deepEqual(f.writes, []);
   await f.controller.command({ type: "revoke", id: pair.id });
-  assert.equal((await send(origin + "/g2/api/home", options)).status, 401);
+  await assert.rejects(send(origin + "/g2/api/home", options));
+  assert.equal((await f.call("/g2/api/home", { token: pair.token })).status, 401);
+});
+
+test("device transport keys isolate active peers, revoke immediately, and re-pair with a fresh key", async (t) => {
+  const { localFetcher, connectionFromCode } =
+    await import("../integrations/even-g2/src/local-fetch.mjs");
+  const { sealLocal, unsealLocal } = await import("../src/shared/localLink.ts");
+  const f = await fixture(t);
+  await f.enable();
+  const origin = f.controller.state().transport.origin;
+  const pairLocal = async (name, fetcher = fetch) => {
+    await f.controller.command({ type: "begin-pairing" });
+    const resolved = await connectionFromCode(f.controller.state().pairing.code, {
+      origins: [origin], allowLoopback: true,
+    });
+    const send = localFetcher(resolved.connection, {
+      allowLoopback: true,
+      fetcher,
+    });
+    const response = await send(origin + "/g2/api/pair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: resolved.code, name }),
+    });
+    assert.equal(response.status, 202);
+    const credentials = await response.json();
+    const connection = send.connection();
+    await f.controller.command({ type: "approve", id: credentials.id });
+    assert.equal((await send(origin + "/g2/api/home", {
+      headers: { Authorization: "Bearer " + credentials.token },
+    })).status, 200);
+    return { send, connection, ...credentials };
+  };
+  const a = await pairLocal("Synthetic A");
+  let capturedB = null;
+  const b = await pairLocal("Synthetic B", async (url, options) => {
+    if (url.endsWith("/g2/link")) capturedB = JSON.parse(options.body);
+    return fetch(url, options);
+  });
+  assert.notEqual(a.connection.deviceId, b.connection.deviceId);
+  assert.notEqual(a.connection.key, b.connection.key);
+  assert.ok(capturedB);
+  await assert.rejects(unsealLocal({
+    ...a.connection,
+    deviceId: b.connection.deviceId,
+  }, capturedB, "request"));
+
+  const forged = await sealLocal({
+    ...a.connection,
+    deviceId: b.connection.deviceId,
+  }, {
+    path: "/g2/api/home",
+    method: "GET",
+    token: b.token,
+    sentAt: Date.now(),
+  }, "request");
+  const rejected = await fetch(origin + "/g2/link", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(forged),
+  });
+  assert.equal(rejected.status, 409);
+
+  const legacyShared = await sealLocal({
+    version: 1,
+    computer: a.connection.computer,
+    key: randomBytes(32).toString("hex"),
+    origins: [origin],
+  }, {
+    path: "/g2/api/home",
+    method: "GET",
+    token: b.token,
+    sentAt: Date.now(),
+  }, "request");
+  const legacyResponse = await fetch(origin + "/g2/link", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(legacyShared),
+  });
+  assert.equal(legacyResponse.status, 409);
+
+  await f.controller.command({ type: "revoke", id: a.id });
+  await assert.rejects(a.send(origin + "/g2/api/home", {
+    headers: { Authorization: "Bearer " + a.token },
+  }));
+  assert.equal((await b.send(origin + "/g2/api/home", {
+    headers: { Authorization: "Bearer " + b.token },
+  })).status, 200);
+
+  const a2 = await pairLocal("Synthetic A re-paired");
+  assert.notEqual(a2.connection.deviceId, a.connection.deviceId);
+  assert.notEqual(a2.connection.key, a.connection.key);
+  const oldKeyPacket = await sealLocal({
+    ...a.connection,
+    deviceId: a2.connection.deviceId,
+  }, {
+    path: "/g2/api/home",
+    method: "GET",
+    token: a2.token,
+    sentAt: Date.now(),
+  }, "request");
+  const oldKeyResponse = await fetch(origin + "/g2/link", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(oldKeyPacket),
+  });
+  assert.equal(oldKeyResponse.status, 409);
+  assert.equal((await a2.send(origin + "/g2/api/home", {
+    headers: { Authorization: "Bearer " + a2.token },
+  })).status, 200);
 });
 
 test("six digits establish SRP keys but terminal access still requires desktop approval", async (t) => {

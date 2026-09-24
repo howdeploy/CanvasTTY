@@ -16,7 +16,47 @@ files:
 asar: true
 asarUnpack:
   - node_modules/node-pty/**/*
+# Close the remaining LoTL vectors in the packaged binary: ignore NODE_OPTIONS /
+# NODE_EXTRA_CA_CERTS and --inspect from the environment, and validate the
+# embedded asar when app.asar is loaded. Dev builds are unaffected (fuses are
+# applied at package time). Electron implements asar integrity validation only on
+# macOS (>= 16) and Windows (>= 30), so the Linux AppImage and deb targets flip
+# the bit without receiving validation from it.
+#
+# runAsNode is deliberately left ENABLED: provider CLIs and the agent runtime
+# spawn the bundled helpers as
+# { command: process.execPath, args: [helper], env: { ELECTRON_RUN_AS_NODE: "1" } }
+# (src/main/index.ts for the browser, agent-runtime, and plugin-hook helpers,
+# src/agent-runtime/*.mjs, plus the generated lifecycle hook commands). Setting
+# runAsNode: false would break the agent runtime in packaged builds.
+#
+# onlyLoadAppFromAsar is left at its default (off). It does not govern the helper
+# .mjs files: the fuse only narrows Electron's own application-code search order
+# (app.asar -> app -> default_app.asar) to app.asar alone, and its documented
+# value is that it stops asar-integrity validation from being bypassed through
+# that search path. The helpers are not application code — they are spawned as
+# child processes with ELECTRON_RUN_AS_NODE=1, and in that mode Electron loads no
+# app bundle at all — so enabling the fuse would not break them. It stays off
+# because no packaged build on any target has exercised the flip, and a wrong
+# fuse choice is a release-wide defect rather than a runtime one; verify it with
+# a packaged run before enabling it.
+#
+# enableCookieEncryption is intentionally omitted rather than set to false: the
+# fuse is a one-way transition, so a release that enabled it would make every
+# later build without the key read the encrypted store as plaintext and corrupt
+# the profile's cookies. The upstream reference comment claimed this key kept
+# cookies encrypted, which is the opposite of what false does.
+electronFuses:
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
 extraResources:
+  - from: scripts/canvastty-control.mjs
+    to: agent-control/canvastty-control.mjs
+  - from: agent/orchestrator
+    to: agent/orchestrator
+    filter:
+      - SKILL.md
   - from: integrations/even-g2/dist
     to: even-g2-web
   - from: src/main/services/companion/asr_worker.py

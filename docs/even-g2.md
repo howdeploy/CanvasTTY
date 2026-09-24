@@ -33,7 +33,7 @@ On the glasses, hold to dictate and release to submit. Rename Terminal opens a s
 
 - The six-digit code authenticates an SRP-6a exchange using the pinned secure-remote-password implementation (2048-bit group, SHA-256). Neither the code nor a reusable PIN-derived encryption key is sent. The client verifies the server proof before accepting the encrypted connection key. Each two-minute offer accepts at most ten handshake starts; a proof can be redeemed once.
 - Mac approval remains mandatory. Persisted bearer credentials are stored only in Even App storage; the desktop stores token hashes and scopes. Identity files use private permissions.
-- Subsequent requests, responses and PCM are AES-GCM encrypted over local HTTP. Computer identity, packet ID and direction are authenticated. The app rejects public, credential-bearing and malformed connection addresses.
+- Subsequent requests, responses and PCM are AES-GCM encrypted over local HTTP. The short-lived SRP session key protects pairing bootstrap; each approved or pending device then uses a distinct transport key selected by its device ID. Computer identity, device route, packet ID and direction are authenticated. The app rejects public, credential-bearing and malformed connection addresses.
 - Existing per-session grants, freshness checks, revocation and request-id replay protection remain enforced. Unknown microphone commands block overlapping native operations; a completed rejection permits a new explicit hold. No recording starts automatically on reconnect.
 - Code bootstrap and ordinary API bodies are bounded. Address probes carry no bearer credential. An uncertain mutation is not automatically repeated at another address.
 
@@ -70,7 +70,7 @@ There is no published compatible installer yet. Build from this branch with the 
 
 ## Security review boundaries
 
-Pairing authenticates the short code and separate device grants control API operations. The current local transport distributes one persistent computer encryption key to paired clients. Revoking a device's API token does not rotate that shared transport key, so per-device confidentiality and forward secrecy are not claimed. An upstream security review should address that trust model before broad distribution. User profiles, pairing state and keys are excluded from source and package contents.
+Pairing authenticates the short code, and separate device grants control API operations. The computer keeps a private transport root and derives an independent key for each random device ID. Pairing bootstrap uses the one-time SRP session key and is limited to discovery and initial pairing requests. Revoking a device removes its transport-key lookup and API grant; it cannot decrypt another device's encrypted packets, even if it retained its former key. Existing devices paired before transport version 2 must pair again after upgrading. The derivation root and grants stay in the private local user-data directory; each client key stays in that device's Even App connection storage. Neither is included in source or package contents.
 
 The speech runtime and vendored ABI header include the upstream MIT license; packaging copies the runtime's third-party license directory. The ASR model is downloaded separately after user action and is not committed or bundled. Its model card and terms should be reviewed for the intended distribution.
 

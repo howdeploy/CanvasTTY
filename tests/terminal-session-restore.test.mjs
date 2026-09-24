@@ -90,8 +90,7 @@ test("opt-in restore preserves card identity and relaunches the agent in native 
       titleCustomized: true,
       cwd: process.cwd(),
       position: { x: 440, y: 180 },
-      size: { width: 880, height: 540 },
-      role: "interactive"
+      size: { width: 880, height: 540 }
     }]);
     await restored.shutdown();
   } finally {

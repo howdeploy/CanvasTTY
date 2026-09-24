@@ -41,7 +41,7 @@ function manager(calls) {
 test("the control provider list is the shared agent provider list, never a plain terminal", () => {
   assert.deepEqual([...CONTROL_PROVIDERS], [...AGENT_PROVIDERS]);
   assert.deepEqual([...AGENT_PROVIDERS], CANVAS_LAUNCHER_ITEMS.filter((item) => item !== "terminal"));
-  assert.deepEqual([...AGENT_PROVIDERS], ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]);
+  assert.deepEqual([...AGENT_PROVIDERS], ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"]);
   assert.equal(isControlProvider("terminal"), false);
   assert.equal(isControlProvider("codex"), true);
   assert.equal(isControlProvider(undefined), false);

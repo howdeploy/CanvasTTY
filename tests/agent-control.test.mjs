@@ -406,7 +406,7 @@ function availableRegistry() {
   };
 }
 
-function fixture() {
+function serviceFixture() {
   const calls = [];
   const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner(calls));
   const control = new AgentControlService(terminals);
@@ -414,7 +414,7 @@ function fixture() {
 }
 
 test("spawn creates a subagent next to its parent and delivers the initial prompt", () => {
-  const { terminals, control } = fixture();
+  const { terminals, control } = serviceFixture();
   const parent = terminals.create({
     provider: "codex",
     cwd: process.cwd(),
@@ -440,7 +440,7 @@ test("spawn creates a subagent next to its parent and delivers the initial promp
 });
 
 test("children lists only that parent's subagents in spawn order", () => {
-  const { terminals, control } = fixture();
+  const { terminals, control } = serviceFixture();
   const parent = terminals.create({
     provider: "claude",
     cwd: process.cwd(),
@@ -464,7 +464,7 @@ test("children lists only that parent's subagents in spawn order", () => {
 });
 
 test("send appends submit unless told otherwise and rejects exited sessions", () => {
-  const { terminals, control } = fixture();
+  const { terminals, control } = serviceFixture();
   const parent = terminals.create({
     provider: "codex",
     cwd: process.cwd(),
@@ -481,7 +481,7 @@ test("send appends submit unless told otherwise and rejects exited sessions", ()
 });
 
 test("observe returns a capped terminal tail and result reflects exit state", () => {
-  const { terminals, control } = fixture();
+  const { terminals, control } = serviceFixture();
   const parent = terminals.create({
     provider: "codex",
     cwd: process.cwd(),
@@ -499,7 +499,7 @@ test("observe returns a capped terminal tail and result reflects exit state", ()
 });
 
 test("cancel disposes the subagent and plain terminals are not agents", () => {
-  const { terminals, control } = fixture();
+  const { terminals, control } = serviceFixture();
   const parent = terminals.create({
     provider: "codex",
     cwd: process.cwd(),
@@ -523,7 +523,7 @@ test("cancel disposes the subagent and plain terminals are not agents", () => {
 });
 
 test("a parent cannot exceed the subagent fan-out cap", () => {
-  const { terminals, control } = fixture();
+  const { terminals, control } = serviceFixture();
   const parent = terminals.create({
     provider: "codex",
     cwd: process.cwd(),

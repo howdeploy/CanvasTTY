@@ -43,7 +43,7 @@ function manager(calls) {
   return new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner(calls));
 }
 
-test("sessions default to the interactive role without hierarchy fields", () => {
+test("sessions default to the agent role without hierarchy fields", () => {
   const calls = [];
   const terminal = manager(calls);
   const session = terminal.create({
@@ -52,7 +52,7 @@ test("sessions default to the interactive role without hierarchy fields", () => 
     profile: "normal",
     position: { x: 0, y: 0 }
   });
-  assert.equal(session.role, "interactive");
+  assert.equal(session.role, "agent");
   assert.equal("parentSessionId" in session, false);
   terminal.disposeAll();
 });
@@ -165,7 +165,7 @@ test("hierarchy persists and orphan subagents are dropped on restore", async (t)
   const restored = second.list();
   assert.deepEqual(
     restored.map((session) => [session.role, session.parentSessionId ?? null]).sort(),
-    [["interactive", null], ["orchestrator", null], ["subagent", parent.id]]
+    [["agent", null], ["orchestrator", null], ["subagent", parent.id]]
   );
   await second.shutdown();
 
@@ -180,6 +180,6 @@ test("hierarchy persists and orphan subagents are dropped on restore", async (t)
   const third = manager(thirdCalls);
   third.configureSessionPersistence(new TerminalSessionStore(directory), true);
   await third.restorePersistedSessions();
-  assert.deepEqual(third.list().map((session) => session.role), ["interactive"]);
+  assert.deepEqual(third.list().map((session) => session.role), ["agent"]);
   await third.shutdown();
 });

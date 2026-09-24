@@ -62,6 +62,7 @@ import {
 } from "./lib/shortcuts";
 import { homeGridPixelSize, homeLayoutFitsGrid, placeHomeWidget } from "./features/home/homeLayout";
 import { boundsInsideRegion, translateBounds } from "./features/workspace/canvasRegions";
+import { DEFAULT_SESSION_SIZE, findNearHomeSessionPosition } from "./features/workspace/sessionPlacement";
 
 interface HomeEditDraft {
   homeGridSize: HomeGridSize;
@@ -185,6 +186,9 @@ function contrastRatio(left: number, right: number): number {
 export function App(): React.JSX.Element {
   const [settings, setSettings] = useState(FALLBACK_SETTINGS);
   const [sessions, setSessions] = useState<SessionSnapshot[]>([]);
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const pendingSessionPlacements = useRef<SessionBounds[]>([]);
   const [limits, setLimits] = useState<LimitsSnapshot | null>(null);
   const [limitsLoadState, setLimitsLoadState] = useState<LimitsLoadState>("loading");
   const [limitsRevision, setLimitsRevision] = useState(0);
@@ -364,17 +368,41 @@ export function App(): React.JSX.Element {
     requestedCenter?: Point,
     role: LaunchRole = "agent"
   ): Promise<SessionSnapshot> => {
+    const currentSettings = settingsRef.current;
     const position = requestedCenter
-      ? centeredWindowPosition(requestedCenter, { width: 700, height: 430 })
-      : nextSessionPosition(sessions.length, settings.homeGridSize);
-    const session = await window.canvasTTY.terminal.create({ provider, profile, cwd, position, role });
-    setSessions((current) => upsertSnapshot(current, session));
-    setActiveSessionId(session.id);
-    await saveSettings({ lastDirectory: cwd });
-    isHomeCamera.current = false;
-    setCamera(focusCamera(position, session.size));
-    return session;
-  }, [sessions.length, saveSettings, settings.homeGridSize]);
+      ? centeredWindowPosition(requestedCenter, DEFAULT_SESSION_SIZE)
+      : findNearHomeSessionPosition(
+          { position: { x: 0, y: 0 }, size: homeGridPixelSize(currentSettings.homeGridSize) },
+          [
+            ...sessionsRef.current,
+            ...currentSettings.pluginCanvas,
+            ...currentSettings.stickyNotes,
+            ...(currentSettings.browserCanvas ? [currentSettings.browserCanvas] : []),
+            ...pendingSessionPlacements.current
+          ],
+          DEFAULT_SESSION_SIZE
+        );
+    // Reserve the slot until the async create finishes, so fast parallel launches
+    // cannot both choose the same free position before React renders either card.
+    const reservation: SessionBounds | null = requestedCenter
+      ? null
+      : { position, size: DEFAULT_SESSION_SIZE };
+    if (reservation) pendingSessionPlacements.current.push(reservation);
+    try {
+      const session = await window.canvasTTY.terminal.create({ provider, profile, cwd, position, role });
+      sessionsRef.current = upsertSnapshot(sessionsRef.current, session);
+      setSessions((current) => upsertSnapshot(current, session));
+      setActiveSessionId(session.id);
+      await saveSettings({ lastDirectory: cwd });
+      isHomeCamera.current = false;
+      setCamera(focusCamera(position, session.size));
+      return session;
+    } finally {
+      if (reservation) {
+        pendingSessionPlacements.current = pendingSessionPlacements.current.filter((item) => item !== reservation);
+      }
+    }
+  }, [saveSettings]);
 
   const openTerminal = useCallback(async (position?: Point): Promise<void> => {
     try {
@@ -1162,14 +1190,6 @@ export function App(): React.JSX.Element {
       <Toast message={toast} />
     </div>
   );
-}
-
-function nextSessionPosition(index: number, homeGridSize: HomeGridSize): Point {
-  const homeSize = homeGridPixelSize(homeGridSize);
-  return {
-    x: homeSize.width + 160 + (index % 2) * 760,
-    y: Math.floor(index / 2) * 500 + 20
-  };
 }
 
 function centeredWindowPosition(point: Point, size: { width: number; height: number }): Point {

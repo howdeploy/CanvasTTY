@@ -64,7 +64,7 @@ test("invalid descriptors are removed and geometry is bounded", () => {
   assert.deepEqual(normalized.sessions[0].size, { width: 420, height: 1_100 });
 });
 
-test("records written before roles existed restore as agents; only an explicit orchestrator survives", async () => {
+test("legacy roles restore as agents while unknown roles are dropped", async () => {
   const { role: _role, ...legacy } = descriptor;
   const normalized = normalizePersistedTerminalSessions({
     version: 1,
@@ -78,7 +78,6 @@ test("records written before roles existed restore as agents; only an explicit o
   assert.deepEqual(normalized.sessions.map((session) => [session.id, session.role]), [
     [descriptor.id, "agent"],
     ["orchestrator", "orchestrator"],
-    ["bogus-role", "agent"],
     ["terminal", "agent"]
   ]);
 

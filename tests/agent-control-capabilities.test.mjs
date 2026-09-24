@@ -118,7 +118,7 @@ test("TerminalManager hands the descriptor to orchestrator sessions only, and re
     terminals.create({ ...base, role: "orchestrator" });
     assert.equal("CANVASTTY_CONTROL_CONNECTION" in calls.at(-1).options.env, false, "no descriptor while the endpoint is off");
 
-    assert.throws(() => terminals.create({ ...base, role: "worker" }), /Unknown launch role/);
+    assert.throws(() => terminals.create({ ...base, role: "worker" }), /Unknown session role/);
     assert.throws(() => terminals.create({ ...base, provider: "terminal", profile: "normal", role: "orchestrator" }), /cannot be an orchestrator/);
   } finally {
     await terminals.shutdown();

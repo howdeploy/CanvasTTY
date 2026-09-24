@@ -1,7 +1,7 @@
 import type { CameraState, SessionBounds } from "../../../../shared/contracts";
 
 export function reconcileCanvasLayerOrder(
-  current: readonly string[],
+  current: string[],
   active: readonly string[]
 ): string[] {
   const activeSet = new Set(active);
@@ -9,7 +9,7 @@ export function reconcileCanvasLayerOrder(
   for (const id of active) {
     if (!next.includes(id)) next.push(id);
   }
-  return next;
+  return next.length === current.length && next.every((id, index) => id === current[index]) ? current : next;
 }
 
 export function bringCanvasLayerToFront(current: readonly string[], id: string): string[] {

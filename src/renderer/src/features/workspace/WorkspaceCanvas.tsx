@@ -16,15 +16,20 @@ import type {
   RadialLauncherItemId,
   SessionBounds,
   SessionSnapshot,
+  Size,
   StickyNote
 } from "../../../../shared/contracts";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
-import { displayCanvasNavigationBinding, matchesPhysicalOrLayoutKey } from "../../lib/shortcuts";
+import { displayCanvasNavigationBinding, isRenameInputTarget, isShortcutCaptureTarget, matchesPhysicalOrLayoutKey } from "../../lib/shortcuts";
 import { BrowserCard } from "../browser/BrowserCard";
+import { attentionQueueRenderedAt, attentionSessions } from "../home/attentionQueue";
 import type { LimitsLoadState } from "../home/homeModel";
 import { homeGridPixelSize, homeLayoutFitsGrid } from "../home/homeLayout";
 import { HomeZone } from "../home/HomeZone";
+import { SessionFailureDetails, sessionFailureDetails } from "../home/SessionFailureDetails";
+import { sessionStatusLabel } from "../../lib/sessionStatus";
+import { sessionStatusTone } from "../../lib/sessionStatusTone";
 import { RadialLauncher } from "../launcher/QuickRadialMenu";
 import { StickyNoteCard } from "../notes/StickyNoteCard";
 import { stickyNoteAtPoint } from "../notes/stickyNoteBounds";
@@ -35,6 +40,7 @@ import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasMinimap } from "./CanvasMinimap";
 import { CanvasRegionCard } from "./CanvasRegionCard";
 import { CanvasRegionMenu } from "./CanvasRegionMenu";
+import { cameraFittingContent } from "./canvasCameraGeometry";
 import {
   clampCanvasMenuPosition,
   routeCanvasContextMenu,
@@ -58,9 +64,12 @@ import {
 } from "./canvasStacking";
 import {
   browserCanvasWidgetId,
+  canvasWidgetInDirection,
   canvasWidgetTarget,
   pluginCanvasWidgetId,
-  terminalCanvasWidgetId
+  terminalCanvasWidgetId,
+  type CanvasFocusCandidate,
+  type CanvasFocusDirection
 } from "./canvasWidgetFocus";
 import { boundsIntersect } from "./minimapGeometry";
 import {
@@ -82,6 +91,14 @@ const CANVAS_OVERLAY_PLACEMENTS: CanvasOverlayPlacement[] = [
   "bottom-right"
 ];
 
+/** Alt+arrow moves canvas focus; never a canvas-navigation binding (those are modifier+mouse or wheel). */
+const CANVAS_FOCUS_ARROWS: Readonly<Record<string, CanvasFocusDirection | undefined>> = {
+  ArrowUp: "up",
+  ArrowDown: "down",
+  ArrowLeft: "left",
+  ArrowRight: "right"
+};
+
 const EMPTY_MARQUEE_SELECTION: ReadonlySet<string> = new Set<string>();
 
 /** A group drag's commit basis, frozen once when the press activates: the pressed layer's start
@@ -91,6 +108,7 @@ type GroupDragBasis = {
   anchor: SessionBounds;
   members: ReadonlyMap<string, SessionBounds>;
 };
+
 type CanvasMenuState = {
   kind: CanvasContextMenuKind;
   position: Point;
@@ -304,14 +322,19 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     for (const note of renderedStickyNotes) result.set(noteLayerId(note.id), note);
     return result;
   }, [renderablePluginIds, renderedBrowserCanvas, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
-  const browserOccluded = renderedBrowserCanvas !== null
-    && canvasLayerIsOccluded(browserLayerId, layerOrder, boundsByLayer);
   // Every window on the canvas, in the order they are rendered: terminals, plugin canvases, browser, notes.
   const allWindowBounds: SessionBounds[] = [
     ...renderedSessions,
     ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)),
     ...(renderedBrowserCanvas ? [renderedBrowserCanvas] : []),
     ...renderedStickyNotes
+  ];
+  const focusCandidates: CanvasFocusCandidate[] = [
+    ...renderedSessions.map((session) => ({ id: terminalCanvasWidgetId(session.id), bounds: session })),
+    ...renderedPluginCanvas
+      .filter((instance) => renderablePluginIds.has(instance.id))
+      .map((instance) => ({ id: pluginCanvasWidgetId(instance.id), bounds: instance })),
+    ...(renderedBrowserCanvas ? [{ id: browserCanvasWidgetId, bounds: renderedBrowserCanvas }] : [])
   ];
 
   const homeBounds: SessionBounds = {
@@ -375,11 +398,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       const moved = translateBounds(memberBounds, rigid);
       const ref = parseCanvasLayerId(memberLayerId);
       if (!ref) continue;
-      // Each card kind owns its commit callback; the browser's takes the whole state.
+      // Commit each window by its own identity, including individual Browser cards.
       if (ref.kind === "terminal" && ref.targetId !== null) onSessionBoundsChange(ref.targetId, moved);
       else if (ref.kind === "plugin" && ref.targetId !== null) onPluginCanvasBoundsChange(ref.targetId, moved);
       else if (ref.kind === "note" && ref.targetId !== null) onStickyNoteBoundsChange(ref.targetId, moved);
-      else if (ref.kind === "browser") onBrowserBoundsChange({ ...settings.browserCanvas, ...moved });
+      else if (ref.kind === "browser" && settings.browserCanvas) onBrowserBoundsChange({ ...settings.browserCanvas, ...moved });
     }
   }, [boundsByLayer, homeBounds, onBrowserBoundsChange, onPluginCanvasBoundsChange,
     onSessionBoundsChange, onStickyNoteBoundsChange, renderedCanvasRegions, settings.browserCanvas, settings.snapToGrid]);
@@ -391,7 +414,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     browserSelected,
     widgetTreeVersion: [
       browserViewVisible ? "browser-visible" : "browser-hidden",
-      settings.browserCanvas ? "browser-card" : "no-browser-card",
+      renderedBrowserCanvas ? "browser-card" : "no-browser-card",
       sessions.map((session) => session.id).join(","),
       plugins.map((plugin) => [
         plugin.manifest.id,
@@ -403,6 +426,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       settings.homeLayout.map((placement) => placement.widgetId).join(",")
     ].join("|")
   });
+  // One owner for "bring this session to the front": the HOME session rows and the attention queue
+  // must both raise the card's layer, focus it, and apply the layer raise through onFocusSession.
+  const focusSessionFromHome = useCallback((session: SessionSnapshot): void => {
+    raiseLayer(terminalLayerId(session.id));
+    focusController.focus(terminalCanvasWidgetId(session.id), "explicit");
+    onFocusSession(session);
+  }, [focusController, onFocusSession, raiseLayer]);
+  const attention = useMemo(() => attentionSessions(renderedSessions), [renderedSessions]);
   // The page area is a native child view, so it composites above every DOM layer including this
   // HUD; the page can only yield by hiding. Slot boxes are measured instead of their children:
   // they are content-sized, which keeps this effect keyed to what can move or resize a slot and
@@ -434,17 +465,20 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     for (const slot of slots) observer.observe(slot);
     return () => observer.disconnect();
   }, [
+    attention.length,
+    settings.attentionQueuePlacement,
+    settings.attentionQueueVisible,
     settings.canvasControlsPlacement,
     settings.minimapPlacement,
     settings.shortcutHintsPlacement,
     settings.showShortcutHints,
     settings.uiScale
   ]);
+  const browserOccluded = renderedBrowserCanvas !== null
+    && canvasLayerIsOccluded(browserLayerId, layerOrder, boundsByLayer);
   const browserScreenRect = renderedBrowserCanvas === null
     ? null
     : canvasScreenRect(renderedBrowserCanvas, camera);
-  // Both sides are screen-relative to this viewport: the camera translation is measured from the
-  // scene origin, and the overlay rects are measured from the overlay root, which shares it.
   const browserUnderOverlay = browserScreenRect !== null
     && overlayRects.some((rect) => boundsOverlap(browserScreenRect, rect));
   const wheelNavigation = useCanvasWheelNavigation({
@@ -576,6 +610,57 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     if (!settings.radialLauncherEnabled) closeRadialLauncher();
   }, [closeRadialLauncher, settings.radialLauncherEnabled]);
 
+  const canvasViewportSize = useCallback((): Size => {
+    const bounds = viewport.current?.getBoundingClientRect();
+    return { width: bounds?.width ?? 1360, height: bounds?.height ?? 820 };
+  }, []);
+
+  /** Frames the HOME zone and every window; an empty canvas just goes HOME. */
+  const fitCanvas = useCallback((): void => {
+    const fitted = cameraFittingContent([homeBounds, ...allWindowBounds], canvasViewportSize());
+    if (fitted === null) {
+      onGoHome();
+      return;
+    }
+    commitCamera(fitted);
+  }, [allWindowBounds, canvasViewportSize, commitCamera, homeBounds, onGoHome]);
+
+  const focusDirection = useCallback((direction: CanvasFocusDirection): void => {
+    const target = canvasWidgetInDirection(
+      focusCandidates,
+      focusController.state.id,
+      direction,
+      viewportCenterWorldPoint()
+    );
+    if (target === null) return;
+    const session = renderedSessions.find((candidate) => terminalCanvasWidgetId(candidate.id) === target);
+    if (session) {
+      raiseLayer(terminalLayerId(session.id));
+      focusController.focus(target, "explicit");
+      onFocusSession(session);
+      return;
+    }
+    const instance = renderedPluginCanvas.find((candidate) => pluginCanvasWidgetId(candidate.id) === target);
+    if (instance) {
+      raiseLayer(pluginLayerId(instance.id));
+      focusController.focus(target, "explicit");
+      onFocusPluginCanvas(instance.id);
+      return;
+    }
+    if (renderedBrowserCanvas && target === browserCanvasWidgetId) {
+      raiseLayer(browserLayerId);
+      focusController.focus(target, "explicit");
+      onFocusBrowser();
+      return;
+    }
+  }, [focusCandidates, focusController, onFocusBrowser, onFocusPluginCanvas, onFocusSession,
+    renderedBrowserCanvas, renderedPluginCanvas, renderedSessions, raiseLayer, viewportCenterWorldPoint]);
+
+  const fitCanvasRef = useRef(fitCanvas);
+  fitCanvasRef.current = fitCanvas;
+  const focusDirectionRef = useRef(focusDirection);
+  focusDirectionRef.current = focusDirection;
+
   useEffect(() => {
     if (homeEditing || !browserViewVisible) {
       setContextMenu(null);
@@ -585,6 +670,17 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       return;
     }
     const handleShortcut = (event: KeyboardEvent): void => {
+      // Alt+arrow is a canvas gesture of its own; the Ctrl/Cmd chords below stay untouched.
+      const direction = event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+        ? CANVAS_FOCUS_ARROWS[event.key]
+        : undefined;
+      if (direction && !event.repeat
+        && !isShortcutCaptureTarget(event.target) && !isRenameInputTarget(event.target)) {
+        event.preventDefault();
+        event.stopPropagation();
+        focusDirectionRef.current(direction);
+        return;
+      }
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
       // Matched on the physical key: these chords must work on a non-Latin layout, where
       // the K key reports `key: "л"` and `event.key` alone would never match.
@@ -706,18 +802,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           onOpenSettings={onOpenSettings}
           onOpenAgent={onOpenAgent}
           onOpenTerminal={onOpenTerminal}
-          onOpenBrowser={() => {
-            if (settings.browserCanvas) {
-              raiseLayer(browserLayerId);
-              focusController.focusBrowser();
-            }
-            onOpenBrowser();
-          }}
-          onFocusSession={(session) => {
-            raiseLayer(terminalLayerId(session.id));
-            focusController.focus(terminalCanvasWidgetId(session.id), "explicit");
-            onFocusSession(session);
-          }}
+          onOpenBrowser={() => onOpenBrowser()}
+          onFocusSession={focusSessionFromHome}
           onRequestMedia={onRequestMedia}
           onRemoveMedia={onRemoveMedia}
           onLayoutChange={onHomeLayoutChange}
@@ -1014,6 +1100,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             setRegionEditor({ mode: "create", focus: "title", position: centerMenuPosition(), worldPoint: viewportCenterWorldPoint() });
           }}
           onCreateNote={() => createNote(viewportCenterWorldPoint())}
+          onFitCanvas={fitCanvas}
           onOpenBrowser={() => onOpenBrowser(viewportCenterWorldPoint())}
           onOpenSettings={onOpenSettings}
           onClose={() => setCommandPaletteOpen(false)}
@@ -1023,6 +1110,37 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       <div className="canvas-overlays" ref={overlays}>
         {CANVAS_OVERLAY_PLACEMENTS.map((placement) => (
           <div className={`canvas-overlay-slot canvas-overlay-slot--${placement}`} key={placement}>
+            {/* The canvas scene is transformed and therefore its own stacking context, so anything
+                inside it paints under this layer and scales with the camera. The queue is a
+                screen-anchored HUD: it belongs here, and as the first child of the reversed column
+                it stacks below whatever else shares this corner. */}
+            {attentionQueueRenderedAt(settings, placement) && (
+              <section className="attention-queue" aria-label={t(settings.locale, "needsAttention")}
+                title={t(settings.locale, "needsAttentionHint")}>
+                <span className="attention-queue__title">{t(settings.locale, "needsAttention")}</span>
+                <span className="attention-queue__caption">{t(settings.locale, "needsAttentionCaption")}</span>
+                {attention.length === 0 ? (
+                  <span className="attention-queue__empty">{t(settings.locale, "needsAttentionEmpty")}</span>
+                ) : attention.map((session) => {
+                  const failureDetails = sessionFailureDetails(session, settings.locale);
+                  return (
+                    <div style={{ position: "relative" }} key={session.id}>
+                      <button
+                        className="attention-queue__item"
+                        data-session-tone={sessionStatusTone(session.status)}
+                        type="button"
+                        title={failureDetails ? undefined : session.title}
+                        onClick={() => focusSessionFromHome(session)}
+                      >
+                        <span>{session.title}</span>
+                        <span>{sessionStatusLabel(settings.locale, session.status, session.provider)}</span>
+                      </button>
+                      {failureDetails && <SessionFailureDetails details={failureDetails} locale={settings.locale} />}
+                    </div>
+                  );
+                })}
+              </section>
+            )}
             {settings.minimapPlacement === placement && (
               <CanvasMinimap viewport={viewport} camera={camera} homeBounds={homeBounds}
                 canvasRegions={renderedCanvasRegions} sessions={renderedSessions} stickyNotes={renderedStickyNotes}
@@ -1033,6 +1151,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             {settings.canvasControlsPlacement === placement && (
               <div className="canvas-controls" data-interactive="true">
                 <button type="button" onClick={onGoHome} title={t(settings.locale, "home")}><UiIcon name="home" size={17} /></button>
+                <button type="button" onClick={fitCanvas} title={t(settings.locale, "fitCanvas")} aria-label={t(settings.locale, "fitCanvas")}><UiIcon name="maximize" size={17} /></button>
                 <button type="button" onClick={() => wheelNavigation.zoomBy(0.82)} title={t(settings.locale, "zoomOut")}><UiIcon name="zoom-out" size={17} /></button>
                 <button type="button" onClick={() => wheelNavigation.zoomBy(1.22)} title={t(settings.locale, "zoomIn")}><UiIcon name="zoom-in" size={17} /></button>
               </div>
@@ -1041,6 +1160,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               <aside className="shortcut-hints" aria-label={t(settings.locale, "keyboardShortcuts")}>
                 <div><kbd>{settings.shortcuts.home}</kbd><span>{t(settings.locale, "homeShortcut")}</span></div>
                 <div><kbd>{settings.shortcuts.renameWindow}</kbd><span>{t(settings.locale, "renameWindow")}</span></div>
+                <div><kbd>{window.canvasTTY.window.isMacOS ? "Option+↑↓←→" : "Alt+↑↓←→"}</kbd><span>{t(settings.locale, "focusWindowHint")}</span></div>
+                <div><kbd>Shift + drag</kbd><span>{t(settings.locale, "marqueeSelectionHint")}</span></div>
                 {settings.canvasWheelCaptureMode === "key" && settings.canvasWheelOverride !== null && (
                   <div><kbd>{displayCanvasNavigationBinding(settings.canvasWheelOverride, window.canvasTTY.window.isMacOS)}</kbd>
                     <span>{t(settings.locale, "canvasWheelOverrideHint")}</span></div>

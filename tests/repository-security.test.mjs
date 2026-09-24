@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { collectRepositoryIssues } from "../scripts/audit-secrets.mjs";
+import { SECRET_PATTERNS, collectArtifactIssues, collectRepositoryIssues } from "../scripts/audit-secrets.mjs";
 
 test("publishable repository files contain no high-confidence secrets or personal paths", async () => {
   assert.deepEqual(await collectRepositoryIssues(), []);
@@ -31,6 +31,74 @@ test("secret audit still reports personal paths in publishable files", async (t)
   assert.deepEqual(await collectRepositoryIssues(root), [
     { path: "notes.md", rule: "personal home path" }
   ]);
+});
+
+test("secret audit ignores key prefixes embedded in identifiers", () => {
+  const patterns = new Map(SECRET_PATTERNS);
+  const matches = (rule, sample) => [...sample.matchAll(patterns.get(rule))].map((match) => match[0]);
+  const longTail = "x".repeat(28);
+
+  for (const [rule, [standalonePrefix, ...identifierPrefixes]] of Object.entries({
+    "Anthropic token": ["sk-ant-", "disk-ant-", "task-ant-"],
+    "OpenAI-style token": ["sk-", "disk-", "task-"]
+  })) {
+    const token = `${standalonePrefix}${longTail}`;
+    assert.deepEqual(matches(rule, `${token}\n`), [token], `${rule} must report a standalone token`);
+
+    for (const prefix of identifierPrefixes) {
+      for (const identifier of ["abc", "def", longTail, `${longTail}-suffix`]) {
+        const sample = `${prefix}${identifier}`;
+        assert.deepEqual(matches(rule, `${sample}\n`), [], `${rule} must ignore ${sample}`);
+      }
+    }
+  }
+});
+
+test("secret audit scans the built bundle in addition to the source tree", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "canvastty-secret-audit-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const builtDirectory = join(root, "out", "main");
+  await mkdir(builtDirectory, { recursive: true });
+  const injectedToken = `sk-ant-${"a".repeat(24)}`;
+  await writeFile(join(builtDirectory, "index.js"), `const injected = "${injectedToken}";\n`, "utf8");
+
+  assert.deepEqual(await collectRepositoryIssues(root), []);
+  assert.deepEqual(await collectArtifactIssues(root), [
+    { path: "out/main/index.js", rule: "Anthropic token" },
+    { path: "out/main/index.js", rule: "OpenAI-style token" }
+  ]);
+});
+
+test("secret audit reports a missing built bundle instead of implying coverage", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "canvastty-secret-audit-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  await writeFile(join(root, "README.md"), "publishable content\n", "utf8");
+
+  assert.equal(await collectArtifactIssues(root), null);
+});
+
+test("secret audit catches Windows personal paths but not system, generic, or relative paths", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "canvastty-secret-audit-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const notes = join(root, "notes.md");
+
+  const personalPath = ["C:", "Users", "operator", "project", ""].join("\\");
+  await writeFile(notes, `Local path: ${personalPath}\n`, "utf8");
+  assert.deepEqual(await collectRepositoryIssues(root), [
+    { path: "notes.md", rule: "personal home path" }
+  ]);
+
+  const nonPersonalPaths = [
+    ["C:", "Windows", "System32", "cmd.exe"].join("\\"),
+    ["C:", "Program Files", "CanvasTTY", "app.asar"].join("\\"),
+    ["C:", "Users", "runner", "work", ""].join("\\"),
+    "%USERPROFILE%\\project",
+    ["src", "main", "index.ts"].join("\\")
+  ];
+  await writeFile(notes, `Samples:\n${nonPersonalPaths.join("\n")}\n`, "utf8");
+  assert.deepEqual(await collectRepositoryIssues(root), []);
 });
 
 test("gitignore excludes local credentials, logs, builds, and agent context", async () => {

@@ -8,6 +8,12 @@ export type AgentProviderId = Exclude<ProviderId, "terminal">;
 export type AgentCliAvailability = Record<AgentProviderId, boolean>;
 export type LimitProviderId = Extract<AgentProviderId, "codex" | "claude" | "qwen" | "kimi" | "opencode" | "grok">;
 export type LaunchProfileId = "normal" | "yolo";
+/**
+ * What a session is for, independent of its normal/YOLO profile: an ordinary
+ * agent, or an orchestrator that drives other sessions through the local
+ * agent-control endpoint (it receives the control descriptor in its environment).
+ */
+export type LaunchRole = "agent" | "orchestrator";
 export type SessionStatus = "idle" | "working" | "needs_approval" | "unavailable" | "done" | "failed";
 export type PaletteId = "sage" | "lilac" | "night";
 export type HomeAccentPresetId = "classic" | "warm" | "cool" | "mono" | "custom";
@@ -41,6 +47,10 @@ export const CANVAS_LAUNCHER_ITEMS: readonly CanvasLauncherItemId[] = [
   "pi",
   "terminal"
 ];
+
+/** Every agent provider (the launcher list without the plain terminal). */
+export const AGENT_PROVIDERS: readonly AgentProviderId[] = CANVAS_LAUNCHER_ITEMS
+  .filter((item): item is AgentProviderId => item !== "terminal");
 
 // Keeps the safe provider subset proposed by @TroopJostle in PR #23 while
 // region, note, Browser, and Settings remain fixed top-level menu actions.
@@ -234,6 +244,21 @@ export interface AppSettings {
   browserAgentAccess: boolean;
   browserShowAgentPresence: boolean;
   browserRestoreTabs: boolean;
+  /** Show an OS notification when a session needs approval or fails. */
+  attentionNotifications: boolean;
+  /**
+   * Show the on-canvas attention panel (sessions awaiting approval or failed).
+   * Independent of `attentionNotifications`: one is the HUD, the other the OS toast.
+   */
+  attentionQueueVisible: boolean;
+  /** Canvas corner that hosts the attention panel. */
+  attentionQueuePlacement: CanvasOverlayPlacement;
+  /**
+   * Serve the local agent-control endpoint (Settings → Agents) that the bundled
+   * `canvastty-control.mjs` CLI and Orchestrator sessions talk to. Off by default;
+   * `--agent-control` / `CANVASTTY_AGENT_CONTROL=1` force it on for one launch.
+   */
+  agentControlEnabled: boolean;
 }
 
 export interface CreateSessionRequest {
@@ -242,6 +267,8 @@ export interface CreateSessionRequest {
   profile: LaunchProfileId;
   position: Point;
   title?: string;
+  /** Defaults to "agent"; "orchestrator" is only meaningful for agent providers. */
+  role?: LaunchRole;
 }
 
 export interface SessionMetadata {
@@ -249,6 +276,7 @@ export interface SessionMetadata {
   revision: number;
   provider: ProviderId;
   profile: LaunchProfileId;
+  role: LaunchRole;
   title: string;
   titleCustomized: boolean;
   cwd: string;
@@ -264,11 +292,23 @@ export interface SessionSnapshot extends SessionMetadata {
   buffer: string;
 }
 
+/**
+ * Which consumers a terminalData event is meant for. The main process feeds
+ * every manager event to its in-process observers (agent control, companion
+ * presentation) and to the renderer. Output produced while a card is hidden
+ * still has to reach the observers, whose cached screens would otherwise go
+ * stale, but must not reach the renderer, which gets one replay when the card
+ * is shown again; that replay in turn carries nothing the observers have not
+ * already seen. Absent means every consumer.
+ */
+export type TerminalDataAudience = "observers" | "renderer";
+
 export interface TerminalDataEvent {
   id: string;
   data: string;
   /** Total UTF-16 code units produced, including this batch and trimmed history. */
   outputOffset: number;
+  audience?: TerminalDataAudience;
 }
 
 export interface TerminalBufferSnapshot {
@@ -903,6 +943,19 @@ export interface LimitsSnapshot {
   providers: ProviderLimitsSnapshot[];
 }
 
+/** Self-update lifecycle; `unavailable` is the honest state for dev and offline runs. */
+export type UpdaterState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "available"; version: string }
+  | { status: "downloading"; version: string; percent: number | null }
+  | { status: "downloaded"; version: string }
+  | { status: "unavailable"; reason: "dev" | "offline" | "error" };
+
+export interface UpdaterStateEvent {
+  state: UpdaterState;
+}
+
 export interface CanvasTTYApi {
   evenG2: import('./evenG2.ts').EvenG2Api;
   appVersion(): Promise<string>;
@@ -1020,9 +1073,17 @@ export interface CanvasTTYApi {
     setBounds(id: string, bounds: SessionBounds): void;
     rename(id: string, title: string): Promise<SessionMetadata>;
     dispose(id: string): Promise<void>;
+    /** Report whether the card renders live output; hidden cards keep history but skip streaming. */
+    setVisible(id: string, visible: boolean): void;
     onData(listener: (event: TerminalDataEvent) => void): () => void;
     onSession(listener: (event: SessionEvent) => void): () => void;
     onRemoved(listener: (event: SessionRemovedEvent) => void): () => void;
+  };
+  updater: {
+    state(): Promise<UpdaterState>;
+    check(): Promise<void>;
+    install(): void;
+    onState(listener: (event: UpdaterStateEvent) => void): () => void;
   };
   window: {
     isMacOS: boolean;
@@ -1038,6 +1099,10 @@ export const IPC = {
   clipboardRead: "clipboard:read",
   clipboardWrite: "clipboard:write",
   externalOpenUrl: "external:open-url",
+  terminalSetVisible: "terminal:set-visible",
+  updaterState: "updater:state",
+  updaterCheck: "updater:check",
+  updaterInstall: "updater:install",
   settingsGet: "settings:get",
   settingsUpdate: "settings:update",
   dialogPickDirectory: "dialog:pick-directory",

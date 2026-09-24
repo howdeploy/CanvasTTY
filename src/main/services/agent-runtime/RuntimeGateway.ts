@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderId } from "../../../shared/contracts.ts";
 import {
+  MAX_ANSWER_CHARS,
   MAX_RUNTIME_MESSAGE_BYTES,
+  MAX_RESULT_CHARS,
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_STATES
 } from "../../../agent-runtime/runtime-protocol.mjs";
@@ -27,7 +29,9 @@ export interface RuntimeLifecycleSignal {
   state: RuntimeLifecycleState;
   event: string;
   turnId: string | null;
+  result?: { text: string; truncated: boolean };
   lastAssistantMessage?: string;
+  answerCaptureGrantExpiresAt?: number;
 }
 
 export interface RuntimeSessionCapability {
@@ -43,6 +47,8 @@ interface RuntimeLease {
   tokenDigest: Buffer;
   activeTurnId: string | null;
   latest: RuntimeLifecycleSignal | null;
+  captureResult: boolean;
+  answerCaptureGrantExpiresAt: number | null;
 }
 
 interface ParsedLifecycleMessage {
@@ -52,6 +58,7 @@ interface ParsedLifecycleMessage {
   state: RuntimeLifecycleState;
   event: string;
   turnId: string | null;
+  result?: { text: string; truncated: boolean };
   lastAssistantMessage?: string;
 }
 
@@ -61,6 +68,8 @@ export interface RuntimeGatewayOptions {
   windowsHostPath?: string;
   windowsPipeHostFactory?: (options: WindowsPipeHostTransportOptions) => WindowsPipeHostTransport;
   onSignal?(terminalSessionId: string, signal: RuntimeLifecycleSignal): void;
+  onAnswerCaptureRevoked?(terminalSessionId: string): void;
+  now?: () => number;
 }
 
 export class RuntimeGateway {
@@ -69,6 +78,8 @@ export class RuntimeGateway {
   private readonly windowsHostPath: string | undefined;
   private readonly windowsPipeHostFactory: (options: WindowsPipeHostTransportOptions) => WindowsPipeHostTransport;
   private readonly onSignal: RuntimeGatewayOptions["onSignal"];
+  private readonly onAnswerCaptureRevoked: RuntimeGatewayOptions["onAnswerCaptureRevoked"];
+  private readonly now: () => number;
   private readonly leases = new Map<string, RuntimeLease>();
   private readonly sockets = new Set<AgentGatewaySocket>();
   private server: Server | null = null;
@@ -83,6 +94,8 @@ export class RuntimeGateway {
     this.windowsPipeHostFactory = options.windowsPipeHostFactory
       ?? ((transportOptions) => new WindowsPipeHostTransport(transportOptions));
     this.onSignal = options.onSignal;
+    this.onAnswerCaptureRevoked = options.onAnswerCaptureRevoked;
+    this.now = options.now ?? Date.now;
   }
 
   get address(): string {
@@ -128,7 +141,9 @@ export class RuntimeGateway {
 
   registerSession(
     terminalSessionId: string,
-    provider: Exclude<ProviderId, "terminal">
+    provider: Exclude<ProviderId, "terminal">,
+    captureResultOrGrantExpiresAt: boolean | number = false,
+    answerCaptureGrantExpiresAt?: number
   ): RuntimeSessionCapability {
     if (!this.endpoint || (!this.server && !this.windowsTransport?.isRunning)) {
       throw new Error("Agent runtime gateway must be started before launching agents.");
@@ -141,12 +156,21 @@ export class RuntimeGateway {
     }
     this.revokeTerminalSession(terminalSessionId);
     const capabilityToken = randomBytes(32).toString("base64url");
+    const grantExpiresAt = typeof captureResultOrGrantExpiresAt === "number"
+      ? captureResultOrGrantExpiresAt : answerCaptureGrantExpiresAt;
     this.leases.set(terminalSessionId, {
       terminalSessionId,
       provider,
       tokenDigest: digest(capabilityToken),
       activeTurnId: null,
-      latest: null
+      latest: null,
+      captureResult: captureResultOrGrantExpiresAt === true,
+      answerCaptureGrantExpiresAt: provider === "codex"
+        && typeof grantExpiresAt === "number"
+        && Number.isFinite(grantExpiresAt)
+        && grantExpiresAt > this.now()
+        ? grantExpiresAt
+        : null
     });
     return { address: this.endpoint, terminalSessionId, provider, capabilityToken };
   }
@@ -160,12 +184,20 @@ export class RuntimeGateway {
     if (!lease) return;
     lease.tokenDigest.fill(0);
     this.leases.delete(terminalSessionId);
+    if (lease.answerCaptureGrantExpiresAt !== null) {
+      this.onAnswerCaptureRevoked?.(terminalSessionId);
+    }
   }
 
   async close(): Promise<void> {
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
-    for (const lease of this.leases.values()) lease.tokenDigest.fill(0);
+    for (const lease of this.leases.values()) {
+      lease.tokenDigest.fill(0);
+      if (lease.answerCaptureGrantExpiresAt !== null) {
+        this.onAnswerCaptureRevoked?.(lease.terminalSessionId);
+      }
+    }
     this.leases.clear();
     const server = this.server;
     const transport = this.windowsTransport;
@@ -203,8 +235,17 @@ export class RuntimeGateway {
       handled = true;
       try {
         const value: unknown = JSON.parse(pending.subarray(0, newline).toString("utf8"));
-        this.handleLifecycle(value);
-        socket.write(Buffer.from(`${JSON.stringify({ v: RUNTIME_PROTOCOL_VERSION, type: "ack" })}\n`, "utf8"));
+        if (isAnswerCaptureCheck(value)) {
+          const answerCapture = this.answerCaptureIsActive(value);
+          socket.write(Buffer.from(`${JSON.stringify({
+            v: RUNTIME_PROTOCOL_VERSION,
+            type: "ack",
+            answerCapture
+          })}\n`, "utf8"));
+        } else {
+          this.handleLifecycle(value);
+          socket.write(Buffer.from(`${JSON.stringify({ v: RUNTIME_PROTOCOL_VERSION, type: "ack" })}\n`, "utf8"));
+        }
         const timeout = setTimeout(close, 1_000);
         timeout.unref();
       } catch {
@@ -213,6 +254,32 @@ export class RuntimeGateway {
     });
     socket.on("error", close);
     socket.on("close", () => this.sockets.delete(socket));
+  }
+
+  private answerCaptureIsActive(value: unknown): boolean {
+    if (!isRecord(value) || Object.keys(value).sort().join(",") !== [
+      "capabilityToken", "provider", "terminalSessionId", "type", "v"
+    ].sort().join(",")
+      || value.v !== RUNTIME_PROTOCOL_VERSION || value.type !== "answer-capture-check"
+      || typeof value.terminalSessionId !== "string" || !value.terminalSessionId
+      || value.terminalSessionId.length > 160 || value.provider !== "codex"
+      || typeof value.capabilityToken !== "string" || value.capabilityToken.length < 32) {
+      throw new Error("Answer-capture check is invalid.");
+    }
+    const lease = this.leases.get(value.terminalSessionId);
+    if (!lease || lease.provider !== value.provider) return false;
+    const supplied = digest(value.capabilityToken);
+    const valid = supplied.length === lease.tokenDigest.length
+      && timingSafeEqual(supplied, lease.tokenDigest);
+    supplied.fill(0);
+    if (!valid) return false;
+    if (lease.answerCaptureGrantExpiresAt === null) return false;
+    if (lease.answerCaptureGrantExpiresAt <= this.now()) {
+      lease.answerCaptureGrantExpiresAt = null;
+      this.onAnswerCaptureRevoked?.(value.terminalSessionId);
+      return false;
+    }
+    return true;
   }
 
   private handleLifecycle(value: unknown): void {
@@ -224,6 +291,15 @@ export class RuntimeGateway {
       && timingSafeEqual(supplied, lease.tokenDigest);
     supplied.fill(0);
     if (!valid) throw new Error("Runtime capability is invalid.");
+    if (message.result && !lease.captureResult) throw new Error("Result capture is not enabled for this session.");
+    if (message.lastAssistantMessage !== undefined && (
+      lease.answerCaptureGrantExpiresAt === null
+      || lease.answerCaptureGrantExpiresAt <= this.now()
+    )) {
+      lease.answerCaptureGrantExpiresAt = null;
+      this.onAnswerCaptureRevoked?.(message.terminalSessionId);
+      throw new Error("Answer capture is not authorized for this session.");
+    }
 
     if (message.turnId && isTurnStart(message.event)) {
       lease.activeTurnId = message.turnId;
@@ -237,20 +313,31 @@ export class RuntimeGateway {
     const signal: RuntimeLifecycleSignal = {
       state: message.state,
       event: message.event,
-      turnId: message.turnId
+      turnId: message.turnId,
+      ...(message.result === undefined ? {} : { result: message.result }),
+      ...(message.lastAssistantMessage === undefined ? {} : { lastAssistantMessage: message.lastAssistantMessage })
     };
-    if(message.lastAssistantMessage!==undefined)signal.lastAssistantMessage=message.lastAssistantMessage;
-    lease.latest = signal;
+    if (message.lastAssistantMessage !== undefined && lease.answerCaptureGrantExpiresAt !== null) {
+      signal.answerCaptureGrantExpiresAt = lease.answerCaptureGrantExpiresAt;
+    }
+    // Captured text is delivered once and never stored in the lifecycle lease.
+    lease.latest = { state: signal.state, event: signal.event, turnId: signal.turnId };
     this.onSignal?.(message.terminalSessionId, signal);
   }
 }
 
+function isAnswerCaptureCheck(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && value.type === "answer-capture-check";
+}
+
 function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
   if (!isRecord(value)) throw new Error("Runtime message must be an object.");
-  const keys = Object.keys(value).filter(key=>key!=='lastAssistantMessage').sort();
+  const keys = Object.keys(value).filter((key) => key !== "lastAssistantMessage").sort();
   const expected = [
     "capabilityToken", "event", "provider", "state", "terminalSessionId", "turnId", "type", "v"
-  ].sort();
+  ];
+  if (value.result !== undefined) expected.push("result");
+  expected.sort();
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
     throw new Error("Runtime message has an invalid schema.");
   }
@@ -272,7 +359,16 @@ function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
     || value.event.length > 80
     || (value.turnId !== null && (typeof value.turnId !== "string" || value.turnId.length > 160))
   ) throw new Error("Runtime message fields are invalid.");
-  if(value.lastAssistantMessage!==undefined&&(value.provider!=='codex'||value.event!=='Stop'||value.state!=='idle'||typeof value.lastAssistantMessage!=='string'||value.lastAssistantMessage.length>4000))throw new Error('Invalid final-answer signal');
+  if (value.result !== undefined && (
+    value.state !== "idle" || value.event !== "Stop" || !isRecord(value.result)
+    || Object.keys(value.result).sort().join(",") !== "text,truncated"
+    || typeof value.result.text !== "string" || value.result.text.length > MAX_RESULT_CHARS
+    || typeof value.result.truncated !== "boolean"
+  )) throw new Error("Runtime result is invalid.");
+  if (value.lastAssistantMessage !== undefined && (
+    value.provider !== "codex" || value.event !== "Stop" || value.state !== "idle"
+    || typeof value.lastAssistantMessage !== "string" || value.lastAssistantMessage.length > MAX_ANSWER_CHARS
+  )) throw new Error("Runtime lastAssistantMessage is invalid.");
   return value as unknown as ParsedLifecycleMessage;
 }
 

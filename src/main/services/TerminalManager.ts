@@ -5,6 +5,7 @@ import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import type {
   CreateSessionRequest,
+  LaunchRole,
   Point,
   ProviderId,
   SessionBounds,
@@ -29,7 +30,20 @@ import type {
   AgentRuntimeLaunchCoordinator,
   PreparedAgentRuntimePtyLaunch
 } from "./agent-runtime/AgentRuntimeBridge.ts";
-import { AGENT_RUNTIME_ENV } from "../../agent-runtime/runtime-protocol.mjs";
+import {
+  AGENT_RUNTIME_ENV,
+  CAPTURE_ANSWER_ENV,
+  CAPTURE_ANSWER_EXPIRES_AT_ENV,
+  CAPTURE_RESULT_ENV
+} from "../../agent-runtime/runtime-protocol.mjs";
+import {
+  CONTROL_CLI_ENV,
+  CONTROL_CONNECTION_ENV,
+  controlEnvironment,
+  isLaunchRole,
+  launchRole,
+  type ControlConnection
+} from "./agent-control/controlCapabilities.ts";
 import { mergeOpenCodeLaunchEnvironment } from "./agent-runtime/ProviderRuntimeLaunch.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
@@ -68,6 +82,7 @@ interface ManagedSession {
   lifecycle: ProviderLifecycleParser | null;
   awaitingInitialResize: boolean;
   resumeOnLaunch: boolean;
+  captureResult: boolean;
 }
 
 export interface ProviderLifecycleSignal {
@@ -75,6 +90,13 @@ export interface ProviderLifecycleSignal {
   state: "idle" | "working" | "needs_approval";
   requestId?: string;
 }
+
+/**
+ * Why a snapshot reports a failing status, when that reason is not an ordinary
+ * transition into failure: "restore" re-derived a persisted session's status
+ * at launch, "user" is the outcome of a launch the user asked for in the UI.
+ */
+export type FailureOrigin = "restore" | "user";
 
 type Emit = (
   channel: typeof IPC.terminalData | typeof IPC.terminalSession | typeof IPC.terminalRemoved,
@@ -88,10 +110,22 @@ export class TerminalManager {
   private readonly agentBrowser?: AgentBrowserLaunchCoordinator;
   private readonly agentRuntime?: AgentRuntimeLaunchCoordinator;
   private readonly spawnPty: typeof pty.spawn;
+  // Renderer-reported card visibility, keyed by session and holding the
+  // outputOffset at the moment it was hidden: the last offset the card saw.
+  // Output keeps flowing through emit while hidden, addressed to the observers
+  // only (see flushOutput), so the batch queue never holds renderer output.
+  private readonly hiddenSinceOffset = new Map<string, number>();
   private lifecycleHooksEnabled: boolean;
   private sessionStore: TerminalSessionStore | null = null;
   private sessionPersistenceEnabled = false;
   private suppressPersistence = false;
+  // The live agent-control descriptor, handed only to orchestrator-role sessions
+  // spawned while it is set; null while the endpoint is off.
+  private controlConnection: ControlConnection | null = null;
+  // Set and cleared around a single synchronous session emit (see emitSession):
+  // the main process reads it from its emit callback to tell a failure that is
+  // merely re-derived state from one the user just caused.
+  private emittingFailureOrigin: FailureOrigin | null = null;
 
   constructor(
     emit: Emit,
@@ -148,20 +182,25 @@ export class TerminalManager {
     return [...this.sessions.values()].map((session) => snapshot(session));
   }
 
+  /**
+   * Takes the failure origin of the session event being emitted right now, or
+   * null for an ordinary snapshot. Only meaningful inside the emit callback:
+   * the value is one-shot, so one failure can never be announced twice.
+   */
+  consumeFailureOrigin(): FailureOrigin | null {
+    const origin = this.emittingFailureOrigin;
+    this.emittingFailureOrigin = null;
+    return origin;
+  }
+
   listMetadata(): SessionMetadata[] {
-    return [...this.sessions.values()].map(session => structuredClone(session.metadata));
+    return [...this.sessions.values()].map((session) => structuredClone(session.metadata));
   }
 
   geometry(id: string): { cols: number; rows: number } {
     const session = this.sessions.get(id);
-    if (!session) throw new Error("Terminal unavailable");
+    if (!session) throw new Error("Terminal session does not exist.");
     return { cols: session.cols, rows: session.rows };
-  }
-
-  inputChecked(id: string, data: string): boolean {
-    const session = this.sessions.get(id);
-    if (!session?.process || session.metadata.exitCode !== null) return false;
-    return tryPtyOperation(() => session.process!.write(data));
   }
 
   readBuffer(id: string): TerminalBufferSnapshot {
@@ -173,16 +212,33 @@ export class TerminalManager {
     };
   }
 
-  create(request: CreateSessionRequest): SessionSnapshot {
+  /**
+   * Sessions launched with the orchestrator role while a connection is set get
+   * it in their environment; ordinary sessions never do. Existing sessions are
+   * not re-spawned, so their environment stays as it was at launch.
+   */
+  setControlConnection(connection: ControlConnection | null): void {
+    this.controlConnection = connection ? { ...connection } : null;
+  }
+
+  create(
+    request: CreateSessionRequest,
+    control: { captureResult?: boolean; answerCaptureGrantExpiresAt?: number } = {}
+  ): SessionSnapshot {
     assertCreateRequest(request);
+    if (control.captureResult && request.provider !== "codex") {
+      throw new Error("Result capture requires a Codex session.");
+    }
     assertDirectory(request.cwd);
 
     const id = randomUUID();
+    const role = launchRole(request.role);
     const metadata: SessionMetadata = {
       id,
       revision: 0,
       provider: request.provider,
       profile: request.profile,
+      role,
       title: request.title?.trim() || defaultTitle(request.provider, request.cwd),
       titleCustomized: Boolean(request.title?.trim()),
       cwd: request.cwd,
@@ -197,7 +253,9 @@ export class TerminalManager {
       && this.providerClis.get(request.provider).state === "available";
     const launched = awaitMeasuredGrid
       ? { process: null, agentBrowser: null, agentRuntime: null, failure: null }
-      : this.spawnProcess(id, request.provider, request.profile, request.cwd);
+      : this.spawnProcess(id, request.provider, request.profile, request.cwd,
+        INITIAL_TERMINAL_COLS, INITIAL_TERMINAL_ROWS, false, control.captureResult, role,
+        control.answerCaptureGrantExpiresAt);
     if (launched.failure) applyLaunchFailure(metadata, launched.failure);
 
     const session: ManagedSession = {
@@ -217,7 +275,8 @@ export class TerminalManager {
         ? createProviderLifecycleParser(request.provider, request.cwd)
         : null,
       awaitingInitialResize: awaitMeasuredGrid,
-      resumeOnLaunch: false
+      resumeOnLaunch: false,
+      captureResult: control.captureResult === true
     };
     this.sessions.set(id, session);
     if (launched.process) this.bindProcess(id, session, launched.process);
@@ -259,7 +318,10 @@ export class TerminalManager {
       session.metadata.profile,
       session.metadata.cwd,
       session.cols,
-      session.rows
+      session.rows,
+      false,
+      session.captureResult,
+      session.metadata.role
     );
     session.process = launched.process;
     session.agentBrowser = launched.agentBrowser;
@@ -269,8 +331,12 @@ export class TerminalManager {
       ? createProviderLifecycleParser(session.metadata.provider, session.metadata.cwd)
       : null;
     session.metadata.startedAt = Date.now();
+    // A restart is a launch the user asked for, so its failure is news even
+    // though the card already showed "failed" before they clicked.
+    let failureOrigin: FailureOrigin | null = null;
     if (launched.failure) {
       applyLaunchFailure(session.metadata, launched.failure);
+      failureOrigin = "user";
     } else {
       session.metadata.status = initialSessionStatus(session.metadata.provider);
       session.metadata.exitCode = null;
@@ -279,16 +345,20 @@ export class TerminalManager {
       const runtimeStatus = this.agentRuntime?.currentStatus(id);
       if (runtimeStatus) session.metadata.status = runtimeStatus;
     }
-    this.emitSession(session.metadata);
+    this.emitSession(session.metadata, failureOrigin);
     return snapshot(session);
   }
 
   input(id: string, data: string): void {
-    if (typeof data !== "string" || data.length === 0) return;
+    this.inputChecked(id, data);
+  }
+
+  inputChecked(id: string, data: string): boolean {
+    if (typeof data !== "string" || data.length === 0) return false;
     const session = this.sessions.get(id);
-    if (!session || session.metadata.exitCode !== null || !session.process) return;
+    if (!session || session.metadata.exitCode !== null || !session.process) return false;
     const process = session.process;
-    tryPtyOperation(() => process.write(data));
+    return tryPtyOperation(() => process.write(data));
   }
 
   resize(id: string, cols: number, rows: number): void {
@@ -364,12 +434,62 @@ export class TerminalManager {
     }
   }
 
+  /**
+   * Reports whether the session's card renders live output. A hidden session
+   * keeps appending to its scrollback and advancing outputOffset, so history
+   * stays canonical, and keeps emitting terminalData for the in-process
+   * observers; only the renderer's delivery of that stream is gated.
+   */
+  setVisible(id: string, visible: boolean): void {
+    if (typeof id !== "string" || typeof visible !== "boolean") return;
+    const session = this.sessions.get(id);
+    if (!session) return;
+    const hiddenSince = this.hiddenSinceOffset.get(id);
+    if (visible === (hiddenSince === undefined)) return;
+
+    if (!visible) {
+      // Visible -> hidden: flush the batch queued while the card was still
+      // live instead of dropping it. It was produced while visible, so it goes
+      // to every consumer; from here on flushOutput addresses the observers
+      // only. Nothing is lost, and nothing is duplicated because the renderer
+      // dedups by absolute offset.
+      this.flushOutput(id, session);
+      this.hiddenSinceOffset.set(id, session.outputOffset);
+      return;
+    }
+
+    // Hidden -> visible: first hand the observers whatever is still batched
+    // (still addressed to them alone, since the card has not seen it and the
+    // replay below covers it), then replay the retained scrollback ending at
+    // the current outputOffset to the renderer alone. The card drops everything
+    // it already wrote (its offset is absolute;
+    // features/terminal/terminalOutput.ts), so the missed suffix arrives —
+    // once. The observers get no replay: they already received every chunk.
+    //
+    // The window is bounded by MAX_SCROLLBACK_CHARS: when the hidden stretch
+    // was longer than the ring, the buffer no longer reaches back to
+    // hiddenSince and the head of that stretch is gone for good. There is no
+    // field on TerminalDataEvent to say so, so the consumer derives the hole
+    // from the offset arithmetic (the event starts after the offset it already
+    // wrote) and marks it in the card instead of stitching it as continuous
+    // output. Never widen the ring to hide this: the truncation must stay
+    // visible.
+    this.flushOutput(id, session);
+    this.hiddenSinceOffset.delete(id);
+    if (hiddenSince === undefined || session.outputOffset === hiddenSince) return;
+    const data = session.bufferChunks.slice(session.bufferStart).join("");
+    if (data.length > 0) {
+      this.emit(IPC.terminalData, { id, data, outputOffset: session.outputOffset, audience: "renderer" });
+    }
+  }
+
   dispose(id: string): void {
     const session = this.sessions.get(id);
     if (!session) return;
 
     this.flushOutput(id, session);
     this.sessions.delete(id);
+    this.hiddenSinceOffset.delete(id);
     session.agentBrowser?.cleanup();
     session.agentRuntime?.cleanup();
     if (session.process) {
@@ -396,6 +516,7 @@ export class TerminalManager {
       revision: 0,
       provider: descriptor.provider,
       profile: descriptor.profile,
+      role: descriptor.role,
       title: descriptor.title,
       titleCustomized: descriptor.titleCustomized,
       cwd: descriptor.cwd,
@@ -432,7 +553,9 @@ export class TerminalManager {
           descriptor.cwd,
           INITIAL_TERMINAL_COLS,
           INITIAL_TERMINAL_ROWS,
-          descriptor.provider !== "terminal"
+          descriptor.provider !== "terminal",
+          false,
+          descriptor.role
         );
         process = launched.process;
         agentBrowser = launched.agentBrowser;
@@ -462,13 +585,18 @@ export class TerminalManager {
         ? createProviderLifecycleParser(descriptor.provider, descriptor.cwd)
         : null,
       awaitingInitialResize: awaitMeasuredGrid,
-      resumeOnLaunch: awaitMeasuredGrid && descriptor.provider !== "terminal"
+      resumeOnLaunch: awaitMeasuredGrid && descriptor.provider !== "terminal",
+      captureResult: false
     };
     this.sessions.set(descriptor.id, session);
     if (process) this.bindProcess(descriptor.id, session, process);
     const runtimeStatus = this.agentRuntime?.currentStatus(descriptor.id);
     if (runtimeStatus) session.metadata.status = runtimeStatus;
-    this.emitSession(metadata);
+    // Restoring re-derives a persisted session's status, so a failure here is
+    // state this launch found (a folder that vanished between runs), not
+    // something that happened under the user — announcing it every launch
+    // would notify about the same silent state again and again.
+    this.emitSession(metadata, metadata.status === "failed" ? "restore" : null);
   }
 
   private persistSessions(): Promise<void> {
@@ -486,9 +614,12 @@ export class TerminalManager {
     });
   }
 
-  private emitSession(metadata: SessionMetadata): void {
+  private emitSession(metadata: SessionMetadata, failureOrigin: FailureOrigin | null = null): void {
     metadata.revision += 1;
+    this.emittingFailureOrigin = failureOrigin;
     this.emit(IPC.terminalSession, { session: structuredClone(metadata) });
+    // The emit callback is the only legitimate reader and has already run.
+    this.emittingFailureOrigin = null;
   }
 
   private launchAwaitingSession(id: string, session: ManagedSession): void {
@@ -504,7 +635,9 @@ export class TerminalManager {
         session.metadata.cwd,
         session.cols,
         session.rows,
-        resumePrevious
+        resumePrevious,
+        session.captureResult,
+        session.metadata.role
       );
       session.process = launched.process;
       session.agentBrowser = launched.agentBrowser;
@@ -537,7 +670,10 @@ export class TerminalManager {
     cwd: string,
     cols = INITIAL_TERMINAL_COLS,
     rows = INITIAL_TERMINAL_ROWS,
-    resumePrevious = false
+    resumePrevious = false,
+    captureResult = false,
+    role: LaunchRole = "agent",
+    answerCaptureGrantExpiresAt?: number
   ): {
     process: IPty | null;
     agentBrowser: PreparedAgentBrowserPtyLaunch | null;
@@ -550,7 +686,9 @@ export class TerminalManager {
     }
     const agentRuntime = provider === "terminal"
       ? null
-      : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd }) ?? null;
+      : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd,
+        ...(captureResult ? { captureResult: true } : {}),
+        ...(answerCaptureGrantExpiresAt === undefined ? {} : { answerCaptureGrantExpiresAt }) }) ?? null;
     let agentBrowser: PreparedAgentBrowserPtyLaunch | null = null;
     try {
       // omp and pi take no browser bridge, exactly like grok: the adapter chain below
@@ -561,10 +699,16 @@ export class TerminalManager {
       const baseEnvironment = terminalEnvironment();
       const browserEnvironment = agentBrowser?.environment ?? {};
       const runtimeEnvironment = agentRuntime?.environment ?? {};
-      const providerEnvironment = provider === "opencode"
-        ? mergeOpenCodeLaunchEnvironment(browserEnvironment, runtimeEnvironment)
-        : { ...browserEnvironment, ...runtimeEnvironment };
+      const providerEnvironment = {
+        ...(provider === "opencode"
+          ? mergeOpenCodeLaunchEnvironment(browserEnvironment, runtimeEnvironment)
+          : { ...browserEnvironment, ...runtimeEnvironment }),
+        // Orchestrators alone learn where the control descriptor and CLI are.
+        ...controlEnvironment(role, this.controlConnection)
+      };
       const providerArgs = [...(agentRuntime?.args ?? []), ...(agentBrowser?.args ?? [])];
+      // Stable terminal observations for the CLI controller; leave ordinary launches unchanged.
+      if (captureResult && provider === "codex") providerArgs.push("-c", "tui.animations=false");
       const launch = resolveTerminalLaunch(provider, profile, providerArgs, {
         environment: { ...baseEnvironment, ...providerEnvironment },
         ...(providerCli ? { providerCli } : {}),
@@ -634,8 +778,25 @@ export class TerminalManager {
 
     const data = session.pendingOutput.join("");
     session.pendingOutput.length = 0;
-    this.emit(IPC.terminalData, { id, data, outputOffset: session.outputOffset });
+    // While the card is hidden the batch is for the observers only: the
+    // renderer catches up through the replay in setVisible.
+    this.emit(IPC.terminalData, {
+      id,
+      data,
+      outputOffset: session.outputOffset,
+      ...(this.hiddenSinceOffset.has(id) ? { audience: "observers" as const } : {})
+    });
   }
+}
+
+/** A manager event the main process forwards to its in-process observers. */
+export function reachesObservers(payload: TerminalDataEvent | SessionEvent | SessionRemovedEvent): boolean {
+  return !("audience" in payload) || payload.audience !== "renderer";
+}
+
+/** A manager event the main process forwards to the renderer. */
+export function reachesRenderer(payload: TerminalDataEvent | SessionEvent | SessionRemovedEvent): boolean {
+  return !("audience" in payload) || payload.audience !== "observers";
 }
 
 function applyLaunchFailure(metadata: SessionMetadata, failure: UnavailableProviderCli): void {
@@ -649,7 +810,13 @@ export function terminalEnvironment(
 ): Record<string, string> {
   const reserved = new Set<string>([
     ...Object.values(AGENT_BROWSER_ENV),
-    ...Object.values(AGENT_RUNTIME_ENV)
+    ...Object.values(AGENT_RUNTIME_ENV),
+    CAPTURE_RESULT_ENV,
+    CAPTURE_ANSWER_ENV,
+    CAPTURE_ANSWER_EXPIRES_AT_ENV,
+    // An orchestrator that launches the app must not leak its own control grant.
+    CONTROL_CONNECTION_ENV,
+    CONTROL_CLI_ENV
   ]);
   const environment = Object.fromEntries(
     Object.entries(source).filter((entry): entry is [string, string] => (
@@ -687,6 +854,8 @@ function assertCreateRequest(request: CreateSessionRequest): void {
   const providers = new Set<ProviderId>(["terminal", "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]);
   if (!request || !providers.has(request.provider)) throw new Error("Unknown terminal provider.");
   if (request.profile !== "normal" && request.profile !== "yolo") throw new Error("Unknown launch profile.");
+  if (request.role !== undefined && !isLaunchRole(request.role)) throw new Error("Unknown launch role.");
+  if (request.role === "orchestrator" && request.provider === "terminal") throw new Error("A plain terminal cannot be an orchestrator.");
   if (typeof request.cwd !== "string" || request.cwd.length === 0) throw new Error("Project folder is required.");
   if (!isPoint(request.position)) throw new Error("Session position is invalid.");
 }

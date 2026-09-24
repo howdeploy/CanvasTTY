@@ -363,5 +363,7 @@ test("opt-in hook result capture is authenticated, bounded and absent for ordina
   assert.equal(signals[3].signal.lastAssistantMessage.length, MAX_ANSWER_CHARS);
   assert.equal(gateway.currentStatus("companion"), "idle");
   await hook("companion-unauthorized", false, false, "must not arrive either", true, false);
-  assert.equal(signals.length, 4);
+  assert.equal(signals.length, 5);
+  assert.equal(signals[4].signal.lastAssistantMessage, undefined);
+  assert.equal(JSON.stringify(signals[4]).includes("must not arrive either"), false);
 });

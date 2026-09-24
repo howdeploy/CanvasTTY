@@ -999,6 +999,7 @@ export type LimitSource =
 export type LimitUnavailableReason =
   | "cli-not-found"
   | "not-authenticated"
+  | "session-expired"
   | "subscription-required"
   | "unsupported-protocol"
   | "timeout"

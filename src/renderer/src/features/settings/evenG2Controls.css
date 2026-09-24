@@ -1,4 +1,5 @@
 .g2-settings {
+  --g2-inset: 22px;
   border: 1px solid color-mix(in srgb, var(--text) 13%, transparent);
   border-radius: 14px;
   background: var(--surface-soft);
@@ -52,7 +53,7 @@
   display: flex;
   gap: 14px;
   align-items: center;
-  padding: 22px;
+  padding: 22px var(--g2-inset);
 }
 .g2-settings__heading h3 {
   font-size: 17px;
@@ -95,7 +96,7 @@
   color: var(--text-dark);
 }
 .g2-settings__entry {
-  padding: 17px 22px;
+  padding: 17px var(--g2-inset);
   background: color-mix(in srgb, var(--surface) 60%, transparent);
   display: flex;
   align-items: center;
@@ -119,7 +120,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  margin: 0 22px 18px;
+  margin: 0 var(--g2-inset) 18px;
   padding-top: 14px;
   border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
 }
@@ -134,7 +135,7 @@
   display: flex;
   gap: 6px;
   border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
-  padding: 15px 22px 0;
+  padding: 15px var(--g2-inset) 0;
 }
 .g2-steps button {
   flex: 1;
@@ -162,7 +163,7 @@
   border-color: var(--primary);
 }
 .g2-settings__body {
-  padding: 22px;
+  padding: var(--g2-inset);
 }
 .g2-settings__body h4 {
   font-size: 17px;
@@ -327,7 +328,7 @@
   color: var(--blue);
 }
 .g2-peer {
-  margin: 0 20px 18px;
+  margin: 0 var(--g2-inset) 18px;
   border-top: 1px solid color-mix(in srgb, var(--text) 13%, transparent);
   padding-top: 18px;
 }
@@ -373,15 +374,21 @@
   background: color-mix(in srgb, var(--danger) 20%, var(--surface));
   padding: 11px 15px;
   border-radius: 8px;
-  margin: 0 20px 14px;
+  margin: 0 var(--g2-inset) 14px;
 }
 .g2-settings__body .g2-settings__error {
   margin: 12px 0;
 }
+.g2-settings > button.g2-link {
+  margin: 0 var(--g2-inset) var(--g2-inset);
+}
 @media (max-width: 950px) {
+  .g2-settings {
+    --g2-inset: 17px;
+  }
   .g2-settings__heading {
     gap: 10px;
-    padding: 17px;
+    padding: var(--g2-inset);
   }
   .g2-settings__heading h3 {
     font-size: 15px;
@@ -395,14 +402,14 @@
   .g2-settings__entry {
     align-items: flex-start;
     flex-direction: column;
-    padding: 17px;
+    padding: 17px var(--g2-inset);
   }
   .g2-settings__body {
-    padding: 17px;
+    padding: var(--g2-inset);
   }
   .g2-steps {
-    padding-left: 12px;
-    padding-right: 12px;
+    padding-left: var(--g2-inset);
+    padding-right: var(--g2-inset);
   }
   .g2-steps button {
     padding: 8px 5px;

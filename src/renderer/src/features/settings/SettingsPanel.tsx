@@ -602,6 +602,14 @@ export function SettingsPanel({
 
           {section === "agents" && (
             <>
+              <SettingGroup layout="stacked" label={t(locale, "agentCliDetection")} description={t(locale, "agentCliDetectionDescription")}>
+                <div className="agent-cli-recheck">
+                  <button className="setting-inline-action" type="button" disabled={checkingAgentClis} onClick={() => void recheckAgentClis()}>
+                    {t(locale, checkingAgentClis ? "agentCliRechecking" : "agentCliRecheck")}
+                  </button>
+                  {agentCliError && <span role="alert">{agentCliError}</span>}
+                </div>
+              </SettingGroup>
               <AgentHooksSettings
                 settings={settings}
                 plugins={plugins}
@@ -761,14 +769,6 @@ export function SettingsPanel({
                       </div>
                     );
                   })}
-                </div>
-              </SettingGroup>
-              <SettingGroup layout="stacked" label={t(locale, "agentCliDetection")} description={t(locale, "agentCliDetectionDescription")}>
-                <div className="agent-cli-recheck">
-                  <button className="setting-inline-action" type="button" disabled={checkingAgentClis} onClick={() => void recheckAgentClis()}>
-                    {t(locale, checkingAgentClis ? "agentCliRechecking" : "agentCliRecheck")}
-                  </button>
-                  {agentCliError && <span role="alert">{agentCliError}</span>}
                 </div>
               </SettingGroup>
               <SettingGroup

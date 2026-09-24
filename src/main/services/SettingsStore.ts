@@ -206,10 +206,10 @@ export class SettingsStore {
       const availabilityChanged = providerSelectionsChanged(normalized, this.value);
       if (!this.value.persistCanvasRegions) this.value.canvasRegions = [];
       if (!this.value.persistStickyNotes) this.value.stickyNotes = [];
-      if (needsMigration || availabilityChanged) await this.persist();
+      if (needsMigration || availabilityChanged) await this.queuePersist();
     } catch (error) {
       if (isMissingFile(error)) {
-        await this.persist();
+        await this.queuePersist();
       } else {
         console.warn("CanvasTTY settings could not be loaded; defaults are used.", error);
       }
@@ -227,50 +227,69 @@ export class SettingsStore {
     const filtered = filterUnavailableProviders(this.value, this.availableProviders);
     if (providerSelectionsChanged(this.value, filtered)) {
       this.value = filtered;
-      await this.persist();
+      await this.queuePersist();
     }
     return this.get();
   }
 
   async update(patch: Partial<AppSettings>): Promise<AppSettings> {
-    if (patch.canvasWheelCaptureMode !== undefined) this.hasPersistedLegacyWheelCapture = true;
-    const nextPatch = patch.canvasWheelCaptureMode === "key"
-      && patch.canvasWheelOverride === undefined
-      && this.value.canvasWheelOverride === null
-      ? { ...patch, canvasWheelOverride: defaultCanvasWheelBinding(this.platform) }
-      : patch;
-    this.value = filterUnavailableProviders(
-      normalizeSettings({ ...this.value, ...nextPatch }, this.value, this.platform),
-      this.availableProviders
-    );
-    await this.persist();
+    const updatePatch = structuredClone(patch);
+    const write = this.writeQueue.catch(() => undefined).then(async () => {
+      const nextHasPersistedLegacyWheelCapture = this.hasPersistedLegacyWheelCapture
+        || updatePatch.canvasWheelCaptureMode !== undefined;
+      const nextPatch = updatePatch.canvasWheelCaptureMode === "key"
+        && updatePatch.canvasWheelOverride === undefined
+        && this.value.canvasWheelOverride === null
+        ? { ...updatePatch, canvasWheelOverride: defaultCanvasWheelBinding(this.platform) }
+        : updatePatch;
+      const nextValue = filterUnavailableProviders(
+        normalizeSettings({ ...this.value, ...nextPatch }, this.value, this.platform),
+        this.availableProviders
+      );
+
+      await this.persist(nextValue, nextHasPersistedLegacyWheelCapture);
+      this.value = nextValue;
+      this.hasPersistedLegacyWheelCapture = nextHasPersistedLegacyWheelCapture;
+    });
+    this.writeQueue = write;
+    await write;
     return this.get();
   }
 
-  private persist(): Promise<void> {
+  private queuePersist(
+    value: AppSettings = this.value,
+    hasPersistedLegacyWheelCapture = this.hasPersistedLegacyWheelCapture
+  ): Promise<void> {
+    const write = this.writeQueue.catch(() => undefined)
+      .then(() => this.persist(value, hasPersistedLegacyWheelCapture));
+    this.writeQueue = write;
+    return write;
+  }
+
+  private persist(
+    value: AppSettings = this.value,
+    hasPersistedLegacyWheelCapture = this.hasPersistedLegacyWheelCapture
+  ): Promise<void> {
     const persistedValue: Partial<AppSettings> & {
       settingsVersion: number;
       zoomOverApplications?: boolean;
     } = {
-      ...this.value,
-      canvasRegions: this.value.persistCanvasRegions ? this.value.canvasRegions : [],
-      stickyNotes: this.value.persistStickyNotes ? this.value.stickyNotes : [],
+      ...value,
+      canvasRegions: value.persistCanvasRegions ? value.canvasRegions : [],
+      stickyNotes: value.persistStickyNotes ? value.stickyNotes : [],
       settingsVersion: SETTINGS_VERSION
     };
-    if (this.hasPersistedLegacyWheelCapture) {
-      persistedValue.zoomOverApplications = this.value.canvasWheelCaptureMode === "always";
+    if (hasPersistedLegacyWheelCapture) {
+      persistedValue.zoomOverApplications = value.canvasWheelCaptureMode === "always";
     }
     const snapshot = JSON.stringify(persistedValue, null, 2);
     const temporaryPath = `${this.filePath}.tmp`;
 
-    const write = this.writeQueue.catch(() => undefined).then(async () => {
+    return (async () => {
       await mkdir(dirname(this.filePath), { recursive: true });
       await writeFile(temporaryPath, snapshot, "utf8");
       await rename(temporaryPath, this.filePath);
-    });
-    this.writeQueue = write;
-
-    return write;
+    })();
   }
 }
 

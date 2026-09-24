@@ -223,6 +223,56 @@ test("colored regions and notes use independent exit persistence gates", async (
   }
 });
 
+test("a failed settings save does not publish its value and a later update persists cleanly", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "canvastty-settings-failed-save-"));
+
+  try {
+    const store = new SettingsStore(dir, "en");
+    await store.load();
+    const persist = store.persist.bind(store);
+    store.persist = async () => {
+      throw new Error("synthetic settings write failure");
+    };
+
+    await assert.rejects(store.update({ palette: "night" }), /synthetic settings write failure/);
+    assert.equal(store.get().palette, "sage");
+    let persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
+    assert.equal(persisted.palette, "sage");
+
+    store.persist = persist;
+    await store.update({ locale: "ru" });
+
+    persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
+    assert.equal(persisted.palette, "sage");
+    assert.equal(persisted.locale, "ru");
+    assert.equal(store.get().palette, "sage");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("concurrent settings updates keep their write-queue order", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "canvastty-settings-write-queue-"));
+
+  try {
+    const store = new SettingsStore(dir, "en");
+    await store.load();
+
+    await Promise.all([
+      store.update({ palette: "night" }),
+      store.update({ locale: "ru" })
+    ]);
+
+    const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
+    assert.equal(persisted.palette, "night");
+    assert.equal(persisted.locale, "ru");
+    assert.equal(store.get().palette, "night");
+    assert.equal(store.get().locale, "ru");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("normalizes HOME accents, Canvas colors, and the expanded pattern set", () => {
   const normalized = normalizeSettings({
     homeAccentPreset: "custom",

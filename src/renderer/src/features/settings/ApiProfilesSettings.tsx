@@ -165,6 +165,7 @@ export function ApiProfilesSettings({ settings, onChange }: ApiProfilesSettingsP
                 ))}
               </select>
               <input
+                className="api-profile-row__base-url"
                 type="text"
                 value={draft.baseUrl}
                 maxLength={500}

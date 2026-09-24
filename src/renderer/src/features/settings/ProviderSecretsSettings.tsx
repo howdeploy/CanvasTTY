@@ -68,7 +68,7 @@ export function ProviderSecretsSettings({ locale }: ProviderSecretsSettingsProps
         const configured = status[secretId];
         const draft = drafts[secretId] ?? "";
         return (
-          <div className="agent-launcher-settings__row" key={secretId}>
+          <div className="agent-launcher-settings__row provider-secret-row" key={secretId}>
             <span className="agent-launcher-settings__identity">
               <strong>{SECRET_LABELS[secretId]}</strong>
               <span className={configured ? "provider-secret provider-secret--on" : "provider-secret"}>

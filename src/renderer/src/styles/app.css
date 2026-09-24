@@ -1078,8 +1078,9 @@ button { border: 0; }
 .attention-queue__item span { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .attention-queue__empty { color: rgba(255,255,255,.5); font-size: 11px; font-weight: 700; }
 
-/* Updates section: icon, status and action sit on one grid. Narrow windows move the actions
-   onto their own row so a long status wraps inside the middle column. */
+/* Updates section: icon, status and action sit on one grid. A narrow Settings pane
+   moves the action below the status so translated text has room to wrap. */
+.settings-updates { container-type: inline-size; }
 .settings-updates .setting-group__description { max-width: 62ch; }
 .settings-updates__card { display: grid; grid-template-columns: 2.3em minmax(0, 1fr) auto; align-items: center; column-gap: 1em; row-gap: .75em; min-width: 0; padding: 1em 1.1em; border-radius: .9em; background: var(--surface-soft); }
 .settings-updates__icon { width: 2.3em; height: 2.3em; flex: 0 0 auto; display: grid; place-items: center; border-radius: .7em; color: var(--text-dark); background: var(--secondary); }
@@ -1094,9 +1095,9 @@ button { border: 0; }
 .settings-updates__progress::-webkit-progress-bar { background: transparent; }
 .settings-updates__progress::-webkit-progress-value { background: var(--primary); border-radius: 999px; }
 .settings-updates__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5em; }
-@media (max-width: 760px) {
+@container (max-width: 46rem) {
   .settings-updates__card { grid-template-columns: 2.3em minmax(0, 1fr); }
-  .settings-updates__actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .settings-updates__actions { grid-column: 2; justify-content: flex-start; }
 }
 .settings-updates__button { min-height: 2.4em; min-width: 9em; padding: 0 1em; border-radius: .65em; outline: 0; color: var(--text); background: color-mix(in srgb, var(--text) 12%, transparent); cursor: pointer; font-size: .85em; font-weight: 800; white-space: nowrap; }
 .settings-updates__button:hover { background: color-mix(in srgb, var(--text) 20%, transparent); }

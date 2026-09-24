@@ -25,7 +25,7 @@ export function UpdatesSettings({ state, locale, currentVersion }: UpdatesSettin
   };
 
   return (
-    <section className="setting-group setting-group--stacked settings-updates" aria-labelledby="settings-updates-title">
+    <section className="setting-group setting-group--field setting-group--stacked settings-updates" aria-labelledby="settings-updates-title">
       <div className="setting-group__copy">
         <h3 id="settings-updates-title">{t(locale, "updates")}</h3>
         <p className="setting-group__description">{t(locale, "updatesDescription")}</p>

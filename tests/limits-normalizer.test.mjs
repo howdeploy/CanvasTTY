@@ -97,6 +97,51 @@ test("normalizes Kimi weekly and rolling usage without exposing account metadata
   ]);
 });
 
+test("normalizes Kimi Code 2 quota windows", () => {
+  const windows = normalizeKimiLimits({
+    code: 0,
+    msg: "success",
+    data: {
+      kind: "ok",
+      quota: {
+        usages: {
+          limit5h: { usedRatio: 0.25, resetAt: "2026-09-24T05:45:52Z" },
+          limit7d: { usedRatio: 0.5, resetAt: "2026-09-29T00:00:00Z" },
+          monthTotal: { usedRatio: 0.1246, resetAt: "2026-10-18T00:00:00Z" },
+          monthCode: { usedRatio: 0.1, resetAt: "2026-10-18T00:00:00Z" }
+        },
+        extraUsage: null
+      }
+    }
+  });
+
+  assert.deepEqual(windows.map((window) => ({
+    id: window.id,
+    usedPercent: window.usedPercent,
+    windowMinutes: window.windowMinutes,
+    resetsAt: window.resetsAt
+  })), [
+    { id: "kimi:managed:300", usedPercent: 25, windowMinutes: 300, resetsAt: Date.parse("2026-09-24T05:45:52Z") },
+    { id: "kimi:weekly", usedPercent: 50, windowMinutes: 10_080, resetsAt: Date.parse("2026-09-29T00:00:00Z") },
+    { id: "kimi:monthly", usedPercent: 12.46, windowMinutes: null, resetsAt: Date.parse("2026-10-18T00:00:00Z") }
+  ]);
+});
+
+test("maps Kimi usage errors to reasons", () => {
+  const cases = [
+    { message: "Failed to fetch usage: request timed out.", reason: "timeout" },
+    { message: "Authorization failed. Please check your API key (try /login).", reason: "not-authenticated" },
+    { message: "Failed to fetch usage: HTTP 500", reason: "protocol-error" }
+  ];
+
+  for (const { message, reason } of cases) {
+    assert.throws(
+      () => normalizeKimiLimits({ code: 0, data: { kind: "error", message } }),
+      (error) => error instanceof Error && error.message === reason
+    );
+  }
+});
+
 test("normalizes every real OpenCode Go usage window", () => {
   const windows = normalizeOpenCodeGoLimits({
     usage: {

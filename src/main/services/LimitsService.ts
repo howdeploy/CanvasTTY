@@ -1009,7 +1009,13 @@ export function normalizeKimiLimits(raw: unknown): LimitWindow[] {
   const payload = isRecord(raw.data) ? raw.data : raw;
   if (payload.kind === "error") {
     const message = typeof payload.message === "string" ? payload.message.toLowerCase() : "";
-    throw new LimitsAdapterError(message.includes("auth") || message.includes("login") ? "not-authenticated" : "protocol-error");
+    throw new LimitsAdapterError(
+      message.includes("auth") || message.includes("login")
+        ? "not-authenticated"
+        : message.includes("timed out")
+          ? "timeout"
+          : "protocol-error"
+    );
   }
   const windows: LimitWindow[] = [];
   const managedSummary = payload.summary;
@@ -1083,6 +1089,40 @@ export function normalizeKimiLimits(raw: unknown): LimitWindow[] {
         resetsAt
       });
       if (windows.length >= MAX_WINDOWS) break;
+    }
+  }
+
+  const managedUsages = isRecord(payload.quota) && isRecord(payload.quota.usages) ? payload.quota.usages : null;
+  if (managedUsages) {
+    const definitions: Array<{
+      key: "limit5h" | "limit7d" | "monthTotal";
+      id: string;
+      slot: "primary" | "secondary";
+      label: string;
+      windowMinutes: number | null;
+    }> = [
+      { key: "limit5h", id: "kimi:managed:300", slot: "primary", label: "5h", windowMinutes: 300 },
+      { key: "limit7d", id: "kimi:weekly", slot: "secondary", label: "7d", windowMinutes: 10_080 },
+      { key: "monthTotal", id: "kimi:monthly", slot: "secondary", label: "monthly", windowMinutes: null }
+    ];
+    for (const { key, id, slot, label, windowMinutes } of definitions) {
+      const candidate = managedUsages[key];
+      if (!isRecord(candidate)) continue;
+      const usedRatio = numericValue(candidate.usedRatio);
+      const resetsAt = epochMilliseconds(candidate.resetAt);
+      if (usedRatio === null && resetsAt === null) continue;
+      windows.push({
+        id,
+        bucketId: "kimi",
+        slot,
+        isDefaultBucket: true,
+        label,
+        usedPercent: usedRatio === null ? null : clampPercent(usedRatio * 100),
+        used: null,
+        limit: null,
+        windowMinutes,
+        resetsAt
+      });
     }
   }
 

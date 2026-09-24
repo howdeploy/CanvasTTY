@@ -76,6 +76,8 @@ import {
 } from "./appearanceSettings";
 import { CanvasNavigationShortcutEditor } from "./CanvasNavigationShortcutEditor";
 import { AgentHooksSettings } from "./AgentHooksSettings";
+import { ProviderSecretsSettings } from "./ProviderSecretsSettings";
+import { ApiProfilesSettings } from "./ApiProfilesSettings";
 import { AboutSettings } from "./AboutSettings";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { setCanvasLauncherItemEnabled } from "../launcher/canvasLauncher";
@@ -600,6 +602,14 @@ export function SettingsPanel({
 
           {section === "agents" && (
             <>
+              <SettingGroup layout="stacked" label={t(locale, "agentCliDetection")} description={t(locale, "agentCliDetectionDescription")}>
+                <div className="agent-cli-recheck">
+                  <button className="setting-inline-action" type="button" disabled={checkingAgentClis} onClick={() => void recheckAgentClis()}>
+                    {t(locale, checkingAgentClis ? "agentCliRechecking" : "agentCliRecheck")}
+                  </button>
+                  {agentCliError && <span role="alert">{agentCliError}</span>}
+                </div>
+              </SettingGroup>
               <AgentHooksSettings
                 settings={settings}
                 plugins={plugins}
@@ -761,13 +771,19 @@ export function SettingsPanel({
                   })}
                 </div>
               </SettingGroup>
-              <SettingGroup layout="stacked" label={t(locale, "agentCliDetection")} description={t(locale, "agentCliDetectionDescription")}>
-                <div className="agent-cli-recheck">
-                  <button className="setting-inline-action" type="button" disabled={checkingAgentClis} onClick={() => void recheckAgentClis()}>
-                    {t(locale, checkingAgentClis ? "agentCliRechecking" : "agentCliRecheck")}
-                  </button>
-                  {agentCliError && <span role="alert">{agentCliError}</span>}
-                </div>
+              <SettingGroup
+                layout="stacked"
+                label={t(locale, "providerApiKeys")}
+                description={t(locale, "providerApiKeysDescription")}
+              >
+                <ProviderSecretsSettings locale={locale} />
+              </SettingGroup>
+              <SettingGroup
+                layout="stacked"
+                label={t(locale, "apiProfiles")}
+                description={t(locale, "apiProfilesDescription")}
+              >
+                <ApiProfilesSettings settings={settings} onChange={onChange} />
               </SettingGroup>
             </>
           )}

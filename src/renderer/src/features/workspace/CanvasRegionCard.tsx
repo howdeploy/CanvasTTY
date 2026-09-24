@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CanvasRegion, Point, SessionBounds } from "../../../../shared/contracts";
-import { constrainCanvasRegionBounds } from "./canvasRegions";
-import { snapMove, snapResize, type ResizeDirection } from "./snap";
+import { constrainCanvasRegionBounds, snapCanvasRegionBounds } from "./canvasRegions";
+import { snapMove, type ResizeDirection } from "./snap";
 
 interface CanvasRegionCardProps {
   region: CanvasRegion;
@@ -132,7 +132,7 @@ export function CanvasRegionCard({
           - (state.direction.includes("n") ? deltaY : 0)
       }
     }, state.direction);
-    applyBounds(snapEnabled ? snapResize(raw, state.direction, snapTargets) : raw);
+    applyBounds(snapEnabled ? snapCanvasRegionBounds(raw, state.direction, snapTargets) : raw);
   };
 
   const endResize = (event: React.PointerEvent<HTMLDivElement>): void => {

@@ -9,6 +9,8 @@ export interface PrepareAgentBrowserLaunchInput {
   terminalSessionId: string;
   provider: AgentProvider;
   cwd: string;
+  /** Include the canvastty_agents MCP server; only orchestrator sessions set this. */
+  includeOrchestration?: boolean;
 }
 
 export interface PreparedAgentBrowserPtyLaunch {
@@ -56,7 +58,9 @@ export class AgentBrowserBridge implements AgentBrowserLaunchCoordinator {
     const capability = this.gateway.registerAgent(input);
     let providerLaunch;
     try {
-      providerLaunch = this.providers.prepare(input.provider, capability.connectionId);
+      providerLaunch = this.providers.prepare(input.provider, capability.connectionId, {
+        ...(input.includeOrchestration ? { orchestration: true } : {})
+      });
     } catch (error) {
       this.gateway.revokeTerminalSession(input.terminalSessionId);
       throw error;

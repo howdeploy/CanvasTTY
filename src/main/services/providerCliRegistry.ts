@@ -1,22 +1,67 @@
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
 import type { AgentCliAvailability, AgentProviderId } from "../../shared/contracts.ts";
 
-export const PROVIDER_CLI_IDS: readonly AgentProviderId[] = Object.freeze([
-  "codex",
-  "claude",
-  "qwen",
-  "kimi",
-  "opencode",
-  "hermes",
-  "grok",
-  "omp",
-  "pi"
-]);
+// A provider ID and the executable names it may install as are independent
+// facts: MiniMax Code ships as `mcode`, Cursor as `agent`. Definitions keep
+// that mapping declarative so new providers never grow resolution special
+// cases.
+export type ProviderCliKnownDirectoryRoot = "home" | "windows-local-appdata";
+
+export interface ProviderCliKnownDirectory {
+  root: ProviderCliKnownDirectoryRoot;
+  segments: readonly string[];
+}
+
+export interface ProviderCliDefinition {
+  id: AgentProviderId;
+  commands: readonly string[];
+  knownDirectories?: readonly ProviderCliKnownDirectory[];
+}
+
+function defineProviderCli(
+  id: AgentProviderId,
+  commands: readonly string[],
+  knownDirectories?: readonly ProviderCliKnownDirectory[]
+): ProviderCliDefinition {
+  return Object.freeze({
+    id,
+    commands: Object.freeze([...commands]),
+    ...(knownDirectories
+      ? { knownDirectories: Object.freeze(knownDirectories.map((directory) => Object.freeze(directory))) }
+      : {})
+  });
+}
+
+export const PROVIDER_CLI_DEFINITIONS: Readonly<Record<AgentProviderId, ProviderCliDefinition>> = Object.freeze({
+  codex: defineProviderCli("codex", ["codex"], [
+    { root: "windows-local-appdata", segments: ["Programs", "OpenAI", "Codex", "bin"] }
+  ]),
+  claude: defineProviderCli("claude", ["claude"]),
+  qwen: defineProviderCli("qwen", ["qwen"]),
+  kimi: defineProviderCli("kimi", ["kimi"], [{ root: "home", segments: [".kimi-code", "bin"] }]),
+  opencode: defineProviderCli("opencode", ["opencode"], [{ root: "home", segments: [".opencode", "bin"] }]),
+  hermes: defineProviderCli("hermes", ["hermes"]),
+  grok: defineProviderCli("grok", ["grok"], [{ root: "home", segments: [".grok", "bin"] }]),
+  omp: defineProviderCli("omp", ["omp"]),
+  pi: defineProviderCli("pi", ["pi"]),
+  // Prefer the unique spelling across PATH. Generic agent requires a verified
+  // Cursor real path or an explicit user override; Grok also installs agent.
+  cursor: defineProviderCli("cursor", ["cursor-agent", "agent"]),
+  // MiniMax Code (@minimax-ai/code) installs its TUI as `mcode`.
+  minimax: defineProviderCli("minimax", ["mcode"], [{ root: "home", segments: [".minimax-code", "bin"] }]),
+  devin: defineProviderCli("devin", ["devin"]),
+  // Google Antigravity CLI installs as `agy` (Gemini CLI's successor).
+  antigravity: defineProviderCli("antigravity", ["agy"])
+});
+
+export const PROVIDER_CLI_IDS: readonly AgentProviderId[] = Object.freeze(
+  Object.keys(PROVIDER_CLI_DEFINITIONS) as AgentProviderId[]
+);
 
 export type ProviderCliLauncher = "native" | "batch";
-export type ProviderCliRejectionReason = "missing" | "not-file" | "not-executable" | "unsupported-launcher";
+export type ProviderCliRejectionReason = "missing" | "not-file" | "not-executable" | "unsupported-launcher" | "unverified-identity";
 
 export interface ProviderCliCheck {
   path: string;
@@ -63,6 +108,7 @@ interface ProviderCliRegistryOptions {
   startupDirectory?: string;
   overrides?: Partial<Record<AgentProviderId, string>>;
   platformRoot?: string;
+  definitions?: readonly ProviderCliDefinition[];
   inspectCandidate?: (path: string, platform: NodeJS.Platform) => ProviderCliRejectionReason | null;
   directoryExists?: (path: string) => boolean;
 }
@@ -81,31 +127,33 @@ export function createProviderCliRegistry(options: ProviderCliRegistryOptions = 
   const inputDirectories = pathEntries(environment[pathKey], platform, startupDirectory);
   const platformDirectories = defaultPlatformDirectories(platform, options.platformRoot);
   const sharedDirectories = sharedUserDirectories(platform, environment, homeDirectory);
+  const definitions = normalizeProviderCliDefinitions(options.definitions);
   const resolveAll = (): Readonly<Record<AgentProviderId, ProviderCliResolution>> => {
     const childDirectories = uniquePaths(
       [...inputDirectories, ...platformDirectories, ...sharedDirectories].filter(directoryExists),
       platform
     );
     const childPath = childDirectories.join(platform === "win32" ? ";" : ":");
-    const resolutions = Object.fromEntries(PROVIDER_CLI_IDS.map((provider) => {
+    const resolutions = Object.fromEntries(definitions.map((definition) => {
       const providerDirectories = uniquePaths([
         ...inputDirectories,
         ...platformDirectories,
-        ...knownProviderDirectories(provider, platform, environment, homeDirectory),
+        ...knownProviderDirectories(definition, platform, environment, homeDirectory),
         ...sharedDirectories
       ], platform);
-      return [provider, resolveProviderCli({
-        provider,
+      return [definition.id, resolveProviderCli({
+        provider: definition.id,
+        commands: definition.commands,
         platform,
         environment,
-        override: normalizeOverride(options.overrides?.[provider], platform, startupDirectory),
+        override: normalizeOverride(options.overrides?.[definition.id], platform, startupDirectory),
         directories: providerDirectories,
         pathKey,
         childPath,
         inspectCandidate
       })];
     })) as Record<AgentProviderId, ProviderCliResolution>;
-    for (const provider of PROVIDER_CLI_IDS) Object.freeze(resolutions[provider]);
+    for (const definition of definitions) Object.freeze(resolutions[definition.id]);
     return Object.freeze(resolutions);
   };
   let resolutions = resolveAll();
@@ -125,6 +173,7 @@ export function createProviderCliRegistry(options: ProviderCliRegistryOptions = 
 
 interface ResolveProviderCliInput {
   provider: AgentProviderId;
+  commands: readonly string[];
   platform: NodeJS.Platform;
   environment: Readonly<NodeJS.ProcessEnv>;
   override?: string;
@@ -136,8 +185,8 @@ interface ResolveProviderCliInput {
 
 function resolveProviderCli(input: ResolveProviderCliInput): ProviderCliResolution {
   const candidates = input.override
-    ? [input.override, ...providerCandidates(input.provider, input.directories, input.platform)]
-    : providerCandidates(input.provider, input.directories, input.platform);
+    ? [input.override, ...providerCandidates(input.commands, input.directories, input.platform, input.provider === "cursor")]
+    : providerCandidates(input.commands, input.directories, input.platform, input.provider === "cursor");
   const checked: ProviderCliCheck[] = [];
 
   for (const candidate of uniquePaths(candidates, input.platform)) {
@@ -145,6 +194,10 @@ function resolveProviderCli(input: ResolveProviderCliInput): ProviderCliResoluti
     const rejection = input.inspectCandidate(absoluteCandidate, input.platform);
     if (rejection) {
       checked.push({ path: absoluteCandidate, result: rejection });
+      continue;
+    }
+    if (input.provider === "cursor" && /(?:^|[\\/])agent(?:\.(?:exe|com|cmd|bat))?$/iu.test(absoluteCandidate) && absoluteCandidate !== input.override && !verifiedCursorPath(absoluteCandidate)) {
+      checked.push({ path: absoluteCandidate, result: "unverified-identity" });
       continue;
     }
     const launcher = launcherKind(absoluteCandidate, input.platform);
@@ -238,12 +291,14 @@ function escapeCommandPromptArgument(value: string): string {
   return `"${escaped}"`.replace(COMMAND_PROMPT_META_CHARACTERS, "^$1");
 }
 
-function providerCandidates(provider: AgentProviderId, directories: string[], platform: NodeJS.Platform): string[] {
+function providerCandidates(commands: readonly string[], directories: string[], platform: NodeJS.Platform, commandFirst = false): string[] {
   const path = platform === "win32" ? win32 : posix;
   const extensions = platform === "win32"
     ? [...WINDOWS_NATIVE_EXTENSIONS, ...WINDOWS_BATCH_EXTENSIONS]
     : [""];
-  return directories.flatMap((directory) => extensions.map((extension) => path.join(directory, `${provider}${extension}`)));
+  const candidate = (directory: string, command: string): string[] => extensions.map((extension) => path.join(directory, `${command}${extension}`));
+  return commandFirst ? commands.flatMap((command) => directories.flatMap((directory) => candidate(directory, command)))
+    : directories.flatMap((directory) => commands.flatMap((command) => candidate(directory, command)));
 }
 
 function launcherKind(path: string, platform: NodeJS.Platform): ProviderCliLauncher | null {
@@ -281,21 +336,44 @@ function defaultPlatformDirectories(platform: NodeJS.Platform, platformRoot = "/
 }
 
 function knownProviderDirectories(
-  provider: AgentProviderId,
+  definition: ProviderCliDefinition,
   platform: NodeJS.Platform,
   environment: Readonly<NodeJS.ProcessEnv>,
   homeDirectory: string
 ): string[] {
   const path = platform === "win32" ? win32 : posix;
   const directories: string[] = [];
-  if (platform === "win32" && provider === "codex") {
-    const localAppData = environment.LOCALAPPDATA ?? path.join(homeDirectory, "AppData", "Local");
-    directories.push(path.join(localAppData, "Programs", "OpenAI", "Codex", "bin"));
+  for (const known of definition.knownDirectories ?? []) {
+    switch (known.root) {
+      case "home":
+        directories.push(path.join(homeDirectory, ...known.segments));
+        break;
+      case "windows-local-appdata": {
+        if (platform !== "win32") break;
+        const localAppData = environment.LOCALAPPDATA ?? path.join(homeDirectory, "AppData", "Local");
+        directories.push(path.join(localAppData, ...known.segments));
+        break;
+      }
+    }
   }
-  if (provider === "opencode") directories.push(path.join(homeDirectory, ".opencode", "bin"));
-  if (provider === "kimi") directories.push(path.join(homeDirectory, ".kimi-code", "bin"));
-  if (provider === "grok") directories.push(path.join(homeDirectory, ".grok", "bin"));
   return directories;
+}
+
+function normalizeProviderCliDefinitions(
+  definitions: readonly ProviderCliDefinition[] | undefined
+): readonly ProviderCliDefinition[] {
+  if (!definitions) return PROVIDER_CLI_IDS.map((id) => PROVIDER_CLI_DEFINITIONS[id]);
+  const seen = new Set<AgentProviderId>();
+  for (const definition of definitions) {
+    if (definition.commands.length === 0) {
+      throw new Error(`Provider ${definition.id} must declare at least one CLI command.`);
+    }
+    if (seen.has(definition.id)) {
+      throw new Error(`Provider ${definition.id} is declared more than once.`);
+    }
+    seen.add(definition.id);
+  }
+  return definitions;
 }
 
 function sharedUserDirectories(
@@ -389,4 +467,8 @@ function providerLabel(provider: AgentProviderId): string {
   if (provider === "omp") return "OMP";
   if (provider === "pi") return "Pi";
   return `${provider[0].toUpperCase()}${provider.slice(1)}`;
+}
+
+function verifiedCursorPath(path: string): boolean {
+  try { return /(?:^|[\\/])(?:\.cursor|cursor-agent|cursor)(?:[\\/])/iu.test(realpathSync(path)); } catch { return false; }
 }

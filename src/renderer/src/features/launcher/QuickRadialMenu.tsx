@@ -22,7 +22,7 @@ interface RadialLauncherProps {
 }
 
 const PROVIDER_IDS = new Set<ProviderId>([
-  "terminal", "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"
+  "terminal", "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"
 ]);
 
 export function RadialLauncher({

@@ -410,7 +410,7 @@ function secretValue(value: unknown): string {
 }
 
 function isProvider(value: string): value is ProviderId {
-  return value === "terminal" || value === "codex" || value === "claude" || value === "qwen" || value === "kimi" || value === "opencode" || value === "hermes" || value === "grok" || value === "omp" || value === "pi";
+  return value === "terminal" || value === "codex" || value === "claude" || value === "qwen" || value === "kimi" || value === "opencode" || value === "hermes" || value === "grok" || value === "omp" || value === "pi" || value === "cursor" || value === "minimax" || value === "devin" || value === "antigravity";
 }
 
 function encodeAssetPath(value: string): string {

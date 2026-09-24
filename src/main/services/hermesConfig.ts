@@ -22,11 +22,16 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, win32 } from "node:path";
 import { parseDocument } from "yaml";
 import {
+  ORCHESTRATION_MCP_SERVER_NAME,
+  ORCHESTRATION_TOOL_NAMES
+} from "../../agent-browser/orchestration-catalog.mjs";
+import {
   APPROVED_BROWSER_TOOL_NAMES,
   MCP_SERVER_NAME,
   canonicalStringify
 } from "../../agent-browser/tool-catalog.mjs";
 import { AGENT_BROWSER_ENV } from "./agent-browser/protocol.ts";
+import { ORCHESTRATION_ENV } from "./agent-browser/orchestration-protocol.ts";
 
 const CONFIG_FILE_MODE = 0o600;
 const CONFIG_DIRECTORY_MODE = 0o700;
@@ -44,12 +49,16 @@ export interface HermesStdioHelperLaunch {
 interface HermesTemporaryConfigurationOptions {
   homeDirectory: string;
   helper: HermesStdioHelperLaunch;
+  /** Optional second MCP server (canvastty_agents) written next to the browser one. */
+  orchestrationHelper?: HermesStdioHelperLaunch;
 }
 
 interface HermesRecoveryJournal {
   version: 1;
   ownershipId: string;
   entryHash: string;
+  /** Absent in journals written before orchestration support; never undefined when set. */
+  orchestrationEntryHash?: string;
   configOriginalHash: string | null;
   configMutatedHash: string;
   mcpServersOriginallyPresent: boolean;
@@ -78,6 +87,7 @@ interface ExistingConfigurationLock {
 }
 
 export class HermesTemporaryConfiguration {
+  readonly hasOrchestrationEntry: boolean;
   private readonly paths: ReturnType<typeof hermesPaths>;
   private readonly journal: HermesRecoveryJournal;
   private cleaned = false;
@@ -88,10 +98,12 @@ export class HermesTemporaryConfiguration {
   ) {
     this.paths = paths;
     this.journal = journal;
+    this.hasOrchestrationEntry = journal.orchestrationEntryHash !== undefined;
   }
 
   static begin(options: HermesTemporaryConfigurationOptions): HermesTemporaryConfiguration {
     validateHelper(options.helper);
+    if (options.orchestrationHelper) validateHelper(options.orchestrationHelper);
     mkdirSync(options.homeDirectory, { recursive: true, mode: CONFIG_DIRECTORY_MODE });
     const paths = hermesPaths(options.homeDirectory);
     const lock = acquireLock(paths.lock);
@@ -99,6 +111,9 @@ export class HermesTemporaryConfiguration {
       this.recoverLocked(paths);
       const ownershipId = randomUUID();
       const entry = hermesMcpEntry(options.helper);
+      const orchestrationEntry = options.orchestrationHelper
+        ? hermesOrchestrationEntry(options.orchestrationHelper)
+        : null;
       const configOriginal = readOptional(paths.config);
       const { document, value } = parseHermesDocument(configOriginal ?? "", paths.config);
       const mcpServersOriginallyPresent = Object.hasOwn(value, "mcp_servers");
@@ -106,7 +121,13 @@ export class HermesTemporaryConfiguration {
       if (MCP_SERVER_NAME in servers) {
         throw new Error(`Hermes MCP server name ${MCP_SERVER_NAME} is already configured.`);
       }
+      if (orchestrationEntry && ORCHESTRATION_MCP_SERVER_NAME in servers) {
+        throw new Error(`Hermes MCP server name ${ORCHESTRATION_MCP_SERVER_NAME} is already configured.`);
+      }
       document.setIn(["mcp_servers", MCP_SERVER_NAME], entry);
+      if (orchestrationEntry) {
+        document.setIn(["mcp_servers", ORCHESTRATION_MCP_SERVER_NAME], orchestrationEntry);
+      }
       const configMutated = document.toString({ lineWidth: 0 });
       const backupDirectory = join(paths.backupRoot, ownershipId);
       mkdirSync(backupDirectory, { recursive: true, mode: CONFIG_DIRECTORY_MODE });
@@ -117,6 +138,7 @@ export class HermesTemporaryConfiguration {
         version: 1,
         ownershipId,
         entryHash: hashCanonical(entry),
+        ...(orchestrationEntry ? { orchestrationEntryHash: hashCanonical(orchestrationEntry) } : {}),
         configOriginalHash: configOriginal === null ? null : hashText(configOriginal),
         configMutatedHash: hashText(configMutated),
         mcpServersOriginallyPresent,
@@ -220,6 +242,29 @@ export function hermesMcpEntry(helper: HermesStdioHelperLaunch): Record<string, 
   };
 }
 
+// Same placeholder contract as the browser entry: Hermes resolves ${VAR} from
+// its own environment when launching the server, so the per-session
+// orchestration capability injected into the PTY environment reaches the
+// helper without baking launch-specific values into the shared config.yaml.
+export function hermesOrchestrationEntry(helper: HermesStdioHelperLaunch): Record<string, unknown> {
+  validateHelper(helper);
+  const orchestrationEnvironment = Object.fromEntries(
+    Object.values(ORCHESTRATION_ENV).map((key) => [key, `\${${key}}`])
+  );
+  return {
+    command: helper.command,
+    args: [...helper.args],
+    env: { ...helper.env, ...orchestrationEnvironment },
+    enabled: true,
+    trust: "full",
+    tools: {
+      include: [...ORCHESTRATION_TOOL_NAMES],
+      resources: false,
+      prompts: false
+    }
+  };
+}
+
 function cleanupOwnedConfiguration(
   paths: ReturnType<typeof hermesPaths>,
   journal: HermesRecoveryJournal
@@ -240,13 +285,24 @@ function cleanupOwnedConfiguration(
     if (before === null) return;
     const { document, value } = parseHermesDocument(before, paths.config);
     const servers = mcpServers(value, paths.config);
-    const owned = servers[MCP_SERVER_NAME];
-    if (owned === undefined) return;
-    if (hashCanonical(owned) !== journal.entryHash) {
-      throw new Error("CanvasTTY Hermes MCP configuration ownership changed before cleanup.");
+    const ownedEntries: Array<[string, string]> = [[MCP_SERVER_NAME, journal.entryHash]];
+    if (journal.orchestrationEntryHash) {
+      ownedEntries.push([ORCHESTRATION_MCP_SERVER_NAME, journal.orchestrationEntryHash]);
     }
-    document.deleteIn(["mcp_servers", MCP_SERVER_NAME]);
-    if (!journal.mcpServersOriginallyPresent && Object.keys(servers).length === 1) {
+    let ownedCount = 0;
+    for (const [name, expectedHash] of ownedEntries) {
+      const owned = servers[name];
+      if (owned === undefined) continue;
+      if (hashCanonical(owned) !== expectedHash) {
+        throw new Error("CanvasTTY Hermes MCP configuration ownership changed before cleanup.");
+      }
+      ownedCount += 1;
+    }
+    if (ownedCount === 0) return;
+    for (const [name] of ownedEntries) {
+      document.deleteIn(["mcp_servers", name]);
+    }
+    if (!journal.mcpServersOriginallyPresent && Object.keys(servers).length === ownedCount) {
       document.delete("mcp_servers");
     }
     const next = document.toString({ lineWidth: 0 });
@@ -295,6 +351,7 @@ function parseJournal(
     || value.version !== 1
     || typeof value.ownershipId !== "string"
     || typeof value.entryHash !== "string"
+    || (value.orchestrationEntryHash !== undefined && typeof value.orchestrationEntryHash !== "string")
     || (value.configOriginalHash !== null && typeof value.configOriginalHash !== "string")
     || typeof value.configMutatedHash !== "string"
     || typeof value.mcpServersOriginallyPresent !== "boolean"

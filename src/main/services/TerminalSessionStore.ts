@@ -2,13 +2,12 @@ import { dirname, join } from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import type {
   LaunchProfileId,
-  LaunchRole,
+  SessionRole,
   Point,
   ProviderId,
   SessionMetadata,
   Size
 } from "../../shared/contracts.ts";
-import { launchRole } from "./agent-control/controlCapabilities.ts";
 
 export const TERMINAL_SESSION_STORE_VERSION = 1;
 const MAX_PERSISTED_SESSIONS = 64;
@@ -22,7 +21,11 @@ const PROVIDERS = new Set<ProviderId>([
   "hermes",
   "grok",
   "omp",
-  "pi"
+  "pi",
+  "cursor",
+  "minimax",
+  "devin",
+  "antigravity"
 ]);
 
 export interface PersistedTerminalSession {
@@ -30,12 +33,13 @@ export interface PersistedTerminalSession {
   provider: ProviderId;
   profile: LaunchProfileId;
   /** Records written before roles existed restore as ordinary agents. */
-  role: LaunchRole;
+  role: SessionRole;
   title: string;
   titleCustomized: boolean;
   cwd: string;
   position: Point;
   size: Size;
+  parentSessionId?: string;
 }
 
 interface PersistedTerminalSessionState {
@@ -112,7 +116,8 @@ export function persistedTerminalSession(metadata: SessionMetadata): PersistedTe
     titleCustomized: metadata.titleCustomized,
     cwd: metadata.cwd,
     position: { ...metadata.position },
-    size: { ...metadata.size }
+    size: { ...metadata.size },
+    ...(metadata.parentSessionId !== undefined ? { parentSessionId: metadata.parentSessionId } : {})
   };
 }
 
@@ -135,11 +140,21 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
     if (typeof session.titleCustomized !== "boolean") continue;
     if (typeof session.cwd !== "string" || session.cwd.length === 0 || session.cwd.length > 4_096) continue;
     if (!isFinitePoint(session.position) || !isFiniteSize(session.size)) continue;
+    const rawRole: unknown = session.role;
+    const roleKnown = rawRole === undefined || rawRole === "agent" || rawRole === "interactive"
+      || rawRole === "orchestrator" || rawRole === "subagent";
+    if (!roleKnown) continue;
+    const role: SessionRole = rawRole === "orchestrator" || rawRole === "subagent" ? rawRole : "agent";
+    const parentSessionId = typeof session.parentSessionId === "string"
+      ? session.parentSessionId
+      : undefined;
+    if (session.parentSessionId !== undefined && parentSessionId === undefined) continue;
+    if (role === "subagent" && parentSessionId === undefined) continue;
     sessions.push({
       id: session.id,
       provider: session.provider as ProviderId,
       profile: session.profile,
-      role: session.provider === "terminal" ? "agent" : launchRole(session.role),
+      role: session.provider === "terminal" ? "agent" : role,
       title: session.title.trim().slice(0, 80),
       titleCustomized: session.titleCustomized,
       cwd: session.cwd,
@@ -147,7 +162,8 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
       size: {
         width: clamp(session.size.width, 420, 1_600),
         height: clamp(session.size.height, 260, 1_100)
-      }
+      },
+      ...(parentSessionId !== undefined ? { parentSessionId } : {})
     });
     ids.add(session.id);
   }

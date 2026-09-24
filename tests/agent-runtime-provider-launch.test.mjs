@@ -74,10 +74,22 @@ test("helper process flags stay scoped to hook commands instead of the agent PTY
 test("revoking CanvasTTY lifecycle hooks leaves every provider launch unmodified", async (t) => {
   const root = await fixture(t);
   const adapters = adaptersFor(root);
-  for (const provider of ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]) {
+  for (const provider of ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"]) {
     const launch = adapters.prepare(provider, `session-${provider}`, false);
     assert.deepEqual(launch.args, []);
     assert.deepEqual(launch.environment, {});
+    launch.releaseConfiguration();
+  }
+});
+
+test("providers without a hook adapter never write Grok's shared hook configuration", async (t) => {
+  const root = await fixture(t);
+  const adapters = adaptersFor(root);
+  for (const provider of ["omp", "pi", "cursor", "minimax", "devin", "antigravity"]) {
+    const launch = adapters.prepare(provider, `session-${provider}`, true);
+    assert.deepEqual(launch.args, [], provider);
+    assert.deepEqual(launch.environment, {}, provider);
+    await assert.rejects(readFile(join(root, "grok", "hooks", "canvastty-runtime-hooks.json"), "utf8"), /ENOENT/u, provider);
     launch.releaseConfiguration();
   }
 });

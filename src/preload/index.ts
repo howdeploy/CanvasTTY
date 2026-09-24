@@ -75,6 +75,11 @@ const api: CanvasTTYApi = {
   limits: {
     get: () => ipcRenderer.invoke(IPC.limitsGet)
   },
+  providerSecrets: {
+    status: () => ipcRenderer.invoke(IPC.providerSecretsStatus),
+    set: (secretId: string, value: string) => ipcRenderer.invoke(IPC.providerSecretsSet, secretId, value),
+    clear: (secretId: string) => ipcRenderer.invoke(IPC.providerSecretsClear, secretId)
+  },
   plugins: {
     list: () => ipcRenderer.invoke(IPC.pluginsList),
     search: (query: string) => ipcRenderer.invoke(IPC.pluginsSearch, query),

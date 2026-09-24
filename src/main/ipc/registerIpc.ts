@@ -11,11 +11,12 @@ import type {
   PluginBrowserOpenResponse,
   PluginCanvasRequest,
   ProviderId,
+  ProviderSecretId,
   SessionBounds
 } from "../../shared/contracts";
-import { IPC } from "../../shared/contracts";
+import { IPC, PROVIDER_SECRET_IDS } from "../../shared/contracts";
 import { isCanvasNavigationMouseButton } from "../../shared/canvasNavigation";
-import { observeWindowState, readWindowState } from "../windowState";
+import { createWindowStateObserver, readWindowState } from "../windowState";
 import type { SettingsStore } from "../services/SettingsStore";
 import { providerCliAvailability, type ProviderCliRegistry } from "../services/providerCliRegistry";
 import type { TerminalManager } from "../services/TerminalManager";
@@ -23,6 +24,7 @@ import type { LimitsService } from "../services/LimitsService";
 import type { PluginManager } from "../services/PluginManager";
 import type { PluginMediaService } from "../services/PluginMediaService";
 import type { PluginSecretsService } from "../services/PluginSecretsService";
+import type { ProviderSecretsService } from "../services/ProviderSecretsService";
 import type { BrowserService } from "../services/BrowserService";
 import { normalizePluginBrowserUrl } from "../services/browser/PluginBrowserOpenPolicy";
 import { PluginBrowserOpenBroker } from "./PluginBrowserOpenBroker";
@@ -48,6 +50,7 @@ interface Dependencies {
   plugins: PluginManager;
   pluginMedia: PluginMediaService;
   pluginSecrets: PluginSecretsService;
+  providerSecrets: ProviderSecretsService;
   browser: BrowserService;
   githubAuth: GithubAuthService;
   hermesHud: HermesHudService;
@@ -79,6 +82,7 @@ export function registerIpc({
   plugins,
   pluginMedia,
   pluginSecrets,
+  providerSecrets,
   browser,
   githubAuth,
   hermesHud,
@@ -92,7 +96,7 @@ export function registerIpc({
   requestPluginCanvas,
   broadcastPluginStorageChange,
   updater
-}: Dependencies): void {
+}: Dependencies): (window: BrowserWindow | null) => void {
   const pluginBrowserOpenBroker = new PluginBrowserOpenBroker(getMainWindow);
   const requestPluginBrowserOpen = async (pluginId: string, value: unknown): Promise<void> => {
     plugins.assertPermission(pluginId, "browser:open");
@@ -313,6 +317,13 @@ export function registerIpc({
   ));
   ipcMain.handle(IPC.pluginsSecretsDelete, (_event, pluginId: string, key: string) => (
     pluginSecrets.delete(pluginId, key)
+  ));
+  ipcMain.handle(IPC.providerSecretsStatus, () => providerSecrets.status());
+  ipcMain.handle(IPC.providerSecretsSet, (_event, secretId: string, value: string) => (
+    providerSecrets.set(providerSecretValue(secretId), value)
+  ));
+  ipcMain.handle(IPC.providerSecretsClear, (_event, secretId: string) => (
+    providerSecrets.delete(providerSecretValue(secretId))
   ));
   ipcMain.handle(IPC.pluginsMediaPickLibrary, (event, pluginId: string) => (
     pickPluginMediaLibrary(event, pluginId, plugins, pluginMedia)
@@ -621,12 +632,10 @@ export function registerIpc({
     terminals.setVisible(id, visible);
   });
 
-  const publishWindowState = (window: BrowserWindow): void => {
-    if (!window.isDestroyed()) window.webContents.send(IPC.windowState, readWindowState(window));
-  };
-
-  const mainWindow = getMainWindow();
-  if (mainWindow) observeWindowState(mainWindow, () => publishWindowState(mainWindow));
+  const observeMainWindow = createWindowStateObserver<BrowserWindow>((window, state) => {
+    if (!window.isDestroyed()) window.webContents.send(IPC.windowState, state);
+  });
+  observeMainWindow(getMainWindow());
 
   ipcMain.on(IPC.windowMinimize, (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.handle(IPC.windowToggleMaximize, (event) => {
@@ -646,6 +655,8 @@ export function registerIpc({
     assertMainRenderer(event, getMainWindow);
     updater.install();
   });
+
+  return observeMainWindow;
 }
 
 function isCanvasNavigationPointerBindingInput(
@@ -762,7 +773,7 @@ async function pickPluginMediaLibrary(
 }
 
 function providerValue(value: unknown): ProviderId {
-  if (value === "terminal" || value === "codex" || value === "claude" || value === "qwen" || value === "kimi" || value === "opencode" || value === "hermes" || value === "grok" || value === "omp" || value === "pi") return value;
+  if (value === "terminal" || value === "codex" || value === "claude" || value === "qwen" || value === "kimi" || value === "opencode" || value === "hermes" || value === "grok" || value === "omp" || value === "pi" || value === "cursor" || value === "minimax" || value === "devin" || value === "antigravity") return value;
   throw new Error("Plugin requested an unknown launcher provider.");
 }
 
@@ -777,4 +788,9 @@ async function readMedia(path: string): Promise<string> {
 
   const content = await readFile(path);
   return `data:${mime};base64,${content.toString("base64")}`;
+}
+
+function providerSecretValue(value: string): ProviderSecretId {
+  if ((PROVIDER_SECRET_IDS as readonly string[]).includes(value)) return value as ProviderSecretId;
+  throw new Error("Provider secret id is unknown.");
 }

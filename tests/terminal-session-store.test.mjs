@@ -37,6 +37,19 @@ test("terminal window descriptors persist atomically without scrollback or envir
   }
 });
 
+test("cursor agent sessions persist like every other provider", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canvastty-terminal-state-cursor-"));
+  try {
+    const cursorSession = { ...descriptor, id: "0f9e8d7c-6b5a-4c3b-2a19-f8e7d6c5b4a3", provider: "cursor" };
+    const store = new TerminalSessionStore(directory);
+    await store.replace([cursorSession]);
+    const restored = await new TerminalSessionStore(directory).load();
+    assert.deepEqual(restored.map((session) => session.provider), ["cursor"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("invalid descriptors are removed and geometry is bounded", () => {
   const normalized = normalizePersistedTerminalSessions({
     version: 1,
@@ -51,7 +64,7 @@ test("invalid descriptors are removed and geometry is bounded", () => {
   assert.deepEqual(normalized.sessions[0].size, { width: 420, height: 1_100 });
 });
 
-test("records written before roles existed restore as agents; only an explicit orchestrator survives", async () => {
+test("legacy roles restore as agents while unknown roles are dropped", async () => {
   const { role: _role, ...legacy } = descriptor;
   const normalized = normalizePersistedTerminalSessions({
     version: 1,
@@ -65,7 +78,6 @@ test("records written before roles existed restore as agents; only an explicit o
   assert.deepEqual(normalized.sessions.map((session) => [session.id, session.role]), [
     [descriptor.id, "agent"],
     ["orchestrator", "orchestrator"],
-    ["bogus-role", "agent"],
     ["terminal", "agent"]
   ]);
 

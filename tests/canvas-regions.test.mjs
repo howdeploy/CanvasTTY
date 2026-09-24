@@ -4,6 +4,7 @@ import {
   boundsInsideRegion,
   canvasRegionAtPoint,
   constrainCanvasRegionBounds,
+  snapCanvasRegionBounds,
   translateBounds
 } from "../src/renderer/src/features/workspace/canvasRegions.ts";
 
@@ -53,4 +54,15 @@ test("region resize keeps the opposite edge while enforcing a usable minimum", (
     position: { x: 460, y: 360 },
     size: { width: 360, height: 240 }
   });
+});
+
+test("region resize preserves 1900px and 380px widths with snapping on or off", () => {
+  const wide = { position: { x: 100, y: 100 }, size: { width: 1_900, height: 600 } };
+  const west = { position: { x: 220, y: 100 }, size: { width: 380, height: 600 } };
+
+  assert.deepEqual(constrainCanvasRegionBounds(wide, "e"), wide);
+  assert.deepEqual(snapCanvasRegionBounds(wide, "e", []), wide);
+  assert.deepEqual(constrainCanvasRegionBounds(west, "w"), west);
+  assert.deepEqual(snapCanvasRegionBounds(west, "w", []), west);
+  assert.equal(west.position.x + west.size.width, 600);
 });

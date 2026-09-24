@@ -41,7 +41,7 @@ function manager(calls) {
 test("the control provider list is the shared agent provider list, never a plain terminal", () => {
   assert.deepEqual([...CONTROL_PROVIDERS], [...AGENT_PROVIDERS]);
   assert.deepEqual([...AGENT_PROVIDERS], CANVAS_LAUNCHER_ITEMS.filter((item) => item !== "terminal"));
-  assert.deepEqual([...AGENT_PROVIDERS], ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi"]);
+  assert.deepEqual([...AGENT_PROVIDERS], ["codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"]);
   assert.equal(isControlProvider("terminal"), false);
   assert.equal(isControlProvider("codex"), true);
   assert.equal(isControlProvider(undefined), false);
@@ -118,7 +118,7 @@ test("TerminalManager hands the descriptor to orchestrator sessions only, and re
     terminals.create({ ...base, role: "orchestrator" });
     assert.equal("CANVASTTY_CONTROL_CONNECTION" in calls.at(-1).options.env, false, "no descriptor while the endpoint is off");
 
-    assert.throws(() => terminals.create({ ...base, role: "worker" }), /Unknown launch role/);
+    assert.throws(() => terminals.create({ ...base, role: "worker" }), /Unknown session role/);
     assert.throws(() => terminals.create({ ...base, provider: "terminal", profile: "normal", role: "orchestrator" }), /cannot be an orchestrator/);
   } finally {
     await terminals.shutdown();

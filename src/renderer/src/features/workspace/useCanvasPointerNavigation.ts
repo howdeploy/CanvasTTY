@@ -14,6 +14,7 @@ import {
   canvasPressIntent,
   canvasWorldRect,
   pastCanvasDragThreshold,
+  type CanvasMarqueeMode,
   type CanvasGroupDragState,
   type CanvasMarqueeRect
 } from "./canvasSelectionGesture";
@@ -35,6 +36,7 @@ interface NativePanState {
 
 interface MarqueeState {
   pointerId: number;
+  mode: CanvasMarqueeMode;
   start: Point;
   current: Point;
   moved: boolean;
@@ -49,7 +51,7 @@ interface UseCanvasPointerNavigationOptions {
   /** Canvas layer ids currently marquee-selected; a drag on one of them moves the group. */
   selectedLayerIds: ReadonlySet<string>;
   /** Replaces the marquee group with the layers intersecting the world rectangle; null clears it. */
-  onMarqueeSelection(bounds: SessionBounds | null): void;
+  onMarqueeSelection(bounds: SessionBounds | null, mode?: CanvasMarqueeMode): void;
   /** Freezes the commit basis of a travelled group move; called once, when the press activates. */
   onGroupDragStart(layerId: string): void;
   /** Commits a group move: the pointer offset in world units, applied from the pressed layer. */
@@ -160,13 +162,13 @@ export function useCanvasPointerNavigation({
     return { x: clientX - bounds.left, y: clientY - bounds.top };
   }, [viewport]);
 
-  const startMarquee = useCallback((event: React.PointerEvent<HTMLDivElement>): boolean => {
+  const startMarquee = useCallback((event: React.PointerEvent<HTMLDivElement>, mode: CanvasMarqueeMode): boolean => {
     const local = localPoint(event.clientX, event.clientY);
     if (!local) return false;
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    marqueeState.current = { pointerId: event.pointerId, start: local, current: local, moved: false };
+    marqueeState.current = { pointerId: event.pointerId, mode, start: local, current: local, moved: false };
     setMarquee(canvasMarqueeRect(local, local));
     return true;
   }, [localPoint]);
@@ -188,11 +190,15 @@ export function useCanvasPointerNavigation({
     const element = viewport.current;
     if (element?.hasPointerCapture(state.pointerId)) element.releasePointerCapture(state.pointerId);
     setMarquee(null);
-    // A press without travel stays a plain click, so focus handling is untouched.
-    if (!state.moved) return;
+    // A click on empty canvas outside the group clears it even if the modifier
+    // was held without enough travel to draw a marquee.
+    if (!state.moved) {
+      onMarqueeSelectionRef.current(null);
+      return;
+    }
     suppressClick.current = true;
     window.setTimeout(() => { suppressClick.current = false; }, 0);
-    onMarqueeSelectionRef.current(canvasWorldRect(state.start, state.current, cameraRef.current));
+    onMarqueeSelectionRef.current(canvasWorldRect(state.start, state.current, cameraRef.current), state.mode);
   }, [cameraRef, viewport]);
 
   const updateGroupDrag = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
@@ -393,7 +399,7 @@ export function useCanvasPointerNavigation({
       selection: selectedLayerIdsRef.current
     });
     if (intent.kind === "group-drag") return startGroupDrag(event, intent.layerId);
-    if (intent.kind === "marquee") return startMarquee(event);
+    if (intent.kind === "marquee") return startMarquee(event, intent.mode);
     if (intent.kind === "clear-selection") onMarqueeSelectionRef.current(null);
     if (!canvasOverrideActiveRef.current || !widgetTarget) return false;
     return startPan(event, true);

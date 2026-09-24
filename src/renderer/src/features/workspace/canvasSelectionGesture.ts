@@ -58,10 +58,12 @@ export interface CanvasMarqueeRect {
   height: number;
 }
 
+export type CanvasMarqueeMode = "all" | "terminal-only";
+
 export type CanvasPressIntent =
-  /** Shift on empty canvas: select every window the rectangle covers. */
-  | { kind: "marquee" }
-  /** Plain press on empty canvas: drop the marquee group and fall through to the pan. */
+  /** Shift (all windows) or Ctrl (terminal-only) on empty canvas: marquee select. */
+  | { kind: "marquee"; mode: CanvasMarqueeMode }
+  /** Plain press or click outside selection: drop the marquee group. */
   | { kind: "clear-selection" }
   /** Press on a card that is one of several selected cards. */
   | { kind: "group-drag"; layerId: string }
@@ -89,17 +91,43 @@ export interface CanvasPress {
  */
 export function canvasPressIntent(press: CanvasPress): CanvasPressIntent {
   if (press.button !== 0) return { kind: "none" };
+
   if (press.cardLayerId !== null) {
     // A group drag is a drag, not a press: until it travels it leaves the card's
     // own controls, focus, and click path untouched.
-    const grouped = press.selection.size > 1
-      && press.selection.has(press.cardLayerId)
-      && !press.onCardControl
-      && !press.altKey;
-    return grouped ? { kind: "group-drag", layerId: press.cardLayerId } : { kind: "none" };
+    const isSelected = press.selection.has(press.cardLayerId);
+    if (isSelected) {
+      const grouped = press.selection.size > 1
+        && !press.onCardControl
+        && !press.altKey;
+      return grouped ? { kind: "group-drag", layerId: press.cardLayerId } : { kind: "none" };
+    }
+    // Clearing the visual group does not consume the press: card controls still
+    // receive their own click, even when the card is outside the selected group.
+    if (press.selection.size > 0) {
+      return { kind: "clear-selection" };
+    }
+    return { kind: "none" };
   }
-  if (press.onCanvasWidget) return { kind: "none" };
-  if (press.shiftKey && !press.altKey && !press.ctrlKey && !press.metaKey) return { kind: "marquee" };
+
+  // A press on any other widget also clears the group without consuming its click.
+  if (press.onCanvasWidget) {
+    if (press.selection.size > 0) {
+      return { kind: "clear-selection" };
+    }
+    return { kind: "none" };
+  }
+
+  // Empty canvas marquee:
+  // Shift+left drag -> marquee all
+  // Ctrl+left drag -> terminal-only marquee
+  if (press.shiftKey && !press.altKey && !press.ctrlKey && !press.metaKey) {
+    return { kind: "marquee", mode: "all" };
+  }
+  if (press.ctrlKey && !press.altKey && !press.shiftKey && !press.metaKey) {
+    return { kind: "marquee", mode: "terminal-only" };
+  }
+
   return { kind: "clear-selection" };
 }
 
@@ -132,6 +160,19 @@ export function canvasWorldRect(start: Point, current: Point, camera: CameraStat
       height: rect.height / camera.zoom
     }
   };
+}
+
+/** Filters layer ids according to marquee mode (e.g. terminal-only vs all). */
+export function filterMarqueeSelectionByMode(layerIds: Iterable<string>, mode: CanvasMarqueeMode): Set<string> {
+  if (mode === "all") return new Set(layerIds);
+  const result = new Set<string>();
+  for (const id of layerIds) {
+    const ref = parseCanvasLayerId(id);
+    if (ref?.kind === "terminal") {
+      result.add(id);
+    }
+  }
+  return result;
 }
 
 export interface CanvasGroupDragState {

@@ -74,10 +74,12 @@ import {
 import { boundsIntersect } from "./minimapGeometry";
 import {
   browserLayerId,
+  filterMarqueeSelectionByMode,
   noteLayerId,
   parseCanvasLayerId,
   pluginLayerId,
-  terminalLayerId
+  terminalLayerId,
+  type CanvasMarqueeMode
 } from "./canvasSelectionGesture";
 import { snapMove } from "./snap";
 import { useCanvasPointerNavigation } from "./useCanvasPointerNavigation";
@@ -217,6 +219,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     pointerId: number;
   } | null>(null);
   const suppressNextContextMenu = useRef(false);
+  const suppressCtrlContextMenuUntil = useRef(0);
   const pendingRadialContextMenu = useRef<CanvasMenuState | null>(null);
   const [noteEditRequest, setNoteEditRequest] = useState<{ id: string; version: number } | null>(null);
   const [regionMovePreview, setRegionMovePreview] = useState<RegionMovePreview | null>(null);
@@ -342,7 +345,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     size: homeGridPixelSize(settings.homeGridSize)
   };
 
-  const selectMarquee = useCallback((bounds: SessionBounds | null): void => {
+  const selectMarquee = useCallback((bounds: SessionBounds | null, mode: CanvasMarqueeMode = "all"): void => {
     if (bounds === null) {
       setMarqueeSelection(EMPTY_MARQUEE_SELECTION);
       return;
@@ -353,7 +356,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       .map(([layerId]) => layerId);
     // Presentation-only: the marquee never moves logical input focus or the active
     // session, and a group drag is read from the selection alone.
-    setMarqueeSelection(ids.length === 0 ? EMPTY_MARQUEE_SELECTION : new Set(ids));
+    const selected = filterMarqueeSelectionByMode(ids, mode);
+    setMarqueeSelection(selected.size === 0 ? EMPTY_MARQUEE_SELECTION : selected);
   }, [boundsByLayer]);
 
   const groupDragBasis = useRef<GroupDragBasis | null>(null);
@@ -714,7 +718,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         }
         if (contextMenu && !element.closest(".canvas-menu")) setContextMenu(null);
         if (regionEditor && !element.closest(".canvas-region-editor")) setRegionEditor(null);
-        if (pointerNavigation.handlePointerDownCapture(event)) return;
+        if (pointerNavigation.handlePointerDownCapture(event)) {
+          // macOS interprets Control+left-click as a context-menu request. Keep
+          // that menu from replacing the terminal marquee we just started.
+          if (event.button === 0 && event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+            suppressCtrlContextMenuUntil.current = window.performance.now() + 1000;
+          }
+          return;
+        }
         const target = canvasWidgetTarget(event.target);
         if (target.focusableWidgetId !== null) {
           focusController.cancelHover();
@@ -737,6 +748,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       onPointerCancelCapture={pointerNavigation.handlePointerCancel}
       onPointerLeave={pointerNavigation.handlePointerLeave}
       onContextMenu={(event) => {
+        if (window.performance.now() < suppressCtrlContextMenuUntil.current) {
+          suppressCtrlContextMenuUntil.current = 0;
+          event.preventDefault();
+          return;
+        }
         if (suppressNextContextMenu.current) {
           suppressNextContextMenu.current = false;
           event.preventDefault();
@@ -1162,6 +1178,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                 <div><kbd>{settings.shortcuts.renameWindow}</kbd><span>{t(settings.locale, "renameWindow")}</span></div>
                 <div><kbd>{window.canvasTTY.window.isMacOS ? "Option+↑↓←→" : "Alt+↑↓←→"}</kbd><span>{t(settings.locale, "focusWindowHint")}</span></div>
                 <div><kbd>Shift + drag</kbd><span>{t(settings.locale, "marqueeSelectionHint")}</span></div>
+                <div><kbd>Ctrl + drag</kbd><span>{t(settings.locale, "terminalMarqueeSelectionHint")}</span></div>
                 {settings.canvasWheelCaptureMode === "key" && settings.canvasWheelOverride !== null && (
                   <div><kbd>{displayCanvasNavigationBinding(settings.canvasWheelOverride, window.canvasTTY.window.isMacOS)}</kbd>
                     <span>{t(settings.locale, "canvasWheelOverrideHint")}</span></div>

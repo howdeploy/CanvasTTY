@@ -11,6 +11,7 @@ import {
   canvasMarqueeRect,
   canvasPressIntent,
   canvasWorldRect,
+  filterMarqueeSelectionByMode,
   noteLayerId,
   parseCanvasLayerId,
   pastCanvasDragThreshold,
@@ -61,14 +62,49 @@ function hookBody(source, name) {
   return rest.slice(0, end);
 }
 
-test("shift on empty canvas starts a marquee and every other modifier combination does not", () => {
-  assert.deepEqual(canvasPressIntent(press({ shiftKey: true })), { kind: "marquee" });
+test("shift on empty canvas starts an 'all' marquee and ctrl starts a 'terminal-only' marquee", () => {
+  assert.deepEqual(canvasPressIntent(press({ shiftKey: true })), { kind: "marquee", mode: "all" });
+  assert.deepEqual(canvasPressIntent(press({ ctrlKey: true })), { kind: "marquee", mode: "terminal-only" });
   assert.deepEqual(canvasPressIntent(press()), { kind: "clear-selection" });
   assert.deepEqual(canvasPressIntent(press({ shiftKey: true, altKey: true })), { kind: "clear-selection" });
   assert.deepEqual(canvasPressIntent(press({ shiftKey: true, ctrlKey: true })), { kind: "clear-selection" });
   assert.deepEqual(canvasPressIntent(press({ shiftKey: true, metaKey: true })), { kind: "clear-selection" });
+  assert.deepEqual(canvasPressIntent(press({ ctrlKey: true, altKey: true })), { kind: "clear-selection" });
+  assert.deepEqual(canvasPressIntent(press({ ctrlKey: true, metaKey: true })), { kind: "clear-selection" });
   assert.deepEqual(canvasPressIntent(press({ shiftKey: true, onCanvasWidget: true })), { kind: "none" });
+  assert.deepEqual(canvasPressIntent(press({ ctrlKey: true, onCanvasWidget: true })), { kind: "none" });
   assert.deepEqual(canvasPressIntent(press({ button: 2 })), { kind: "none" });
+});
+
+test("click outside selection clears selection for empty canvas, nonselected card, and canvas widget", () => {
+  const selection = new Set([terminalLayerId("a"), terminalLayerId("b")]);
+
+  // Click on empty canvas clears selection
+  assert.deepEqual(canvasPressIntent(press({ selection })), { kind: "clear-selection" });
+
+  // Click on a nonselected card clears selection
+  assert.deepEqual(
+    canvasPressIntent(press({ cardLayerId: terminalLayerId("c"), selection })),
+    { kind: "clear-selection" }
+  );
+
+  // A nonselected card control clears the visual group while keeping its own click.
+  assert.deepEqual(
+    canvasPressIntent(press({ cardLayerId: terminalLayerId("c"), selection, onCardControl: true })),
+    { kind: "clear-selection" }
+  );
+
+  // Click on canvas widget surface outside cards clears selection
+  assert.deepEqual(
+    canvasPressIntent(press({ onCanvasWidget: true, selection })),
+    { kind: "clear-selection" }
+  );
+
+  // But without selection, clicking canvas widget is just "none"
+  assert.deepEqual(
+    canvasPressIntent(press({ onCanvasWidget: true, selection: new Set() })),
+    { kind: "none" }
+  );
 });
 
 test("a press on a card is a group drag only when the card is one of several selected", () => {
@@ -82,9 +118,9 @@ test("a press on a card is a group drag only when the card is one of several sel
   }
   const [terminal, plugin] = everyLayerId;
   assert.deepEqual(canvasPressIntent(press({ cardLayerId: terminal, selection: new Set([terminal]) })), { kind: "none" });
-  assert.deepEqual(canvasPressIntent(press({ cardLayerId: "terminal:elsewhere", selection })), { kind: "none" });
+  assert.deepEqual(canvasPressIntent(press({ cardLayerId: "terminal:elsewhere", selection })), { kind: "clear-selection" });
   assert.deepEqual(canvasPressIntent(press({ cardLayerId: terminal })), { kind: "none" });
-  assert.deepEqual(canvasPressIntent(press({ cardLayerId: plugin, selection: new Set([terminal, "terminal:x"]) })), { kind: "none" });
+  assert.deepEqual(canvasPressIntent(press({ cardLayerId: plugin, selection: new Set([terminal, "terminal:x"]) })), { kind: "clear-selection" });
 });
 
 test("a press on a card control, the search input, or a resize handle reaches that surface", () => {
@@ -216,4 +252,13 @@ test("a travelled group drag commits one delta once and suppresses exactly one f
   const bail = finish.indexOf("if (!state.active) return;");
   assert.notEqual(bail, -1, "only a travelled drag may commit");
   assert.ok(bail < finish.indexOf("suppressClick.current = true"), "a jitter press must not suppress the click");
+});
+
+test("filterMarqueeSelectionByMode filters terminal-only vs all", () => {
+  const ids = [terminalLayerId("1"), pluginLayerId("2"), browserLayerId, noteLayerId("3")];
+  const allFiltered = filterMarqueeSelectionByMode(ids, "all");
+  assert.deepEqual([...allFiltered], ids);
+
+  const terminalFiltered = filterMarqueeSelectionByMode(ids, "terminal-only");
+  assert.deepEqual([...terminalFiltered], [terminalLayerId("1")]);
 });

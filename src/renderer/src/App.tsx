@@ -210,6 +210,7 @@ export function App(): React.JSX.Element {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [browserSelected, setBrowserSelected] = useState(false);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [fullscreenSessionId, setFullscreenSessionId] = useState<string | null>(null);
   const [pendingTerminalUrl, setPendingTerminalUrl] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
@@ -456,6 +457,21 @@ export function App(): React.JSX.Element {
       : session));
     window.canvasTTY.terminal.setBounds(id, bounds);
   }, []);
+
+  const toggleSessionFullscreen = useCallback((id: string): void => {
+    if (fullscreenSessionId === id) {
+      // Exit fullscreen: only update state, no bounds persistence
+      // Note: Camera position is preserved intentionally (BUG 3 mitigation).
+      // If the user panned/zoomed during fullscreen, the camera stays where they left it.
+      setFullscreenSessionId(null);
+    } else {
+      // Enter fullscreen: exit current fullscreen first if switching sessions (BUG 2)
+      if (fullscreenSessionId !== null) {
+        setFullscreenSessionId(null);
+      }
+      setFullscreenSessionId(id);
+    }
+  }, [fullscreenSessionId]);
 
   const changePluginCanvasBounds = useCallback((id: string, bounds: SessionBounds): void => {
     const pluginCanvas = settingsRef.current.pluginCanvas.map((instance) => instance.id === id
@@ -1074,6 +1090,8 @@ export function App(): React.JSX.Element {
           activeSessionId={activeSessionId}
           browserSelected={browserSelected}
           renamingSessionId={renamingSessionId}
+          fullscreenSessionId={fullscreenSessionId}
+          onToggleFullscreen={toggleSessionFullscreen}
           onSelectSession={(id) => {
             setBrowserSelected(false);
             setActiveSessionId(id);

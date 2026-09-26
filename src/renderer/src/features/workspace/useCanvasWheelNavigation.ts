@@ -10,14 +10,10 @@ import {
   canvasNavigationMouseButtonFromDomButton,
   canvasWheelIntent,
   isCanvasNavigationBindingActive,
-  normalizeCanvasWheelDeltas,
   shouldCanvasOwnWheel,
   type CanvasWheelDeltas
 } from "../../../../shared/canvasNavigation";
-import {
-  isFocusedCanvasWidgetTarget,
-  isPriorityLocalCanvasWheelTarget
-} from "./canvasWidgetFocus";
+import { routeCanvasWheelEvent } from "./canvasWheelRouting";
 import type { CanvasWidgetFocusState } from "./useCanvasWidgetFocus";
 
 export interface CanvasWheelInput extends CanvasWheelDeltas {
@@ -210,30 +206,13 @@ export function useCanvasWheelNavigation({
     const element = viewport.current;
     if (!element) return;
     const handleWheel = (event: WheelEvent): void => {
-      // A priority-local surface (Browser panels, HOME session list) keeps the
-      // wheel over its own scroll area, so the freeze marker on the card must
-      // not outrank it; explicit capture modes still claim the wheel below.
-      const priorityLocalOwner = isPriorityLocalCanvasWheelTarget(event.target);
-      const browserFreezeOwned = !priorityLocalOwner
-        && event.target instanceof Element
-        && event.target.closest('[data-browser-canvas-wheel-owner="canvas"]') !== null;
-      const ownedByCanvas = browserFreezeOwned || shouldCanvasOwnWheel({
-        overFocusedWidget: priorityLocalOwner
-          || isFocusedCanvasWidgetTarget(event.target, widgetFocusRef.current.id),
+      routeCanvasWheelEvent(event, {
+        focusedWidgetId: widgetFocusRef.current.id,
         captureMode: settingsRef.current.canvasWheelCaptureMode,
         wheelOverrideActive: wheelOverrideActiveRef.current,
-        navigationOverrideActive: canvasOverrideActiveRef.current
-      });
-      if (!ownedByCanvas) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const bounds = element.getBoundingClientRect();
-      applyCanvasWheel({
-        clientX: event.clientX,
-        clientY: event.clientY,
-        ...normalizeCanvasWheelDeltas(event.deltaX, event.deltaY, event.deltaMode, bounds),
-        ctrlKey: event.ctrlKey,
-        metaKey: event.metaKey
+        navigationOverrideActive: canvasOverrideActiveRef.current,
+        getBounds: () => element.getBoundingClientRect(),
+        applyCanvasWheel
       });
     };
     element.addEventListener("wheel", handleWheel, { capture: true, passive: false });

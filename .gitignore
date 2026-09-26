@@ -1,5 +1,5 @@
 # Dependencies and generated application output
-node_modules/
+node_modules
 bun.lock
 out/
 dist/

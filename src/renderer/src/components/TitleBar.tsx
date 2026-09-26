@@ -4,7 +4,7 @@ import { ProviderIcon } from "./ProviderIcon";
 import { UiIcon } from "./UiIcon";
 import { t } from "../lib/i18n";
 
-const BUILD_CHANNEL = import.meta.env.DEV ? "DEV" : "RELEASE";
+const BUILD_CHANNEL = import.meta.env.DEV || import.meta.env.VITE_BUILD_CHANNEL === "DEV" ? "DEV" : "RELEASE";
 const BUILD_LABEL = `${BUILD_CHANNEL} v${appManifest.version}`;
 
 interface TitleBarProps {

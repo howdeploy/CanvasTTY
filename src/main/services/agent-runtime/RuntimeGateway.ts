@@ -29,6 +29,7 @@ export interface RuntimeLifecycleSignal {
   state: RuntimeLifecycleState;
   event: string;
   turnId: string | null;
+  codexThreadId?: string;
   result?: { text: string; truncated: boolean };
   lastAssistantMessage?: string;
   answerCaptureGrantExpiresAt?: number;
@@ -58,6 +59,7 @@ interface ParsedLifecycleMessage {
   state: RuntimeLifecycleState;
   event: string;
   turnId: string | null;
+  codexThreadId?: string;
   result?: { text: string; truncated: boolean };
   lastAssistantMessage?: string;
 }
@@ -314,6 +316,7 @@ export class RuntimeGateway {
       state: message.state,
       event: message.event,
       turnId: message.turnId,
+      ...(message.codexThreadId === undefined ? {} : { codexThreadId: message.codexThreadId }),
       ...(message.result === undefined ? {} : { result: message.result }),
       ...(message.lastAssistantMessage === undefined ? {} : { lastAssistantMessage: message.lastAssistantMessage })
     };
@@ -321,7 +324,12 @@ export class RuntimeGateway {
       signal.answerCaptureGrantExpiresAt = lease.answerCaptureGrantExpiresAt;
     }
     // Captured text is delivered once and never stored in the lifecycle lease.
-    lease.latest = { state: signal.state, event: signal.event, turnId: signal.turnId };
+    lease.latest = {
+      state: signal.state,
+      event: signal.event,
+      turnId: signal.turnId,
+      ...(signal.codexThreadId === undefined ? {} : { codexThreadId: signal.codexThreadId })
+    };
     this.onSignal?.(message.terminalSessionId, signal);
   }
 }
@@ -337,6 +345,7 @@ function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
     "capabilityToken", "event", "provider", "state", "terminalSessionId", "turnId", "type", "v"
   ];
   if (value.result !== undefined) expected.push("result");
+  if (value.codexThreadId !== undefined) expected.push("codexThreadId");
   expected.sort();
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
     throw new Error("Runtime message has an invalid schema.");
@@ -359,6 +368,11 @@ function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
     || value.event.length > 80
     || (value.turnId !== null && (typeof value.turnId !== "string" || value.turnId.length > 160))
   ) throw new Error("Runtime message fields are invalid.");
+  if (value.codexThreadId !== undefined && (
+    value.provider !== "codex"
+    || typeof value.codexThreadId !== "string"
+    || !CANONICAL_UUID_RE.test(value.codexThreadId)
+  )) throw new Error("Runtime codexThreadId is invalid.");
   if (value.result !== undefined && (
     value.state !== "idle" || value.event !== "Stop" || !isRecord(value.result)
     || Object.keys(value.result).sort().join(",") !== "text,truncated"
@@ -371,6 +385,8 @@ function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
   )) throw new Error("Runtime lastAssistantMessage is invalid.");
   return value as unknown as ParsedLifecycleMessage;
 }
+
+const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function isTurnStart(event: string): boolean {
   return event === "UserPromptSubmit"

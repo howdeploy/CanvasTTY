@@ -68,8 +68,7 @@ test("restored agent windows use each provider's native continue mode", () => {
   assert.deepEqual(codex.args, [
     "--dangerously-bypass-approvals-and-sandbox",
     "--bridge",
-    "resume",
-    "--last"
+    "resume"
   ]);
 
   for (const provider of ["claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin"]) {
@@ -85,6 +84,87 @@ test("restored agent windows use each provider's native continue mode", () => {
     resumePrevious: true
   });
   assert.deepEqual(restored.args, ["--bridge"]);
+});
+
+test("Codex restore with resumeThreadId launches codex resume <UUID>", () => {
+  const uuid1 = "12345678-1234-4234-8234-123456789abc";
+  const uuid2 = "abcdef01-abcd-4def-9abc-def012345678";
+
+  const launch1 = resolveTerminalLaunch("codex", "normal", ["--bridge"], {
+    providerCli: available("codex", "/resolved/codex"),
+    resumePrevious: true,
+    resumeThreadId: uuid1
+  });
+  assert.deepEqual(launch1.args, ["--bridge", "resume", uuid1]);
+
+  const launch2 = resolveTerminalLaunch("codex", "yolo", [], {
+    providerCli: available("codex", "/resolved/codex"),
+    resumePrevious: true,
+    resumeThreadId: uuid2.toUpperCase()
+  });
+  assert.deepEqual(launch2.args, [
+    "--dangerously-bypass-approvals-and-sandbox",
+    "resume",
+    uuid2.toLowerCase()
+  ]);
+});
+
+test("Codex restore without resumeThreadId launches interactive resume chooser", () => {
+  const launch = resolveTerminalLaunch("codex", "normal", [], {
+    providerCli: available("codex", "/resolved/codex"),
+    resumePrevious: true
+  });
+  assert.deepEqual(launch.args, ["resume"]);
+});
+
+test("Codex restore throws on malformed resumeThreadId", () => {
+  for (const malformed of ["not-a-uuid", "12345678-1234-1234-1234", "12345678-1234-1234-1234-123456789abc-extra", "../escape"]) {
+    assert.throws(
+      () =>
+        resolveTerminalLaunch("codex", "normal", [], {
+          providerCli: available("codex", "/resolved/codex"),
+          resumePrevious: true,
+          resumeThreadId: malformed
+        }),
+      /Invalid Codex thread ID format/u
+    );
+  }
+});
+
+test("Other providers ignore resumeThreadId and retain standard continue flags", () => {
+  const uuid = "12345678-1234-4234-8234-123456789abc";
+  const claude = resolveTerminalLaunch("claude", "normal", ["--bridge"], {
+    providerCli: available("claude", "/resolved/claude"),
+    resumePrevious: true,
+    resumeThreadId: uuid
+  });
+  assert.deepEqual(claude.args, ["--bridge", "--continue"]);
+
+  const qwen = resolveTerminalLaunch("qwen", "yolo", [], {
+    providerCli: available("qwen", "/resolved/qwen"),
+    resumePrevious: true,
+    resumeThreadId: uuid
+  });
+  assert.deepEqual(qwen.args, ["--yolo", "--continue"]);
+});
+
+test("Windows batch quoting with Codex resume thread UUID", () => {
+  const commandPrompt = "C:\\Windows\\System32\\cmd.exe";
+  const uuid = "12345678-1234-4234-8234-123456789abc";
+  const providerCli = available(
+    "codex",
+    "C:\\Users\\Kisa\\AppData\\Roaming\\npm\\codex.cmd",
+    { launcher: "batch", commandPrompt, environment: { Path: "C:\\resolved" } }
+  );
+  const launch = resolveTerminalLaunch("codex", "normal", ["--bridge"], {
+    platform: "win32",
+    providerCli,
+    resumePrevious: true,
+    resumeThreadId: uuid
+  });
+  assert.equal(launch.command, commandPrompt);
+  assert.match(launch.args, /codex\.cmd/u);
+  assert.match(launch.args, new RegExp(uuid, "u"));
 });
 
 test("OMP and Pi use their documented dangerous flags instead of the legacy default", () => {

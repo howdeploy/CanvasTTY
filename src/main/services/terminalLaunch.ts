@@ -19,7 +19,10 @@ interface LaunchResolutionOptions {
   fileExists?: (path: string) => boolean;
   providerCli?: ProviderCliResolution;
   resumePrevious?: boolean;
+  resumeThreadId?: string;
 }
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const WINDOWS_NATIVE_EXTENSIONS = [".exe", ".com"];
 
@@ -51,7 +54,7 @@ export function resolveTerminalLaunch(
   const providerArgs = [
     ...(profile === "yolo" && provider !== "opencode" ? DANGEROUS_ARGUMENTS[provider] : []),
     ...agentBrowserArgs,
-    ...(options.resumePrevious ? RESUME_ARGUMENTS[provider] : [])
+    ...(options.resumePrevious ? resolveResumeArguments(provider, options.resumeThreadId) : [])
   ];
   const combinedEnvironment = {
     ...providerCli.environment,
@@ -72,11 +75,26 @@ export function resolveTerminalLaunch(
   };
 }
 
+function resolveResumeArguments(
+  provider: Exclude<ProviderId, "terminal">,
+  resumeThreadId?: string
+): string[] {
+  if (provider === "codex") {
+    if (resumeThreadId) {
+      if (!UUID_REGEX.test(resumeThreadId)) {
+        throw new Error(`Invalid Codex thread ID format: "${resumeThreadId}". Expected a canonical UUID.`);
+      }
+      return ["resume", resumeThreadId.toLowerCase()];
+    }
+    return ["resume"];
+  }
+  return RESUME_ARGUMENTS[provider];
+}
+
 // Per-provider instead of a fallthrough: the old `return ["--continue"]` default would
 // have handed an unverified flag to whatever provider was added next. A missing entry is
 // now a compile error.
-const RESUME_ARGUMENTS: Record<Exclude<ProviderId, "terminal">, string[]> = {
-  codex: ["resume", "--last"],
+const RESUME_ARGUMENTS: Record<Exclude<ProviderId, "terminal" | "codex">, string[]> = {
   claude: ["--continue"],
   qwen: ["--continue"],
   kimi: ["--continue"],

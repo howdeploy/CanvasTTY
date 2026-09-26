@@ -40,6 +40,14 @@ const turnId = firstString(
   input?.prompt_id,
   input?.promptId
 );
+const codexThreadId = firstString(
+  input?.session_id,
+  input?.sessionId,
+  input?.thread_id,
+  input?.threadId,
+  input?.conversation_id,
+  input?.conversationId
+);
 const finalAnswer = state === "idle" && event === "Stop" && typeof input?.last_assistant_message === "string"
   ? input.last_assistant_message
   : null;
@@ -55,6 +63,7 @@ await reportLifecycle({
   state,
   event,
   turnId,
+  ...(codexThreadId ? { codexThreadId } : {}),
   ...(result === undefined ? {} : { result }),
   ...(lastAssistantMessage === undefined ? {} : { lastAssistantMessage })
 });

@@ -80,7 +80,8 @@ test("opt-in restore preserves card identity and relaunches the agent in native 
     await restored.restorePersistedSessions();
 
     assert.equal(restoredCalls.length, 1);
-    assert.deepEqual(restoredCalls[0].args.slice(-2), ["resume", "--last"]);
+    assert.deepEqual(restoredCalls[0].args.slice(-1), ["resume"]);
+    assert.equal(restoredCalls[0].args.includes("--last"), false);
     assert.deepEqual(restored.list().map(({ buffer, revision, status, startedAt, exitCode, failureDetails, ...session }) => session), [{
       id: created.id,
       provider: "codex",

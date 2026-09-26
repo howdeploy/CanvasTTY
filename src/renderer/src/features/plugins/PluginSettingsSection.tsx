@@ -248,7 +248,7 @@ export function PluginSettingsSection({
   };
 
   const runSearch = async (): Promise<void> => {
-    if (searching || searchQuery.trim().length === 0 || !githubAuthorized) return;
+    if (searching || searchQuery.trim().length === 0) return;
     setSearching(true);
     setError(null);
     try {
@@ -283,7 +283,7 @@ export function PluginSettingsSection({
   };
 
   const runShowcase = async (): Promise<void> => {
-    if (loadingShowcase || !githubAuthorized) return;
+    if (loadingShowcase) return;
     setLoadingShowcase(true);
     setError(null);
     try {
@@ -811,6 +811,7 @@ export function PluginSettingsSection({
             </span>
           )}
         </h3>
+        {!githubAuthorized && !githubCode && <p className="plugin-github-optional">{t(locale, "githubAuthOptional")}</p>}
         {githubStatus?.authorized ? (
           <div>
             <div className="plugin-github-row">
@@ -866,7 +867,7 @@ export function PluginSettingsSection({
       </section>
 
       <div className="plugin-showcase-wrap">
-        <section className={`setting-group plugin-showcase-group${githubAuthorized ? "" : " plugin-showcase-group--off"}`}>
+        <section className="setting-group plugin-showcase-group">
           <h3>
             {t(locale, "pluginShowcase")}
             <button
@@ -920,9 +921,6 @@ export function PluginSettingsSection({
           </div>
         )}
         </section>
-        {!githubAuthorized && (
-          <p className="plugin-showcase-lock" role="status">{t(locale, "showcaseRequiresGithub")}</p>
-        )}
       </div>
     </div>
   );

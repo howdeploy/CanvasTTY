@@ -24,6 +24,7 @@ import type {
   ProviderId,
   SessionBounds,
   SessionSnapshot,
+  ShortcutAction,
   StickyNote,
   WindowState
 } from "../../shared/contracts";
@@ -62,6 +63,7 @@ import {
 } from "./lib/shortcuts";
 import { homeGridPixelSize, homeLayoutFitsGrid, placeHomeWidget } from "./features/home/homeLayout";
 import { boundsInsideRegion, translateBounds } from "./features/workspace/canvasRegions";
+import { DEFAULT_SESSION_SIZE, findNearHomeSessionPosition } from "./features/workspace/sessionPlacement";
 
 interface HomeEditDraft {
   homeGridSize: HomeGridSize;
@@ -185,6 +187,9 @@ function contrastRatio(left: number, right: number): number {
 export function App(): React.JSX.Element {
   const [settings, setSettings] = useState(FALLBACK_SETTINGS);
   const [sessions, setSessions] = useState<SessionSnapshot[]>([]);
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const pendingSessionPlacements = useRef<SessionBounds[]>([]);
   const [limits, setLimits] = useState<LimitsSnapshot | null>(null);
   const [limitsLoadState, setLimitsLoadState] = useState<LimitsLoadState>("loading");
   const [limitsRevision, setLimitsRevision] = useState(0);
@@ -210,6 +215,7 @@ export function App(): React.JSX.Element {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [browserSelected, setBrowserSelected] = useState(false);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [fullscreenSessionId, setFullscreenSessionId] = useState<string | null>(null);
   const [pendingTerminalUrl, setPendingTerminalUrl] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
@@ -364,17 +370,41 @@ export function App(): React.JSX.Element {
     requestedCenter?: Point,
     role: LaunchRole = "agent"
   ): Promise<SessionSnapshot> => {
+    const currentSettings = settingsRef.current;
     const position = requestedCenter
-      ? centeredWindowPosition(requestedCenter, { width: 700, height: 430 })
-      : nextSessionPosition(sessions.length, settings.homeGridSize);
-    const session = await window.canvasTTY.terminal.create({ provider, profile, cwd, position, role });
-    setSessions((current) => upsertSnapshot(current, session));
-    setActiveSessionId(session.id);
-    await saveSettings({ lastDirectory: cwd });
-    isHomeCamera.current = false;
-    setCamera(focusCamera(position, session.size));
-    return session;
-  }, [sessions.length, saveSettings, settings.homeGridSize]);
+      ? centeredWindowPosition(requestedCenter, DEFAULT_SESSION_SIZE)
+      : findNearHomeSessionPosition(
+          { position: { x: 0, y: 0 }, size: homeGridPixelSize(currentSettings.homeGridSize) },
+          [
+            ...sessionsRef.current,
+            ...currentSettings.pluginCanvas,
+            ...currentSettings.stickyNotes,
+            ...(currentSettings.browserCanvas ? [currentSettings.browserCanvas] : []),
+            ...pendingSessionPlacements.current
+          ],
+          DEFAULT_SESSION_SIZE
+        );
+    // Reserve the slot until the async create finishes, so fast parallel launches
+    // cannot both choose the same free position before React renders either card.
+    const reservation: SessionBounds | null = requestedCenter
+      ? null
+      : { position, size: DEFAULT_SESSION_SIZE };
+    if (reservation) pendingSessionPlacements.current.push(reservation);
+    try {
+      const session = await window.canvasTTY.terminal.create({ provider, profile, cwd, position, role });
+      sessionsRef.current = upsertSnapshot(sessionsRef.current, session);
+      setSessions((current) => upsertSnapshot(current, session));
+      setActiveSessionId(session.id);
+      await saveSettings({ lastDirectory: cwd });
+      isHomeCamera.current = false;
+      setCamera(focusCamera(position, session.size));
+      return session;
+    } finally {
+      if (reservation) {
+        pendingSessionPlacements.current = pendingSessionPlacements.current.filter((item) => item !== reservation);
+      }
+    }
+  }, [saveSettings]);
 
   const openTerminal = useCallback(async (position?: Point): Promise<void> => {
     try {
@@ -456,6 +486,21 @@ export function App(): React.JSX.Element {
       : session));
     window.canvasTTY.terminal.setBounds(id, bounds);
   }, []);
+
+  const toggleSessionFullscreen = useCallback((id: string): void => {
+    if (fullscreenSessionId === id) {
+      // Exit fullscreen: only update state, no bounds persistence
+      // Note: Camera position is preserved intentionally (BUG 3 mitigation).
+      // If the user panned/zoomed during fullscreen, the camera stays where they left it.
+      setFullscreenSessionId(null);
+    } else {
+      // Enter fullscreen: exit current fullscreen first if switching sessions (BUG 2)
+      if (fullscreenSessionId !== null) {
+        setFullscreenSessionId(null);
+      }
+      setFullscreenSessionId(id);
+    }
+  }, [fullscreenSessionId]);
 
   const changePluginCanvasBounds = useCallback((id: string, bounds: SessionBounds): void => {
     const pluginCanvas = settingsRef.current.pluginCanvas.map((instance) => instance.id === id
@@ -951,7 +996,13 @@ export function App(): React.JSX.Element {
   }, [homeEditDraft, settings.locale, showToast]);
 
   useEffect(() => {
-    const performShortcut = (shortcut: "home" | "renameWindow"): void => {
+    const performShortcut = (shortcut: ShortcutAction): void => {
+      if (shortcut === "toggleFullscreen") {
+        if (settingsOpen || launchProvider !== null || pendingTerminalUrl !== null || homeEditDraft) return;
+        const id = fullscreenSessionId ?? activeSessionId;
+        if (id) toggleSessionFullscreen(id);
+        return;
+      }
       if (shortcut === "home") {
         goHome();
         return;
@@ -964,6 +1015,12 @@ export function App(): React.JSX.Element {
     };
     const handleShortcut = (event: KeyboardEvent): void => {
       if (event.repeat || isShortcutCaptureTarget(event.target) || isRenameInputTarget(event.target)) return;
+      if (matchesShortcut(event, settings.shortcuts.toggleFullscreen)) {
+        event.preventDefault();
+        event.stopPropagation();
+        performShortcut("toggleFullscreen");
+        return;
+      }
       if (matchesShortcut(event, settings.shortcuts.home)) {
         event.preventDefault();
         event.stopPropagation();
@@ -983,7 +1040,9 @@ export function App(): React.JSX.Element {
         ? "home"
         : matchesPointerShortcut(event, settings.shortcuts.renameWindow)
           ? "renameWindow"
-          : null;
+          : matchesPointerShortcut(event, settings.shortcuts.toggleFullscreen)
+            ? "toggleFullscreen"
+            : null;
       if (!action) return;
       event.preventDefault();
       event.stopPropagation();
@@ -996,7 +1055,7 @@ export function App(): React.JSX.Element {
       window.removeEventListener("keydown", handleShortcut, true);
       window.removeEventListener("pointerdown", handlePointerShortcut, true);
     };
-  }, [activeSessionId, goHome, settings.locale, settings.shortcuts, showToast]);
+  }, [activeSessionId, fullscreenSessionId, goHome, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, showToast, toggleSessionFullscreen]);
 
   const appearance = resolveAppearanceSettings(settings);
   const rootClasses = useMemo(
@@ -1074,6 +1133,8 @@ export function App(): React.JSX.Element {
           activeSessionId={activeSessionId}
           browserSelected={browserSelected}
           renamingSessionId={renamingSessionId}
+          fullscreenSessionId={fullscreenSessionId}
+          onToggleFullscreen={toggleSessionFullscreen}
           onSelectSession={(id) => {
             setBrowserSelected(false);
             setActiveSessionId(id);
@@ -1162,14 +1223,6 @@ export function App(): React.JSX.Element {
       <Toast message={toast} />
     </div>
   );
-}
-
-function nextSessionPosition(index: number, homeGridSize: HomeGridSize): Point {
-  const homeSize = homeGridPixelSize(homeGridSize);
-  return {
-    x: homeSize.width + 160 + (index % 2) * 760,
-    y: Math.floor(index / 2) * 500 + 20
-  };
 }
 
 function centeredWindowPosition(point: Point, size: { width: number; height: number }): Point {

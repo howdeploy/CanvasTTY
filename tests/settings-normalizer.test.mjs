@@ -52,7 +52,7 @@ const fallback = {
   minimapInteractionMode: "click",
   shortcutHintsPlacement: "bottom-right",
   canvasControlsPlacement: "bottom-left",
-  shortcuts: { home: "Home", renameWindow: "F2" },
+  shortcuts: { home: "Home", renameWindow: "F2", toggleFullscreen: "Meta+F" },
   mediaPath: null,
   mediaFit: "cover",
   lastDirectory: "/",
@@ -579,7 +579,7 @@ test("fresh installs default to scroll pan and key-gated widget wheel input", as
     assert.equal(store.get().browserRestoreTabs, true);
     assert.equal(store.get().persistCanvasRegions, true);
     assert.equal(store.get().persistStickyNotes, true);
-    assert.deepEqual(store.get().shortcuts, { home: "Home", renameWindow: "F2" });
+    assert.deepEqual(store.get().shortcuts, { home: "Home", renameWindow: "F2", toggleFullscreen: "Meta+F" });
     const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
     assert.equal(Object.hasOwn(persisted, "zoomOverApplications"), false);
   } finally {
@@ -742,7 +742,7 @@ test("invalid explicit key mode fails closed without replacing action shortcuts"
   }, fallback, "darwin");
   assert.equal(normalized.canvasWheelCaptureMode, "off");
   assert.equal(normalized.canvasWheelOverride, null);
-  assert.deepEqual(normalized.shortcuts, { home: "Meta+Space", renameWindow: "F2" });
+  assert.deepEqual(normalized.shortcuts, { home: "Meta+Space", renameWindow: "F2", toggleFullscreen: "Meta+F" });
 });
 
 test("mode changes persist the compatible legacy boolean and preserve the hidden binding", async () => {
@@ -830,14 +830,20 @@ test("valid custom shortcuts survive normalization", () => {
   }, fallback);
   assert.equal(normalized.focusActivation, "double");
   assert.equal(normalized.showShortcutHints, false);
-  assert.deepEqual(normalized.shortcuts, { home: "Ctrl+H", renameWindow: "Ctrl+Shift+R" });
+  assert.deepEqual(normalized.shortcuts, { home: "Ctrl+H", renameWindow: "Ctrl+Shift+R", toggleFullscreen: "Meta+F" });
+});
+
+test("fullscreen shortcuts migrate, retain custom bindings and reject conflicts", () => {
+  assert.equal(normalizeSettings({ shortcuts: { home: "Home", renameWindow: "F2" } }, fallback).shortcuts.toggleFullscreen, "Meta+F");
+  assert.equal(normalizeSettings({ shortcuts: { toggleFullscreen: "Ctrl+Shift+F" } }, fallback).shortcuts.toggleFullscreen, "Ctrl+Shift+F");
+  assert.deepEqual(normalizeSettings({ shortcuts: { toggleFullscreen: "F2" } }, fallback).shortcuts, fallback.shortcuts);
 });
 
 test("mouse buttons survive action shortcut normalization", () => {
   const normalized = normalizeSettings({
     shortcuts: { home: "Mouse4", renameWindow: "Ctrl+Mouse5" }
   }, fallback);
-  assert.deepEqual(normalized.shortcuts, { home: "Mouse4", renameWindow: "Ctrl+Mouse5" });
+  assert.deepEqual(normalized.shortcuts, { home: "Mouse4", renameWindow: "Ctrl+Mouse5", toggleFullscreen: "Meta+F" });
 });
 
 test("normalizes canvas overlay positions independently", () => {
@@ -882,7 +888,7 @@ test("normalization preserves action shortcuts and allows modifier-only navigati
     shortcuts: { home: "Alt+H", renameWindow: "F2" },
     canvasNavigationOverride: "Alt"
   }, fallback, "darwin");
-  assert.deepEqual(conflict.shortcuts, { home: "Alt+H", renameWindow: "F2" });
+  assert.deepEqual(conflict.shortcuts, { home: "Alt+H", renameWindow: "F2", toggleFullscreen: "Meta+F" });
   assert.equal(conflict.canvasNavigationOverride, "Alt");
 
   const reserved = normalizeSettings({ canvasNavigationOverride: "Meta" }, fallback, "darwin");
@@ -892,7 +898,7 @@ test("normalization preserves action shortcuts and allows modifier-only navigati
   const migratedConflict = normalizeSettings({
     shortcuts: { home: "Alt+H", renameWindow: "F2" }
   }, fallback, "darwin");
-  assert.deepEqual(migratedConflict.shortcuts, { home: "Alt+H", renameWindow: "F2" });
+  assert.deepEqual(migratedConflict.shortcuts, { home: "Alt+H", renameWindow: "F2", toggleFullscreen: "Meta+F" });
   assert.equal(migratedConflict.canvasNavigationOverride, "Alt");
 });
 

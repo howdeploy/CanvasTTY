@@ -8,6 +8,7 @@ import {
   MAX_STICKY_NOTE_SIZE,
   MIN_STICKY_NOTE_SIZE
 } from "./stickyNoteBounds";
+import { stickyNoteWheelAttributes } from "./stickyNoteWheelAttributes";
 
 interface StickyNoteCardProps {
   note: StickyNote;
@@ -213,12 +214,15 @@ export function StickyNoteCard({
     onBoundsChange(note.id, liveBounds.current);
   };
 
+  const wheelAttributes = stickyNoteWheelAttributes(note.id);
+
   return (
     <article
       className={`sticky-note-card ${groupSelected ? "sticky-note-card--selected" : ""}`}
       data-interactive="true"
       data-sticky-note-id={note.id}
       data-canvas-layer-id={`note:${note.id}`}
+      {...wheelAttributes.card}
       data-wheel-owner="local"
       style={{
         zIndex: stackIndex,
@@ -250,6 +254,7 @@ export function StickyNoteCard({
         </button>
       </header>
       <textarea
+        {...wheelAttributes.editor}
         ref={editor}
         className="sticky-note-card__editor"
         value={text}

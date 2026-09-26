@@ -20,6 +20,7 @@ import type {
   StickyNote
 } from "../../../../shared/contracts";
 import { UiIcon } from "../../components/UiIcon";
+import { ShortcutReference } from "../../components/ShortcutReference";
 import { t } from "../../lib/i18n";
 import { displayCanvasNavigationBinding, isRenameInputTarget, isShortcutCaptureTarget, matchesPhysicalOrLayoutKey } from "../../lib/shortcuts";
 import { BrowserCard } from "../browser/BrowserCard";
@@ -160,6 +161,8 @@ interface WorkspaceCanvasProps {
   activeSessionId: string | null;
   browserSelected: boolean;
   renamingSessionId: string | null;
+  fullscreenSessionId: string | null;
+  onToggleFullscreen(id: string): void;
   onSelectSession(id: string): void;
   onSelectBrowser(): void;
   onClearCanvasSelection(): void;
@@ -196,7 +199,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     settings, mediaData, sessions, limits, limitsLoadState, plugins, browser,
     browserViewVisible, homeEditing, camera, onCameraChange, onGoHome,
     onOpenSettings, onOpenAgent, onOpenTerminal, onOpenBrowser, onOpenTerminalUrl, onFocusSession,
-    activeSessionId, browserSelected, renamingSessionId, onSelectSession,
+    activeSessionId, browserSelected, renamingSessionId, fullscreenSessionId, onToggleFullscreen, onSelectSession,
     onSelectBrowser, onClearCanvasSelection, onRenameSession, onRenameEnd,
     onRequestMedia, onRemoveMedia, onHomeLayoutChange, onHomeGridSizeChange,
     onFinishHomeEdit, onResetHomeLayout, onPluginError, onPluginCanvasBoundsChange,
@@ -822,7 +825,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           onPluginCanvasWheel={wheelNavigation.applyCanvasWheel}
         />
         <div className={`workspace__windows ${homeEditing ? "workspace__windows--hidden" : ""}`} aria-hidden={homeEditing}>
-          {renderedSessions.map((session) => (
+          {renderedSessions.filter((session) => fullscreenSessionId !== session.id).map((session) => (
             <TerminalCard
               key={session.id}
               session={withGroupNudge(terminalLayerId(session.id), session)}
@@ -839,6 +842,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               selected={activeSessionId === session.id}
               groupSelected={marqueeSelection.has(terminalLayerId(session.id))}
               renaming={renamingSessionId === session.id}
+              fullscreen={fullscreenSessionId === session.id}
+              onToggleFullscreen={() => onToggleFullscreen(session.id)}
               snapTargets={[
                 homeBounds,
                 ...renderedCanvasRegions.map((candidate) => ({ position: candidate.position, size: candidate.size })),
@@ -972,6 +977,49 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             />
           ))}
         </div>
+      </div>
+
+      {/* Fullscreen layer: rendered outside workspace__scene to avoid camera transformation */}
+      <div className="workspace__fullscreen-layer">
+        {renderedSessions
+          .filter((session) => fullscreenSessionId === session.id)
+          .map((session) => (
+            <TerminalCard
+              key={session.id}
+              session={withGroupNudge(terminalLayerId(session.id), session)}
+              locale={settings.locale}
+              palette={settings.palette}
+              zoom={1}
+              stackIndex={9999}
+              snapEnabled={false}
+              focusActivation={settings.focusActivation}
+              invertTerminalWheel={settings.invertTerminalWheel}
+              captureCanvasWheelOverWidgets={false}
+              focused={widgetFocus.id === terminalCanvasWidgetId(session.id)}
+              focusChangeSource={widgetFocus.source}
+              selected={activeSessionId === session.id}
+              groupSelected={false}
+              renaming={renamingSessionId === session.id}
+              fullscreen={true}
+              onToggleFullscreen={() => onToggleFullscreen(session.id)}
+              snapTargets={[]}
+              onActivate={(selectedSession) => {
+                focusController.focus(terminalCanvasWidgetId(selectedSession.id), "explicit");
+                onFocusSession(selectedSession);
+              }}
+              onSelect={(id) => {
+                focusController.cancelHover();
+                focusController.focus(terminalCanvasWidgetId(id), "explicit");
+                onSelectSession(id);
+              }}
+              onRename={onRenameSession}
+              onRenameEnd={onRenameEnd}
+              onBoundsChange={() => {}}
+              onRestart={onRestartSession}
+              onDispose={onDisposeSession}
+              onOpenUrl={onOpenTerminalUrl}
+            />
+          ))}
       </div>
 
       {pointerNavigation.marquee && (
@@ -1160,6 +1208,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               <aside className="shortcut-hints" aria-label={t(settings.locale, "keyboardShortcuts")}>
                 <div><kbd>{settings.shortcuts.home}</kbd><span>{t(settings.locale, "homeShortcut")}</span></div>
                 <div><kbd>{settings.shortcuts.renameWindow}</kbd><span>{t(settings.locale, "renameWindow")}</span></div>
+                <div><kbd>{settings.shortcuts.toggleFullscreen.replace("Meta", window.canvasTTY.window.isMacOS ? "Command" : "Super")}</kbd><span>{t(settings.locale, "toggleFullscreen")}</span></div>
                 <div><kbd>{window.canvasTTY.window.isMacOS ? "Option+↑↓←→" : "Alt+↑↓←→"}</kbd><span>{t(settings.locale, "focusWindowHint")}</span></div>
                 <div><kbd>Shift + drag</kbd><span>{t(settings.locale, "marqueeSelectionHint")}</span></div>
                 {settings.canvasWheelCaptureMode === "key" && settings.canvasWheelOverride !== null && (
@@ -1170,6 +1219,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                   <div><kbd>{displayCanvasNavigationBinding(settings.canvasNavigationOverride, window.canvasTTY.window.isMacOS)}</kbd>
                     <span>{t(settings.locale, "canvasNavigationOverrideHint")}</span></div>
                 )}
+                <details className="shortcut-hints__more" data-interactive="true" data-canvas-wheel-priority="local">
+                  <summary>{t(settings.locale, "keyboardShortcuts")}</summary>
+                  <ShortcutReference locale={settings.locale} />
+                </details>
               </aside>
             )}
           </div>

@@ -32,6 +32,12 @@ test("layer reconciliation keeps user order and appends only new live windows", 
   );
 });
 
+test("an unchanged layer order reconciles to the same array", () => {
+  const order = ["browser", "terminal:a", "note:n"];
+  assert.equal(reconcileCanvasLayerOrder(order, ["note:n", "terminal:a", "browser"]), order);
+  assert.notEqual(reconcileCanvasLayerOrder(order, ["terminal:a", "browser"]), order);
+});
+
 test("the native Browser surface is hidden only under a higher overlapping layer", () => {
   const map = new Map([
     ["browser", bounds(0, 0)],

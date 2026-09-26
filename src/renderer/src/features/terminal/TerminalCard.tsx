@@ -58,7 +58,9 @@ interface TerminalCardProps {
   /** Multi-select group member: gets the selected outline without focus/WebGL side effects. */
   groupSelected?: boolean;
   renaming: boolean;
+  fullscreen: boolean;
   snapTargets: readonly SessionBounds[];
+  onToggleFullscreen(): void;
   onActivate(session: SessionSnapshot): void;
   onSelect(id: string): void;
   onRename(id: string, title: string): Promise<void>;
@@ -111,7 +113,9 @@ export function TerminalCard({
   selected,
   groupSelected,
   renaming,
+  fullscreen,
   snapTargets,
+  onToggleFullscreen,
   onActivate,
   onSelect,
   onRename,
@@ -621,7 +625,7 @@ export function TerminalCard({
   const searchCount = `${searchMatches.current}/${searchMatches.total}`;
   return (
     <article
-      className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""} ${session.status === "needs_approval" || session.status === "failed" ? "terminal-card--attention" : ""}`}
+      className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""} ${session.status === "needs_approval" || session.status === "failed" ? "terminal-card--attention" : ""} ${fullscreen ? "terminal-card--fullscreen" : ""}`}
       data-interactive="true"
       data-canvas-layer-id={`terminal:${session.id}`}
       data-canvas-widget-id={terminalCanvasWidgetId(session.id)}
@@ -677,6 +681,17 @@ export function TerminalCard({
         "--terminal-background": terminalBackground
       } as React.CSSProperties}
     >
+      {fullscreen && (
+        <button
+          className="terminal-card__exit-fullscreen"
+          type="button"
+          onClick={(event) => { event.stopPropagation(); onToggleFullscreen(); }}
+          title={t(locale, "exitFullscreen")}
+          aria-label={t(locale, "exitFullscreen")}
+        >
+          <UiIcon name="close" size="1.2em" />
+        </button>
+      )}
       <header
         className="terminal-card__header"
         onPointerDown={startDrag}
@@ -741,6 +756,15 @@ export function TerminalCard({
               <UiIcon name={restarting ? "working" : "reload"} size="1.23em" />
             </button>
           )}
+          <button
+            className="terminal-card__action terminal-card__action--fullscreen"
+            type="button"
+            onClick={(event) => { event.stopPropagation(); onToggleFullscreen(); }}
+            title={fullscreen ? t(locale, "exitFullscreen") : t(locale, "enterFullscreen")}
+            aria-label={fullscreen ? t(locale, "exitFullscreen") : t(locale, "enterFullscreen")}
+          >
+            <UiIcon name={fullscreen ? "restore" : "maximize"} size="1.23em" />
+          </button>
           <button className="terminal-card__action terminal-card__action--close" type="button" onClick={() => onDispose(session.id)} title={t(locale, "close")} aria-label={t(locale, "close")}><UiIcon name="close" size="1.23em" /></button>
         </div>
       </header>

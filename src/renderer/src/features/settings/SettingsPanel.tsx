@@ -50,6 +50,7 @@ import {
   defaultCanvasWheelBinding
 } from "../../../../shared/canvasNavigation";
 import { ProviderIcon } from "../../components/ProviderIcon";
+import { ShortcutReference } from "../../components/ShortcutReference";
 import { UiIcon, type UiIconName } from "../../components/UiIcon";
 import {
   CanvasMenuDivider,
@@ -943,6 +944,22 @@ export function SettingsPanel({
                   <p className="shortcut-editor__error" role="alert">{shortcutError}</p>
                 )}
               </SettingGroup>
+              <SettingGroup label={t(locale, "toggleFullscreen")} description={t(locale, "toggleFullscreenDescription")}>
+                <ShortcutRow
+                  label={t(locale, "shortcutBinding")}
+                  value={settings.shortcuts.toggleFullscreen.replace("Meta", window.canvasTTY.window.isMacOS ? "Command" : "Super")}
+                  capturing={capturing === "toggleFullscreen"}
+                  onStart={() => {
+                    setShortcutError(null);
+                    setCapturing("toggleFullscreen");
+                  }}
+                  onKeyDown={(event) => captureShortcut("toggleFullscreen", event)}
+                  onPointerDown={(event) => capturePointerShortcut("toggleFullscreen", event)}
+                />
+                {shortcutError && capturing === "toggleFullscreen" && (
+                  <p className="shortcut-editor__error" role="alert">{shortcutError}</p>
+                )}
+              </SettingGroup>
               <SettingGroup label={t(locale, "renameWindow")} description={t(locale, "renameWindowDescription")}>
                 <ShortcutRow
                   label={t(locale, "shortcutBinding")}
@@ -958,6 +975,9 @@ export function SettingsPanel({
                 {shortcutError && capturing === "renameWindow" && (
                   <p className="shortcut-editor__error" role="alert">{shortcutError}</p>
                 )}
+              </SettingGroup>
+              <SettingGroup label={t(locale, "keyboardShortcuts")} layout="stacked">
+                <ShortcutReference locale={locale} />
               </SettingGroup>
             </>
           )}

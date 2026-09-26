@@ -207,7 +207,7 @@ if (library) {
 
 当前安装器会刻意拒绝私有仓库、GitHub `/tree/branch/subdirectory` 链接以及需要构建步骤的仓库。请把可直接运行的静态包发布到仓库根目录。
 
-可选的展示页登录使用 GitHub OAuth Device Flow。构建维护者可以[注册 OAuth App 并启用 Device Flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app)，再将公开的 client ID 保存到 GitHub Actions 仓库变量 `CANVASTTY_GITHUB_CLIENT_ID`。正式构建会在该变量已配置时嵌入其值；本地构建可使用 `GITHUB_OAUTH_CLIENT_ID` 或 `CANVASTTY_GITHUB_CLIENT_ID`，运行时也可以用任一变量覆盖内置值。应用不包含也不需要 client secret。默认情况下，登录会在 CanvasTTY 内置浏览器中打开 GitHub，同时明确提供系统浏览器作为备用选项。未配置 client ID 时，界面会明确显示 OAuth 不可用，但仍可通过仓库链接检查和安装插件。退出登录只删除本机的加密会话；需要时请另行在 [GitHub 应用设置](https://github.com/settings/applications)中撤销授权。
+无需账号即可通过 GitHub 公共搜索 API 浏览和搜索展示页。登录是可选的，只会提高 GitHub 搜索限额；达到匿名限额时，CanvasTTY 会显示何时可以重试。可选的展示页登录使用 GitHub OAuth Device Flow。构建维护者可以[注册 OAuth App 并启用 Device Flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app)，再将公开的 client ID 保存到 GitHub Actions 仓库变量 `CANVASTTY_GITHUB_CLIENT_ID`。正式构建会在该变量已配置时嵌入其值；本地构建可使用 `GITHUB_OAUTH_CLIENT_ID` 或 `CANVASTTY_GITHUB_CLIENT_ID`，运行时也可以用任一变量覆盖内置值。应用不包含也不需要 client secret。默认情况下，登录会在 CanvasTTY 内置浏览器中打开 GitHub，同时明确提供系统浏览器作为备用选项。未配置 client ID 时，界面会明确显示 OAuth 不可用，但仍可通过仓库链接检查和安装插件。退出登录只删除本机的加密会话；需要时请另行在 [GitHub 应用设置](https://github.com/settings/applications)中撤销授权。
 
 ## 作者检查清单
 

@@ -22,7 +22,7 @@ test("viewport-bound overlays and camera sizing share the titlebar boundary", as
   assert.match(startupPage, /--titlebar-height: \$\{titlebarHeight\}px;/);
   assert.match(startupPage, /grid-template-rows: var\(--titlebar-height\) 1fr;/);
   assert.match(titleBar, /import appManifest from "\.\.\/\.\.\/\.\.\/\.\.\/package\.json";/);
-  assert.match(titleBar, /import\.meta\.env\.DEV \? "DEV" : "RELEASE"/);
+  assert.match(titleBar, /import\.meta\.env\.DEV \|\| import\.meta\.env\.VITE_BUILD_CHANNEL === "DEV" \? "DEV" : "RELEASE"/);
   assert.match(titleBar, /`\$\{BUILD_CHANNEL\} v\$\{appManifest\.version\}`/);
   assert.match(styles, /\.titlebar__build--dev \{/);
   assert.match(styles, /\.titlebar__build--release \{/);

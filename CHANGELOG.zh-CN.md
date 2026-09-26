@@ -23,6 +23,10 @@
 - WebGL 仅用于聚焦的终端卡片：同一时间只有一个 context，焦点离开时释放；context 丢失时回退到 DOM renderer。调色板与透明度渲染保持不变。
 - Settings → Updates 新增一行自更新，状态如实呈现：idle、checking、update available（含版本号）、downloading（已知时显示百分比）、ready to install 以及 unavailable（dev、offline 或 error）。下载与安装都是显式操作，只有在更新下载完成后才提供 install-and-restart；开发模式下该行报告 unavailable 而不会抛错。
 - 仓库密钥审计不再把标识符内部的密钥前缀当作命中，因此 `disk-…`、`task-…` 这类名称不再产生误报，而真实密钥仍会被检出。
+- 新增 Cursor、MiniMax Code、Devin 和 Antigravity 智能体（PR #63）。
+- 新增提供商 API 密钥、API 配置文件，以及通过编排 MCP 在智能体之间委派任务（PR #64）。
+- 插件展示页无需 GitHub 账号即可使用；登录是可选的，只会提高 GitHub 限额（issue #22）。HOME 时钟显示日期（issue #53）。
+- 默认会话拒绝网页权限，渲染进程崩溃后会重新加载，较长的智能体回答会保留其轮次，密钥审计也会检查构建产物（来自 PR #35 和 #51）。
 ## 1.5.2
 
 - 修复调整卡片大小后，Codex 清空并重新绘制历史时终端跳到历史开头的问题。阅读时保留相对滚动位置，位于底部的终端继续跟随新输出。

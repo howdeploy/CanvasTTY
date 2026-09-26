@@ -50,6 +50,13 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+interface GrokCredential {
+  token: string;
+  authMode: number;
+  expiresAt: number;
+  sessionExpired: boolean;
+}
+
 export class LimitsService {
   private codex: CodexAppServerClient;
   private kimi: KimiWebUsageClient;
@@ -402,10 +409,11 @@ async function readOpenCodeGoUsage(clientVersion: string): Promise<unknown> {
 async function readGrokUsage(clientVersion: string): Promise<unknown> {
   const configRoot = process.env.GROK_HOME || join(homedir(), ".grok");
   const credentials = await readCredentialFile(join(configRoot, "auth.json"), "not-authenticated");
-  const accessToken = selectGrokAccessToken(credentials);
-  if (!accessToken) throw new LimitsAdapterError("not-authenticated");
+  const credential = selectGrokCredential(credentials);
+  if (!credential) throw new LimitsAdapterError("not-authenticated");
+  if (credential.sessionExpired) throw new LimitsAdapterError("session-expired");
 
-  return fetchUsageJson(GROK_BILLING_URL, accessToken, {
+  return fetchUsageJson(GROK_BILLING_URL, credential.token, {
     "x-xai-token-auth": "xai-grok-cli",
     "user-agent": `canvastty/${clientVersion}`
   });
@@ -445,17 +453,18 @@ async function readFirstCredentialFile(
   throw new LimitsAdapterError(missingReason);
 }
 
-function selectGrokAccessToken(credentials: Record<string, unknown>): string | null {
+function selectGrokCredential(credentials: Record<string, unknown>): GrokCredential | null {
   const candidates = Object.values(credentials)
     .filter(isRecord)
     .map((credential) => ({
       token: cleanSecret(credential.key),
       authMode: credential.auth_mode === "oidc" ? 1 : 0,
-      expiresAt: numericValue(credential.expires_at) ?? 0
+      expiresAt: numericValue(credential.expires_at) ?? 0,
+      sessionExpired: cleanSecret(credential.refresh_token) !== null && hasExpired(credential.expires_at)
     }))
-    .filter((candidate): candidate is { token: string; authMode: number; expiresAt: number } => candidate.token !== null)
+    .filter((candidate): candidate is GrokCredential => candidate.token !== null)
     .sort((left, right) => right.authMode - left.authMode || right.expiresAt - left.expiresAt);
-  return candidates[0]?.token ?? null;
+  return candidates[0] ?? null;
 }
 
 async function readCredentialFile(path: string, missingReason: LimitUnavailableReason): Promise<Record<string, unknown>> {
@@ -1009,7 +1018,13 @@ export function normalizeKimiLimits(raw: unknown): LimitWindow[] {
   const payload = isRecord(raw.data) ? raw.data : raw;
   if (payload.kind === "error") {
     const message = typeof payload.message === "string" ? payload.message.toLowerCase() : "";
-    throw new LimitsAdapterError(message.includes("auth") || message.includes("login") ? "not-authenticated" : "protocol-error");
+    throw new LimitsAdapterError(
+      message.includes("auth") || message.includes("login")
+        ? "not-authenticated"
+        : message.includes("timed out")
+          ? "timeout"
+          : "protocol-error"
+    );
   }
   const windows: LimitWindow[] = [];
   const managedSummary = payload.summary;
@@ -1083,6 +1098,40 @@ export function normalizeKimiLimits(raw: unknown): LimitWindow[] {
         resetsAt
       });
       if (windows.length >= MAX_WINDOWS) break;
+    }
+  }
+
+  const managedUsages = isRecord(payload.quota) && isRecord(payload.quota.usages) ? payload.quota.usages : null;
+  if (managedUsages) {
+    const definitions: Array<{
+      key: "limit5h" | "limit7d" | "monthTotal";
+      id: string;
+      slot: "primary" | "secondary";
+      label: string;
+      windowMinutes: number | null;
+    }> = [
+      { key: "limit5h", id: "kimi:managed:300", slot: "primary", label: "5h", windowMinutes: 300 },
+      { key: "limit7d", id: "kimi:weekly", slot: "secondary", label: "7d", windowMinutes: 10_080 },
+      { key: "monthTotal", id: "kimi:monthly", slot: "secondary", label: "monthly", windowMinutes: null }
+    ];
+    for (const { key, id, slot, label, windowMinutes } of definitions) {
+      const candidate = managedUsages[key];
+      if (!isRecord(candidate)) continue;
+      const usedRatio = numericValue(candidate.usedRatio);
+      const resetsAt = epochMilliseconds(candidate.resetAt);
+      if (usedRatio === null && resetsAt === null) continue;
+      windows.push({
+        id,
+        bucketId: "kimi",
+        slot,
+        isDefaultBucket: true,
+        label,
+        usedPercent: usedRatio === null ? null : clampPercent(usedRatio * 100),
+        used: null,
+        limit: null,
+        windowMinutes,
+        resetsAt
+      });
     }
   }
 
@@ -1197,6 +1246,11 @@ function epochMilliseconds(value: unknown): number | null {
   if (number === null || number <= 0) return null;
   const milliseconds = number < 1_000_000_000_000 ? number * 1_000 : number;
   return Number.isSafeInteger(Math.trunc(milliseconds)) ? Math.trunc(milliseconds) : null;
+}
+
+function hasExpired(value: unknown): boolean {
+  const expiresAt = epochMilliseconds(value);
+  return expiresAt !== null && expiresAt <= Date.now();
 }
 
 function clampPercent(value: number): number {

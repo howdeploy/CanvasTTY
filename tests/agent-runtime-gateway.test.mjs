@@ -107,6 +107,129 @@ test("RuntimeGateway rejects a wrong capability and ignores a stale turn complet
   assert.equal(gateway.currentStatus("terminal-two"), "working");
 });
 
+test("RuntimeGateway propagates codexThreadId for codex sessions with canonical UUID", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
+  const root = await fixture(t);
+  const signals = [];
+  const gateway = new RuntimeGateway({ runtimeDirectory: root, onSignal: (id, signal) => signals.push({ id, signal }) });
+  await gateway.start();
+  t.after(() => gateway.close());
+  const capability = gateway.registerSession("terminal-codex-thread", "codex");
+
+  const validUuid = "12345678-1234-1234-1234-123456789abc";
+  const helper = new URL("../src/agent-runtime/hook-helper.mjs", import.meta.url);
+  const child = spawn(process.execPath, [helper.pathname, "working", "UserPromptSubmit"], {
+    env: {
+      ...process.env,
+      [AGENT_RUNTIME_ENV.address]: capability.address,
+      [AGENT_RUNTIME_ENV.terminalSessionId]: capability.terminalSessionId,
+      [AGENT_RUNTIME_ENV.provider]: capability.provider,
+      [AGENT_RUNTIME_ENV.capabilityToken]: capability.capabilityToken
+    },
+    stdio: ["pipe", "ignore", "pipe"]
+  });
+  child.stdin.end(JSON.stringify({ turn_id: "turn-codex-1", session_id: validUuid }));
+  const result = await childResult(child);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0].signal.turnId, "turn-codex-1");
+  assert.equal(signals[0].signal.codexThreadId, validUuid);
+});
+
+test("RuntimeGateway normalizes uppercase UUID to lowercase canonical UUID for codex", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
+  const root = await fixture(t);
+  const signals = [];
+  const gateway = new RuntimeGateway({ runtimeDirectory: root, onSignal: (id, signal) => signals.push({ id, signal }) });
+  await gateway.start();
+  t.after(() => gateway.close());
+  const capability = gateway.registerSession("terminal-codex-upper", "codex");
+
+  const upperUuid = "A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D";
+  const lowerUuid = upperUuid.toLowerCase();
+  const helper = new URL("../src/agent-runtime/hook-helper.mjs", import.meta.url);
+  const child = spawn(process.execPath, [helper.pathname, "working", "UserPromptSubmit"], {
+    env: {
+      ...process.env,
+      [AGENT_RUNTIME_ENV.address]: capability.address,
+      [AGENT_RUNTIME_ENV.terminalSessionId]: capability.terminalSessionId,
+      [AGENT_RUNTIME_ENV.provider]: capability.provider,
+      [AGENT_RUNTIME_ENV.capabilityToken]: capability.capabilityToken
+    },
+    stdio: ["pipe", "ignore", "pipe"]
+  });
+  child.stdin.end(JSON.stringify({ turn_id: "turn-codex-upper", session_id: upperUuid }));
+  const result = await childResult(child);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0].signal.codexThreadId, lowerUuid);
+});
+
+test("RuntimeGateway ignores codexThreadId when non-canonical or cross-provider", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
+  const root = await fixture(t);
+  const signals = [];
+  const gateway = new RuntimeGateway({ runtimeDirectory: root, onSignal: (id, signal) => signals.push({ id, signal }) });
+  await gateway.start();
+  t.after(() => gateway.close());
+
+  // 1. Cross-provider: claude provider with session_id UUID in hook input
+  const claudeCap = gateway.registerSession("terminal-claude-test", "claude");
+  const validUuid = "12345678-1234-1234-1234-123456789abc";
+  const helper = new URL("../src/agent-runtime/hook-helper.mjs", import.meta.url);
+
+  const claudeChild = spawn(process.execPath, [helper.pathname, "working", "UserPromptSubmit"], {
+    env: {
+      ...process.env,
+      [AGENT_RUNTIME_ENV.address]: claudeCap.address,
+      [AGENT_RUNTIME_ENV.terminalSessionId]: claudeCap.terminalSessionId,
+      [AGENT_RUNTIME_ENV.provider]: claudeCap.provider,
+      [AGENT_RUNTIME_ENV.capabilityToken]: claudeCap.capabilityToken
+    },
+    stdio: ["pipe", "ignore", "pipe"]
+  });
+  claudeChild.stdin.end(JSON.stringify({ turn_id: "turn-claude-1", session_id: validUuid }));
+  const claudeResult = await childResult(claudeChild);
+  assert.equal(claudeResult.code, 0, claudeResult.stderr);
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0].signal.codexThreadId, undefined);
+
+  // 2. Malformed UUID: not canonical format (e.g. invalid chars, wrong length, path traversal)
+  const codexCap = gateway.registerSession("terminal-codex-malformed", "codex");
+  const malformedInputs = [
+    "not-a-uuid",
+    "12345678-1234-1234-1234-123456789abz", // 'z' is not hex
+    "12345678123412341234123456789abc", // no hyphens
+    "../../../etc/passwd",
+    "12345678-1234-1234-1234-123456789abc\n",
+    "Bearer token123456"
+  ];
+  for (const badId of malformedInputs) {
+    const childBad = spawn(process.execPath, [helper.pathname, "working", "UserPromptSubmit"], {
+      env: {
+        ...process.env,
+        [AGENT_RUNTIME_ENV.address]: codexCap.address,
+        [AGENT_RUNTIME_ENV.terminalSessionId]: codexCap.terminalSessionId,
+        [AGENT_RUNTIME_ENV.provider]: codexCap.provider,
+        [AGENT_RUNTIME_ENV.capabilityToken]: codexCap.capabilityToken
+      },
+      stdio: ["pipe", "ignore", "pipe"]
+    });
+    childBad.stdin.end(JSON.stringify({ turn_id: "turn-bad", session_id: badId }));
+    const badRes = await childResult(childBad);
+    assert.equal(badRes.code, 0, badRes.stderr);
+  }
+  // All malformed ones should either be omitted or ignored without codexThreadId
+  for (let i = 1; i < signals.length; i++) {
+    assert.equal(signals[i].signal.codexThreadId, undefined);
+  }
+
+  // 3. Direct protocol injection with cross-provider codexThreadId is rejected
+  await send(claudeCap.address, {
+    ...message(claudeCap, "working", "UserPromptSubmit", "turn-claude-direct"),
+    codexThreadId: validUuid
+  });
+  // Signal should not be delivered or accepted
+  assert.equal(signals.filter((s) => s.id === "terminal-claude-test").length, 1);
+});
+
 test("ordinary Codex Stop reports omit answer text without an explicit capture grant", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
   const root = await fixture(t);
   const signals = [];

@@ -341,7 +341,8 @@ async function initializeServices(): Promise<void> {
         terminalManager?.applyProviderSignal(terminalSessionId, {
           kind: "lifecycle",
           state: signal.state,
-          ...(signal.turnId ? { requestId: signal.turnId } : {})
+          ...(signal.turnId ? { requestId: signal.turnId } : {}),
+          ...(signal.codexThreadId ? { codexThreadId: signal.codexThreadId } : {})
         });
         agentControl?.onSignal(terminalSessionId, signal);
         if (signal.lastAssistantMessage !== undefined && signal.answerCaptureGrantExpiresAt !== undefined) {

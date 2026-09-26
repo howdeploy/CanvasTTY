@@ -40,6 +40,7 @@ export interface PersistedTerminalSession {
   position: Point;
   size: Size;
   parentSessionId?: string;
+  codexThreadId?: string;
 }
 
 interface PersistedTerminalSessionState {
@@ -106,7 +107,20 @@ export class TerminalSessionStore {
   }
 }
 
-export function persistedTerminalSession(metadata: SessionMetadata): PersistedTerminalSession {
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function normalizeCodexThreadId(provider: ProviderId, candidate: unknown): string | undefined {
+  if (provider !== "codex") return undefined;
+  if (typeof candidate !== "string") return undefined;
+  const trimmed = candidate.trim().toLowerCase();
+  return UUID_REGEX.test(trimmed) ? trimmed : undefined;
+}
+
+export function persistedTerminalSession(
+  metadata: SessionMetadata,
+  codexThreadId?: unknown
+): PersistedTerminalSession {
+  const normalizedCodexThreadId = normalizeCodexThreadId(metadata.provider, codexThreadId);
   return {
     id: metadata.id,
     provider: metadata.provider,
@@ -117,7 +131,8 @@ export function persistedTerminalSession(metadata: SessionMetadata): PersistedTe
     cwd: metadata.cwd,
     position: { ...metadata.position },
     size: { ...metadata.size },
-    ...(metadata.parentSessionId !== undefined ? { parentSessionId: metadata.parentSessionId } : {})
+    ...(metadata.parentSessionId !== undefined ? { parentSessionId: metadata.parentSessionId } : {}),
+    ...(normalizedCodexThreadId !== undefined ? { codexThreadId: normalizedCodexThreadId } : {})
   };
 }
 
@@ -150,6 +165,11 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
       : undefined;
     if (session.parentSessionId !== undefined && parentSessionId === undefined) continue;
     if (role === "subagent" && parentSessionId === undefined) continue;
+    // A damaged or obsolete conversation ID must not make the whole card disappear.
+    // It can still restore with Codex's interactive resume picker.
+    const codexThreadId = session.provider === "codex" && typeof session.codexThreadId === "string" && UUID_REGEX.test(session.codexThreadId.trim())
+      ? session.codexThreadId.trim().toLowerCase()
+      : undefined;
     sessions.push({
       id: session.id,
       provider: session.provider as ProviderId,
@@ -163,7 +183,8 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
         width: clamp(session.size.width, 420, 1_600),
         height: clamp(session.size.height, 260, 1_100)
       },
-      ...(parentSessionId !== undefined ? { parentSessionId } : {})
+      ...(parentSessionId !== undefined ? { parentSessionId } : {}),
+      ...(codexThreadId !== undefined ? { codexThreadId } : {})
     });
     ids.add(session.id);
   }

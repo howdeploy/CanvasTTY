@@ -83,6 +83,8 @@ interface ManagedSession {
   lifecycle: ProviderLifecycleParser | null;
   awaitingInitialResize: boolean;
   resumeOnLaunch: boolean;
+  resumeThreadId?: string;
+  codexThreadId?: string;
   captureResult: boolean;
 }
 
@@ -90,6 +92,7 @@ export interface ProviderLifecycleSignal {
   kind: "lifecycle";
   state: "idle" | "working" | "needs_approval";
   requestId?: string;
+  codexThreadId?: string;
 }
 
 /**
@@ -324,14 +327,18 @@ export class TerminalManager {
         : null;
       session.awaitingInitialResize = true;
       session.resumeOnLaunch = false;
+      delete session.resumeThreadId;
+      delete session.codexThreadId;
       session.metadata.startedAt = Date.now();
       session.metadata.status = initialSessionStatus(session.metadata.provider);
       session.metadata.exitCode = null;
       session.metadata.failureDetails = null;
       this.emitSession(session.metadata);
+      this.schedulePersistence();
       return snapshot(session);
     }
 
+    delete session.codexThreadId;
     session.agentOrchestration?.cleanup();
     const launched = this.spawnProcess(
       id,
@@ -368,6 +375,7 @@ export class TerminalManager {
       if (runtimeStatus) session.metadata.status = runtimeStatus;
     }
     this.emitSession(session.metadata, failureOrigin);
+    this.schedulePersistence();
     return snapshot(session);
   }
 
@@ -431,6 +439,12 @@ export class TerminalManager {
   applyProviderSignal(id: string, signal: ProviderLifecycleSignal): void {
     const session = this.sessions.get(id);
     if (!this.lifecycleHooksEnabled || !session || session.metadata.status === "done" || session.metadata.status === "failed") return;
+
+    if (signal.codexThreadId && session.metadata.provider === "codex"
+      && signal.codexThreadId !== session.codexThreadId) {
+      session.codexThreadId = signal.codexThreadId;
+      this.schedulePersistence();
+    }
 
     const nextStatus = signal.state;
     if (session.metadata.status === nextStatus) return;
@@ -580,7 +594,9 @@ export class TerminalManager {
           INITIAL_TERMINAL_ROWS,
           descriptor.provider !== "terminal",
           false,
-          descriptor.role
+          descriptor.role,
+          undefined,
+          descriptor.codexThreadId
         );
         process = launched.process;
         agentBrowser = launched.agentBrowser;
@@ -613,6 +629,7 @@ export class TerminalManager {
         : null,
       awaitingInitialResize: awaitMeasuredGrid,
       resumeOnLaunch: awaitMeasuredGrid && descriptor.provider !== "terminal",
+      ...(descriptor.codexThreadId ? { resumeThreadId: descriptor.codexThreadId, codexThreadId: descriptor.codexThreadId } : {}),
       captureResult: false
     };
     this.sessions.set(descriptor.id, session);
@@ -631,7 +648,7 @@ export class TerminalManager {
       return Promise.resolve();
     }
     return this.sessionStore.replace(
-      [...this.sessions.values()].map((session) => persistedTerminalSession(session.metadata))
+      [...this.sessions.values()].map((session) => persistedTerminalSession(session.metadata, session.codexThreadId))
     );
   }
 
@@ -654,6 +671,8 @@ export class TerminalManager {
     session.awaitingInitialResize = false;
     const resumePrevious = session.resumeOnLaunch;
     session.resumeOnLaunch = false;
+    const resumeThreadId = session.resumeThreadId;
+    delete session.resumeThreadId;
     try {
       const launched = this.spawnProcess(
         id,
@@ -664,7 +683,9 @@ export class TerminalManager {
         session.rows,
         resumePrevious,
         session.captureResult,
-        session.metadata.role
+        session.metadata.role,
+        undefined,
+        resumeThreadId
       );
       session.process = launched.process;
       session.agentBrowser = launched.agentBrowser;
@@ -701,7 +722,8 @@ export class TerminalManager {
     resumePrevious = false,
     captureResult = false,
     role: SessionRole = "agent",
-    answerCaptureGrantExpiresAt?: number
+    answerCaptureGrantExpiresAt?: number,
+    resumeThreadId?: string
   ): {
     process: IPty | null;
     agentBrowser: PreparedAgentBrowserPtyLaunch | null;
@@ -755,7 +777,8 @@ export class TerminalManager {
       const launch = resolveTerminalLaunch(provider, profile, providerArgs, {
         environment: { ...baseEnvironment, ...providerEnvironment },
         ...(providerCli ? { providerCli } : {}),
-        resumePrevious
+        resumePrevious,
+        ...(resumeThreadId ? { resumeThreadId } : {})
       });
       return {
         process: this.spawnPty(launch.command, launch.args, {

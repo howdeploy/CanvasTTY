@@ -20,6 +20,7 @@ import type {
   StickyNote
 } from "../../../../shared/contracts";
 import { UiIcon } from "../../components/UiIcon";
+import { ShortcutReference } from "../../components/ShortcutReference";
 import { t } from "../../lib/i18n";
 import { displayCanvasNavigationBinding, isRenameInputTarget, isShortcutCaptureTarget, matchesPhysicalOrLayoutKey } from "../../lib/shortcuts";
 import { BrowserCard } from "../browser/BrowserCard";
@@ -1207,6 +1208,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               <aside className="shortcut-hints" aria-label={t(settings.locale, "keyboardShortcuts")}>
                 <div><kbd>{settings.shortcuts.home}</kbd><span>{t(settings.locale, "homeShortcut")}</span></div>
                 <div><kbd>{settings.shortcuts.renameWindow}</kbd><span>{t(settings.locale, "renameWindow")}</span></div>
+                <div><kbd>{settings.shortcuts.toggleFullscreen.replace("Meta", window.canvasTTY.window.isMacOS ? "Command" : "Super")}</kbd><span>{t(settings.locale, "toggleFullscreen")}</span></div>
                 <div><kbd>{window.canvasTTY.window.isMacOS ? "Option+↑↓←→" : "Alt+↑↓←→"}</kbd><span>{t(settings.locale, "focusWindowHint")}</span></div>
                 <div><kbd>Shift + drag</kbd><span>{t(settings.locale, "marqueeSelectionHint")}</span></div>
                 {settings.canvasWheelCaptureMode === "key" && settings.canvasWheelOverride !== null && (
@@ -1217,6 +1219,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                   <div><kbd>{displayCanvasNavigationBinding(settings.canvasNavigationOverride, window.canvasTTY.window.isMacOS)}</kbd>
                     <span>{t(settings.locale, "canvasNavigationOverrideHint")}</span></div>
                 )}
+                <details className="shortcut-hints__more" data-interactive="true" data-canvas-wheel-priority="local">
+                  <summary>{t(settings.locale, "keyboardShortcuts")}</summary>
+                  <ShortcutReference locale={settings.locale} />
+                </details>
               </aside>
             )}
           </div>

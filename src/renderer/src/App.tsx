@@ -24,6 +24,7 @@ import type {
   ProviderId,
   SessionBounds,
   SessionSnapshot,
+  ShortcutAction,
   StickyNote,
   WindowState
 } from "../../shared/contracts";
@@ -995,7 +996,13 @@ export function App(): React.JSX.Element {
   }, [homeEditDraft, settings.locale, showToast]);
 
   useEffect(() => {
-    const performShortcut = (shortcut: "home" | "renameWindow"): void => {
+    const performShortcut = (shortcut: ShortcutAction): void => {
+      if (shortcut === "toggleFullscreen") {
+        if (settingsOpen || launchProvider !== null || pendingTerminalUrl !== null || homeEditDraft) return;
+        const id = fullscreenSessionId ?? activeSessionId;
+        if (id) toggleSessionFullscreen(id);
+        return;
+      }
       if (shortcut === "home") {
         goHome();
         return;
@@ -1008,6 +1015,12 @@ export function App(): React.JSX.Element {
     };
     const handleShortcut = (event: KeyboardEvent): void => {
       if (event.repeat || isShortcutCaptureTarget(event.target) || isRenameInputTarget(event.target)) return;
+      if (matchesShortcut(event, settings.shortcuts.toggleFullscreen)) {
+        event.preventDefault();
+        event.stopPropagation();
+        performShortcut("toggleFullscreen");
+        return;
+      }
       if (matchesShortcut(event, settings.shortcuts.home)) {
         event.preventDefault();
         event.stopPropagation();
@@ -1027,7 +1040,9 @@ export function App(): React.JSX.Element {
         ? "home"
         : matchesPointerShortcut(event, settings.shortcuts.renameWindow)
           ? "renameWindow"
-          : null;
+          : matchesPointerShortcut(event, settings.shortcuts.toggleFullscreen)
+            ? "toggleFullscreen"
+            : null;
       if (!action) return;
       event.preventDefault();
       event.stopPropagation();
@@ -1040,7 +1055,7 @@ export function App(): React.JSX.Element {
       window.removeEventListener("keydown", handleShortcut, true);
       window.removeEventListener("pointerdown", handlePointerShortcut, true);
     };
-  }, [activeSessionId, goHome, settings.locale, settings.shortcuts, showToast]);
+  }, [activeSessionId, fullscreenSessionId, goHome, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, showToast, toggleSessionFullscreen]);
 
   const appearance = resolveAppearanceSettings(settings);
   const rootClasses = useMemo(

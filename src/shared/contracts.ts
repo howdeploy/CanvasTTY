@@ -28,7 +28,7 @@ export type CanvasOverlayPlacement = "top-left" | "top-right" | "bottom-left" | 
 export type MinimapInteractionMode = "click" | "drag";
 export type BrowserViewportSurface = "native" | "placeholder" | "hidden";
 export type FocusActivation = "off" | "single" | "double";
-export type ShortcutAction = "home" | "renameWindow";
+export type ShortcutAction = "home" | "renameWindow" | "toggleFullscreen";
 export type RadialLauncherActionId = "note" | "browser" | "settings";
 export type RadialLauncherItemId = ProviderId | RadialLauncherActionId;
 
@@ -143,11 +143,13 @@ export const DEFAULT_HOME_LAYOUT: HomeWidgetPlacement[] = [
 export interface ShortcutBindings {
   home: string;
   renameWindow: string;
+  toggleFullscreen: string;
 }
 
 export const DEFAULT_SHORTCUTS: ShortcutBindings = {
   home: "Home",
-  renameWindow: "F2"
+  renameWindow: "F2",
+  toggleFullscreen: "Meta+F"
 };
 
 export const INITIAL_TERMINAL_COLS = 80;

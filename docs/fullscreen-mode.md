@@ -7,13 +7,13 @@ CanvasTTY supports fullscreen mode for terminal sessions, allowing you to expand
 ### Enter Fullscreen
 
 - **Header button:** Click the maximize icon (⛶) in the terminal card header.
-- **Keyboard:** Not yet supported via shortcut (coming soon).
+- **Keyboard:** Select a terminal and press `Super+F` (`Command+F` on macOS). Change the binding in Settings → Controls → Terminal fullscreen.
 
 ### Exit Fullscreen
 
 - **Close button:** Click the X button in the top-right corner of the fullscreen session.
 - **Header button:** Click the restore icon (❐) in the terminal card header.
-- **Keyboard:** Press `Escape`.
+- **Keyboard:** Press the same fullscreen shortcut again. `Escape` remains available to the terminal application and never exits fullscreen.
 
 ## Behavior
 

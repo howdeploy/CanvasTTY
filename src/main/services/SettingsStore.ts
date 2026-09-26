@@ -41,6 +41,7 @@ import {
   DEFAULT_HOME_GRID_SIZE,
   DEFAULT_HOME_LAYOUT,
   DEFAULT_RADIAL_LAUNCHER_ITEMS,
+  DEFAULT_SHORTCUTS,
   DEFAULT_UI_SCALE,
   HOME_GRID_MAX_COLUMNS,
   HOME_GRID_MAX_ROWS,
@@ -96,7 +97,6 @@ const CANVAS_OVERLAY_PLACEMENTS = new Set<CanvasOverlayPlacement>([
 ]);
 const MINIMAP_INTERACTION_MODES = new Set<MinimapInteractionMode>(["click", "drag"]);
 const SHORTCUT_MODIFIERS = new Set(["Ctrl", "Alt", "Shift", "Meta"]);
-const DEFAULT_SHORTCUTS: ShortcutBindings = { home: "Home", renameWindow: "F2" };
 
 export class SettingsStore {
   private readonly filePath: string;
@@ -906,10 +906,12 @@ function normalizeShortcuts(candidate: unknown, fallback: ShortcutBindings): Sho
     : {};
   const shortcuts = {
     home: isValidShortcut(source.home) ? source.home : fallback.home,
-    renameWindow: isValidShortcut(source.renameWindow) ? source.renameWindow : fallback.renameWindow
+    renameWindow: isValidShortcut(source.renameWindow) ? source.renameWindow : fallback.renameWindow,
+    toggleFullscreen: isValidShortcut(source.toggleFullscreen) ? source.toggleFullscreen : fallback.toggleFullscreen
   };
 
-  if (shortcuts.home.toLowerCase() === shortcuts.renameWindow.toLowerCase()) {
+  const bindings = Object.values(shortcuts).map((binding) => binding.toLowerCase());
+  if (new Set(bindings).size !== bindings.length) {
     return { ...fallback };
   }
   return shortcuts;

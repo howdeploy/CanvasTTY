@@ -135,11 +135,13 @@ button { border: 0; }
 .tile { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
 
 .home-zone { position: absolute; left: 0; top: 0; display: grid; gap: 18px; border-radius: calc(var(--radius-lg) + 4px); }
+/* Empty HOME cells must not intercept regions visible underneath them. */
+.home-zone:not(.home-zone--editing) { pointer-events: none; }
 .home-zone--editing { outline: 2px dashed rgba(255,255,255,.86); outline-offset: 10px; background-color: rgba(255,255,255,.06); background-image: linear-gradient(to right, rgba(255,255,255,.2) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,.2) 1px, transparent 1px); background-size: 100px 90px; }
 .home-zone__boundary-label { position: absolute; left: -11px; top: -49px; z-index: 60; min-height: 30px; padding: 7px 11px; display: flex; align-items: center; border-radius: 9px; color: white; background: rgba(40,41,52,.94); box-shadow: var(--shadow-sm); font: 800 11px/1 var(--font-mono); white-space: nowrap; }
 .home-zone__boundary-resize { position: absolute; right: -24px; bottom: -24px; z-index: 70; width: 42px; height: 42px; border: 4px solid rgba(255,255,255,.9); border-left: 0; border-top: 0; border-radius: 0 0 10px 0; background: rgba(40,41,52,.74); cursor: nwse-resize; touch-action: none; }
 .home-zone__boundary-resize:hover { background: rgba(40,41,52,.94); }
-.home-widget-slot { position: absolute; z-index: 1; min-width: 0; min-height: 0; }
+.home-widget-slot { position: absolute; z-index: 1; min-width: 0; min-height: 0; pointer-events: auto; }
 .home-widget-slot > .tile { width: 100%; height: 100%; }
 .home-zone--editing .home-widget-slot > .tile { pointer-events: none; }
 .home-zone--editing .home-widget-slot { border-radius: var(--radius-lg); outline: 2px dashed rgba(255,255,255,.72); outline-offset: 4px; }
@@ -276,9 +278,17 @@ button { border: 0; }
 .canvas-controls button { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 8px; color: white; background: transparent; cursor: pointer; transition: background .15s ease; }
 .canvas-controls button:hover { background: rgba(255,255,255,.13); }
 .shortcut-hints { min-width: 224px; padding: 9px 11px; display: grid; gap: 7px; border-radius: 12px; color: white; background: rgba(40,41,52,.9); box-shadow: var(--shadow-sm); pointer-events: none; }
-.shortcut-hints div { display: grid; grid-template-columns: minmax(52px, auto) 1fr; align-items: center; gap: 10px; }
+.shortcut-hints > div { display: grid; grid-template-columns: minmax(52px, auto) 1fr; align-items: center; gap: 10px; }
 .shortcut-hints kbd { min-width: 52px; padding: 5px 7px; border: 1px solid rgba(255,255,255,.14); border-radius: 7px; color: white; background: rgba(255,255,255,.1); font: 800 11px var(--font-mono); text-align: center; }
 .shortcut-hints span { color: rgba(255,255,255,.66); font-size: 11px; font-weight: 750; }
+.shortcut-hints__more { pointer-events: auto; max-width: min(440px, 70vw); max-height: 45vh; overflow-y: auto; }
+.shortcut-hints__more summary { cursor: pointer; padding: 5px 0; font-size: 11px; font-weight: 750; }
+.shortcut-reference { margin: 0; display: grid; gap: 10px; font-size: 12px; }
+.shortcut-reference > div { display: grid; grid-template-columns: minmax(100px, 1fr) 2fr; align-items: center; gap: 12px; }
+.shortcut-reference dt, .shortcut-reference dd { margin: 0; }
+.shortcut-reference kbd { font: 700 11px var(--font-mono); overflow-wrap: anywhere; }
+.shortcut-hints .shortcut-reference { padding-top: 8px; font-size: 11px; }
+.shortcut-hints .shortcut-reference kbd { display: block; }
 .canvas-minimap { width: 190px; height: 122px; padding: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; outline: 0; color: white; background: rgba(40,41,52,.92); box-shadow: var(--shadow-sm); cursor: crosshair; pointer-events: auto; touch-action: none; }
 .canvas-minimap[data-interaction-mode="drag"] { cursor: grab; }
 .canvas-minimap[data-interaction-mode="drag"]:active { cursor: grabbing; }
@@ -363,6 +373,7 @@ button { border: 0; }
 .sticky-note-card__close:hover, .sticky-note-card__close:focus-visible { color: white; background: var(--danger); }
 .sticky-note-card__editor { width: 100%; height: calc(100% - 3.15em); padding: 1em; resize: none; border: 0; outline: 0; color: var(--text-dark); background: transparent; font: 700 1em/1.5 "Trebuchet MS", "Segoe UI", sans-serif; user-select: text; }
 .sticky-note-card__editor::placeholder { color: color-mix(in srgb, var(--text-dark) 58%, transparent); }
+.sticky-note-card__editor { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, color-mix(in srgb, var(--yellow) 65%, var(--text-dark)) 60%, transparent) transparent; }
 .home-editor-toolbar { position: absolute; left: 50%; top: 18px; z-index: 500; min-height: 48px; padding: 5px 6px 5px 15px; display: flex; align-items: center; gap: 8px; border-radius: 14px; color: white; background: rgba(40,41,52,.96); box-shadow: var(--shadow-md); transform: translateX(-50%); }
 .home-editor-toolbar strong { margin-right: 6px; font-size: 12px; }
 .home-editor-toolbar button { min-height: 36px; padding: 7px 12px; border-radius: 9px; color: white; background: rgba(255,255,255,.1); cursor: pointer; font-size: 11px; font-weight: 850; }

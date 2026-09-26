@@ -436,20 +436,6 @@ export function TerminalCard({
     if (summaryMode) closeSearch();
   }, [summaryMode]);
 
-  // Exit fullscreen mode on Escape key
-  useEffect(() => {
-    if (!fullscreen) return;
-    const handleEscape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        onToggleFullscreen();
-      }
-    };
-    window.addEventListener("keydown", handleEscape, false);
-    return () => window.removeEventListener("keydown", handleEscape, false);
-  }, [fullscreen, onToggleFullscreen]);
-
   const bindRenameInput = useCallback((input: HTMLInputElement | null): void => {
     renameInput.current = input;
     if (!input) return;

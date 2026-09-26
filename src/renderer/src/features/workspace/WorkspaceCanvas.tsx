@@ -160,6 +160,8 @@ interface WorkspaceCanvasProps {
   activeSessionId: string | null;
   browserSelected: boolean;
   renamingSessionId: string | null;
+  fullscreenSessionId: string | null;
+  onToggleFullscreen(id: string): void;
   onSelectSession(id: string): void;
   onSelectBrowser(): void;
   onClearCanvasSelection(): void;
@@ -196,7 +198,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     settings, mediaData, sessions, limits, limitsLoadState, plugins, browser,
     browserViewVisible, homeEditing, camera, onCameraChange, onGoHome,
     onOpenSettings, onOpenAgent, onOpenTerminal, onOpenBrowser, onOpenTerminalUrl, onFocusSession,
-    activeSessionId, browserSelected, renamingSessionId, onSelectSession,
+    activeSessionId, browserSelected, renamingSessionId, fullscreenSessionId, onToggleFullscreen, onSelectSession,
     onSelectBrowser, onClearCanvasSelection, onRenameSession, onRenameEnd,
     onRequestMedia, onRemoveMedia, onHomeLayoutChange, onHomeGridSizeChange,
     onFinishHomeEdit, onResetHomeLayout, onPluginError, onPluginCanvasBoundsChange,
@@ -822,7 +824,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           onPluginCanvasWheel={wheelNavigation.applyCanvasWheel}
         />
         <div className={`workspace__windows ${homeEditing ? "workspace__windows--hidden" : ""}`} aria-hidden={homeEditing}>
-          {renderedSessions.map((session) => (
+          {renderedSessions.filter((session) => fullscreenSessionId !== session.id).map((session) => (
             <TerminalCard
               key={session.id}
               session={withGroupNudge(terminalLayerId(session.id), session)}
@@ -839,6 +841,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               selected={activeSessionId === session.id}
               groupSelected={marqueeSelection.has(terminalLayerId(session.id))}
               renaming={renamingSessionId === session.id}
+              fullscreen={fullscreenSessionId === session.id}
+              onToggleFullscreen={() => onToggleFullscreen(session.id)}
               snapTargets={[
                 homeBounds,
                 ...renderedCanvasRegions.map((candidate) => ({ position: candidate.position, size: candidate.size })),
@@ -972,6 +976,49 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             />
           ))}
         </div>
+      </div>
+
+      {/* Fullscreen layer: rendered outside workspace__scene to avoid camera transformation */}
+      <div className="workspace__fullscreen-layer">
+        {renderedSessions
+          .filter((session) => fullscreenSessionId === session.id)
+          .map((session) => (
+            <TerminalCard
+              key={session.id}
+              session={withGroupNudge(terminalLayerId(session.id), session)}
+              locale={settings.locale}
+              palette={settings.palette}
+              zoom={1}
+              stackIndex={9999}
+              snapEnabled={false}
+              focusActivation={settings.focusActivation}
+              invertTerminalWheel={settings.invertTerminalWheel}
+              captureCanvasWheelOverWidgets={false}
+              focused={widgetFocus.id === terminalCanvasWidgetId(session.id)}
+              focusChangeSource={widgetFocus.source}
+              selected={activeSessionId === session.id}
+              groupSelected={false}
+              renaming={renamingSessionId === session.id}
+              fullscreen={true}
+              onToggleFullscreen={() => onToggleFullscreen(session.id)}
+              snapTargets={[]}
+              onActivate={(selectedSession) => {
+                focusController.focus(terminalCanvasWidgetId(selectedSession.id), "explicit");
+                onFocusSession(selectedSession);
+              }}
+              onSelect={(id) => {
+                focusController.cancelHover();
+                focusController.focus(terminalCanvasWidgetId(id), "explicit");
+                onSelectSession(id);
+              }}
+              onRename={onRenameSession}
+              onRenameEnd={onRenameEnd}
+              onBoundsChange={() => {}}
+              onRestart={onRestartSession}
+              onDispose={onDisposeSession}
+              onOpenUrl={onOpenTerminalUrl}
+            />
+          ))}
       </div>
 
       {pointerNavigation.marquee && (

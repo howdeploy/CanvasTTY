@@ -50,6 +50,13 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+interface GrokCredential {
+  token: string;
+  authMode: number;
+  expiresAt: number;
+  sessionExpired: boolean;
+}
+
 export class LimitsService {
   private codex: CodexAppServerClient;
   private kimi: KimiWebUsageClient;
@@ -402,10 +409,11 @@ async function readOpenCodeGoUsage(clientVersion: string): Promise<unknown> {
 async function readGrokUsage(clientVersion: string): Promise<unknown> {
   const configRoot = process.env.GROK_HOME || join(homedir(), ".grok");
   const credentials = await readCredentialFile(join(configRoot, "auth.json"), "not-authenticated");
-  const accessToken = selectGrokAccessToken(credentials);
-  if (!accessToken) throw new LimitsAdapterError("not-authenticated");
+  const credential = selectGrokCredential(credentials);
+  if (!credential) throw new LimitsAdapterError("not-authenticated");
+  if (credential.sessionExpired) throw new LimitsAdapterError("session-expired");
 
-  return fetchUsageJson(GROK_BILLING_URL, accessToken, {
+  return fetchUsageJson(GROK_BILLING_URL, credential.token, {
     "x-xai-token-auth": "xai-grok-cli",
     "user-agent": `canvastty/${clientVersion}`
   });
@@ -445,17 +453,18 @@ async function readFirstCredentialFile(
   throw new LimitsAdapterError(missingReason);
 }
 
-function selectGrokAccessToken(credentials: Record<string, unknown>): string | null {
+function selectGrokCredential(credentials: Record<string, unknown>): GrokCredential | null {
   const candidates = Object.values(credentials)
     .filter(isRecord)
     .map((credential) => ({
       token: cleanSecret(credential.key),
       authMode: credential.auth_mode === "oidc" ? 1 : 0,
-      expiresAt: numericValue(credential.expires_at) ?? 0
+      expiresAt: numericValue(credential.expires_at) ?? 0,
+      sessionExpired: cleanSecret(credential.refresh_token) !== null && hasExpired(credential.expires_at)
     }))
-    .filter((candidate): candidate is { token: string; authMode: number; expiresAt: number } => candidate.token !== null)
+    .filter((candidate): candidate is GrokCredential => candidate.token !== null)
     .sort((left, right) => right.authMode - left.authMode || right.expiresAt - left.expiresAt);
-  return candidates[0]?.token ?? null;
+  return candidates[0] ?? null;
 }
 
 async function readCredentialFile(path: string, missingReason: LimitUnavailableReason): Promise<Record<string, unknown>> {
@@ -1237,6 +1246,11 @@ function epochMilliseconds(value: unknown): number | null {
   if (number === null || number <= 0) return null;
   const milliseconds = number < 1_000_000_000_000 ? number * 1_000 : number;
   return Number.isSafeInteger(Math.trunc(milliseconds)) ? Math.trunc(milliseconds) : null;
+}
+
+function hasExpired(value: unknown): boolean {
+  const expiresAt = epochMilliseconds(value);
+  return expiresAt !== null && expiresAt <= Date.now();
 }
 
 function clampPercent(value: number): number {

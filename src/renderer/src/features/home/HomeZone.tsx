@@ -583,6 +583,8 @@ function limitReasonLabel(reason: HomeLimitReason | null, locale: LocaleId): str
     ? "limitCliNotFound"
     : reason === "not-authenticated"
       ? "limitNotAuthenticated"
+      : reason === "session-expired"
+        ? "limitSessionExpired"
       : reason === "subscription-required"
         ? "limitSubscriptionRequired"
       : reason === "unsupported-protocol"

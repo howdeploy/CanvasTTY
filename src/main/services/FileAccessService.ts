@@ -1,5 +1,5 @@
 import { constants, realpathSync, statSync } from "node:fs";
-import { open, readdir, realpath, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { TextDecoder } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -197,7 +197,7 @@ export class FileAccessService {
       // the fd path, but there is no atomic openat chain here by design.
       let resolvedAfterOpen: string;
       try {
-        resolvedAfterOpen = await realpath(target.real);
+        resolvedAfterOpen = realpathSync(target.real);
       } catch {
         return { kind: "unsupported", reason: "unavailable" };
       }
@@ -347,7 +347,10 @@ export class FileAccessService {
 
     let real;
     try {
-      real = await realpath(candidate);
+      // Canonicalize with the same resolver used when the root was registered
+      // (`realpathSync`). The async `realpath` can return a differently-cased or
+      // 8.3-shortened path on Windows, which would fail the containment check.
+      real = realpathSync(candidate);
     } catch {
       return { ok: false, reason: "unavailable" };
     }
@@ -357,9 +360,19 @@ export class FileAccessService {
 }
 
 function isContainedPath(root: string, candidate: string): boolean {
-  if (candidate === root) return true;
-  const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
-  return candidate.startsWith(prefix);
+  // Windows paths are case-insensitive and `realpath` may surface a long (`\\?\`)
+  // form, so compare normalized values there instead of raw strings.
+  const normalizedRoot = normalizePathForCompare(root);
+  const normalizedCandidate = normalizePathForCompare(candidate);
+  if (normalizedCandidate === normalizedRoot) return true;
+  const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
+  return normalizedCandidate.startsWith(prefix);
+}
+
+function normalizePathForCompare(value: string): string {
+  if (process.platform !== "win32") return value;
+  const withoutLongPrefix = value.startsWith("\\\\?\\") ? value.slice(4) : value;
+  return withoutLongPrefix.toLowerCase();
 }
 
 function toPosix(value: string): string {
@@ -374,7 +387,7 @@ function compareEntries(left: FileEntry, right: FileEntry): number {
 async function descriptorRealPath(handle: Awaited<ReturnType<typeof open>>): Promise<string | null> {
   for (const candidate of [`/proc/self/fd/${handle.fd}`, `/dev/fd/${handle.fd}`]) {
     try {
-      return await realpath(candidate);
+      return realpathSync(candidate);
     } catch {
       continue;
     }

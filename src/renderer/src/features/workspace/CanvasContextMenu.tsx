@@ -34,6 +34,7 @@ interface CanvasContextMenuProps {
   onCreateNote(): void;
   onLaunch(provider: ProviderId): void;
   onOpenBrowser(): void;
+  onOpenFiles(): void;
   onOpenSettings(): void;
   onRenameRegion(): void;
   onChangeRegionColor(color: string): void;
@@ -54,6 +55,7 @@ export function CanvasContextMenu({
   onCreateNote,
   onLaunch,
   onOpenBrowser,
+  onOpenFiles,
   onOpenSettings,
   onRenameRegion,
   onChangeRegionColor,
@@ -166,6 +168,9 @@ export function CanvasContextMenu({
           </div>
           <CanvasMenuRow icon="browser" role="menuitem" onClick={onOpenBrowser}>
             {t(locale, "canvasMenuOpenBrowser")}
+          </CanvasMenuRow>
+          <CanvasMenuRow icon="folder" role="menuitem" onClick={onOpenFiles}>
+            {t(locale, "files")}
           </CanvasMenuRow>
           <CanvasMenuDivider />
           <CanvasMenuRow

@@ -10,6 +10,7 @@ CanvasTTY is a spatial Electron desktop for real local terminals and AI-agent CL
 |:--|:--|
 | [Getting started](getting-started.md) | Requirements, local launch, first session, and verification commands |
 | [Built-in browser and audit log](browser.md) | Canvas controls, settings, agent access, website/file boundaries, activity, and persistent redacted audit files |
+| [File browser and reader](files.md) | Opening a Files card, session and folder roots, supported content, read limits, quick open, persistence, and read-only security boundaries |
 | [Web companion](mobile-companion.md) | Tailscale Serve HTTPS setup, browser pairing, session grants, revocation, and security limits |
 | [Installing, releases, and local data](installing-and-security.md) | Installer formats, unsigned-preview caveats, credential boundaries, and release checks |
 | [Widget authoring](widget-authoring.md) | Source-level extension paths, visual grammar, process boundaries, and an AI-agent brief |

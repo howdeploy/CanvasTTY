@@ -78,8 +78,10 @@ test("Settings and the launch/link dialogs are split out of the app's static imp
 
   // Before this change, App.tsx bundled to a single ~1.6 MB chunk with no on-demand chunk for
   // Settings at all. The code required before first paint must now be meaningfully smaller than that.
+  // The Files canvas card adds its own startup orchestration to App.tsx (its heavyweight Markdown/
+  // highlight renderers and the card itself are lazy-loaded), so the budget sits a little higher.
   assert.ok(
-    eagerBytes < 1_500_000,
+    eagerBytes < 1_550_000,
     `code statically reachable from App.js should shrink well below the old single-chunk size, got ${eagerBytes} bytes`
   );
 });

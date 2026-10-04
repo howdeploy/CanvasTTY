@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import { BUNDLED_CANVAS_BACKGROUND_IDS } from "../../../../shared/contracts";
 import type {
@@ -24,8 +24,10 @@ import type {
 } from "../../../../shared/contracts";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
-import { displayCanvasNavigationBinding, isRenameInputTarget, isShortcutCaptureTarget, matchesShortcut, shouldKeepNativeKeyboardInput } from "../../lib/shortcuts";
+import { displayCanvasNavigationBinding, isRenameInputTarget, isShortcutCaptureTarget, matchesPhysicalOrLayoutKey, matchesShortcut, shouldKeepNativeKeyboardInput } from "../../lib/shortcuts";
 import { BrowserCard } from "../browser/BrowserCard";
+import type { FileBrowserCardProps, FileSessionOption } from "../files/FileBrowserCard";
+import { fileCardRuntimeFor, type FileCardRuntimeState } from "../files/fileCardRuntime";
 import { attentionQueueRenderedAt, attentionSessions } from "../home/attentionQueue";
 import type { LimitsLoadState } from "../home/homeModel";
 import { homeGridPixelSize, homeLayoutFitsGrid } from "../home/homeLayout";
@@ -78,6 +80,7 @@ import {
   browserCanvasWidgetId,
   canvasWidgetInDirection,
   canvasWidgetTarget,
+  filesCanvasWidgetId,
   pluginCanvasWidgetId,
   terminalCanvasWidgetId,
   type CanvasFocusCandidate,
@@ -86,6 +89,7 @@ import {
 import { boundsIntersect } from "./minimapGeometry";
 import {
   browserLayerId,
+  filesLayerId,
   noteLayerId,
   parseCanvasLayerId,
   pluginLayerId,
@@ -165,6 +169,7 @@ type RegionMovePreview = {
   pluginBounds: ReadonlyMap<string, SessionBounds>;
   browserBounds: SessionBounds | null;
   noteBounds: ReadonlyMap<string, SessionBounds>;
+  fileCardBounds: ReadonlyMap<string, SessionBounds>;
 };
 
 interface WorkspaceCanvasProps {
@@ -229,7 +234,24 @@ interface WorkspaceCanvasProps {
   onStickyNoteBoundsChange(id: string, bounds: SessionBounds): void;
   onStickyNoteTextChange(id: string, text: string): void;
   onDeleteStickyNote(id: string): void;
+  fileCardState: Readonly<Record<string, FileCardRuntimeState>>;
+  fileSessionOptions: readonly FileSessionOption[];
+  onOpenFiles(position?: Point): void;
+  onFocusFileCard(id: string): void;
+  onFileCardBoundsChange(id: string, bounds: SessionBounds): void;
+  onCloseFileCard(id: string): void;
+  onChooseFileFolder(id: string): void;
+  onRegisterFileSession(id: string, sessionId: string): void;
+  onOpenFileDirectory(id: string, relativePath: string): void;
+  onOpenFile(id: string, relativePath: string): void;
+  onFileQuickOpen(id: string, query: string): void;
+  onOpenLink(href: string): void;
 }
+
+// The Files card and its rich renderers (react-markdown / rehype / lowlight) are
+// kept out of the startup bundle: lazy-load the card so its weight is fetched
+// only when a Files card exists (see tests/renderer-bundle-splitting.test.mjs).
+const FileBrowserCard = lazy(() => import("../files/FileBrowserCard").then((module) => ({ default: module.FileBrowserCard })));
 
 export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element {
   const {
@@ -244,7 +266,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     onRestartSession, onDisposeSession, onBrowserBoundsChange, onFocusBrowser,
     onCloseBrowser, onCreateCanvasRegion, onChangeCanvasRegion,
     onCanvasRegionBoundsChange, onDeleteCanvasRegion, onCreateStickyNote,
-    onStickyNoteBoundsChange, onStickyNoteTextChange, onDeleteStickyNote, surfacesMounted = true
+    onStickyNoteBoundsChange, onStickyNoteTextChange, onDeleteStickyNote,
+    fileCardState, fileSessionOptions, onOpenFiles, onFocusFileCard, onFileCardBoundsChange,
+    onCloseFileCard, onChooseFileFolder, onRegisterFileSession, onOpenFileDirectory, onOpenFile,
+    onFileQuickOpen, onOpenLink, surfacesMounted = true
   } = props;
   const viewport = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<CanvasMenuState | null>(null);
@@ -259,6 +284,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const suppressNextContextMenu = useRef(false);
   const pendingRadialContextMenu = useRef<CanvasMenuState | null>(null);
   const [noteEditRequest, setNoteEditRequest] = useState<{ id: string; version: number } | null>(null);
+  const [fileQuickOpenRequest, setFileQuickOpenRequest] = useState<{ id: string; version: number } | null>(null);
   const [regionMovePreview, setRegionMovePreview] = useState<RegionMovePreview | null>(null);
   const [marqueeSelection, setMarqueeSelection] = useState<ReadonlySet<string>>(EMPTY_MARQUEE_SELECTION);
   const [masterPixelSkinSessionIds, setMasterPixelSkinSessionIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -309,10 +335,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         browserBounds: settings.browserCanvas && boundsInsideRegion(settings.browserCanvas, startRegion)
           ? copyBounds(settings.browserCanvas)
           : null,
-        noteBounds: containedBounds(settings.stickyNotes, startRegion)
+        noteBounds: containedBounds(settings.stickyNotes, startRegion),
+        fileCardBounds: containedBounds(settings.fileCards, startRegion)
       };
     });
-  }, [sessions, settings.browserCanvas, settings.canvasRegions, settings.pluginCanvas, settings.stickyNotes]);
+  }, [sessions, settings.browserCanvas, settings.canvasRegions, settings.fileCards, settings.pluginCanvas, settings.stickyNotes]);
 
   // A press can lose its pointer (window blur, leaving Edit HOME) before it reaches a
   // pointer-up, so the scene drops any live preview instead of leaving it stuck.
@@ -355,6 +382,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     const start = regionMovePreview?.noteBounds.get(note.id);
     return start && previewDelta ? { ...note, ...translateBounds(start, previewDelta) } : note;
   }), [previewDelta, regionMovePreview, settings.stickyNotes]);
+  const renderedFileCards = useMemo(() => settings.fileCards.map((card) => {
+    const start = regionMovePreview?.fileCardBounds.get(card.id);
+    return start && previewDelta ? { ...card, ...translateBounds(start, previewDelta) } : card;
+  }), [previewDelta, regionMovePreview, settings.fileCards]);
+  // The shortcut listener is subscribed once; this ref keeps the quick-open
+  // hotkey mapped to the latest rendered cards without re-subscribing.
+  const renderedFileCardsRef = useRef(renderedFileCards);
+  renderedFileCardsRef.current = renderedFileCards;
 
   const renderablePluginIds = useMemo(() => new Set(settings.pluginCanvas.filter((instance) => {
     const plugin = plugins.find((candidate) => candidate.manifest.id === instance.pluginId && candidate.enabled);
@@ -370,8 +405,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     ...renderedSessions.map((session) => terminalLayerId(session.id)),
     ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)).map((instance) => pluginLayerId(instance.id)),
     ...(renderedBrowserCanvas ? [browserLayerId] : []),
-    ...renderedStickyNotes.map((note) => noteLayerId(note.id))
-  ], [renderablePluginIds, renderedBrowserCanvas, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
+    ...renderedStickyNotes.map((note) => noteLayerId(note.id)),
+    ...renderedFileCards.map((card) => filesLayerId(card.id))
+  ], [renderablePluginIds, renderedBrowserCanvas, renderedFileCards, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
   const [layerOrder, setLayerOrder] = useState<string[]>(activeLayerIds);
   useEffect(() => {
     setLayerOrder((current) => reconcileCanvasLayerOrder(current, activeLayerIds));
@@ -387,21 +423,24 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     }
     if (renderedBrowserCanvas) result.set(browserLayerId, renderedBrowserCanvas);
     for (const note of renderedStickyNotes) result.set(noteLayerId(note.id), note);
+    for (const card of renderedFileCards) result.set(filesLayerId(card.id), card);
     return result;
-  }, [renderablePluginIds, renderedBrowserCanvas, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
-  // Every window on the canvas, in the order they are rendered: terminals, plugin canvases, browser, notes.
+  }, [renderablePluginIds, renderedBrowserCanvas, renderedFileCards, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
+  // Every window on the canvas, in the order they are rendered: terminals, plugin canvases, browser, notes, files.
   const allWindowBounds = useMemo((): SessionBounds[] => [
     ...renderedSessions,
     ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)),
     ...(renderedBrowserCanvas ? [renderedBrowserCanvas] : []),
-    ...renderedStickyNotes
-  ], [renderablePluginIds, renderedBrowserCanvas, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
+    ...renderedStickyNotes,
+    ...renderedFileCards
+  ], [renderablePluginIds, renderedBrowserCanvas, renderedFileCards, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
   const focusCandidates: CanvasFocusCandidate[] = [
     ...renderedSessions.map((session) => ({ id: terminalCanvasWidgetId(session.id), bounds: session })),
     ...renderedPluginCanvas
       .filter((instance) => renderablePluginIds.has(instance.id))
       .map((instance) => ({ id: pluginCanvasWidgetId(instance.id), bounds: instance })),
-    ...(renderedBrowserCanvas ? [{ id: browserCanvasWidgetId, bounds: renderedBrowserCanvas }] : [])
+    ...(renderedBrowserCanvas ? [{ id: browserCanvasWidgetId, bounds: renderedBrowserCanvas }] : []),
+    ...renderedFileCards.map((card) => ({ id: filesCanvasWidgetId(card.id), bounds: card }))
   ];
 
   const homeBounds = useMemo((): SessionBounds => ({
@@ -482,9 +521,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       if (ref.kind === "terminal" && ref.targetId !== null) onSessionBoundsChange(ref.targetId, moved);
       else if (ref.kind === "plugin" && ref.targetId !== null) onPluginCanvasBoundsChange(ref.targetId, moved);
       else if (ref.kind === "note" && ref.targetId !== null) onStickyNoteBoundsChange(ref.targetId, moved);
+      else if (ref.kind === "files" && ref.targetId !== null) onFileCardBoundsChange(ref.targetId, moved);
       else if (ref.kind === "browser" && settings.browserCanvas) onBrowserBoundsChange({ ...settings.browserCanvas, ...moved });
     }
-  }, [boundsByLayer, homeBounds, onBrowserBoundsChange, onPluginCanvasBoundsChange,
+  }, [boundsByLayer, homeBounds, onBrowserBoundsChange, onFileCardBoundsChange, onPluginCanvasBoundsChange,
     onSessionBoundsChange, onStickyNoteBoundsChange, renderedCanvasRegions, settings.browserCanvas, settings.snapToGrid]);
 
   const focusController = useCanvasWidgetFocus({
@@ -503,6 +543,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       ].join(":")).join(";"),
       settings.pluginCanvas.map((instance) => instance.id).join(","),
       settings.stickyNotes.map((note) => note.id).join(","),
+      settings.fileCards.map((card) => card.id).join(","),
       settings.homeLayout.map((placement) => placement.widgetId).join(",")
     ].join("|")
   });
@@ -800,8 +841,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       onFocusBrowser();
       return;
     }
-  }, [focusCandidates, focusController, onFocusBrowser, onFocusPluginCanvas, onFocusSession,
-    renderedBrowserCanvas, renderedPluginCanvas, renderedSessions, raiseLayer, viewportCenterWorldPoint]);
+    const fileCard = renderedFileCards.find((candidate) => filesCanvasWidgetId(candidate.id) === target);
+    if (fileCard) {
+      raiseLayer(filesLayerId(fileCard.id));
+      focusController.focus(target, "explicit");
+      onFocusFileCard(fileCard.id);
+    }
+  }, [focusCandidates, focusController, onFocusBrowser, onFocusFileCard, onFocusPluginCanvas, onFocusSession,
+    renderedBrowserCanvas, renderedFileCards, renderedPluginCanvas, renderedSessions, raiseLayer, viewportCenterWorldPoint]);
 
   const fitCanvasRef = useRef(fitCanvas);
   fitCanvasRef.current = fitCanvas;
@@ -859,6 +906,23 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         setRegionEditor(null);
         setCommandPaletteOpen(false);
         onOpenSettings();
+      } else if ((event.metaKey || event.ctrlKey) && !event.altKey
+        && matchesPhysicalOrLayoutKey(event, "KeyP", "p")) {
+        // Quick open belongs to the focused Files card: focus its search input
+        // and let its own input drive `files:search` through the App.
+        const focusedId = focusController.stateRef.current.id;
+        const activeCard = renderedFileCardsRef.current.find((card) => (
+          filesCanvasWidgetId(card.id) === focusedId
+        ));
+        if (!activeCard) return;
+        event.preventDefault();
+        setContextMenu(null);
+        setRegionEditor(null);
+        setCommandPaletteOpen(false);
+        setFileQuickOpenRequest((current) => ({
+          id: activeCard.id,
+          version: (current?.version ?? 0) + 1
+        }));
       }
     };
     window.addEventListener("keydown", handleShortcut, true);
@@ -1122,6 +1186,45 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               groupSelected={marqueeSelection.has(noteLayerId(note.id))}
             />
           ))}
+          <Suspense fallback={null}>
+          {renderedFileCards.map((card) => {
+            const state = fileCardRuntimeFor(fileCardState, card.id);
+            return (
+              <WorkspaceFileCard
+                key={card.id}
+                camera={camera}
+                cardId={card.id}
+                bounds={withGroupNudge(filesLayerId(card.id), card)}
+                root={state.root}
+                sessionOptions={fileSessionOptions}
+                entries={state.entries}
+                childrenByDirectory={state.childrenByDirectory}
+                expandedFolders={card.expandedFolders}
+                activeFile={card.activeFile}
+                readResult={state.readResult}
+                loading={state.loading}
+                error={state.error}
+                rootUnavailable={state.rootUnavailable}
+                quickOpenQuery={state.quickOpenQuery}
+                quickOpenResults={state.quickOpenResults}
+                quickOpenFocusRequest={fileQuickOpenRequest?.id === card.id ? fileQuickOpenRequest.version : 0}
+                locale={settings.locale}
+                stackIndex={canvasLayerZIndex(layerOrder, filesLayerId(card.id))}
+                snapEnabled={settings.snapToGrid}
+                getSnapTargets={snapTargets.forLayer(filesLayerId(card.id))}
+                onChooseFolder={() => onChooseFileFolder(card.id)}
+                onRegisterSession={(sessionId) => onRegisterFileSession(card.id, sessionId)}
+                onOpenDirectory={(relativePath) => onOpenFileDirectory(card.id, relativePath)}
+                onOpenFile={(relativePath) => onOpenFile(card.id, relativePath)}
+                onQuickOpen={(query) => onFileQuickOpen(card.id, query)}
+                onChangeBounds={(bounds) => onFileCardBoundsChange(card.id, bounds)}
+                onClose={() => onCloseFileCard(card.id)}
+                onOpenLink={onOpenLink}
+                groupSelected={marqueeSelection.has(filesLayerId(card.id))}
+              />
+            );
+          })}
+          </Suspense>
         </div>
       </div>
 
@@ -1199,6 +1302,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           onLaunch={(provider) => launchAt(provider, contextMenu.worldPoint)}
           onOpenBrowser={() => {
             onOpenBrowser(contextMenu.worldPoint);
+            setContextMenu(null);
+          }}
+          onOpenFiles={() => {
+            onOpenFiles(contextMenu.worldPoint);
             setContextMenu(null);
           }}
           onOpenSettings={() => {
@@ -1289,6 +1396,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           onCreateNote={() => createNote(viewportCenterWorldPoint())}
           onFitCanvas={fitCanvas}
           onOpenBrowser={() => onOpenBrowser(viewportCenterWorldPoint())}
+          onOpenFiles={() => onOpenFiles(viewportCenterWorldPoint())}
           onOpenSettings={onOpenSettings}
           onClose={() => setCommandPaletteOpen(false)}
         />
@@ -1334,7 +1442,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             {settings.minimapPlacement === placement && (
               <CanvasMinimap viewport={viewport} camera={camera} homeBounds={homeBounds}
                 canvasRegions={renderedCanvasRegions} sessions={renderedSessions} stickyNotes={renderedStickyNotes}
-                pluginCanvas={minimapPluginCanvas}
+                pluginCanvas={minimapPluginCanvas} fileCards={renderedFileCards}
                 browserCanvas={renderedBrowserCanvas} layerOrder={layerOrder}
                 locale={settings.locale} interactionMode={settings.minimapInteractionMode}
                 onCameraChange={commitCamera} />
@@ -1374,6 +1482,12 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       </div>
     </div>
   );
+}
+
+/** The Files card reads its zoom from the camera store, so a pan or zoom re-renders only the card, not the canvas. */
+function WorkspaceFileCard({ camera, ...props }: Omit<FileBrowserCardProps, "zoom"> & { camera: CameraStore }): React.JSX.Element {
+  const zoom = useCameraSelector(camera, (value) => value.zoom);
+  return <FileBrowserCard {...props} zoom={zoom} />;
 }
 
 function copyBounds(bounds: SessionBounds): SessionBounds {

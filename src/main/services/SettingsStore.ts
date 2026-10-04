@@ -18,6 +18,8 @@ import type {
   CanvasWheelCaptureMode,
   CanvasPatternId,
   EdgePanSpeed,
+  FileCard,
+  FileRootReference,
   FocusActivation,
   HomeAccentColors,
   HomeAccentPresetId,
@@ -196,6 +198,7 @@ export class SettingsStore {
         || !("persistStickyNotes" in source)
         || !("canvasRegions" in source)
         || !("stickyNotes" in source)
+        || !("fileCards" in source)
         || !("apiProfiles" in source)
         || source.canvasColor === "palette"
         || source.settingsVersion !== SETTINGS_VERSION;
@@ -409,6 +412,7 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     canvasRegions: [],
     stickyNotes: [],
     pluginCanvas: [],
+    fileCards: [],
     browserCanvas: null,
     browserAgentAccess: true,
     browserShowAgentPresence: true,
@@ -528,6 +532,7 @@ export function normalizeSettings(
     homeGridSize
   );
   const pluginCanvas = normalizePluginCanvas(source.pluginCanvas, fallback.pluginCanvas ?? []);
+  const fileCards = normalizeFileCards(source.fileCards, fallback.fileCards ?? []);
   const canvasRegions = normalizeCanvasRegions(source.canvasRegions, fallback.canvasRegions ?? []);
   const stickyNotes = normalizeStickyNotes(source.stickyNotes, fallback.stickyNotes ?? []);
   const browserCanvas = normalizeBrowserCanvas(source.browserCanvas, fallback.browserCanvas ?? null);
@@ -682,6 +687,7 @@ export function normalizeSettings(
     canvasRegions,
     stickyNotes,
     pluginCanvas,
+    fileCards,
     browserCanvas,
     browserAgentAccess: typeof source.browserAgentAccess === "boolean"
       ? source.browserAgentAccess
@@ -963,6 +969,86 @@ function normalizePluginCanvas(candidate: unknown, fallback: readonly PluginCanv
     ids.add(source.id);
   }
   return instances;
+}
+
+const MAX_FILE_CARDS = 64;
+const MAX_FILE_CARD_EXPANDED_FOLDERS = 256;
+const MAX_FILE_CARD_FOLDER_PATH = 4_096;
+const MAX_FILE_CARD_RELATIVE_PATH = 1_024;
+
+function normalizeFileRootReference(candidate: unknown): FileRootReference | null {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const source = candidate as { rootType?: unknown; sessionId?: unknown; folderPath?: unknown };
+  if (source.rootType === "folder") {
+    // A folder root may retain its chosen canonical path so restore can
+    // re-register it; it is validated and capped like the card-level path.
+    const folderPath = typeof source.folderPath === "string"
+      && source.folderPath.length > 0
+      && source.folderPath.length <= MAX_FILE_CARD_FOLDER_PATH
+      ? source.folderPath
+      : undefined;
+    return folderPath ? { rootType: "folder", folderPath } : { rootType: "folder" };
+  }
+  if (source.rootType !== "session") return null;
+  return typeof source.sessionId === "string" && source.sessionId.length > 0 && source.sessionId.length <= 80
+    ? { rootType: "session", sessionId: source.sessionId }
+    : null;
+}
+
+// Invalid cards are dropped rather than repaired: a card whose root or bounds
+// no longer validate must not silently point at an unrelated location.
+export function normalizeFileCards(
+  candidate: unknown,
+  fallback: readonly FileCard[] = []
+): FileCard[] {
+  if (!Array.isArray(candidate)) return fallback.map((card) => structuredClone(card));
+
+  const cards: FileCard[] = [];
+  const ids = new Set<string>();
+  for (const value of candidate.slice(0, MAX_FILE_CARDS)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const source = value as Partial<FileCard>;
+    if (!isInstanceId(source.id) || ids.has(source.id)) continue;
+    const root = normalizeFileRootReference(source.root);
+    if (!root) continue;
+    if (!isFinitePoint(source.position) || !isFiniteSize(source.size)) continue;
+    const label = typeof source.label === "string" && source.label.trim().length > 0
+      ? source.label.trim().slice(0, 80)
+      : null;
+    const folderPath = root.rootType === "folder"
+      && typeof source.folderPath === "string"
+      && source.folderPath.length > 0
+      && source.folderPath.length <= MAX_FILE_CARD_FOLDER_PATH
+      ? source.folderPath
+      : null;
+    const activeFile = typeof source.activeFile === "string"
+      && source.activeFile.length > 0
+      && source.activeFile.length <= MAX_FILE_CARD_RELATIVE_PATH
+      ? source.activeFile
+      : null;
+    const expandedFolders = Array.isArray(source.expandedFolders)
+      ? source.expandedFolders
+        .filter((entry): entry is string => typeof entry === "string"
+          && entry.length > 0
+          && entry.length <= MAX_FILE_CARD_RELATIVE_PATH)
+        .slice(0, MAX_FILE_CARD_EXPANDED_FOLDERS)
+      : [];
+    cards.push({
+      id: source.id,
+      root,
+      label,
+      folderPath,
+      activeFile,
+      expandedFolders,
+      position: { x: source.position.x, y: source.position.y },
+      size: {
+        width: clamp(source.size.width, 240, 1_600),
+        height: clamp(source.size.height, 140, 1_100)
+      }
+    });
+    ids.add(source.id);
+  }
+  return cards;
 }
 
 function normalizeCanvasRegions(

@@ -14,6 +14,7 @@ import type {
   CanvasTTYApi,
   CustomTerminalBorderSkinId,
   CreateSessionRequest,
+  FileRootReference,
   PluginBrowserOpenRequest,
   PluginBrowserOpenResponse,
   PluginCanvasRequest,
@@ -117,6 +118,15 @@ const api: CanvasTTYApi = {
   },
   media: {
     read: (path: string) => ipcRenderer.invoke(IPC.mediaRead, path)
+  },
+  files: {
+    listRoots: () => ipcRenderer.invoke(IPC.filesListRoots),
+    registerRoot: (reference: FileRootReference) => ipcRenderer.invoke(IPC.filesRegisterRoot, reference),
+    openFolder: () => ipcRenderer.invoke(IPC.filesOpenFolder),
+    list: (rootId: string, relativePath: string) => ipcRenderer.invoke(IPC.filesList, rootId, relativePath),
+    read: (rootId: string, relativePath: string) => ipcRenderer.invoke(IPC.filesRead, rootId, relativePath),
+    search: (rootId: string, query: string) => ipcRenderer.invoke(IPC.filesSearch, rootId, query),
+    closeRoot: (rootId: string) => ipcRenderer.invoke(IPC.filesCloseRoot, rootId)
   },
   limits: {
     get: () => ipcRenderer.invoke(IPC.limitsGet)

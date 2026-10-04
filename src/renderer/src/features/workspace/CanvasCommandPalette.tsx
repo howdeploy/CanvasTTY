@@ -27,6 +27,7 @@ interface CanvasCommandPaletteProps {
   onCreateNote(): void;
   onFitCanvas(): void;
   onOpenBrowser(): void;
+  onOpenFiles(): void;
   onOpenSettings(): void;
   onClose(): void;
 }
@@ -53,6 +54,7 @@ export function CanvasCommandPalette({
   onCreateNote,
   onFitCanvas,
   onOpenBrowser,
+  onOpenFiles,
   onOpenSettings,
   onClose
 }: CanvasCommandPaletteProps): React.JSX.Element {
@@ -117,6 +119,15 @@ export function CanvasCommandPalette({
       run: onOpenBrowser
     },
     {
+      id: "open:files",
+      group: "actions",
+      kind: "action",
+      label: t(locale, "files"),
+      searchDetail: t(locale, "canvasMenuActions"),
+      icon: "folder",
+      run: onOpenFiles
+    },
+    {
       id: "open:settings",
       group: "actions",
       kind: "action",
@@ -126,7 +137,7 @@ export function CanvasCommandPalette({
       shortcut: window.canvasTTY.window.isMacOS ? "⌘," : "Ctrl+,",
       run: onOpenSettings
     }
-  ], [launcherItems, locale, onCreateNote, onCreateRegion, onFitCanvas, onFocusSession, onLaunch, onOpenBrowser, onOpenSettings, sessions]);
+  ], [launcherItems, locale, onCreateNote, onCreateRegion, onFitCanvas, onFocusSession, onLaunch, onOpenBrowser, onOpenFiles, onOpenSettings, sessions]);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase(locale);
     if (!normalized) return commands;

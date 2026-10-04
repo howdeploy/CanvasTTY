@@ -22,6 +22,7 @@ import { DiagnosticLog } from "./services/DiagnosticLog";
 import { UpdateController, type UpdateAdapter } from "./services/updates/UpdateController";
 import { ManualReleaseAdapter } from "./services/updates/ManualReleaseAdapter";
 import { SettingsStore } from "./services/SettingsStore";
+import { FileAccessService } from "./services/FileAccessService";
 import { SkinRegistry } from "./services/SkinRegistry";
 import { PixelSkinPackRegistry } from "./services/PixelSkinPackRegistry";
 import { TerminalManager, reachesObservers, reachesRenderer } from "./services/TerminalManager";
@@ -761,6 +762,14 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   await Promise.all([browserReady, storesLoaded]);
   pluginManager.registerTokenProvider(() => githubAuth!.getToken());
   protocol.handle("canvastty-media", (request) => pluginMediaService!.protocolResponse(request));
+  // Session roots resolve a sessionId to the terminal's current working
+  // directory through TerminalManager's metadata snapshots; the renderer never
+  // supplies a path. Folder roots come from the native dialog or a persisted
+  // folderPath on restore.
+  const fileAccessService = new FileAccessService({
+    resolveSessionCwd: (sessionId) =>
+      terminalManager?.listMetadata().find((session) => session.id === sessionId)?.cwd
+  });
   registerIpc(ipc, {
     settings,
     recheckProviderClis: async () => {
@@ -782,6 +791,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     pluginSecrets: pluginSecretsService,
     providerSecrets: providerSecretsService!,
     browser: browserService,
+    files: fileAccessService,
     githubAuth: githubAuth!,
     hermesHud: hermesHudService,
     launchFieldOptions: (pluginId, provider) => launchPipeline.fieldOptions(pluginId, provider),

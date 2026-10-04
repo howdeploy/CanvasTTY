@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import type {
   CameraState,
+  FileCard,
   LocaleId,
   MinimapInteractionMode,
   ProviderId,
@@ -11,7 +12,7 @@ import type {
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { t } from "../../lib/i18n";
 import { useCameraSelector, type CameraStore } from "./cameraStore";
-import { browserLayerId, noteLayerId, pluginLayerId, terminalLayerId } from "./canvasSelectionGesture";
+import { browserLayerId, filesLayerId, noteLayerId, pluginLayerId, terminalLayerId } from "./canvasSelectionGesture";
 import { minimapContentEqual, type MinimapContent } from "./minimapContent";
 import {
   cameraWorldViewport,
@@ -29,11 +30,12 @@ interface CanvasMinimapProps extends MinimapContent {
   locale: LocaleId;
   interactionMode: MinimapInteractionMode;
   onCameraChange(camera: CameraState): void;
+  fileCards?: readonly FileCard[];
 }
 
 interface MinimapEntity {
   id: string;
-  kind: "terminal" | "plugin" | "browser" | "note";
+  kind: "terminal" | "plugin" | "browser" | "note" | "files";
   bounds: SessionBounds;
   provider?: ProviderId;
 }
@@ -51,6 +53,7 @@ export const CanvasMinimap = memo(CanvasMinimapView, (previous, next) => (
   && previous.locale === next.locale
   && previous.interactionMode === next.interactionMode
   && previous.onCameraChange === next.onCameraChange
+  && sameFileCards(previous.fileCards, next.fileCards)
   && minimapContentEqual(previous, next)
 ));
 
@@ -62,6 +65,7 @@ function CanvasMinimapView({
   sessions,
   stickyNotes,
   pluginCanvas,
+  fileCards = [],
   browserCanvas,
   layerOrder,
   locale,
@@ -94,8 +98,9 @@ function CanvasMinimapView({
     })),
     ...stickyNotes.map((note) => ({ id: noteLayerId(note.id), kind: "note" as const, bounds: note })),
     ...pluginCanvas.map((instance) => ({ id: pluginLayerId(instance.id), kind: "plugin" as const, bounds: instance })),
+    ...fileCards.map((card) => ({ id: filesLayerId(card.id), kind: "files" as const, bounds: card })),
     ...(browserCanvas ? [{ id: browserLayerId, kind: "browser" as const, bounds: browserCanvas }] : [])
-  ], [browserCanvas, pluginCanvas, sessions, stickyNotes]);
+  ], [browserCanvas, fileCards, pluginCanvas, sessions, stickyNotes]);
   const layerIndices = useMemo(
     () => new Map(layerOrder.map((id, index) => [id, index + 1])),
     [layerOrder]
@@ -282,4 +287,23 @@ function areaStyle(area: { x: number; y: number; width: number; height: number }
     width: `${area.width * 100}%`,
     height: `${area.height * 100}%`
   };
+}
+
+/** File cards carry no provider, so `minimapContentEqual` does not see them; compare their bounds here. */
+function sameFileCards(
+  previous: readonly FileCard[] | undefined,
+  next: readonly FileCard[] | undefined
+): boolean {
+  const left = previous ?? [];
+  const right = next ?? [];
+  return left === right || (
+    left.length === right.length
+    && left.every((card, index) => (
+      card.id === right[index].id
+      && card.position.x === right[index].position.x
+      && card.position.y === right[index].position.y
+      && card.size.width === right[index].size.width
+      && card.size.height === right[index].size.height
+    ))
+  );
 }

@@ -68,11 +68,11 @@ test("remark anchors read the same in the editor for every kind, and every statu
 
 test("remarks are placed on ready image and file materials, and references can be picked on the same kinds", () => {
   const material = (kind, overrides = {}) => ({ kind, state: "ready", ...overrides });
-  assert.deepEqual(["image", "text", "video", "audio", "pdf", "file"].map((kind) => remarkDrawable(material(kind))), [true, false, false, false, false, true]);
+  assert.deepEqual(["image", "text", "video", "audio", "pdf", "file"].map((kind) => remarkDrawable(material(kind))), [true, true, true, true, true, true]);
   assert.equal(remarkDrawable(material("image", { state: "missing" })), false);
   assert.equal(remarkPickable(material("image")), true);
   assert.equal(remarkPickable(material("file")), true);
-  assert.equal(remarkPickable(material("pdf")), false);
+  assert.equal(remarkPickable(material("pdf")), true);
 });
 
 test("an anchor key is stable across equal objects and changes with the anchor", () => {

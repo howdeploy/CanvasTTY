@@ -145,9 +145,10 @@ test("App restores native Command+A before its native-input guard without interc
   const actions = [];
   const window = { canvasTTY: { window: { isMacOS: true } } };
   const settings = { shortcuts: { toggleFullscreen: "Meta+F", home: "Home", renameWindow: "F2" } };
-  const createHandler = new Function("window", "settings", "performShortcut", "handleMacNativeSelectAll", "shouldKeepNativeKeyboardInput", "isShortcutCaptureTarget", "isRenameInputTarget", "matchesShortcut", "shortcutReferenceOpen", `return (event) => {${body}}`);
-  const handler = createHandler(window, settings, (action) => actions.push(action), handleMacNativeSelectAll,
-    shouldKeepNativeKeyboardInput, isShortcutCaptureTarget, isRenameInputTarget, matchesShortcut, false);
+  const createHandler = new Function("window", "settings", "performShortcut", "handleMacNativeSelectAll", "shouldKeepNativeKeyboardInput", "isShortcutCaptureTarget", "isRenameInputTarget", "matchesShortcut", "shortcutReferenceOpen", "handoffRemarkIds", `return (event) => {${body}}`);
+  const handoffHandler = (handoffRemarkIds = null) => createHandler(window, settings, (action) => actions.push(action), handleMacNativeSelectAll,
+    shouldKeepNativeKeyboardInput, isShortcutCaptureTarget, isRenameInputTarget, matchesShortcut, false, handoffRemarkIds);
+  const handler = handoffHandler();
   const event = (target, changes = {}) => {
     const state = { prevented: false, stopped: false };
     return { ...keyEvent("ф", { code: "KeyA", metaKey: true }), target, repeat: false, state,
@@ -204,4 +205,21 @@ test("App restores native Command+A before its native-input guard without interc
   const otherPlatform = new InputTarget(); handler(event(otherPlatform));
   assert.equal(otherPlatform.selectionStart, 4);
   assert.deepEqual(actions, []);
+  window.canvasTTY.window.isMacOS = true;
+  const modalHandler = handoffHandler(["remark-1"]);
+  for (const field of [new InputTarget(), new TextareaTarget()]) {
+    const input = event(field);
+    modalHandler(input);
+    assert.deepEqual(input.state, { prevented: true, stopped: true });
+    field.type("ч");
+    assert.equal(field.value, "ч");
+  }
+  for (const changes of [
+    { key: "Home", code: "Home", metaKey: false },
+    { key: "F2", code: "F2", metaKey: false },
+    { key: "f", code: "KeyF" }
+  ]) modalHandler(event(new ElementTarget(), changes));
+  assert.deepEqual(actions, []);
+  handler(event(new ElementTarget(), { key: "Home", code: "Home", metaKey: false }));
+  assert.deepEqual(actions, ["home"]);
 });

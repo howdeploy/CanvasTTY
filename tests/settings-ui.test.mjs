@@ -300,3 +300,9 @@ test("the redesigned menus use shared tokens, em geometry, and the configured UI
   assert.match(styles, /\.browser-card__header \{[^}]*font-size: calc\(13px \* var\(--ui-scale, 1\)\)/);
   assert.doesNotMatch(styles, /\.canvas-region-menu/);
 });
+
+test("the handoff dialog ships its focus-visible field styles", async () => {
+  const styles = await readFile(appStylesPath, "utf8");
+  assert.match(styles, /\.handoff-dialog__form textarea:focus-visible/);
+  assert.match(styles, /\.handoff-dialog__actions button:focus-visible/);
+});

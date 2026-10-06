@@ -1,4 +1,4 @@
-import type { MaterialKind, Point, SessionBounds, Size } from "./contracts.ts";
+import type { HandoffBlock, HandoffDraft, MaterialKind, Point, ProviderId, RemarkAnchor, SessionBounds, SessionMetadata, Size } from "./contracts.ts";
 
 export const MATERIAL_SCHEME = "canvastty-material";
 export const MATERIAL_LIMIT = 256;
@@ -6,6 +6,7 @@ export const MATERIAL_VERSION_LIMIT = 20;
 export const MATERIAL_STORAGE_LIMIT = 1024 * 1024 * 1024;
 export const MATERIAL_VERSION_MAX_BYTES = 100 * 1024 * 1024;
 export const REMARK_TEXT_LIMIT = 2_000;
+export const HANDOFF_NOTE_LIMIT = 4_000;
 export const MATERIAL_MIN_SIZE: Size = { width: 220, height: 150 };
 export const MATERIAL_MAX_SIZE: Size = { width: 2_400, height: 1_800 };
 export const MATERIAL_HEADER_HEIGHT = 54;
@@ -115,11 +116,30 @@ const TEXT_TYPES: Record<string, string> = {
   ".patch": "text/x-diff"
 };
 
+const MIME_TO_EXTENSION: Record<string, string> = {};
+for (const [extension, mimeType] of [
+  ...Object.entries(IMAGE_TYPES),
+  ...Object.entries(VIDEO_TYPES),
+  ...Object.entries(AUDIO_TYPES),
+  ...Object.entries(TEXT_TYPES),
+  [".pdf", "application/pdf"] as const
+]) {
+  if (!(mimeType in MIME_TO_EXTENSION)) MIME_TO_EXTENSION[mimeType] = extension;
+}
+
+export function extensionForMime(mimeType: string, fallback = ""): string {
+  return MIME_TO_EXTENSION[mimeType] ?? fallback;
+}
+
 export function materialType(name: string): MaterialType {
   const lower = name.toLowerCase();
   const dot = lower.lastIndexOf(".");
   const extension = dot > 0 ? lower.slice(dot) : "";
   if (IMAGE_TYPES[extension]) return { kind: "image", mimeType: IMAGE_TYPES[extension] };
+  if (VIDEO_TYPES[extension]) return { kind: "video", mimeType: VIDEO_TYPES[extension] };
+  if (AUDIO_TYPES[extension]) return { kind: "audio", mimeType: AUDIO_TYPES[extension] };
+  if (TEXT_TYPES[extension]) return { kind: "text", mimeType: TEXT_TYPES[extension] };
+  if (extension === ".pdf") return { kind: "pdf", mimeType: "application/pdf" };
   return { kind: "file", mimeType: "application/octet-stream" };
 }
 
@@ -176,6 +196,41 @@ export function clampSize(size: Size): Size {
     width: Math.min(MATERIAL_MAX_SIZE.width, Math.max(MATERIAL_MIN_SIZE.width, size.width)),
     height: Math.min(MATERIAL_MAX_SIZE.height, Math.max(MATERIAL_MIN_SIZE.height, size.height))
   };
+}
+
+export function handoffBlockFor(session: SessionMetadata, launchPending = false): HandoffBlock | null {
+  if (session.provider === "terminal") return "not-an-agent";
+  if (session.exitCode !== null || session.status === "done" || session.status === "failed") return "exited";
+  if (launchPending) return "starting";
+  if (session.status === "working") return "busy";
+  if (session.status === "needs_approval") return "needs-approval";
+  if (session.environment) return "remote-environment";
+  return null;
+}
+
+export function handoffAttachesImages(provider: ProviderId): boolean {
+  return provider === "claude" || provider === "codex";
+}
+
+export function handoffDraftKey(draft: HandoffDraft): string {
+  return JSON.stringify({
+    id: draft.id,
+    sessionId: draft.sessionId,
+    remarkIds: [...draft.remarkIds].sort(),
+    editableMaterialIds: [...draft.editableMaterialIds].sort(),
+    note: draft.note,
+    resultsFolder: draft.resultsFolder
+  });
+}
+
+export function formatClock(seconds: number): string {
+  const tenths = Math.round(Math.max(0, seconds) * 10);
+  const hours = Math.floor(tenths / 36_000);
+  const minutes = Math.floor((tenths % 36_000) / 600);
+  const whole = Math.floor((tenths % 600) / 10);
+  const fraction = tenths % 10;
+  const rest = `${String(whole).padStart(2, "0")}${fraction ? `.${fraction}` : ""}`;
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
 }
 
 export function isAreaAnchor(anchor: import("./contracts.ts").RemarkAnchor): anchor is Extract<import("./contracts.ts").RemarkAnchor, { kind: "region" | "point" }> {

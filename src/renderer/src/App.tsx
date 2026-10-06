@@ -87,12 +87,15 @@ import { homeGridPixelSize, homeLayoutFitsGrid, placeHomeWidget } from "./featur
 import { boundsInsideRegion, translateBounds } from "./features/workspace/canvasRegions";
 import { DEFAULT_SESSION_SIZE, findNearHomeSessionPosition } from "./features/workspace/sessionPlacement";
 import { useMaterials } from "./features/materials/useMaterials";
+const HandoffDialog = lazy(() =>
+  import("./features/materials/HandoffDialog").then((module) => ({ default: module.HandoffDialog })));
 import {
   addResultNeedsNotice,
   materialFailureKey,
   materialRejectionKey,
   type MaterialCommand
 } from "./features/materials/materialCardModel";
+import { remarkNeedsWork } from "./features/materials/materialRemarksModel";
 
 interface HomeEditDraft {
   homeGridSize: HomeGridSize;
@@ -353,6 +356,8 @@ export function App(): React.JSX.Element {
   const materials = useMaterials();
   const materialsRef = useRef(materials.materials);
   materialsRef.current = materials.materials;
+  const [handoffRemarkIds, setHandoffRemarkIds] = useState<string[] | null>(null);
+  const [lastHandoffSessionId, setLastHandoffSessionId] = useState<string | null>(null);
 
   const openUpdates = useCallback((): void => {
     setSettingsOpen(true);
@@ -980,11 +985,24 @@ export function App(): React.JSX.Element {
     materials.deleteRemark(id)
   ), [materials]);
 
-  const remarkAction = useCallback((remarkId: string, action: "delete"): void => {
+  const remarkAction = useCallback((remarkId: string, action: "delete" | "send"): void => {
     if (action === "delete") {
       void deleteRemark(remarkId).catch(() => showToast(t(settingsRef.current.locale, "materialFailureUnavailable")));
+    } else if (action === "send") {
+      const remark = materials.snapshot.remarks.find((candidate) => candidate.id === remarkId);
+      if (remark && remarkNeedsWork(remark)) setHandoffRemarkIds([remarkId]);
     }
-  }, [deleteRemark, showToast]);
+  }, [deleteRemark, materials.snapshot.remarks, showToast]);
+
+  const sendMaterialRemarks = useCallback((materialId: string): void => {
+    setHandoffRemarkIds(materials.snapshot.remarks
+      .filter((remark) => remark.target.materialId === materialId && remarkNeedsWork(remark))
+      .map((remark) => remark.id));
+  }, [materials.snapshot.remarks]);
+
+  const sendAllRemarks = useCallback((): void => {
+    setHandoffRemarkIds(materials.snapshot.remarks.filter(remarkNeedsWork).map((remark) => remark.id));
+  }, [materials.snapshot.remarks]);
 
   const deleteCanvasRegion = useCallback((id: string): void => {
     const canvasRegions = settingsRef.current.canvasRegions.filter((region) => region.id !== id);
@@ -1425,7 +1443,7 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     const performShortcut = (shortcut: "home" | "renameWindow" | "toggleFullscreen"): void => {
       if (shortcut === "toggleFullscreen") {
-        if (settingsOpen || launchProvider !== null || pendingTerminalUrl !== null || homeEditDraft) return;
+        if (settingsOpen || launchProvider !== null || pendingTerminalUrl !== null || homeEditDraft || handoffRemarkIds !== null) return;
         const id = fullscreenSessionId ?? activeSessionId;
         if (id) toggleSessionFullscreen(id);
         return;
@@ -1443,6 +1461,7 @@ export function App(): React.JSX.Element {
     const handleShortcut = (event: KeyboardEvent): void => {
       if (shortcutReferenceOpen) return;
       if (handleMacNativeSelectAll(event, window.canvasTTY.window.isMacOS)) return;
+      if (handoffRemarkIds !== null) return;
       if (shouldKeepNativeKeyboardInput(event.target, window.canvasTTY.window.isMacOS, event)) return;
       if (event.repeat || isShortcutCaptureTarget(event.target) || isRenameInputTarget(event.target)) return;
       if (matchesShortcut(event, settings.shortcuts.toggleFullscreen)) {
@@ -1465,7 +1484,7 @@ export function App(): React.JSX.Element {
     };
 
     const handlePointerShortcut = (event: PointerEvent): void => {
-      if (shortcutReferenceOpen) return;
+      if (shortcutReferenceOpen || handoffRemarkIds !== null) return;
       if (isShortcutCaptureTarget(event.target) || isRenameInputTarget(event.target)) return;
       const action = matchesPointerShortcut(event, settings.shortcuts.home)
         ? "home"
@@ -1486,7 +1505,7 @@ export function App(): React.JSX.Element {
       window.removeEventListener("keydown", handleShortcut, true);
       window.removeEventListener("pointerdown", handlePointerShortcut, true);
     };
-  }, [activeSessionId, fullscreenSessionId, goHome, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, shortcutReferenceOpen, showToast, toggleSessionFullscreen]);
+  }, [activeSessionId, fullscreenSessionId, goHome, handoffRemarkIds, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, shortcutReferenceOpen, showToast, toggleSessionFullscreen]);
 
   const appearance = resolveAppearanceSettings(settings);
   const rootClasses = useMemo(
@@ -1536,7 +1555,7 @@ export function App(): React.JSX.Element {
           limitsLoadState={limitsLoadState}
           plugins={plugins}
           browser={browser}
-          browserViewVisible={!settingsOpen && !shortcutReferenceOpen && launchProvider === null && pendingTerminalUrl === null}
+          browserViewVisible={!settingsOpen && !shortcutReferenceOpen && launchProvider === null && pendingTerminalUrl === null && handoffRemarkIds === null}
           homeEditing={homeEditDraft !== null}
           camera={cameraStore}
           onCameraChange={changeCamera}
@@ -1601,8 +1620,11 @@ export function App(): React.JSX.Element {
           onRemoveMaterial={removeMaterial}
           onMaterialCommand={runMaterialCommand}
           remarks={materials.remarks}
+          handoffs={materials.snapshot.handoffs}
           onAddRemark={addRemark}
           onRemarkAction={remarkAction}
+          onSendMaterialRemarks={sendMaterialRemarks}
+          onSendAllRemarks={sendAllRemarks}
         />}
       </main>
 
@@ -1667,6 +1689,18 @@ export function App(): React.JSX.Element {
           onEditHome={startHomeEditor}
           onOpenBrowser={openBrowser}
         />
+        {handoffRemarkIds !== null && <HandoffDialog
+          locale={settings.locale}
+          initialRemarkIds={handoffRemarkIds}
+          sessions={sessions}
+          materials={materials.materials}
+          remarks={materials.remarks}
+          handoffs={materials.snapshot.handoffs}
+          lastSessionId={lastHandoffSessionId}
+          onClose={() => setHandoffRemarkIds(null)}
+          onSent={(handoff) => setLastHandoffSessionId(handoff.sessionId)}
+          onFocusSession={focusSession}
+        />}
       </Suspense>
       {closedGitRisks.length > 0 && (
         <div className="git-risk-panel">

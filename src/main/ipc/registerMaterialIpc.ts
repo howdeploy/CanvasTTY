@@ -1,8 +1,10 @@
+import { realpath, stat } from "node:fs/promises";
 import { BrowserWindow, clipboard, dialog, shell } from "electron";
 import type { IpcMainInvokeEvent, OpenDialogOptions } from "electron";
 import type { MaterialsAddResult, Point } from "../../shared/contracts.ts";
 import { IPC } from "../../shared/contracts.ts";
 import type { MaterialService } from "../services/materials/MaterialService";
+import type { HandoffService } from "../services/materials/HandoffService";
 import { captureRejection, fileUrlPaths, plistPaths, textPaths, windowsFileNames } from "../services/materials/materialClipboard.ts";
 import { isId } from "../services/materials/materialState.ts";
 import { assertMainRenderer } from "./registerIpc";
@@ -12,10 +14,12 @@ const MAX_CLIPBOARD_PATHS = 16;
 
 interface MaterialIpcDependencies {
   materials: MaterialService;
+  handoffs: HandoffService;
+  workingDirectory(sessionId: string): string | null;
   getMainWindow(): BrowserWindow | null;
 }
 
-export function registerMaterialIpc(ipcMain: IpcRegistrar, { materials, getMainWindow }: MaterialIpcDependencies): void {
+export function registerMaterialIpc(ipcMain: IpcRegistrar, { materials, handoffs, workingDirectory, getMainWindow }: MaterialIpcDependencies): void {
 
   ipcMain.handle(IPC.materialsSnapshot, (event) => {
     assertMainRenderer(event, getMainWindow);
@@ -98,6 +102,35 @@ export function registerMaterialIpc(ipcMain: IpcRegistrar, { materials, getMainW
   ipcMain.handle(IPC.materialsDeleteRemark, (event, id: unknown) => {
     assertMainRenderer(event, getMainWindow);
     return materials.deleteRemark(requireId(id));
+  });
+
+  ipcMain.handle(IPC.materialsPreviewHandoff, (event, draft: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    return handoffs.preview(draft);
+  });
+
+  ipcMain.handle(IPC.materialsSendHandoff, (event, draft: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    return handoffs.send(draft);
+  });
+
+
+  ipcMain.handle(IPC.materialsPickResultsFolder, async (event, sessionId: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const defaultPath = typeof sessionId === "string" ? workingDirectory(sessionId) ?? undefined : undefined;
+    const options: OpenDialogOptions = { properties: ["openDirectory", "createDirectory"], ...(defaultPath ? { defaultPath } : {}) };
+    const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    const selected = result.filePaths[0];
+    if (result.canceled || !selected) return null;
+    try {
+      if (!(await stat(selected)).isDirectory()) return null;
+      const folder = await realpath(selected);
+      handoffs.grantResultsFolder(folder);
+      return folder;
+    } catch {
+      return null;
+    }
   });
 }
 

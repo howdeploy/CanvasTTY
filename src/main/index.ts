@@ -50,6 +50,8 @@ import { PluginCards } from "./services/PluginCards";
 import { GithubAuthService } from "./services/GithubAuthService";
 import { PluginMediaService } from "./services/PluginMediaService";
 import { MaterialService } from "./services/materials/MaterialService";
+import { HandoffService } from "./services/materials/HandoffService";
+import { electronImageOps } from "./services/materials/electronImageOps";
 import { MATERIAL_SCHEME } from "../shared/materials.ts";
 import { PluginSecretsService } from "./services/PluginSecretsService";
 import { ProviderSecretsService } from "./services/ProviderSecretsService";
@@ -174,6 +176,7 @@ let pluginCards: PluginCards | null = null;
 let githubAuth: GithubAuthService | null = null;
 let pluginMediaService: PluginMediaService | null = null;
 let materialService: MaterialService | null = null;
+let handoffService: HandoffService | null = null;
 let pluginSecretsService: PluginSecretsService | null = null;
 let providerSecretsService: ProviderSecretsService | null = null;
 let hermesHudService: HermesHudService | null = null;
@@ -584,6 +587,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       agentControl?.observe(channel, payload);
       evenG2?.observe(channel, payload);
       pluginSessions?.observe(channel, payload);
+      handoffService?.observe(channel, payload);
       if (channel === IPC.terminalRemoved && "id" in payload) pluginCards?.forgetSession(payload.id);
     }
     if (reachesRenderer(payload)) rendererOutbox.push(channel, payload);
@@ -784,7 +788,20 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     }
   });
   await materialService.load();
-  registerMaterialIpc(ipc, { materials: materialService, getMainWindow: () => mainWindow });
+  handoffService = new HandoffService({
+    materials: materialService,
+    terminals: terminalManager,
+    images: electronImageOps,
+    root: materialService.handoffsPath,
+    locale: () => settings.get().locale
+  });
+  void handoffService.prune();
+  registerMaterialIpc(ipc, {
+    materials: materialService,
+    handoffs: handoffService,
+    workingDirectory: (sessionId) => terminalManager?.pluginContext(sessionId)?.workingDirectory ?? null,
+    getMainWindow: () => mainWindow
+  });
   registerIpc(ipc, {
     settings,
     recheckProviderClis: async () => {
@@ -1233,6 +1250,7 @@ async function shutdownServices(): Promise<void> {
   if (browserService) await Promise.allSettled([browserService.dispose()]);
   if (pluginServices) await Promise.allSettled([pluginServices.dispose()]);
   if (pluginManager) await Promise.allSettled([pluginManager.dispose()]);
+  await handoffService?.dispose();
   if (materialService) await Promise.allSettled([materialService.dispose()]);
   await ptyExits;
   diagnostics.record("info", "application", "shutdown.completed");

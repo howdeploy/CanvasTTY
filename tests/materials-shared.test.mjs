@@ -10,13 +10,13 @@ import {
   materialUrl
 } from "../src/shared/materials.ts";
 
-test("file names map to an image or a plain file", () => {
+test("file names map to a material kind by extension", () => {
   assert.deepEqual(materialType("Hero.PNG"), { kind: "image", mimeType: "image/png" });
-  assert.deepEqual(materialType("clip.mov"), { kind: "file", mimeType: "application/octet-stream" });
-  assert.deepEqual(materialType("voice.m4a"), { kind: "file", mimeType: "application/octet-stream" });
-  assert.deepEqual(materialType("README.md"), { kind: "file", mimeType: "application/octet-stream" });
-  assert.deepEqual(materialType("App.tsx"), { kind: "file", mimeType: "application/octet-stream" });
-  assert.deepEqual(materialType("brief.pdf"), { kind: "file", mimeType: "application/octet-stream" });
+  assert.deepEqual(materialType("clip.mov"), { kind: "video", mimeType: "video/quicktime" });
+  assert.deepEqual(materialType("voice.m4a"), { kind: "audio", mimeType: "audio/mp4" });
+  assert.deepEqual(materialType("README.md"), { kind: "text", mimeType: "text/markdown" });
+  assert.deepEqual(materialType("App.tsx"), { kind: "text", mimeType: "text/typescript" });
+  assert.deepEqual(materialType("brief.pdf"), { kind: "pdf", mimeType: "application/pdf" });
   assert.deepEqual(materialType("archive.zip"), { kind: "file", mimeType: "application/octet-stream" });
   assert.deepEqual(materialType(".env"), { kind: "file", mimeType: "application/octet-stream" });
   assert.deepEqual(materialType("Makefile"), { kind: "file", mimeType: "application/octet-stream" });

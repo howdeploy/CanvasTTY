@@ -32,6 +32,7 @@ import plusIcon from "../assets/icons/lucide/plus.svg";
 import paletteIcon from "../assets/icons/lucide/palette.svg";
 import pencilIcon from "../assets/icons/lucide/pencil.svg";
 import searchIcon from "../assets/icons/lucide/search.svg";
+import sendIcon from "../assets/icons/lucide/send.svg";
 import settingsIcon from "../assets/icons/lucide/settings.svg";
 import slidersHorizontalIcon from "../assets/icons/lucide/sliders-horizontal.svg";
 import stickyNoteIcon from "../assets/icons/lucide/sticky-note.svg";
@@ -86,7 +87,8 @@ export type UiIconName =
   | "working"
   | "attention"
   | "error"
-  | "done";
+  | "done"
+  | "send";
 
 interface UiIconProps {
   name: UiIconName;
@@ -138,7 +140,8 @@ const ICONS: Record<UiIconName, string> = {
   working: workingIcon,
   attention: attentionIcon,
   error: errorIcon,
-  done: checkIcon
+  done: checkIcon,
+  send: sendIcon
 };
 
 export function UiIcon({ name, size = 24 }: UiIconProps): React.JSX.Element {

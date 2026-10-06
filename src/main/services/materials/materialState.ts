@@ -1,17 +1,22 @@
 import { isAbsolute } from "node:path";
 import type {
+  HandoffDeliveryState,
+  HandoffPasteNote,
+  MaterialHandoff,
   MaterialKind,
   MaterialOrigin,
   MaterialRemark,
   MaterialVersionReason,
   Point,
+  ProviderId,
   RemarkAnchor,
   RemarkStatus,
   RemarkTarget,
   Size
-} from "../../../shared/contracts.ts";
+} from "../../../shared/contracts";
 import {
   clampSize,
+  HANDOFF_NOTE_LIMIT,
   MATERIAL_LIMIT,
   MATERIAL_VERSION_LIMIT,
   REMARK_TEXT_LIMIT
@@ -19,12 +24,20 @@ import {
 
 export const MATERIAL_STATE_VERSION = 1;
 export const REMARK_LIMIT = 2_000;
+export const HANDOFF_LIMIT = 200;
+export const HANDOFF_REMARK_LIMIT = 50;
 
-const KINDS: ReadonlySet<MaterialKind> = new Set(["image", "text", "video", "audio", "pdf", "file"]);
+const KINDS: Record<MaterialKind, true> = { image: true, text: true, video: true, audio: true, pdf: true, file: true };
 const VERSION_REASONS: ReadonlySet<MaterialVersionReason> = new Set(["pinned", "remark", "capture", "edit"]);
 const REMARK_STATUSES: ReadonlySet<RemarkStatus> = new Set(["open", "sent", "reported", "accepted", "reopened"]);
+const DELIVERY_STATES: ReadonlySet<HandoffDeliveryState> = new Set(["sending", "submitted", "pasted", "failed"]);
+const PASTE_NOTES: ReadonlySet<HandoffPasteNote> = new Set(["not-seen", "not-observed", "enter-failed"]);
+const PROVIDER_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 const ID_PATTERN = /^[a-f0-9-]{36}$/;
 export const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+export const MAX_ELEMENT_ROLE = 60;
+export const MAX_ELEMENT_NAME = 200;
+export const MAX_SESSION_ID = 120;
 const MAX_NAME = 255;
 const MAX_URL = 2_048;
 const MAX_TITLE = 300;
@@ -70,11 +83,12 @@ export interface StoredMaterialState {
   version: typeof MATERIAL_STATE_VERSION;
   materials: StoredMaterial[];
   remarks: MaterialRemark[];
-  counters: { remark: number };
+  handoffs: MaterialHandoff[];
+  counters: { remark: number; handoff: number };
 }
 
 export function emptyMaterialState(): StoredMaterialState {
-  return { version: MATERIAL_STATE_VERSION, materials: [], remarks: [], counters: { remark: 0 } };
+  return { version: MATERIAL_STATE_VERSION, materials: [], remarks: [], handoffs: [], counters: { remark: 0, handoff: 0 } };
 }
 
 export function restoreMaterialState(candidate: unknown): StoredMaterialState {
@@ -144,9 +158,19 @@ export function normalizeMaterialState(candidate: unknown): StoredMaterialState 
       state.remarks.push(remark);
     }
   }
+  if (Array.isArray(candidate.handoffs)) {
+    const handoffIds = new Set<string>();
+    for (const value of candidate.handoffs.slice(-HANDOFF_LIMIT)) {
+      const handoff = normalizeHandoff(value);
+      if (!handoff || handoffIds.has(handoff.id)) continue;
+      handoffIds.add(handoff.id);
+      state.handoffs.push(handoff);
+    }
+  }
   const counters = isRecord(candidate.counters) ? candidate.counters : {};
   state.counters = {
-    remark: Math.max(counterValue(counters.remark), ...state.remarks.map((remark) => remark.number))
+    remark: Math.max(counterValue(counters.remark), ...state.remarks.map((remark) => remark.number)),
+    handoff: Math.max(counterValue(counters.handoff), ...state.handoffs.map((handoff) => handoff.number))
   };
   return state;
 }
@@ -184,6 +208,14 @@ function normalizeRemark(value: unknown): MaterialRemark | null {
   if (typeof value.text !== "string" || value.text.length > REMARK_TEXT_LIMIT) return null;
   if (typeof value.status !== "string" || !REMARK_STATUSES.has(value.status as RemarkStatus)) return null;
   if (!isFiniteNumber(value.createdAt) || !isFiniteNumber(value.updatedAt)) return null;
+  const handoffIds = Array.isArray(value.handoffIds) ? value.handoffIds.filter(isId).slice(-HANDOFF_LIMIT) : [];
+  const report = isRecord(value.report) && isId(value.report.handoffId) && isFiniteNumber(value.report.at)
+    ? {
+        handoffId: value.report.handoffId,
+        at: value.report.at,
+        note: typeof value.report.note === "string" ? value.report.note.slice(0, REMARK_TEXT_LIMIT) : null
+      }
+    : null;
   return {
     id: value.id,
     number: value.number,
@@ -193,8 +225,53 @@ function normalizeRemark(value: unknown): MaterialRemark | null {
     status: value.status as RemarkStatus,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
-    handoffIds: [],
-    report: null
+    handoffIds,
+    report
+  };
+}
+
+function normalizeHandoff(value: unknown): MaterialHandoff | null {
+  if (!isRecord(value) || !isId(value.id) || !isCount(value.number)) return null;
+  if (!isFiniteNumber(value.createdAt) || typeof value.sessionId !== "string" || value.sessionId.length > MAX_SESSION_ID) return null;
+  if (typeof value.sessionTitle !== "string" || typeof value.provider !== "string" || !PROVIDER_PATTERN.test(value.provider)) return null;
+  if (!Array.isArray(value.remarkIds) || typeof value.note !== "string" || typeof value.folder !== "string" || !isAbsolute(value.folder)) return null;
+  if (value.resultsFolder !== null && (typeof value.resultsFolder !== "string" || !isAbsolute(value.resultsFolder))) return null;
+  const delivery = isRecord(value.delivery) ? value.delivery : null;
+  if (!delivery || typeof delivery.state !== "string" || !DELIVERY_STATES.has(delivery.state as HandoffDeliveryState)) return null;
+  const items = Array.isArray(value.items) ? value.items.flatMap((item) => (
+    isRecord(item) && isId(item.materialId) && (item.versionId === null || isId(item.versionId)) && typeof item.editable === "boolean"
+      ? [{ materialId: item.materialId, versionId: item.versionId as string | null, editable: item.editable }]
+      : []
+  )).slice(0, HANDOFF_REMARK_LIMIT * 2) : [];
+  const state = delivery.state === "sending" ? "failed" : delivery.state as HandoffDeliveryState;
+  return {
+    id: value.id,
+    number: value.number,
+    createdAt: value.createdAt,
+    sessionId: value.sessionId,
+    sessionTitle: value.sessionTitle.slice(0, MAX_TITLE),
+    provider: value.provider as ProviderId,
+    remarkIds: value.remarkIds.filter(isId).slice(0, HANDOFF_REMARK_LIMIT),
+    items,
+    note: value.note.slice(0, HANDOFF_NOTE_LIMIT),
+    folder: value.folder,
+    resultsFolder: value.resultsFolder as string | null,
+    sessionStartedAt: isFiniteNumber(value.sessionStartedAt) ? value.sessionStartedAt : null,
+    delivery: {
+      state,
+      imagesExpected: counterValue(delivery.imagesExpected),
+      imagesAttached: counterValue(delivery.imagesAttached),
+      sentAt: isFiniteNumber(delivery.sentAt) ? delivery.sentAt : null,
+      turnStartedAt: isFiniteNumber(delivery.turnStartedAt) ? delivery.turnStartedAt : null,
+      turnEndedAt: isFiniteNumber(delivery.turnEndedAt) ? delivery.turnEndedAt : null,
+      note: state === "pasted" && typeof delivery.note === "string" && PASTE_NOTES.has(delivery.note as HandoffPasteNote)
+        ? delivery.note as HandoffPasteNote
+        : null,
+      error: delivery.state === "sending"
+        ? "CanvasTTY closed while sending."
+        : typeof delivery.error === "string" ? delivery.error.slice(0, 500) : null,
+      stateSaved: delivery.stateSaved !== false
+    }
   };
 }
 
@@ -218,7 +295,7 @@ function normalizeMaterial(value: unknown): StoredMaterial | null {
   if (!isRecord(value)) return null;
   const { id, kind, name, mimeType, position, size, path, identity, origin, createdAt, versions, nextVersion } = value;
   if (!isId(id)) return null;
-  if (typeof kind !== "string" || !KINDS.has(kind as MaterialKind)) return null;
+  if (typeof kind !== "string" || !Object.hasOwn(KINDS, kind)) return null;
   if (typeof name !== "string" || name.length === 0 || name.length > MAX_NAME) return null;
   if (typeof mimeType !== "string" || !MIME_PATTERN.test(mimeType)) return null;
   if (!isPoint(position) || !isSize(size)) return null;

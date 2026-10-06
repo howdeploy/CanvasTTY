@@ -306,6 +306,7 @@ export interface MaterialsSnapshot {
   loadError?: "unreadable";
   materials: CanvasMaterial[];
   remarks: MaterialRemark[];
+  handoffs: MaterialHandoff[];
   storage: MaterialStorageUsage;
 }
 
@@ -345,8 +346,7 @@ export type RemarkAnchor =
   | { kind: "point"; x: number; y: number }
   | { kind: "lines"; start: number; end: number }
   | { kind: "time"; start: number; end: number | null }
-  | { kind: "page"; page: number }
-  | { kind: "step"; index: number };
+  | { kind: "page"; page: number };
 
 export interface RemarkTarget {
   materialId: string;
@@ -390,6 +390,85 @@ export interface RemarkPatch {
 export type RemarkResult = { ok: true; remark: MaterialRemark } | { ok: false; reason: MaterialFailure };
 
 export type MaterialVersionResult = { ok: true; version: MaterialVersion } | { ok: false; reason: MaterialFailure };
+
+export type HandoffDeliveryState = "sending" | "submitted" | "pasted" | "failed";
+
+export type HandoffPasteNote = "not-seen" | "not-observed" | "enter-failed";
+
+export interface HandoffDelivery {
+  state: HandoffDeliveryState;
+  imagesExpected: number;
+  imagesAttached: number;
+  sentAt: number | null;
+  turnStartedAt: number | null;
+  turnEndedAt: number | null;
+  note: HandoffPasteNote | null;
+  error: string | null;
+  stateSaved: boolean;
+}
+
+export interface HandoffItem {
+  materialId: string;
+  versionId: string | null;
+  editable: boolean;
+}
+
+export interface MaterialHandoff {
+  id: string;
+  number: number;
+  createdAt: number;
+  sessionId: string;
+  sessionTitle: string;
+  provider: ProviderId;
+  remarkIds: string[];
+  items: HandoffItem[];
+  note: string;
+  folder: string;
+  resultsFolder: string | null;
+  sessionStartedAt: number | null;
+  delivery: HandoffDelivery;
+}
+
+export interface HandoffDraft {
+  id: string;
+  sessionId: string;
+  remarkIds: string[];
+  editableMaterialIds: string[];
+  note: string;
+  resultsFolder: string | null;
+}
+
+export interface HandoffPreview {
+  text: string;
+  files: string[];
+  imageMode: "attach" | "paths";
+  images: number;
+  warnings: HandoffWarning[];
+}
+
+export type HandoffWarning = "results-outside-workdir" | "status-unknown";
+
+export type HandoffBlock =
+  | "no-session"
+  | "not-an-agent"
+  | "exited"
+  | "starting"
+  | "busy"
+  | "needs-approval"
+  | "remote-environment"
+  | "composer-not-ready"
+  | "already-sent"
+  | "no-remarks"
+  | "too-many-remarks"
+  | "too-long";
+
+export type HandoffResult =
+  | { ok: true; handoff: MaterialHandoff }
+  | { ok: false; reason: HandoffBlock | MaterialFailure };
+
+export type HandoffPreviewResult =
+  | { ok: true; preview: HandoffPreview }
+  | { ok: false; reason: HandoffBlock | MaterialFailure };
 
 export interface CameraState extends Point {
   zoom: number;
@@ -1735,6 +1814,9 @@ export interface CanvasTTYApi {
     addRemark(draft: RemarkDraft): Promise<RemarkResult>;
     updateRemark(id: string, patch: RemarkPatch): Promise<RemarkResult>;
     deleteRemark(id: string): Promise<void>;
+    previewHandoff(draft: HandoffDraft): Promise<HandoffPreviewResult>;
+    sendHandoff(draft: HandoffDraft): Promise<HandoffResult>;
+    pickResultsFolder(sessionId: string): Promise<string | null>;
     onChanged(listener: (snapshot: MaterialsSnapshot) => void): () => void;
   };
   limits: {
@@ -1909,6 +1991,9 @@ export const IPC = {
   materialsAddRemark: "materials:add-remark",
   materialsUpdateRemark: "materials:update-remark",
   materialsDeleteRemark: "materials:delete-remark",
+  materialsPreviewHandoff: "materials:preview-handoff",
+  materialsSendHandoff: "materials:send-handoff",
+  materialsPickResultsFolder: "materials:pick-results-folder",
   materialsChanged: "materials:changed",
   limitsGet: "limits:get",
   pluginsList: "plugins:list",

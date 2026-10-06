@@ -45,10 +45,12 @@ interface CanvasContextMenuProps {
   onAddFiles(): void;
   onPasteFiles(): void;
   onPinMaterial(): void;
+  onSendMaterial: (() => void) | null;
   onRevealMaterial(): void;
   onCopyMaterialPath(): void;
   onBringMaterialToFront(): void;
   onRemoveMaterial(): void;
+  onSendRemarks: (() => void) | null;
   onClose(): void;
 }
 
@@ -73,10 +75,12 @@ export function CanvasContextMenu({
   onAddFiles,
   onPasteFiles,
   onPinMaterial,
+  onSendMaterial,
   onRevealMaterial,
   onCopyMaterialPath,
   onBringMaterialToFront,
   onRemoveMaterial,
+  onSendRemarks,
   onClose
 }: CanvasContextMenuProps): React.JSX.Element {
   const menu = useRef<HTMLDivElement>(null);
@@ -149,6 +153,11 @@ export function CanvasContextMenu({
             role="menuitem"
             onClick={onPasteFiles}
           >{t(locale, "materialsPaste")}</CanvasMenuRow>
+          {onSendRemarks && (
+            <CanvasMenuRow icon="send" role="menuitem" onClick={onSendRemarks}>
+              {t(locale, "handoffSendToAgent")}
+            </CanvasMenuRow>
+          )}
           <CanvasMenuDivider />
           <div className="canvas-menu__submenu-anchor">
             <CanvasMenuRow
@@ -262,6 +271,11 @@ export function CanvasContextMenu({
 
       {kind === "material" && (
         <>
+          {onSendMaterial && (
+            <CanvasMenuRow icon="send" role="menuitem" onClick={onSendMaterial}>
+              {t(locale, "handoffSendToAgent")}
+            </CanvasMenuRow>
+          )}
           <CanvasMenuRow icon="pin" role="menuitem" onClick={onPinMaterial}>
             {t(locale, "materialPinVersion")}
           </CanvasMenuRow>

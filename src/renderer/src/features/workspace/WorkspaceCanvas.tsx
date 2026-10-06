@@ -15,6 +15,7 @@ import type {
   HomeWidgetPlacement,
   InstalledPlugin,
   LimitsSnapshot,
+  MaterialHandoff,
   MaterialRemark,
   Point,
   ProviderId,
@@ -249,8 +250,11 @@ interface WorkspaceCanvasProps {
   onRemoveMaterial(id: string): void;
   onMaterialCommand(id: string, command: MaterialCommand): void;
   remarks: readonly MaterialRemark[];
+  handoffs: readonly MaterialHandoff[];
   onAddRemark(draft: RemarkDraft): Promise<boolean>;
   onRemarkAction(remarkId: string, action: "delete"): void;
+  onSendMaterialRemarks(materialId: string): void;
+  onSendAllRemarks(): void;
 }
 
 export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element {
@@ -268,7 +272,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     onCanvasRegionBoundsChange, onDeleteCanvasRegion, onCreateStickyNote,
     onStickyNoteBoundsChange, onStickyNoteTextChange, onDeleteStickyNote,
     materials, onAddMaterialFiles, onPickMaterials, onPasteMaterials, onMaterialBoundsChange,
-    onMaterialBoundsChangeBatch, onRemoveMaterial, onMaterialCommand, remarks, onAddRemark, onRemarkAction, surfacesMounted = true
+    onMaterialBoundsChangeBatch, onRemoveMaterial, onMaterialCommand, remarks, handoffs, onAddRemark, onRemarkAction,
+    onSendMaterialRemarks, onSendAllRemarks, surfacesMounted = true
   } = props;
   const viewport = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<CanvasMenuState | null>(null);
@@ -386,7 +391,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     materials,
     remarks,
     onAddRemark,
-    onRemarkAction
+    onRemarkAction,
+    onSendMaterialRemarks
   });
   const renderedMaterials = useMemo(() => materials.map((material) => {
     const start = regionMovePreview?.materialBounds.get(material.id);
@@ -1306,6 +1312,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           rect={popoverRect}
           remarkDraft={remarkDraft}
           selectedRemark={selectedRemark}
+          handoffs={handoffs}
           materialNames={materialNames}
           remarkActions={remarkActions}
         />
@@ -1391,6 +1398,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             if (contextMenu.targetId) onMaterialCommand(contextMenu.targetId, "pin");
             setContextMenu(null);
           }}
+          onSendMaterial={remarks.some((remark) => remark.target.materialId === contextMenu.targetId && remarkNeedsWork(remark)) ? () => {
+            if (contextMenu.targetId) onSendMaterialRemarks(contextMenu.targetId);
+            setContextMenu(null);
+          } : null}
           onRevealMaterial={() => {
             if (contextMenu.targetId) onMaterialCommand(contextMenu.targetId, "reveal");
             setContextMenu(null);
@@ -1411,6 +1422,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             }
             setContextMenu(null);
           }}
+          onSendRemarks={remarks.some((remark) => remarkNeedsWork(remark)) ? () => {
+            setCommandPaletteOpen(false);
+            onSendAllRemarks();
+          } : null}
           onClose={() => setContextMenu(null)}
         />
       )}

@@ -4,6 +4,7 @@ export const EMPTY_MATERIALS_SNAPSHOT: MaterialsSnapshot = {
   revision: 0,
   materials: [],
   remarks: [],
+  handoffs: [],
   storage: { usedBytes: 0, limitBytes: 0 }
 };
 

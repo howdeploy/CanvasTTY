@@ -1,9 +1,14 @@
 import type {
+  HandoffBlock,
+  HandoffDelivery,
+  HandoffPasteNote,
   LocaleId,
   MaterialFailure,
+  MaterialHandoff,
   MaterialRemark,
   Point,
   RemarkAnchor,
+  RemarkStatus,
   Size
 } from "../../../../shared/contracts.ts";
 import { isAreaAnchor } from "../../../../shared/materials.ts";
@@ -74,7 +79,7 @@ export function remarksByMaterial(remarks: readonly MaterialRemark[]): Map<strin
   return grouped;
 }
 
-export function remarkStatusClass(status: MaterialRemark["status"]): string {
+export function remarkStatusClass(status: RemarkStatus): string {
   return `material-remark-status material-remark-status--${status}`;
 }
 
@@ -83,7 +88,6 @@ export function remarkAnchorLabel(anchor: RemarkAnchor, locale: LocaleId): strin
     case "lines": return `${t(locale, "remarkAnchorLines")} ${anchor.start === anchor.end ? anchor.start : `${anchor.start}–${anchor.end}`}`;
     case "page": return `${t(locale, "remarkAnchorPage")} ${anchor.page}`;
     case "time": return `${t(locale, "remarkAnchorTime")} ${anchor.end === null ? formatClock(anchor.start) : `${formatClock(anchor.start)}–${formatClock(anchor.end)}`}`;
-    case "step": return `${t(locale, "remarkAnchorStep")} ${anchor.index + 1}`;
     case "region": return t(locale, "remarkAnchorRegion");
     case "point": return t(locale, "remarkAnchorPoint");
     case "whole": return t(locale, "remarkAnchorWhole");
@@ -107,7 +111,7 @@ export function remarkDraftWithoutLostMaterials<T extends { materialId: string; 
   return draft;
 }
 
-export function remarkStatusKey(status: MaterialRemark["status"]): "remarkStatusOpen" | "remarkStatusSent" | "remarkStatusReported"
+export function remarkStatusKey(status: RemarkStatus): "remarkStatusOpen" | "remarkStatusSent" | "remarkStatusReported"
   | "remarkStatusAccepted" | "remarkStatusReopened" {
   switch (status) {
     case "open": return "remarkStatusOpen";
@@ -115,6 +119,65 @@ export function remarkStatusKey(status: MaterialRemark["status"]): "remarkStatus
     case "reported": return "remarkStatusReported";
     case "accepted": return "remarkStatusAccepted";
     default: return "remarkStatusReopened";
+  }
+}
+
+export function latestHandoff(handoffs: readonly MaterialHandoff[], remark: MaterialRemark): MaterialHandoff | null {
+  const id = remark.handoffIds.at(-1);
+  return id ? handoffs.find((handoff) => handoff.id === id) ?? null : null;
+}
+
+export type DeliveryKey = "deliverySending" | "deliverySubmitted" | "deliveryPasted" | "deliveryFailed"
+  | "deliveryTurnStarted" | "deliveryTurnEnded";
+
+export type PasteNoteKey = "handoffPastedNotSeen" | "handoffPastedNotObserved" | "handoffPastedEnterFailed" | "handoffPastedSessionGone";
+
+export function pasteNoteKey(note: HandoffPasteNote | null, sessionGone = false): PasteNoteKey {
+  if (sessionGone) return "handoffPastedSessionGone";
+  if (note === "not-observed") return "handoffPastedNotObserved";
+  if (note === "enter-failed") return "handoffPastedEnterFailed";
+  return "handoffPastedNotSeen";
+}
+
+export function deliveryKey(delivery: HandoffDelivery): DeliveryKey {
+  if (delivery.state === "sending") return "deliverySending";
+  if (delivery.state === "failed") return "deliveryFailed";
+  if (delivery.state === "pasted") return "deliveryPasted";
+  if (delivery.turnEndedAt !== null) return "deliveryTurnEnded";
+  if (delivery.turnStartedAt !== null) return "deliveryTurnStarted";
+  return "deliverySubmitted";
+}
+
+export type HandoffReasonKey =
+  | "handoffBlockNoSession"
+  | "handoffBlockNotAgent"
+  | "handoffBlockExited"
+  | "handoffBlockStarting"
+  | "handoffBlockBusy"
+  | "handoffBlockApproval"
+  | "handoffBlockRemote"
+  | "handoffBlockComposer"
+  | "handoffBlockAlreadySent"
+  | "handoffBlockNoRemarks"
+  | "handoffBlockTooMany"
+  | "handoffBlockTooLong"
+  | "handoffBlockUnavailable";
+
+export function handoffReasonKey(reason: HandoffBlock | MaterialFailure): HandoffReasonKey {
+  switch (reason) {
+    case "no-session": return "handoffBlockNoSession";
+    case "not-an-agent": return "handoffBlockNotAgent";
+    case "exited": return "handoffBlockExited";
+    case "starting": return "handoffBlockStarting";
+    case "busy": return "handoffBlockBusy";
+    case "needs-approval": return "handoffBlockApproval";
+    case "remote-environment": return "handoffBlockRemote";
+    case "composer-not-ready": return "handoffBlockComposer";
+    case "already-sent": return "handoffBlockAlreadySent";
+    case "no-remarks": return "handoffBlockNoRemarks";
+    case "too-many-remarks": return "handoffBlockTooMany";
+    case "too-long": return "handoffBlockTooLong";
+    default: return "handoffBlockUnavailable";
   }
 }
 
@@ -162,7 +225,8 @@ export interface MaterialRemarkActions {
   clearReference(): void;
   save(text: string): Promise<boolean>;
   select(remarkId: string | null): void;
-  act(remarkId: string, action: "delete"): void;
+  act(remarkId: string, action: "delete" | "send"): void;
+  send(materialId: string): void;
 }
 
 export function failureToastKey(reason: MaterialFailure): string | null {

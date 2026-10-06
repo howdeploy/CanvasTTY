@@ -5,6 +5,7 @@ import type {
   MaterialResult,
   MaterialsAddResult,
   MaterialsSnapshot,
+  MaterialVersionResult,
   Point,
   RemarkDraft,
   RemarkPatch,
@@ -26,7 +27,7 @@ export interface MaterialsController {
   reveal(id: string): Promise<void>;
   relink(id: string): Promise<MaterialResult>;
   acceptMove(id: string): Promise<MaterialResult>;
-  pinVersion(id: string): Promise<MaterialResult>;
+  pinVersion(id: string): Promise<MaterialVersionResult>;
   addRemark(draft: RemarkDraft): Promise<RemarkResult>;
   updateRemark(id: string, patch: RemarkPatch): Promise<RemarkResult>;
   deleteRemark(id: string): Promise<void>;

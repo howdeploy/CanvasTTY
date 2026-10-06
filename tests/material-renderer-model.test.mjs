@@ -99,3 +99,9 @@ test("the card subtitle names the origin or falls back to the folder", () => {
   assert.equal(materialSubtitle({ ...base, origin: { kind: "clipboard" } }, "ru"), "Из буфера обмена");
   assert.equal(materialSubtitle({ ...base, origin: { kind: "browser", url: "example.com/page" } }, "en"), "example.com/page");
 });
+
+test("the handoff dialog warns whenever the outcome state is not saved", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../src/renderer/src/features/materials/HandoffDialog.tsx", import.meta.url), "utf8");
+  assert.match(source, /delivery\.stateSaved === false && <p>\{t\(locale, "handoffStateNotSaved"\)\}<\/p>/);
+});

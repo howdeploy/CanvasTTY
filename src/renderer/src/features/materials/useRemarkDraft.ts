@@ -24,12 +24,14 @@ export function useRemarkDraft({
   materials,
   remarks,
   onAddRemark,
-  onRemarkAction
+  onRemarkAction,
+  onSendMaterialRemarks
 }: {
   materials: readonly CanvasMaterial[];
   remarks: readonly MaterialRemark[];
   onAddRemark(draft: RemarkDraft): Promise<boolean>;
-  onRemarkAction(remarkId: string, action: "delete"): void;
+  onRemarkAction(remarkId: string, action: "delete" | "send"): void;
+  onSendMaterialRemarks(materialId: string): void;
 }): RemarkDraftController {
   const [remarkDraft, setRemarkDraft] = useState<RemarkDraftState | null>(null);
   const [selectedRemarkId, setSelectedRemarkId] = useState<string | null>(null);
@@ -64,8 +66,9 @@ export function useRemarkDraft({
       return saved;
     },
     select: (remarkId) => setSelectedRemarkId(remarkId),
-    act: (remarkId, action) => onRemarkAction(remarkId, action)
-  }), [onAddRemark, onRemarkAction]);
+    act: (remarkId, action) => onRemarkAction(remarkId, action),
+    send: (materialId) => onSendMaterialRemarks(materialId)
+  }), [onAddRemark, onRemarkAction, onSendMaterialRemarks]);
 
   useEffect(() => {
     if (!remarkDraft) return;

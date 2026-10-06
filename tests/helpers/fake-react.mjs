@@ -79,7 +79,7 @@ export async function importWithFakeReact(modulePath, exports, { checkSnapshots 
     platform: "node",
     format: "esm",
     write: false,
-    loader: { ".svg": "text", ".css": "empty" },
+    loader: { ".svg": "text", ".css": "empty", ".png": "empty", ".ico": "empty" },
     plugins: [{
       name: "fake-react",
       setup(builder) {

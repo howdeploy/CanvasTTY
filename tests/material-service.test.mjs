@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -41,12 +42,108 @@ test("dropped files become cards at the drop point; folders, missing and relativ
     assert.deepEqual({ kind: image.kind, name: image.name, location: image.location, state: image.state },
       { kind: "image", name: "hero.png", location: hero, state: "ready" });
     assert.deepEqual(image.size, { width: 440, height: 302 });
-    assert.equal(file.kind, "file");
+    assert.equal(file.kind, "text");
     assert.deepEqual(image.position, { x: 500, y: 300 });
     assert.deepEqual(file.position, { x: 500 + 440 + 24, y: 300 });
     assert.deepEqual(await readFile(hero), pngBytes(1920, 1080, 16));
   });
 });
+
+test("unreadable images reject individually", { skip: process.platform === "win32" }, async () => {
+  await withMaterials(async ({ work, service }) => {
+    const readable = join(work, "notes.txt");
+    const denied = join(work, "denied.png");
+    await writeFile(readable, "keep");
+    await writeFile(denied, pngBytes(4, 4));
+    await chmod(denied, 0);
+    try {
+      const result = await service.addPaths([readable, denied], { x: 0, y: 0 });
+      assert.equal(result.added.length, 1);
+      assert.deepEqual(result.rejected, [{ name: "denied.png", reason: "unreadable" }]);
+      assert.equal(only(service).location, readable);
+    } finally {
+      await chmod(denied, 0o600);
+    }
+  });
+});
+
+for (const replacement of ["symlink", "fifo"]) {
+  test(`image ${replacement} races reject`, { skip: process.platform === "win32" }, async () => {
+    await withMaterials(async ({ work, userData }) => {
+      await writeFile(join(work, "notes.txt"), "keep");
+      await writeFile(join(work, "hero.png"), pngBytes(4, 4));
+      await writeFile(join(work, "other.png"), pngBytes(99, 99));
+      const source = `
+        import fs from "node:fs";
+        import { syncBuiltinESMExports } from "node:module";
+        import { execFileSync } from "node:child_process";
+        import { join } from "node:path";
+        import { MaterialService } from ${JSON.stringify(new URL("../src/main/services/materials/MaterialService.ts", import.meta.url).href)};
+        const [work, userData, replacement] = process.argv.slice(1);
+        const image = join(work, "hero.png");
+        const original = fs.promises.open;
+        let replaced = false;
+        fs.promises.open = async (path, ...args) => {
+          if (path === image && !replaced) {
+            replaced = true;
+            await fs.promises.unlink(image);
+            if (replacement === "fifo") execFileSync("mkfifo", [image]);
+            else await fs.promises.symlink(join(work, "other.png"), image);
+          }
+          return original(path, ...args);
+        };
+        syncBuiltinESMExports();
+        const service = new MaterialService({userDataPath:userData,persist:()=>true,emit(){},pollIntervalMs:0,watchFactory:()=>({close(){}})});
+        await service.load();
+        const result = await service.addPaths([join(work, "notes.txt"), image], {x:0,y:0});
+        await service.dispose();
+        process.stdout.write(JSON.stringify(result));
+      `;
+      const child = spawnSync(process.execPath, ["--input-type=module", "-e", source, work, userData, replacement], { encoding: "utf8", timeout: 2_000 });
+      assert.equal(child.status, 0, child.error?.code ?? child.stderr);
+      const result = JSON.parse(child.stdout);
+      assert.equal(result.added.length, 1);
+      assert.deepEqual(result.rejected, [{ name: "hero.png", reason: "unreadable" }]);
+    });
+  });
+}
+
+for (const command of ["relink", "acceptMove"]) {
+  test(`legacy files ${command}`, async () => {
+    await withMaterials(async ({ work, userData, service, create, watch }) => {
+      const original = join(work, "brief.md");
+      const moved = join(work, "moved.md");
+      await writeFile(original, "# Keep\n");
+      await writeFile(join(work, "movie.mp4"), "video");
+      await service.addPaths([original], { x: 10, y: 20 });
+      const material = only(service);
+      await service.pinVersion(material.id);
+      const remark = (await service.addRemark({ materialId: material.id, anchor: { kind: "whole" }, reference: { materialId: material.id, anchor: { kind: "whole" } }, text: "keep" })).remark;
+      await service.dispose();
+      const statePath = join(userData, "materials", "state.json");
+      const state = JSON.parse(await readFile(statePath, "utf8"));
+      state.materials[0].kind = "file";
+      state.materials[0].mimeType = "application/octet-stream";
+      for (const version of state.materials[0].versions) version.mimeType = "application/octet-stream";
+      await writeFile(statePath, JSON.stringify(state));
+      const restored = await create();
+      assert.deepEqual(await restored.relink(material.id, join(work, "movie.mp4")), { ok: false, reason: "kind-mismatch" });
+      await rename(original, moved);
+      if (command === "acceptMove") {
+        watch.fire(work);
+        await until(() => only(restored).state, (value) => value === "moved");
+      }
+      const result = command === "acceptMove" ? await restored.acceptMove(material.id) : await restored.relink(material.id, moved);
+      assert.deepEqual(result, { ok: true });
+      assert.equal(only(restored).id, material.id);
+      assert.equal(only(restored).kind, "text");
+      assert.equal(only(restored).location, moved);
+      assert.deepEqual(only(restored).versions.map((version) => version.id), state.materials[0].versions.map((version) => version.id));
+      assert.deepEqual(restored.remark(remark.id), remark);
+      assert.deepEqual(await body(await restored.protocolResponse(new Request(materialUrl(material.id, remark.target.versionId)))), Buffer.from("# Keep\n"));
+    });
+  });
+}
 
 test("file identity is stored as exact dev/ino strings and survives a rename", async () => {
   await withMaterials(async ({ work, service, watch, userData }) => {

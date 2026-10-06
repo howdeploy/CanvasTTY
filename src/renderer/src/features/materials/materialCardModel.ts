@@ -100,7 +100,7 @@ export function materialRejectionKey(reason: MaterialRejectionReason): MaterialR
 }
 
 export function remarkDrawable(material: CanvasMaterial): boolean {
-  return material.state === "ready" && (material.kind === "image" || material.kind === "file");
+  return material.state === "ready" && (material.kind === "image" || material.kind === "text" || material.kind === "video" || material.kind === "audio" || material.kind === "pdf" || material.kind === "file");
 }
 
 export function remarkPickable(material: CanvasMaterial): boolean {

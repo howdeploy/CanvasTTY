@@ -145,3 +145,9 @@ test("unknown identity fields still block restoration", () => {
     assert.throws(() => restoreMaterialState({ version: 1, materials: [material({ identity })] }), /Invalid materials state/);
   }
 });
+
+test("inherited kinds cannot restore", () => {
+  for (const kind of ["constructor", "toString", "__proto__"]) {
+    assert.throws(() => restoreMaterialState({ version: 1, materials: [material({ kind })] }), /Invalid materials state/);
+  }
+});

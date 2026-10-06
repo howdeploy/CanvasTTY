@@ -46,6 +46,9 @@ for (const [name, damage] of [
   ["unknown material fields", (state) => { state.materials[0].futureData = []; return JSON.stringify(state); }],
   ["unknown version fields", (state) => { state.materials[0].versions[0].futureData = []; return JSON.stringify(state); }],
   ["invalid material", (state) => { state.materials[0].kind = "unknown"; return JSON.stringify(state); }],
+  ...["constructor", "toString", "__proto__"].map((kind) => [
+    `inherited kind ${kind}`, (state) => { state.materials[0].kind = kind; return JSON.stringify(state); }
+  ]),
   ["invalid version", (state) => { state.materials[0].versions[0].reason = "unknown"; return JSON.stringify(state); }]
 ]) {
   test(`preserves ${name}`, async () => {
@@ -125,6 +128,24 @@ test("collects after a valid load", async () => {
     assert.equal((await blobs()).length, 1);
     const response = await next.protocolResponse(new Request(materialUrl(saved.materialId, null)));
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), Buffer.alloc(64, 1));
+  });
+});
+
+test("preserves handoff packages without their index", async () => {
+  await withStore(async ({ root, statePath, create, setPersist }) => {
+    const folder = join(root, "handoffs", "saved");
+    const handoff = join(folder, "handoff.md");
+    await mkdir(folder, { recursive: true });
+    await writeFile(handoff, "Only copy of the handoff");
+    for (const persist of [true, false]) {
+      setPersist(persist);
+      const service = create();
+      await service.load();
+      assert.equal(service.snapshot().loadError, "unreadable");
+      await service.dispose();
+      assert.equal(await readFile(handoff, "utf8"), "Only copy of the handoff");
+      await assert.rejects(readFile(statePath), { code: "ENOENT" });
+    }
   });
 });
 

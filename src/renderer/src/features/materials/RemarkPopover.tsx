@@ -1,10 +1,11 @@
 import type {
   CanvasMaterial,
   LocaleId,
+  MaterialHandoff,
   MaterialRemark,
   SessionBounds
 } from "../../../../shared/contracts";
-import { type MaterialRemarkActions, type RemarkDraftState } from "./materialRemarksModel";
+import { latestHandoff, type MaterialRemarkActions, type RemarkDraftState } from "./materialRemarksModel";
 import { RemarkDrawHint, RemarkEditor } from "./RemarkEditor";
 import { RemarkPanel, type RemarkAction } from "./RemarkPanel";
 
@@ -14,6 +15,7 @@ export function RemarkPopover({
   rect,
   remarkDraft,
   selectedRemark,
+  handoffs,
   materialNames,
   remarkActions
 }: {
@@ -22,6 +24,7 @@ export function RemarkPopover({
   rect: SessionBounds | null;
   remarkDraft: RemarkDraftState | null;
   selectedRemark: MaterialRemark | null;
+  handoffs: readonly MaterialHandoff[];
   materialNames: ReadonlyMap<string, string>;
   remarkActions: MaterialRemarkActions;
 }): React.JSX.Element {
@@ -58,6 +61,7 @@ export function RemarkPopover({
         <RemarkPanel
           locale={locale}
           remark={selectedRemark}
+          handoff={latestHandoff(handoffs, selectedRemark)}
           referenceName={selectedRemark.reference ? materialNames.get(selectedRemark.reference.materialId) ?? null : null}
           stale={material.versions.some((version) => version.id === selectedRemark.target.versionId && !version.current)}
           onAction={(action: RemarkAction) => remarkActions.act(selectedRemark.id, action)}

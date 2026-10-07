@@ -27,7 +27,28 @@ A subscription percentage cannot be derived from session tokens. Token counts do
 
 CanvasTTY never parses a provider's terminal UI to recover limits. Unsupported subscription types remain explicitly unavailable.
 
-Per-session token accounting is **not implemented as a public CanvasTTY API yet**. The following model is a safe extension pattern, not a claim about current telemetry.
+## Usage history
+
+Open **Usage history** to select a report period and view measured quota changes,
+conditional estimates by application → profile → session, and local token counters.
+The report period is not the quota window; primary and weekly windows remain separate.
+
+- Codex/Claude quota observations are collected every minute while CanvasTTY runs.
+- Local Codex, Claude Code and Hermes accounting stores are read-only; Hermes requires
+  a SQLite CLI with `-safe` support on `PATH`. Missing sources are reported, not counted as zero.
+- History and cursors are saved atomically in `usage-history.json` under the normal
+  Electron `userData` directory, bounded to 30 days and 500,000 events.
+- The automatic estimate splits a comparable interval's measured change by session token
+  weight **if local logged activity explains that change**. This is not the provider's
+  billing formula or proof of account attribution. External activity remains unknown.
+- Incomplete collection, immature events, resets, account changes and gaps are shown
+  explicitly. Earlier account percentages cannot be reconstructed from token totals.
+- Only accounting metadata is exposed to the main renderer; prompts, responses and
+  credentials are not part of the history. Plugins do not receive this history API.
+
+The session-token API below remains a proposed extension contract. The built-in history
+uses [`UsageHistory`](../src/shared/usageHistory.ts), not that proposed public API.
+Its deterministic Electron check is `node scripts/smoke-usage-ui-packaged.mjs --app <package>`.
 
 ## Source priority
 

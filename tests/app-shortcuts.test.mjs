@@ -145,9 +145,9 @@ test("App restores native Command+A before its native-input guard without interc
   const actions = [];
   const window = { canvasTTY: { window: { isMacOS: true } } };
   const settings = { shortcuts: { toggleFullscreen: "Meta+F", home: "Home", renameWindow: "F2" } };
-  const createHandler = new Function("window", "settings", "performShortcut", "handleMacNativeSelectAll", "shouldKeepNativeKeyboardInput", "isShortcutCaptureTarget", "isRenameInputTarget", "matchesShortcut", "shortcutReferenceOpen", `return (event) => {${body}}`);
+  const createHandler = new Function("window", "settings", "performShortcut", "handleMacNativeSelectAll", "shouldKeepNativeKeyboardInput", "isShortcutCaptureTarget", "isRenameInputTarget", "matchesShortcut", "shortcutReferenceOpen", "usageHistoryOpen", `return (event) => {${body}}`);
   const handler = createHandler(window, settings, (action) => actions.push(action), handleMacNativeSelectAll,
-    shouldKeepNativeKeyboardInput, isShortcutCaptureTarget, isRenameInputTarget, matchesShortcut, false);
+    shouldKeepNativeKeyboardInput, isShortcutCaptureTarget, isRenameInputTarget, matchesShortcut, false, false);
   const event = (target, changes = {}) => {
     const state = { prevented: false, stopped: false };
     return { ...keyEvent("ф", { code: "KeyA", metaKey: true }), target, repeat: false, state,

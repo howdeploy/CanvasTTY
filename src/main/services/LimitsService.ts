@@ -33,10 +33,20 @@ const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
 const OPENCODE_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 const GROK_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
+const LIMIT_PROVIDERS: readonly LimitProviderId[] = ["codex", "claude", "qwen", "kimi", "opencode", "grok"];
 
-interface CacheEntry {
+interface CacheEntry<T = LimitsSnapshot> {
   cachedAt: number;
-  value: LimitsSnapshot;
+  value: T;
+}
+
+export interface LimitsServiceOptions {
+  codexIdleMs?: number;
+  /** Environment used to locate CODEX_HOME; defaults to the one the Codex app-server inherits. */
+  environment?: Readonly<Record<string, string | undefined>>;
+  homeDirectory?: string;
+  cacheTtlMs?: number;
+  claude?: Omit<ClaudeUsageReadOptions, "onScope">;
 }
 
 interface JsonRpcResponse {
@@ -68,8 +78,15 @@ export class LimitsService {
   private kimi: KimiWebUsageClient;
   private readonly providerClis: ProviderCliRegistry;
   private readonly clientVersion: string;
+  private readonly cacheTtlMs: number;
+  private readonly codexHome: string;
+  private readonly claudeOptions: Omit<ClaudeUsageReadOptions, "onScope">;
   private cache: CacheEntry | null = null;
   private inFlight: Promise<LimitsSnapshot> | null = null;
+  private readonly providerCache = new Map<LimitProviderId, CacheEntry<ProviderLimitsSnapshot>>();
+  private readonly providerLoads = new Map<LimitProviderId, Promise<ProviderLimitsSnapshot>>();
+  // undefined until the first Codex read; null when that read found no account.
+  private lastCodexScope: string | null | undefined = undefined;
   private lastGoodCodex: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
   private lastGoodClaude: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
   private lastGoodKimi: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
@@ -79,17 +96,21 @@ export class LimitsService {
 
   private readonly codexIdleMs: number;
 
-  constructor(providerClis: ProviderCliRegistry, clientVersion = "unknown", options: { codexIdleMs?: number } = {}) {
+  constructor(providerClis: ProviderCliRegistry, clientVersion = "unknown", options: LimitsServiceOptions = {}) {
     this.providerClis = providerClis;
     this.clientVersion = clientVersion;
     this.codexIdleMs = options.codexIdleMs ?? CODEX_IDLE_MS;
+    this.cacheTtlMs = options.cacheTtlMs ?? CACHE_TTL_MS;
+    const environment = options.environment ?? process.env;
+    this.codexHome = environment.CODEX_HOME || join(options.homeDirectory ?? homedir(), ".codex");
+    this.claudeOptions = options.claude ?? {};
     this.codex = new CodexAppServerClient(availableCli(providerClis, "codex"), clientVersion, this.codexIdleMs);
     this.kimi = new KimiWebUsageClient(availableCli(providerClis, "kimi"));
   }
 
   async get(): Promise<LimitsSnapshot> {
     const now = Date.now();
-    if (this.cache && now - this.cache.cachedAt < CACHE_TTL_MS) {
+    if (this.cache && now - this.cache.cachedAt < this.cacheTtlMs) {
       return structuredClone(this.cache.value);
     }
 
@@ -110,6 +131,21 @@ export class LimitsService {
     return this.cache ? structuredClone(this.cache.value) : null;
   }
 
+  /**
+   * Reads only the requested providers (usage history needs Codex and Claude) without
+   * starting the others. Fresh results are shared with get(), so both callers together
+   * make at most one provider request per cache interval.
+   */
+  async getProviders(providers: readonly LimitProviderId[]): Promise<LimitsSnapshot> {
+    const full = this.cache && Date.now() - this.cache.cachedAt < this.cacheTtlMs ? this.cache.value : null;
+    const checkedAt = Date.now();
+    const values = await Promise.all(providers.map((provider) => {
+      const cached = full?.providers.find((candidate) => candidate.provider === provider);
+      return cached ? Promise.resolve(cached) : this.loadShared(provider, checkedAt);
+    }));
+    return structuredClone({ fetchedAt: Date.now(), providers: values });
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -119,12 +155,15 @@ export class LimitsService {
 
   async providerClisRefreshed(): Promise<void> {
     await this.inFlight?.catch(() => undefined);
+    await Promise.allSettled([...this.providerLoads.values()]);
     if (this.disposed) return;
     this.codex.dispose();
     this.kimi.dispose();
     this.codex = new CodexAppServerClient(availableCli(this.providerClis, "codex"), this.clientVersion, this.codexIdleMs);
     this.kimi = new KimiWebUsageClient(availableCli(this.providerClis, "kimi"));
     this.cache = null;
+    this.providerCache.clear();
+    this.lastCodexScope = undefined;
     this.lastGoodCodex = null;
     this.lastGoodClaude = null;
     this.lastGoodKimi = null;
@@ -134,21 +173,42 @@ export class LimitsService {
 
   private async refresh(): Promise<LimitsSnapshot> {
     const checkedAt = Date.now();
-    const [codex, claude, qwen, kimi, opencode, grok] = await Promise.all([
-      this.loadCodex(checkedAt),
-      this.loadClaude(checkedAt),
-      this.loadQwen(checkedAt),
-      this.loadKimi(checkedAt),
-      this.loadOpenCode(checkedAt),
-      this.loadGrok(checkedAt)
-    ]);
+    const providers = await Promise.all(LIMIT_PROVIDERS.map((provider) => this.loadShared(provider, checkedAt)));
     const value: LimitsSnapshot = {
       fetchedAt: Date.now(),
-      providers: [codex, claude, qwen, kimi, opencode, grok]
+      providers
     };
 
     this.cache = { cachedAt: Date.now(), value };
     return value;
+  }
+
+  /** One request per provider at a time, reused while younger than the cache interval. */
+  private loadShared(provider: LimitProviderId, checkedAt: number): Promise<ProviderLimitsSnapshot> {
+    const cached = this.providerCache.get(provider);
+    if (cached && Date.now() - cached.cachedAt < this.cacheTtlMs) return Promise.resolve(cached.value);
+    let load = this.providerLoads.get(provider);
+    if (!load) {
+      load = this.loadProvider(provider, checkedAt).then((value) => {
+        this.providerCache.set(provider, { cachedAt: Date.now(), value });
+        return value;
+      }).finally(() => {
+        this.providerLoads.delete(provider);
+      });
+      this.providerLoads.set(provider, load);
+    }
+    return load;
+  }
+
+  private loadProvider(provider: LimitProviderId, checkedAt: number): Promise<ProviderLimitsSnapshot> {
+    switch (provider) {
+      case "codex": return this.loadCodex(checkedAt);
+      case "claude": return this.loadClaude(checkedAt);
+      case "qwen": return this.loadQwen(checkedAt);
+      case "kimi": return this.loadKimi(checkedAt);
+      case "opencode": return this.loadOpenCode(checkedAt);
+      case "grok": return this.loadGrok(checkedAt);
+    }
   }
 
   private async loadCodex(checkedAt: number): Promise<ProviderLimitsSnapshot> {
@@ -160,7 +220,15 @@ export class LimitsService {
     }
 
     try {
+      // The account is bound around the request: a login change before, during or since
+      // the previous read cannot be attributed, so that observation stays account-unknown.
+      const before = await readCodexAccountScope(this.codexHome);
+      const accountChanged = this.lastCodexScope !== undefined && before !== this.lastCodexScope;
+      this.lastCodexScope = before;
+      // The long-lived app-server may still hold the previous login; start a fresh one.
+      if (accountChanged) this.codex.restart();
       const raw = await this.codex.readRateLimits();
+      const after = await readCodexAccountScope(this.codexHome);
       const windows = normalizeCodexLimits(raw);
       if (windows.length === 0) throw new LimitsAdapterError("not-authenticated");
 
@@ -169,7 +237,8 @@ export class LimitsService {
         state: "available",
         source: "codex-app-server",
         fetchedAt: Date.now(),
-        windows
+        windows,
+        accountScope: !accountChanged && before !== null && before === after ? before : null
       };
       this.lastGoodCodex = available;
       return available;
@@ -192,7 +261,13 @@ export class LimitsService {
       return unavailable("claude", "claude-usage-api", "cli-not-found", checkedAt);
     }
     try {
-      const raw = await readClaudeUsage(this.clientVersion);
+      let accountScope: string | null = null;
+      const raw = await readClaudeUsage(this.clientVersion, {
+        ...this.claudeOptions,
+        onScope: (scope) => {
+          accountScope = scope;
+        }
+      });
       const windows = normalizeClaudeLimits(raw);
       if (windows.length === 0) throw new LimitsAdapterError("protocol-error");
 
@@ -201,7 +276,8 @@ export class LimitsService {
         state: "available",
         source: "claude-usage-api",
         fetchedAt: Date.now(),
-        windows
+        windows,
+        accountScope
       };
       this.lastGoodClaude = available;
       return available;
@@ -338,6 +414,12 @@ export interface ClaudeUsageReadOptions {
     accessToken: string,
     additionalHeaders: Record<string, string>
   ) => Promise<unknown>;
+  /**
+   * Receives a one-way fingerprint of the OAuth credential used for this request, never
+   * the credential. A token refresh starts a new epoch: it separates credentials
+   * conservatively but is not a permanent account identity.
+   */
+  onScope?: (scope: string) => void;
 }
 
 export async function readClaudeUsage(
@@ -352,6 +434,7 @@ export async function readClaudeUsage(
   const accessToken = cleanSecret(oauth?.accessToken);
   // Missing credentials describe only this runtime user; they do not prove anything about the user's plan.
   if (!accessToken) throw new LimitsAdapterError("not-authenticated");
+  options.onScope?.(accountScopeFingerprint("claude", accessToken));
 
   return (options.request ?? fetchUsageJson)(CLAUDE_USAGE_URL, accessToken, {
     "anthropic-beta": "oauth-2025-04-20",
@@ -482,6 +565,41 @@ function selectGrokCredential(credentials: Record<string, unknown>): GrokCredent
     .filter((candidate): candidate is GrokCredential => candidate.token !== null)
     .sort((left, right) => right.authMode - left.authMode || right.expiresAt - left.expiresAt);
   return candidates[0] ?? null;
+}
+
+/**
+ * Stable Codex account scope: a one-way fingerprint of tokens.account_id from the local
+ * login. API-key-only, keyring-stored, missing or unreadable auth is an unknown account.
+ */
+export async function readCodexAccountScope(codexHome: string): Promise<string | null> {
+  try {
+    const auth = await readCredentialFile(join(codexHome, "auth.json"), "not-authenticated");
+    const tokens = isRecord(auth.tokens) ? auth.tokens : null;
+    const accountId = cleanSecret(tokens?.account_id);
+    return accountId ? accountScopeFingerprint("codex", accountId) : null;
+  } catch {
+    return null;
+  }
+}
+
+function accountScopeFingerprint(provider: "codex" | "claude", value: string): string {
+  return createHash("sha256")
+    .update(`canvastty-usage-scope/v1/${provider}\0`)
+    .update(value)
+    .digest("hex")
+    .slice(0, 24);
+}
+
+/** Account scope is for local usage history only; plugins and paired devices never see it. */
+export function withoutAccountScope(snapshot: LimitsSnapshot): LimitsSnapshot {
+  return {
+    ...snapshot,
+    providers: snapshot.providers.map((provider) => {
+      if (provider.state === "unavailable") return { ...provider };
+      const { accountScope: _omitted, ...rest } = provider;
+      return rest;
+    })
+  };
 }
 
 async function readCredentialFile(path: string, missingReason: LimitUnavailableReason): Promise<Record<string, unknown>> {
@@ -726,6 +844,12 @@ class CodexAppServerClient {
     } finally {
       this.scheduleIdleStop();
     }
+  }
+
+  /** Drops the current app-server so the next read starts one with the current login. */
+  restart(): void {
+    if (this.disposed) return;
+    this.resetConnection();
   }
 
   dispose(): void {

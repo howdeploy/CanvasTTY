@@ -290,7 +290,7 @@ async function handleRequest({
   }
   if (method === "limits.get") {
     requirePermission(plugin, "limits:read");
-    return limits ? { state: "ready", snapshot: limits } : { state: "loading", snapshot: null };
+    return pluginLimitsResponse(limits);
   }
   if (method === "hermesHud.getState") {
     requirePermission(plugin, "hermes:hud");
@@ -387,6 +387,27 @@ async function handleRequest({
     return null;
   }
   throw new Error(`Unsupported plugin method: ${method}.`);
+}
+
+/**
+ * The renderer holds the raw snapshot, whose accountScope fingerprint exists only for
+ * local usage history; plugins receive a deep copy without it.
+ */
+export function pluginLimitsResponse(
+  snapshot: LimitsSnapshot | null
+): { state: "ready"; snapshot: LimitsSnapshot } | { state: "loading"; snapshot: null } {
+  if (!snapshot) return { state: "loading", snapshot: null };
+  return {
+    state: "ready",
+    snapshot: {
+      fetchedAt: snapshot.fetchedAt,
+      providers: snapshot.providers.map((provider) => {
+        if (provider.state === "unavailable") return structuredClone(provider);
+        const { accountScope: _omitted, ...rest } = provider;
+        return structuredClone(rest);
+      })
+    }
+  };
 }
 
 function requirePermission(plugin: InstalledPlugin, permission: PluginPermission): void {

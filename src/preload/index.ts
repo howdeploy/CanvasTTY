@@ -149,6 +149,9 @@ const api: CanvasTTYApi = {
     set: (secretId: string, value: string) => ipcRenderer.invoke(IPC.providerSecretsSet, secretId, value),
     clear: (secretId: string) => ipcRenderer.invoke(IPC.providerSecretsClear, secretId)
   },
+  usageHistory: {
+    get: () => ipcRenderer.invoke(IPC.usageHistoryGet)
+  },
   plugins: {
     list: () => ipcRenderer.invoke(IPC.pluginsList),
     search: (query: string) => ipcRenderer.invoke(IPC.pluginsSearch, query),

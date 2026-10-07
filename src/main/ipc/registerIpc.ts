@@ -30,7 +30,8 @@ import { isPixelSkinSlot, isPixelTerminalBorderSkinId, type PixelSkinPackRegistr
 import { providerCliAvailability, type ProviderCliRegistry } from "../services/providerCliRegistry";
 import type { TerminalManager } from "../services/TerminalManager";
 import type { AgentChatHistoryService } from "../services/AgentChatHistoryService";
-import type { LimitsService } from "../services/LimitsService";
+import { withoutAccountScope, type LimitsService } from "../services/LimitsService";
+import type { UsageHistoryService } from "../services/UsageHistoryService";
 import type { PluginManager } from "../services/PluginManager";
 import type { PluginServiceSupervisor } from "../services/PluginServiceSupervisor";
 import type { PluginCards } from "../services/PluginCards";
@@ -62,6 +63,7 @@ interface Dependencies {
   terminals: TerminalManager;
   agentChatHistory: AgentChatHistoryService;
   limits: LimitsService;
+  usageHistory: UsageHistoryService;
   plugins: PluginManager;
   pluginServices: PluginServiceSupervisor;
   pluginCards: PluginCards;
@@ -198,6 +200,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   terminals,
   agentChatHistory,
   limits,
+  usageHistory,
   plugins,
   pluginServices,
   pluginCards,
@@ -319,6 +322,11 @@ export function registerIpc(ipcMain: IpcRegistrar, {
       console.warn("CanvasTTY media could not be read.", error);
       return null;
     }
+  });
+
+  ipcMain.handle(IPC.usageHistoryGet, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    return usageHistory.get();
   });
 
   ipcMain.handle(IPC.limitsGet, (event) => {
@@ -642,7 +650,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     }
     if (method === "limits.get") {
       plugins.assertPermission(pluginId, "limits:read");
-      return { state: "ready", snapshot: await limits.get() };
+      return { state: "ready", snapshot: withoutAccountScope(await limits.get()) };
     }
     if (method === "hermesHud.getState") {
       plugins.assertPermission(pluginId, "hermes:hud");

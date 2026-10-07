@@ -27,7 +27,25 @@ CanvasTTY 把遥测首先看作真实性问题，其次才是可视化问题。�
 
 CanvasTTY 绝不会通过解析服务商的终端 UI 来还原限额。不支持的订阅类型会明确保持 unavailable。
 
-按会话统计 token 的功能**尚未作为公开的 CanvasTTY API 实现**。以下模型是安全的扩展模式，并不代表当前已有这类遥测。
+## 用量历史
+
+打开 **Usage history**，选择报告时段，查看配额实测变化、按应用 → 配置 → 会话
+分组的条件估算，以及本地 token 计数。报告时段不是配额窗口；主窗口与周窗口分别展示。
+
+- CanvasTTY 运行期间，每分钟采集一次 Codex/Claude 配额观察值。
+- Codex、Claude Code 的本地日志及 Hermes 数据库仅以只读方式访问。
+  Hermes 需要 `PATH` 中支持 `-safe` 的 SQLite CLI；缺少来源会明确报告，不记为零。
+- 历史与读取游标一起原子保存至 Electron 标准 `userData` 目录中的
+  `usage-history.json`，最多保留 30 天、500,000 条事件。
+- 自动估算按会话 token 权重分配可比较区间的实测变化，条件是**本地记录的活动解释了该变化**。
+  这不是服务商的计费公式，也不能证明费用来自某个账户。外部活动的贡献仍未知。
+- 未完成的采集、尚未稳定的事件、重置、账户切换和观察缺口会明确标注。
+  不能根据 token 总数还原过去的配额百分比。
+- 只有记账元数据传给主渲染进程，历史中不包含提示词、回答或凭据；插件不能访问此历史 API。
+
+下面的会话 token API 仍是建议的扩展契约。内置历史使用
+[`UsageHistory`](../src/shared/usageHistory.ts)，而不是该公开契约。
+Electron 验证命令：`node scripts/smoke-usage-ui-packaged.mjs --app <package>`。
 
 ## 数据源优先级
 

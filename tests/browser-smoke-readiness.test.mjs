@@ -7,7 +7,8 @@ import {
   isBrowserSmokeWheelReady,
   waitForBrowserSmokeWheelReady,
   runBrowserSmokeCleanup,
-  requireBrowserSmokeScrollBaseline
+  requireBrowserSmokeScrollBaseline,
+  freezeEndedBeforeIdle
 } from "../src/main/services/browser/BrowserSmokeReadiness.ts";
 
 const page = {
@@ -21,6 +22,15 @@ const page = {
 };
 const ready = { ownerVisible: true, ownerFocused: true, page };
 const point = { x: 700, y: 300 };
+
+test("freeze smoke distinguishes a transition end from normal wheel idle", () => {
+  const active = { active: true, dataUrlLength: 42, observedAt: 1_000 };
+  assert.equal(freezeEndedBeforeIdle([active, { active: false, observedAt: 1_180 }], 1_000, 250), true);
+  assert.equal(freezeEndedBeforeIdle([active, { active: false, observedAt: 1_249 }], 1_000, 250), true);
+  assert.equal(freezeEndedBeforeIdle([active, { active: false, observedAt: 1_250 }], 1_000, 250), false);
+  assert.equal(freezeEndedBeforeIdle([active, { active: false, observedAt: 1_260 }], 1_000, 250), false);
+  assert.equal(freezeEndedBeforeIdle([{ active: false, observedAt: 900 }, active], 1_000, 250), false);
+});
 
 test("physical wheel smoke requires native window and document focus on a visible loaded page", () => {
   assert.equal(isBrowserSmokeWheelReady(ready), true);

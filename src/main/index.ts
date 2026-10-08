@@ -24,6 +24,7 @@ import { ManualReleaseAdapter } from "./services/updates/ManualReleaseAdapter";
 import { registerMaterialIpc } from "./ipc/registerMaterialIpc";
 import { textResponse } from "./services/fileResponse";
 import { SettingsStore } from "./services/SettingsStore";
+import { FileAccessService } from "./services/FileAccessService";
 import { SkinRegistry } from "./services/SkinRegistry";
 import { PixelSkinPackRegistry } from "./services/PixelSkinPackRegistry";
 import { TerminalManager, reachesObservers, reachesRenderer } from "./services/TerminalManager";
@@ -774,6 +775,14 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   await Promise.all([browserReady, storesLoaded]);
   pluginManager.registerTokenProvider(() => githubAuth!.getToken());
   protocol.handle("canvastty-media", (request) => pluginMediaService!.protocolResponse(request));
+  // Session roots resolve a sessionId to the terminal's current working
+  // directory through TerminalManager's metadata snapshots; the renderer never
+  // supplies a path. Folder roots come from the native dialog or a persisted
+  // folderPath on restore.
+  const fileAccessService = new FileAccessService({
+    resolveSessionCwd: (sessionId) =>
+      terminalManager?.listMetadata().find((session) => session.id === sessionId)?.cwd
+  });
   materialService = new MaterialService({
     userDataPath: app.getPath("userData"),
     persist: () => settings.get().persistMaterials,
@@ -785,6 +794,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   });
   await materialService.load();
   registerMaterialIpc(ipc, { materials: materialService, getMainWindow: () => mainWindow });
+
   registerIpc(ipc, {
     settings,
     recheckProviderClis: async () => {
@@ -806,6 +816,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     pluginSecrets: pluginSecretsService,
     providerSecrets: providerSecretsService!,
     browser: browserService,
+    files: fileAccessService,
     githubAuth: githubAuth!,
     hermesHud: hermesHudService,
     launchFieldOptions: (pluginId, provider) => launchPipeline.fieldOptions(pluginId, provider),

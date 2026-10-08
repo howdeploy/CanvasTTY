@@ -9,6 +9,7 @@ import type {
   CanvasNavigationPointerBindingInput,
   CustomTerminalBorderSkinId,
   CreateSessionRequest,
+  FileRootReference,
   PluginBrowserOpenResponse,
   PluginCanvasRequest,
   PluginLaunchFieldOptions,
@@ -38,6 +39,7 @@ import type { PluginMediaService } from "../services/PluginMediaService";
 import type { PluginSecretsService } from "../services/PluginSecretsService";
 import type { ProviderSecretsService } from "../services/ProviderSecretsService";
 import type { BrowserService } from "../services/BrowserService";
+import type { FileAccessService } from "../services/FileAccessService";
 import type { IpcRegistrar } from "./IpcReadinessGate";
 import { normalizePluginBrowserUrl } from "../services/browser/PluginBrowserOpenPolicy";
 import { PluginBrowserOpenBroker } from "./PluginBrowserOpenBroker";
@@ -69,6 +71,7 @@ interface Dependencies {
   pluginSecrets: PluginSecretsService;
   providerSecrets: ProviderSecretsService;
   browser: BrowserService;
+  files: FileAccessService;
   githubAuth: GithubAuthService;
   hermesHud: HermesHudService;
   launchFieldOptions(pluginId: string, provider: ProviderId): Promise<PluginLaunchFieldOptions>;
@@ -205,6 +208,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   pluginSecrets,
   providerSecrets,
   browser,
+  files,
   githubAuth,
   hermesHud,
   launchFieldOptions,
@@ -319,6 +323,58 @@ export function registerIpc(ipcMain: IpcRegistrar, {
       console.warn("CanvasTTY media could not be read.", error);
       return null;
     }
+  });
+
+  ipcMain.handle(IPC.filesListRoots, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    return files.listRoots();
+  });
+  ipcMain.handle(IPC.filesRegisterRoot, async (event, reference: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    const parsed = fileRootReference(reference);
+    if (!parsed) throw new Error("File root reference is invalid.");
+    try {
+      return await files.registerRoot(parsed);
+    } catch (error) {
+      console.warn("CanvasTTY file root could not be registered.", error);
+      return null;
+    }
+  });
+  ipcMain.handle(IPC.filesOpenFolder, async (event) => {
+    assertMainRenderer(event, getMainWindow);
+    const owner = getMainWindow();
+    const options: OpenDialogOptions = {
+      title: "Choose a folder",
+      properties: ["openDirectory"]
+    };
+    const result = owner
+      ? await dialog.showOpenDialog(owner, options)
+      : await dialog.showOpenDialog(options);
+    const selected = result.filePaths[0];
+    if (result.canceled || !selected) return null;
+    try {
+      return files.registerFolderRoot(selected);
+    } catch (error) {
+      console.warn("CanvasTTY selected folder could not be opened.", error);
+      return null;
+    }
+  });
+  ipcMain.handle(IPC.filesList, async (event, rootId: unknown, relativePath: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    return files.list(stringValue(rootId, "rootId"), fileRelativePath(relativePath));
+  });
+  ipcMain.handle(IPC.filesRead, async (event, rootId: unknown, relativePath: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    return files.read(stringValue(rootId, "rootId"), fileRelativePath(relativePath));
+  });
+  ipcMain.handle(IPC.filesSearch, async (event, rootId: unknown, query: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    return files.search(stringValue(rootId, "rootId"), fileSearchQuery(query));
+  });
+  ipcMain.handle(IPC.filesCloseRoot, (event, rootId: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    files.releaseRoot(stringValue(rootId, "rootId"));
+    return true;
   });
 
   ipcMain.handle(IPC.limitsGet, (event) => {
@@ -980,6 +1036,43 @@ function assertPluginWindowSender(
 function stringValue(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 2_048) {
     throw new Error(`Plugin ${label} parameter is invalid.`);
+  }
+  return value;
+}
+
+function fileRootReference(value: unknown): FileRootReference | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const reference = value as Record<string, unknown>;
+  if (reference.rootType === "session") {
+    if (typeof reference.sessionId !== "string" || reference.sessionId.length === 0 || reference.sessionId.length > 2_048) {
+      return null;
+    }
+    return { rootType: "session", sessionId: reference.sessionId };
+  }
+  if (reference.rootType === "folder") {
+    if (reference.folderPath === undefined) return { rootType: "folder" };
+    if (
+      typeof reference.folderPath !== "string"
+      || reference.folderPath.length === 0
+      || reference.folderPath.length > 4_096
+    ) return null;
+    return { rootType: "folder", folderPath: reference.folderPath };
+  }
+  return null;
+}
+
+function fileRelativePath(value: unknown): string {
+  // An empty relative path addresses the root itself, so unlike stringValue it
+  // is allowed; FileAccessService re-enforces containment on every operation.
+  if (typeof value !== "string" || value.length > 2_048 || value.includes("\0")) {
+    throw new Error("File relative path is invalid.");
+  }
+  return value;
+}
+
+function fileSearchQuery(value: unknown): string {
+  if (typeof value !== "string" || value.length > 512) {
+    throw new Error("File search query is invalid.");
   }
   return value;
 }

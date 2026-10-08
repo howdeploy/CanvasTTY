@@ -15,6 +15,10 @@ export function pluginCanvasWidgetId(instanceId: string): string {
   return `plugin-canvas:${instanceId}`;
 }
 
+export function filesCanvasWidgetId(cardId: string): string {
+  return `files-canvas:${cardId}`;
+}
+
 export function homeCanvasWidgetId(widgetId: string): string {
   return `home:${widgetId}`;
 }

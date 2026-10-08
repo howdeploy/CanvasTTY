@@ -453,6 +453,8 @@ export interface AppSettings {
   canvasRegions: CanvasRegion[];
   stickyNotes: StickyNote[];
   pluginCanvas: PluginCanvasInstance[];
+  /** Persisted Files card state (root reference, bounds, open file, tree). */
+  fileCards: FileCard[];
   browserCanvas: BrowserCanvasState | null;
   browserAgentAccess: boolean;
   browserShowAgentPresence: boolean;
@@ -1132,6 +1134,82 @@ export interface PluginPlaylistFile {
 
 export interface BrowserCanvasState extends SessionBounds {}
 
+/** How a Files card is rooted: a terminal session cwd or a dialog-picked folder. */
+export type FileRootKind = "session" | "folder";
+
+/**
+ * Identifies a root without carrying a filesystem path across the bridge.
+ * Session roots name the terminal session whose cwd main resolves; folder roots
+ * are created by the native open-folder dialog in main. A folder reference may
+ * carry `folderPath` only on restore, to re-register a persisted folder root
+ * after relaunch; list/read/search never carry paths.
+ */
+export type FileRootReference =
+  | { rootType: "session"; sessionId: string }
+  | { rootType: "folder"; folderPath?: string };
+
+/**
+ * Opaque main-owned handle for a registered root. `rootId` is the only way the
+ * renderer addresses the root; list/read/search always pair it with a relative
+ * path so no absolute root path ever reaches renderer payloads.
+ */
+export interface FileRootDescriptor {
+  rootId: string;
+  label: string;
+  available: boolean;
+  rootType: FileRootKind;
+  /**
+   * Canonical absolute folder path for folder roots, retained so a persisted
+   * root can be re-registered after relaunch. Session descriptors omit it, so a
+   * session cwd never crosses the bridge.
+   */
+  folderPath?: string | null;
+}
+
+export type FileEntryKind = "file" | "directory";
+
+export interface FileEntry {
+  name: string;
+  relativePath: string;
+  kind: FileEntryKind;
+  /** Byte size for files; null for directories. */
+  size: number | null;
+}
+
+export type FileReadUnsupportedReason = "binary" | "not-permitted" | "unavailable";
+
+/** Bounded, typed file content. Unsupported and oversized reads carry no bytes. */
+export type FileReadResult =
+  | { kind: "text"; content: string; truncated: boolean; size: number }
+  | { kind: "image"; mediaType: string; dataUrl: string; size: number }
+  | { kind: "unsupported"; reason: FileReadUnsupportedReason }
+  | { kind: "too-large"; reason: "too-large"; size: number };
+
+/** Bounded filename-search output: relative file paths only. */
+export interface FileSearchResult {
+  relativePaths: string[];
+  truncated: boolean;
+}
+
+/**
+ * Persisted Files card state. `root` records how the card was rooted; folder
+ * roots retain `folderPath` so main can re-validate and re-open the folder after
+ * relaunch, while session roots resolve `sessionId` to its cwd again. Neither
+ * value is used in list/read/search payloads, which stay relative.
+ */
+export interface FileCard extends SessionBounds {
+  id: string;
+  root: FileRootReference;
+  /** Display label for the root; null when unknown. Never an absolute path. */
+  label: string | null;
+  /** Absolute folder path for folder roots; null for session roots. */
+  folderPath: string | null;
+  /** Relative path of the file shown in the viewer, or null. */
+  activeFile: string | null;
+  /** Relative paths of expanded tree folders. */
+  expandedFolders: string[];
+}
+
 export interface BrowserViewportClipBounds extends Size {
   x: number;
   y: number;
@@ -1720,6 +1798,17 @@ export interface CanvasTTYApi {
   media: {
     read(path: string): Promise<string | null>;
   };
+  files: {
+    listRoots(): Promise<FileRootDescriptor[]>;
+    /** Registers a session or folder root reference; resolves null when unavailable. */
+    registerRoot(reference: FileRootReference): Promise<FileRootDescriptor | null>;
+    /** Opens the native folder picker; resolves null when canceled. */
+    openFolder(): Promise<FileRootDescriptor | null>;
+    list(rootId: string, relativePath: string): Promise<FileEntry[]>;
+    read(rootId: string, relativePath: string): Promise<FileReadResult>;
+    search(rootId: string, query: string): Promise<FileSearchResult>;
+    closeRoot(rootId: string): Promise<void>;
+  };
   materials: {
     snapshot(): Promise<MaterialsSnapshot>;
     addFiles(files: File[], point: Point): Promise<MaterialsAddResult>;
@@ -1736,6 +1825,7 @@ export interface CanvasTTYApi {
     updateRemark(id: string, patch: RemarkPatch): Promise<RemarkResult>;
     deleteRemark(id: string): Promise<void>;
     onChanged(listener: (snapshot: MaterialsSnapshot) => void): () => void;
+
   };
   limits: {
     get(): Promise<LimitsSnapshot>;
@@ -1895,6 +1985,13 @@ export const IPC = {
   dialogPickDirectory: "dialog:pick-directory",
   dialogPickMedia: "dialog:pick-media",
   mediaRead: "media:read",
+  filesListRoots: "files:list-roots",
+  filesRegisterRoot: "files:register-root",
+  filesOpenFolder: "files:open-folder",
+  filesList: "files:list",
+  filesRead: "files:read",
+  filesSearch: "files:search",
+  filesCloseRoot: "files:close-root",
   materialsSnapshot: "materials:snapshot",
   materialsAddPaths: "materials:add-paths",
   materialsPick: "materials:pick",
@@ -1910,6 +2007,7 @@ export const IPC = {
   materialsUpdateRemark: "materials:update-remark",
   materialsDeleteRemark: "materials:delete-remark",
   materialsChanged: "materials:changed",
+
   limitsGet: "limits:get",
   pluginsList: "plugins:list",
   pluginsSearch: "plugins:search",

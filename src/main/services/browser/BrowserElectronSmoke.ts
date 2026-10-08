@@ -9,6 +9,7 @@ import {
   waitForBrowserSmokeWheelReady,
   runBrowserSmokeCleanup,
   requireBrowserSmokeScrollBaseline,
+  freezeEndedBeforeIdle,
   type BrowserSmokePageState,
   type BrowserSmokeWheelReadiness
 } from "./BrowserSmokeReadiness.ts";
@@ -498,7 +499,8 @@ async function assertOwnerWheelFreezesCrossingBrowser(service: BrowserService): 
       globalThis.__canvasttyFreezeEvents.push({
         active: event.active,
         generation: event.generation,
-        dataUrlLength: event.dataUrl?.length ?? 0
+        dataUrlLength: event.dataUrl?.length ?? 0,
+        observedAt: Date.now()
       });
     });
     void 0;
@@ -529,26 +531,27 @@ async function assertOwnerWheelFreezesCrossingBrowser(service: BrowserService): 
     await waitUntil(async () => owner.webContents.executeJavaScript(
       "globalThis.__canvasttyFreezeEvents?.some((event) => event.active && event.dataUrlLength > 0) === true"
     ));
+    // The preceding IPC/capture wait can consume the original 250 ms wheel
+    // interval. Refresh it before testing the surface transition.
+    const sequenceRefreshedAt = Date.now();
+    service.beginRendererWheelSequence({ clientX: 400, clientY: 300 });
     service.setViewport({ ...initialViewport, x: 403, surface: "placeholder" });
     await new Promise((resolve) => setTimeout(resolve, 80));
     service.setViewport({ ...initialViewport, x: 403, surface: "native" });
     await new Promise((resolve) => setTimeout(resolve, 80));
-    const endedDuringPlaceholder = await owner.webContents.executeJavaScript(`
-      (() => {
-        const events = globalThis.__canvasttyFreezeEvents ?? [];
-        const activeIndex = events.findIndex((event) => event.active && event.dataUrlLength > 0);
-        return activeIndex >= 0 && events.slice(activeIndex + 1).some((event) => !event.active);
-      })()
-    `);
+    const freezeEvents = await owner.webContents.executeJavaScript(
+      "globalThis.__canvasttyFreezeEvents ?? []"
+    ) as Array<{ active: boolean; observedAt: number }>;
+    const endedDuringPlaceholder = freezeEndedBeforeIdle(
+      freezeEvents, sequenceRefreshedAt, BROWSER_CANVAS_WHEEL_IDLE_MS
+    );
     if (endedDuringPlaceholder) {
       throw new Error("Native/placeholder transition ended the active canvas wheel sequence.");
     }
+    const idleDeadline = sequenceRefreshedAt + BROWSER_CANVAS_WHEEL_IDLE_MS;
     await waitUntil(async () => owner.webContents.executeJavaScript(`
-      (() => {
-        const events = globalThis.__canvasttyFreezeEvents ?? [];
-        const activeIndex = events.findIndex((event) => event.active && event.dataUrlLength > 0);
-        return activeIndex >= 0 && events.slice(activeIndex + 1).some((event) => !event.active);
-      })()
+      (globalThis.__canvasttyFreezeEvents ?? []).some((event) =>
+        !event.active && event.observedAt >= ${idleDeadline})
     `));
   } finally {
     service.setViewport({ x: 0, y: 0, width: 820, height: 620, surface: "native", canvasScale: 1 });

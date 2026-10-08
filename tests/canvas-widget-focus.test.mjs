@@ -16,6 +16,17 @@ test("canvas widget ids are stable across each focusable input surface", () => {
   assert.equal(browserCanvasWidgetId, "browser");
 });
 
+test("a files layer routes directional focus exactly like a note layer", () => {
+  const candidates = [
+    { id: "terminal:left", bounds: { position: { x: 0, y: 0 }, size: { width: 200, height: 100 } } },
+    { id: "note:n", bounds: { position: { x: 400, y: 0 }, size: { width: 200, height: 100 } } },
+    { id: "files:f", bounds: { position: { x: 800, y: 0 }, size: { width: 200, height: 100 } } }
+  ];
+  assert.equal(canvasWidgetInDirection(candidates, "terminal:left", "right", { x: 0, y: 0 }), "note:n");
+  assert.equal(canvasWidgetInDirection(candidates, "note:n", "right", { x: 0, y: 0 }), "files:f");
+  assert.equal(canvasWidgetInDirection(candidates, "files:f", "left", { x: 0, y: 0 }), "note:n");
+});
+
 test("only a click outside every widget clears logical input focus", () => {
   assert.equal(canvasWidgetFocusAfterClick("terminal:one", {
     isWidget: true,

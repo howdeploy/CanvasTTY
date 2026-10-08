@@ -2,6 +2,11 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+- Added a rich file viewer to the **Files** card: Markdown files (`.md`, `.markdown`, `.mdown`, `.mkd`) render as formatted GitHub-Flavored Markdown with headings, lists, task lists, tables, blockquotes, horizontal rules, inline code, and fenced code blocks with syntax highlighting, recognized code files are syntax-highlighted by the language detected from their extension while unknown languages stay plain monospaced text, all rendered content is sanitized so raw HTML, scripts, event-handler attributes, and dangerous link schemes never render, `http(s)` links open in the app's built-in browser with other schemes inert, only embedded `data:` images show while remote or relative sources fall back to alt text or a placeholder without a network request, and text and code files above the rich-rendering size threshold fall back to plain text with a notice.
+- Added a read-only **Files** canvas card and reader: open it from the empty-canvas context menu or the `Cmd/Ctrl+K` palette, root it at a live terminal session working directory or a folder picked in a native dialog, browse a directory tree that loads on demand, and read text/code as selectable monospace (bounded at 2 MB with a truncation marker and total size) or supported images (bounded at 25 MB) with explicit binary, unsupported, and too-large states. Quick open searches file names inside the active root, each card's root, bounds, open file, and expanded folders persist and restore with an unavailable state when the root is gone, and a new main-process `FileAccessService` enforces `realpath` containment so every listing, read, and search uses relative paths strictly inside registered roots with no write, rename, or delete capability.
+
 ## 1.7.1
 
 - Added built-in stable-release updates with explicit download and installation, active-session shutdown confirmation, and signed Sparkle updates on macOS. Install this first updater-enabled release manually; later compatible releases can be installed from the app.

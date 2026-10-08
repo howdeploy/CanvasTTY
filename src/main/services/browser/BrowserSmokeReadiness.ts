@@ -22,6 +22,17 @@ export function isBrowserSmokeWheelReady(state: BrowserSmokeWheelReadiness): boo
     && state.page.focused;
 }
 
+/** A freeze release after the wheel idle deadline is expected, even if the renderer reports it late. */
+export function freezeEndedBeforeIdle(
+  events: readonly { active: boolean; observedAt: number }[],
+  sequenceRefreshedAt: number,
+  idleMs: number
+): boolean {
+  return events.some((event) => !event.active
+    && event.observedAt >= sequenceRefreshedAt
+    && event.observedAt < sequenceRefreshedAt + idleMs);
+}
+
 type BrowserSmokeSchedule = (callback: () => void, delayMs: number) => () => void;
 
 const scheduleBrowserSmokeCheck: BrowserSmokeSchedule = (callback, delayMs) => {

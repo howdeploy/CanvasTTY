@@ -113,6 +113,10 @@ test("manifests: tools need tools:agents, card actions need cards:decorate, sche
     ...exampleManifest,
     services: [{ ...exampleManifest.services[0], cardActions: [{ id: "x", title: "X", when: { environmentKinds: ["Bad Kind"] } }] }]
   }), /environmentKinds/u);
+  const withActions=count=>({...exampleManifest,services:[{...exampleManifest.services[0],
+    cardActions:Array.from({length:count},(_,index)=>({id:`action-${index}`,title:`Action ${index}`}))}]});
+  assert.equal(validatePluginManifest(withActions(16)).services[0].cardActions.length,16);
+  assert.throws(()=>validatePluginManifest(withActions(17)),/between 1 and 16/u);
 });
 
 test("tool listing follows the session's role and agent; names are <pluginId>__<tool>", () => {
@@ -191,7 +195,8 @@ test("the orchestration handler lists core tools only for orchestrators and rout
     redact: (text) => text.replaceAll(SECRET, "[redacted]")
   });
   const handler = new ScopedOrchestrationHandler(new AgentControlService(terminals), plugin);
-  assert.deepEqual(handler.listTools(orchestrator.id).map((tool) => tool.name), [...ORCHESTRATION_TOOL_NAMES, "collect-demo__diffstat"]);
+  const optionalTools = new Set(["list_tasks", "claim_task", "update_task", "complete_task", "get_task_budget", "list_orchestration_templates", "apply_orchestration_template"]);
+  assert.deepEqual(handler.listTools(orchestrator.id).map((tool) => tool.name), [...ORCHESTRATION_TOOL_NAMES.filter(name=>!optionalTools.has(name)), "collect-demo__diffstat"]);
   assert.deepEqual(handler.listTools(agent.id).map((tool) => tool.name), ["collect-demo__diffstat"]);
   // A plain agent never gets the core tools, even by name.
   await assert.rejects(handler.execute(agent.id, { id: "1", tool: "list_agents", arguments: {} }), /Only orchestrator sessions/u);

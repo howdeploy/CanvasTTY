@@ -105,9 +105,9 @@ test("the setting is exposed in Settings → Agents, honoured by the main proces
   assert.match(main, /join\(app\.getAppPath\(\), "scripts", "canvastty-control\.mjs"\)/);
 
   // Launch dialog: an explicit role choice, the endpoint-off hint, and an explicit enable button; nothing silent.
-  assert.match(dialog, /onLaunch\(provider, profile, cwd, role[,)]/);
-  assert.match(dialog, /const endpointMissing = role === "orchestrator" && !settings\.agentControlEnabled/);
-  assert.match(dialog, /disabled=\{busy \|\| endpointMissing\}/);
+  assert.match(dialog, /onLaunch\(provider, profile, cwd, flowId \? "orchestrator" : role,/);
+  assert.match(dialog, /const endpointMissing = \(role === "orchestrator" \|\| Boolean\(flowId\)\) && !settings\.agentControlEnabled/);
+  assert.ok(dialog.includes('disabled={busy || endpointMissing || Boolean(flowId && (selectedFlow?.trusted !== true || !flowTask.trim()))}'));
   assert.match(dialog, /onClick=\{\(\) => void enableEndpoint\(\)\}/);
   assert.doesNotMatch(dialog, /canvasTTY\.settings\.update/, "the dialog persists nothing itself; only the explicit prop does");
   assert.match(dialog, /if \(endpointMissing\) return;/);

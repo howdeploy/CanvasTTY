@@ -368,6 +368,9 @@ test("a spawn_agent canceled while it was starting closes the agent it created",
   const controller = new AbortController();
   const canceled = [];
   const control = {
+    isReadOnlyReviewer: () => false,
+    assertInputAllowed: () => undefined,
+    taskBudget: () => null,
     status: () => ({ role: "orchestrator", provider: "codex" }),
     profileFor: () => ({ profile: "normal", inherited: true }),
     spawn: async () => {
@@ -691,6 +694,8 @@ test("a send_to_agent canceled while its text waited delivers nothing and answer
   const controller = new AbortController();
   let received = null;
   const control = {
+    isReadOnlyReviewer: () => false,
+    assertInputAllowed: () => undefined,
     status: (id) => id === "orchestrator-1" ? { role: "orchestrator", provider: "codex" } : { id, parentSessionId: "orchestrator-1", provider: "codex" },
     send: async (_id, _text, _submit, signal) => {
       received = signal;

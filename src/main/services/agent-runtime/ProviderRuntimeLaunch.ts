@@ -182,7 +182,8 @@ export class ProviderRuntimeLaunchAdapters {
     coreHooksEnabled = true,
     decisions = false,
     decisionBudgetMs?: number,
-    claudeHttpHookBase?: string
+    claudeHttpHookBase?: string,
+    captureResult = false
   ): PreparedProviderRuntimeLaunch {
     const pluginRegistrations = this.options.pluginHooks?.list(provider) ?? [];
     const gate = decisions && this.decisionsSupported(provider);
@@ -193,8 +194,9 @@ export class ProviderRuntimeLaunchAdapters {
     const openCodeDecisions = gate && provider === "opencode";
     // Only providers with a hook adapter get lifecycle configuration. Cursor,
     // MiniMax, Devin and Antigravity must never reach Grok's shared hook overlay.
+    const resultHooks = captureResult && (provider === "codex" || provider === "opencode");
     const hasHooks = HOOK_PROVIDERS.has(provider)
-      && (coreHooksEnabled || pluginCommands.length > 0 || (provider === "opencode" && (pluginRegistrations.length > 0 || openCodeDecisions)));
+      && (coreHooksEnabled || resultHooks || pluginCommands.length > 0 || (provider === "opencode" && (pluginRegistrations.length > 0 || openCodeDecisions)));
     const environment = hasHooks
       ? {
         ...(pluginRegistrations.length > 0 ? {
@@ -210,7 +212,7 @@ export class ProviderRuntimeLaunchAdapters {
       return prepared(claudeHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands, claudeHttpHookBase), environment);
     }
     if (provider === "codex") {
-      return prepared(codexHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands), environment);
+      return prepared(codexHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands, resultHooks), environment);
     }
     if (provider === "qwen") {
       const path = createQwenHookSettings({
@@ -641,11 +643,14 @@ function codexHookArgs(
   helper: RuntimeHookHelperLaunch,
   platform: NodeJS.Platform,
   coreHooksEnabled: boolean,
-  pluginCommands: readonly ProviderHookCommand[]
+  pluginCommands: readonly ProviderHookCommand[],
+  captureResult = false
 ): string[] {
   validateHelper(helper);
+  const hooks = coreHooksEnabled ? CODEX_HOOKS
+    : captureResult ? CODEX_HOOKS.filter(({ event }) => ["SessionStart", "UserPromptSubmit", "PermissionRequest", "PostToolUse", "Stop"].includes(event)) : [];
   const grouped = groupProviderHookMappings([
-    ...(coreHooksEnabled ? lifecycleCommands(CODEX_HOOKS, helper, platform) : []),
+    ...lifecycleCommands(hooks, helper, platform),
     ...pluginCommands
   ]);
   const events = Object.entries(grouped).flatMap(([event, mappings]) => {

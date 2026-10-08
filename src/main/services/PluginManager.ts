@@ -1,3 +1,4 @@
+import { ACCOUNTS_PLUGIN_ID } from "./accountHomeIsolation.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import {
@@ -597,6 +598,7 @@ export class PluginManager {
         pluginName: manifest.name,
         serviceId: service.id,
         launch: structuredClone(service.launch),
+        ...(plugin.manifest.id === ACCOUNTS_PLUGIN_ID ? { dataDir: join(this.dataRoot, plugin.manifest.id) } : {}),
         secrets: manifest.permissions.includes("secrets")
       });
     }
@@ -1801,7 +1803,7 @@ function validateBrowserEngine(value: unknown): PluginBrowserEngine {
   return { id, title, ...(description ? { description } : {}), layout: value.layout === true };
 }
 
-const MAX_CARD_ACTIONS = 8;
+const MAX_CARD_ACTIONS = 16;
 
 function validateCardActions(value: unknown): PluginCardAction[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_CARD_ACTIONS) {

@@ -255,6 +255,10 @@ An environment is where a card runs: a git worktree, a container, a remote host.
 
 `keeps` declares what of CanvasTTY's protection reaches the agent there: `launch` (the launch's arguments and environment reach the agent unchanged, so CanvasTTY's hooks and the profile's per-run settings work), `isolated` (the agent does not run on this computer's files: a container or a remote host) and `confines` (the environment itself confines the agent to the project). Undeclared means no: any profile but normal is refused without `launch`, and the card says that base protection does not reach the agent there. An `isolated` environment is not wrapped in CanvasTTY's agent isolation again (the card names the environment's own boundary); any other runs inside it, with the environment's folder as the project.
 
+Checkpoint restoration also refuses repositories when the current index or saved checkpoint contains submodules: parent-repository snapshots do not preserve dirty or untracked data inside nested repositories. Safeguard and restore that state with Git separately; CanvasTTY does not recursively delete or reset submodules.
+
+Checkpoint restoration cannot suspend an isolated agent by pausing its local SSH/container wrapper. CanvasTTY refuses restoration for related isolated launches, including after the wrapper exits; that exit does not establish remote workload termination. The host remembers the isolation declaration and project scope used by successful launches in the saved host-only card record, independently of later plugin changes or app restarts. Legacy placed cards without this evidence, and malformed evidence, are treated as unknown isolation scope and refuse restoration. These guards cover tracked host sessions, not untracked external workloads.
+
 CanvasTTY keeps the card, the PTY, the saved record and the restore order; the service answers five host-only requests (surfaces cannot send them):
 
 | Request | Params | Answer | Budget |

@@ -12,10 +12,9 @@ import type { IsolationPaths } from "./isolationPaths.ts";
  * - no other process may be signalled; no application opened through Launch Services (`open`), no Apple events
  *   (`osascript` driving Terminal), no preference writes through cfprefsd (`defaults write`, which would otherwise
  *   write outside the layer on the agent's behalf);
- * - Unix sockets: only DNS (mDNSResponder), syslog, this launch's own temporary folder and CanvasTTY's own
- *   token-authenticated gateways; no Docker, tmux, SSH agent or other daemon of the person's.
+ * - Unix sockets: DNS (mDNSResponder), syslog, this launch's temporary folder and CanvasTTY's own gateways.
  *
- * Network and the keychain's services stay as they are: the CLI talks to its provider and reads its own sign-in.
+ * The CLI keeps its provider network access. Diff-only reviewers receive narrowly scoped read grants.
  */
 export function seatbeltProfile(paths: IsolationPaths): string {
   const lines: string[] = [
@@ -32,10 +31,30 @@ export function seatbeltProfile(paths: IsolationPaths): string {
     lines.push(`(allow file-write*${paths.writableFiles.map((path) => ` (regex ${regex(`^${escapeRegex(path)}(\\.[^/]*)?$`)})`).join("")})`);
   }
   if (paths.unreadable.length > 0) {
-    lines.push(`(deny file-read* file-write*${paths.unreadable.map((path) => ` (subpath ${quote(path)})`).join("")})`);
+    lines.push(`(deny${paths.restrictReads ? "" : " file-read*"} file-write*${paths.unreadable.map((path) => ` (subpath ${quote(path)})`).join("")})`);
+  }
+  if (paths.restrictReads) {
+    // Deny regular-file reads globally while allowing narrower exact runtime, OS and diff paths to reopen them.
+    // An unconditional `(deny file-read*)` wins over every exception in Seatbelt. Native macOS runtimes need directory
+    // entries while resolving resources, so allow directory vnodes and immediately re-hide HOME and project roots.
+    lines.push("(deny file-read* (vnode-type REGULAR-FILE))", "(allow file-read-metadata (vnode-type DIRECTORY))", "(allow file-read* (vnode-type DIRECTORY))");
+    for (const path of paths.unreadable) lines.push(`(deny file-read* (subpath ${quote(path)}))`);
   }
   if (paths.readableAgain.length > 0) {
-    lines.push(`(allow file-read*${paths.readableAgain.map((path) => ` (subpath ${quote(path)})`).join("")})`);
+    if (paths.restrictReads) {
+      // Separate rules make each spelling an independent exception. Combining path predicates in one rule intersects
+      // them, so a caller opening `/var/...` would miss the grant even when its canonical `/private/var/...` was listed.
+      for (const path of paths.readableAgain) lines.push(`(allow file-read* (subpath ${quote(path)}))`);
+    } else {
+      lines.push(`(allow file-read*${paths.readableAgain.map((path) => ` (subpath ${quote(path)})`).join("")})`);
+    }
+  }
+  // plugin-data is denied as a whole to hide the private parent and every sibling worktree. Reopen this one exact
+  // validated linked-worktree project for writes after that parent denial. The Git metadata denies below still win.
+  const privateRootProjects = paths.projectRoots.filter((project) => paths.readableAgain.includes(project)
+    && paths.unreadable.some((hidden) => hidden.endsWith("/plugin-data") && project.startsWith(`${hidden}/`)));
+  if (privateRootProjects.length > 0) {
+    lines.push(`(allow file-write*${privateRootProjects.map((path) => ` (subpath ${quote(path)})`).join("")})`);
   }
   // The CLI's own home that sits in a hidden folder (an account home it was handed): writable again, like its other
   // folders (a sign-in refresh writes there). Its permission settings are denied again below.

@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { app, BrowserWindow, clipboard, dialog, shell } from "electron";
-import type { IpcMainEvent, IpcMainInvokeEvent, OpenDialogOptions } from "electron";
+import type { IpcMainEvent, IpcMainInvokeEvent, OpenDialogOptions, WebContents } from "electron";
 import type {
   AppSettings,
   AgentChatHistoryProviderId,
@@ -75,6 +75,7 @@ interface Dependencies {
   getMainWindow(): BrowserWindow | null;
   applyBrowserSettings(settings: AppSettings): Promise<void> | void;
   setCanvasNavigationShortcutCapture(active: boolean): void;
+  setCanvasNavigationTerminalEditFocus(contents: WebContents, active: boolean): void;
   setCanvasNavigationPointerBinding(input: CanvasNavigationPointerBindingInput): void;
   openPluginWindow(pluginId: string, contributionId: string): Promise<void>;
   closePluginWindows(pluginId: string): void;
@@ -211,6 +212,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   getMainWindow,
   applyBrowserSettings,
   setCanvasNavigationShortcutCapture,
+  setCanvasNavigationTerminalEditFocus,
   setCanvasNavigationPointerBinding,
   openPluginWindow,
   closePluginWindows,
@@ -260,6 +262,11 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     assertMainRenderer(event, getMainWindow);
     if (typeof active !== "boolean") return;
     setCanvasNavigationShortcutCapture(active);
+  });
+  ipcMain.on(IPC.canvasNavigationTerminalEditFocus, (event, active: boolean) => {
+    assertMainRenderer(event, getMainWindow);
+    if (typeof active !== "boolean") return;
+    setCanvasNavigationTerminalEditFocus(event.sender, active);
   });
   ipcMain.on(IPC.canvasNavigationPointerBinding, (event, input: unknown) => {
     assertMainRenderer(event, getMainWindow);
@@ -432,13 +439,13 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     assertMainRenderer(event, getMainWindow);
     return pluginCards.decorations();
   });
-  ipcMain.handle(IPC.pluginsInvokeCardAction, (event, pluginId: unknown, actionId: unknown, sessionId: unknown) => {
+  ipcMain.handle(IPC.pluginsInvokeCardAction, (event, pluginId: unknown, actionId: unknown, sessionId: unknown, input?: unknown) => {
     // Only the app window's own card menu invokes actions; plugin surfaces cannot reach this channel.
     assertMainRenderer(event, getMainWindow);
     if (typeof pluginId !== "string" || typeof actionId !== "string" || typeof sessionId !== "string") {
       throw new Error("Card action request is invalid.");
     }
-    return pluginCards.invoke(pluginId, actionId, sessionId);
+    return pluginCards.invoke(pluginId, actionId, sessionId, input);
   });
   ipcMain.handle(IPC.pluginsLaunchFieldOptions, (event, pluginId: unknown, provider: unknown) => {
     // Only the app's own launcher asks; plugin surfaces cannot reach this channel.

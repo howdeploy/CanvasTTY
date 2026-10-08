@@ -14,7 +14,7 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: resolve("src/main/index.ts")
+        input: {index: resolve("src/main/index.ts"), SessionTimelineIndexWorker: resolve("src/main/services/SessionTimelineIndexWorker.ts")}
       }
     }
   },

@@ -6,6 +6,7 @@ import type {
   PluginCardTone
 } from "../../shared/contracts.ts";
 import { cardActionMatches } from "../../shared/pluginCardActions.ts";
+import { normalizeCardActionInput, normalizeCardReview } from "./PluginChangeReviews.ts";
 import type { PluginSessionSummary } from "./PluginSessions.ts";
 
 /** A trusted plugin service that declared `cardActions` (PluginManager.cardActionProviders). */
@@ -33,6 +34,7 @@ export interface CardActionInvocation {
   actionId: string;
   sessionId: string;
   session: PluginSessionSummary;
+  input?: Record<string, unknown>;
 }
 
 const CARD_ACTION_TIMEOUT_MS = 15_000;
@@ -126,7 +128,7 @@ export class PluginCards {
   }
 
   /** The person chose an action on a card. Errors and timeouts come back as an error toast, nothing else. */
-  async invoke(pluginId: string, actionId: string, sessionId: string): Promise<PluginCardActionResult> {
+  async invoke(pluginId: string, actionId: string, sessionId: string, input?: unknown): Promise<PluginCardActionResult> {
     // Action ids are unique within a plugin, whichever of its services declares them.
     const provider = this.providers()
       .find((candidate) => candidate.pluginId === pluginId && candidate.actions.some((action) => action.id === actionId));
@@ -136,7 +138,8 @@ export class PluginCards {
     if (!session) throw new Error("No card has that session id.");
     if (!cardActionMatches(action.when, session)) throw new Error("That action does not apply to this card.");
     const timeoutMs = this.deps.timeoutMs ?? CARD_ACTION_TIMEOUT_MS;
-    const params: CardActionInvocation = { actionId, sessionId, session };
+    const normalizedInput = normalizeCardActionInput(input);
+    const params: CardActionInvocation = { actionId, sessionId, session, ...(normalizedInput ? { input: normalizedInput } : {}) };
     let timer: NodeJS.Timeout | undefined;
     try {
       const answer = await Promise.race([
@@ -148,7 +151,9 @@ export class PluginCards {
       const record = answer && typeof answer === "object" && !Array.isArray(answer) ? answer as Record<string, unknown> : {};
       const tone = TONES.has(record.tone as PluginCardTone) ? record.tone as PluginCardTone : "neutral";
       const message = typeof record.message === "string" && record.message.trim() ? this.message(record.message) : undefined;
-      return { tone, ...(message ? { message } : {}) };
+      const actions = new Set(this.providers().filter(row => row.pluginId === pluginId).flatMap(row => row.actions.map(action => action.id)));
+      const review = record.review === undefined ? undefined : normalizeCardReview(record.review, this.deps.redact, actions);
+      return { tone, ...(message ? { message } : {}), ...(review ? { review } : {}) };
     } catch (error) {
       return { tone: "error", message: this.message(`${provider.pluginName}: ${error instanceof Error ? error.message : "the action failed."}`) };
     } finally {

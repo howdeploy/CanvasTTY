@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
@@ -59,6 +60,7 @@ for (const [provider, threadId] of [
       state: "working",
       event: "UserPromptSubmit",
       turnId: "turn-one",
+      turnEpoch: 1,
       threadId
     }
   }]);
@@ -127,17 +129,22 @@ test("RuntimeGateway: a late revoke carrying an older launch's capability leaves
   await gateway.start();
   t.after(() => gateway.close());
   const older = gateway.registerSession("terminal-reused", "codex");
+  await send(older.address, message(older, "working", "UserPromptSubmit", "turn-before-relaunch"));
+  const olderEpoch = gateway.currentTurnEpoch("terminal-reused");
   const newer = gateway.registerSession("terminal-reused", "codex");
 
   // The older launch's cleanup runs late, after the card was relaunched under the same id.
   gateway.revokeTerminalSession("terminal-reused", older.capabilityToken);
   await send(newer.address, message(newer, "working", "UserPromptSubmit", "turn-after-late-cleanup"));
-  assert.deepEqual(signals.map(({ signal }) => signal.state), ["working"]);
+  const newerEpoch = gateway.currentTurnEpoch("terminal-reused");
+  assert.ok(olderEpoch !== null && newerEpoch !== null && newerEpoch > olderEpoch, "a relaunch receives a globally fresh turn epoch");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(signals.map(({ signal }) => signal.state), ["working", "working"]);
 
   // Its own capability still revokes it.
   gateway.revokeTerminalSession("terminal-reused", newer.capabilityToken);
   await send(newer.address, message(newer, "idle", "Stop", "turn-after-late-cleanup"));
-  assert.deepEqual(signals.map(({ signal }) => signal.state), ["working"]);
+  assert.deepEqual(signals.map(({ signal }) => signal.state), ["working", "working"]);
 });
 
 test("RuntimeGateway: a late start of an earlier turn does not take over from the newer turn", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
@@ -153,9 +160,21 @@ test("RuntimeGateway: a late start of an earlier turn does not take over from th
   // Turn 1's start hook arrives late, on its own connection.
   await send(capability.address, message(capability, "working", "UserPromptSubmit", "turn-1"));
   await send(capability.address, message(capability, "idle", "Stop", "turn-2"));
+  assert.equal(gateway.currentTurnEpoch("terminal-turns"), null, "idle closes the host turn");
+  await send(capability.address, message(capability, "working", "UserPromptSubmit", null));
+  const idlessEpoch = gateway.currentTurnEpoch("terminal-turns");
+  await send(capability.address, message(capability, "working", "UserPromptSubmit", null));
+  assert.equal(gateway.currentTurnEpoch("terminal-turns"), idlessEpoch, "duplicate id-less starts do not create a new generation");
+  await send(capability.address, message(capability, "idle", "Stop", null));
+  assert.equal(gateway.currentTurnEpoch("terminal-turns"), null);
+  await send(capability.address, message(capability, "working", "UserPromptSubmit", null));
+  assert.equal(gateway.currentTurnEpoch("terminal-turns"), idlessEpoch + 1, "the next observed start advances the host generation");
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(signals.map(({ signal }) => `${signal.state}:${signal.turnId}`), ["working:turn-1", "idle:turn-1", "working:turn-2", "idle:turn-2"]);
-  assert.equal(gateway.currentStatus("terminal-turns"), "idle");
+  assert.deepEqual(signals.map(({ signal }) => [signal.state, signal.turnId ?? null, signal.turnEpoch]), [
+    ["working", "turn-1", 1], ["idle", "turn-1", 1], ["working", "turn-2", 2], ["idle", "turn-2", 2],
+    ["working", null, idlessEpoch], ["working", null, idlessEpoch], ["idle", null, idlessEpoch], ["working", null, idlessEpoch + 1]
+  ]);
+  assert.equal(gateway.currentStatus("terminal-turns"), "working");
 });
 
 test("RuntimeGateway propagates threadId for codex sessions with canonical UUID", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
@@ -293,7 +312,7 @@ test("ordinary Codex Stop reports omit answer text without an explicit capture g
   assert.equal(result.code, 0, result.stderr);
   assert.deepEqual(signals, [{
     id: "terminal-default-deny",
-    signal: { state: "idle", event: "Stop", turnId: "turn-answer" }
+    signal: { state: "idle", event: "Stop", turnId: "turn-answer", turnEpoch: 1 }
   }]);
   assert.equal(gateway.currentStatus("terminal-default-deny"), "idle");
 });
@@ -322,6 +341,7 @@ test("answer capture requires a live per-session grant and is bound to its runti
       state: "idle",
       event: "Stop",
       turnId: "turn-answer",
+      turnEpoch: 1,
       lastAssistantMessage: "authorized answer",
       answerCaptureGrantExpiresAt: grantExpiresAt
     }
@@ -605,4 +625,36 @@ test("RuntimeGateway closes a connection that sends no message, so idle clients 
   const outcome = await Promise.race([closed.then(() => "closed"), new Promise((resolve) => setTimeout(() => resolve("open"), 1_500))]);
   idle.destroy();
   assert.equal(outcome, "closed");
+});
+
+test("permission requests receive the host's active turn ID, never the packet's claimed ID", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
+  const root = await fixture(t);
+  let forwarded;
+  const gateway = new RuntimeGateway({
+    runtimeDirectory: root,
+    onPermissionRequest: (_id, request) => { forwarded = request; return { behavior: "none" }; }
+  });
+  await gateway.start();
+  t.after(() => gateway.close());
+  const capability = gateway.registerSession("terminal-permission-turn", "claude", false, undefined, true);
+  await send(capability.address, message(capability, "working", "UserPromptSubmit", "trusted-turn-42"));
+  const toolInput = { command: "printf safe" };
+  const response = await sendAndRead(capability.address, {
+    v: RUNTIME_PROTOCOL_VERSION,
+    type: "permission_request",
+    terminalSessionId: capability.terminalSessionId,
+    provider: capability.provider,
+    capabilityToken: capability.capabilityToken,
+    requestId: "request-0001",
+    toolName: "Bash",
+    toolInput,
+    toolInputPreview: null,
+    toolInputSha256: createHash("sha256").update(JSON.stringify(toolInput), "utf8").digest("hex"),
+    truncated: false,
+    cwd: null,
+    turnId: "attacker-chosen-turn"
+  });
+  assert.equal(response?.type, "permission_decision");
+  assert.equal(forwarded?.turnId, "trusted-turn-42");
+  assert.equal(forwarded?.turnEpoch, 1);
 });

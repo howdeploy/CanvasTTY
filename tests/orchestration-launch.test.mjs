@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { claudeMcpArgs, codexMcpArgs, qwenMcpArgs } from "../src/main/services/agent-browser/ProviderLaunch.ts";
 import { createOrchestrationDispatcher } from "../src/agent-browser/orchestration-helper.mjs";
+import { ORCHESTRATION_TOOL_NAMES } from "../src/agent-browser/orchestration-catalog.mjs";
 
 const helper = { command: "/app/electron", args: ["agent/browser-helper.mjs"], env: { ELECTRON_RUN_AS_NODE: "1" } };
 const orchestrationHelper = { command: "/app/electron", args: ["agent/orchestration-helper.mjs"], env: { ELECTRON_RUN_AS_NODE: "1" } };
@@ -31,7 +32,11 @@ test("codex gains a second orchestration -c table only when provided", () => {
   assert.equal(full.length, 4);
   assert.match(full[1], /mcp_servers\.canvastty_browser/u);
   assert.match(full[3], /mcp_servers\.canvastty_agents/u);
-  assert.match(full[3], /enabled_tools=\[.?"list_providers","spawn_agent/u);
+  const enabledToolsMatch = full[3].match(/enabled_tools=(\[[^\]]*\])/u);
+  assert.ok(enabledToolsMatch);
+  const enabledTools = JSON.parse(enabledToolsMatch[1]);
+  assert.ok(enabledTools.includes("list_providers"));
+  assert.ok(enabledTools.includes("spawn_agent"));
 });
 
 test("the stdio helper advertises orchestration tools and forwards calls", async () => {
@@ -49,7 +54,7 @@ test("the stdio helper advertises orchestration tools and forwards calls", async
   assert.equal(initialized.result.serverInfo.name, "canvastty_agents");
 
   const listed = await dispatch({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-  assert.equal(listed.result.tools.length, 8);
+  assert.deepEqual(listed.result.tools.map(tool=>tool.name), [...ORCHESTRATION_TOOL_NAMES]);
 
   const spawned = await dispatch({
     jsonrpc: "2.0",

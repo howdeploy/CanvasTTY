@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { summaryScaleForZoom, useCameraSelector, type CameraStore } from "../workspace/cameraStore";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -28,6 +28,7 @@ import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 import { matchesShortcut } from "../../lib/shortcuts";
 import { GitRiskNotice } from "./GitRiskNotice";
+import type { PluginChangeReviewActionInput } from "./PluginChangesReviewDialog";
 import { isCustomTerminalBorderSkinId, terminalBorderSkinFallback } from "../../lib/skinStyles";
 import { sessionStatusLabel } from "../../lib/sessionStatus";
 import { attachTerminalMouseCoordinateAdapter, attachTerminalScrollbarCoordinateAdapter } from "./terminalMouseCoordinates";
@@ -69,6 +70,13 @@ import { Canvas2DSkinView } from "../skins/Canvas2DSkinView";
 import { isPixelSkinThemeId, pixelSkinStateForSession } from "../skins/skinCatalog";
 import { isPixelSkinPackId, usePixelSkinPackSummary } from "../skins/SkinAssets";
 import { pixelSkinControlLayout, pixelSkinSurfaceBounds, skinDetailLevel } from "../skins/SkinLayout";
+import { TaskSummaryBar } from "../workspace/TaskSummaryBar";
+import type { WorkspaceDropPayload } from "../workspace/workspaceContextDrop";
+import { backlogTerminalApi } from "../workspace/backlogRendererApi";
+import { backlogText } from "../workspace/workspaceBacklogText";
+import { taskCardState } from "../workspace/workspaceTaskGraph";
+
+const PluginChangesReviewDialog = lazy(() => import("./PluginChangesReviewDialog").then((module) => ({ default: module.PluginChangesReviewDialog })));
 
 interface TerminalCardProps {
   session: SessionSnapshot;
@@ -92,6 +100,9 @@ interface TerminalCardProps {
   forceMasterDetail: boolean;
   /** Multi-select group member: gets the selected outline without focus/WebGL side effects. */
   groupSelected?: boolean;
+  taskChildren?: readonly SessionSnapshot[];
+  broadcastTarget?: boolean;
+  externalSearchRequest?: { query: string; line: number; offset: number; requestId: number };
   /**
    * The card is CSS-hidden by an ancestor (HOME editing hides the whole window layer). One of the
    * inputs of the card's surface lifecycle (surfaceLifecycle.ts): a hidden card is suspended.
@@ -107,12 +118,16 @@ interface TerminalCardProps {
   onRename(id: string, title: string): Promise<void>;
   onRenameEnd(): void;
   onBoundsChange(id: string, bounds: SessionBounds): void;
+  onBoundsPreview?(id: string, bounds: SessionBounds | null): void;
   onRestart(id: string, resume?: boolean): Promise<void>;
   /** `keepEnvironmentData` is the answer to "Keep environment data?" for a card in a plugin environment. */
   onDispose(id: string, keepEnvironmentData?: boolean): void;
   /** Saving sessions is on, so the per-card "Don't restore" choice applies. */
   restoreEnabled?: boolean;
   onOpenUrl(url: string): void;
+  onOpenInspector(id: string, initialTab?: "timeline" | "report"): void;
+  onGatherTask(id: string): void;
+  onDropContext(id: string, payload: WorkspaceDropPayload, point: Point): void;
 }
 
 interface DragState {
@@ -171,6 +186,9 @@ function TerminalCardView({
   selected,
   forceMasterDetail,
   groupSelected,
+  taskChildren = [],
+  broadcastTarget = false,
+  externalSearchRequest,
   hidden = false,
   renaming,
   fullscreen,
@@ -181,9 +199,13 @@ function TerminalCardView({
   onRename,
   onRenameEnd,
   onBoundsChange,
+  onBoundsPreview,
   onRestart,
   onDispose,
   onOpenUrl,
+  onOpenInspector,
+  onGatherTask,
+  onDropContext,
   restoreEnabled = false
 }: TerminalCardProps): React.JSX.Element {
   const borderSkin = terminalBorderSkinFallback(selectedBorderSkin);
@@ -241,12 +263,20 @@ function TerminalCardView({
   const pluginDecorations = usePluginCardDecorations(session);
   const [actionRunning, setActionRunning] = useState(false);
   const [actionToast, setActionToast] = useState<PluginCardActionResult | null>(null);
-  const hasOptions = restoreEnabled || pluginDecorations.actions.length > 0;
+  const [pluginReview, setPluginReview] = useState<{ pluginId: string; actionId: string; review: NonNullable<PluginCardActionResult["review"]> } | null>(null);
+  const hasOptions = true;
   const runPluginAction = (action: PluginCardActionEntry): void => {
     setOptionsOpen(false);
     setActionRunning(true);
     void window.canvasTTY.plugins.invokeCardAction(action.pluginId, action.actionId, session.id)
-      .then((result) => setActionToast({ tone: result.tone, message: result.message ?? `${action.title}: ${t(locale, "cardActionDone")}` }))
+      .then((result) => {
+        if (result.review) {
+          setActionToast(null);
+          setPluginReview({ pluginId: action.pluginId, actionId: action.actionId, review: result.review });
+        } else {
+          setActionToast({ tone: result.tone, message: result.message ?? `${action.title}: ${t(locale, "cardActionDone")}` });
+        }
+      })
       .catch((error: unknown) => setActionToast({ tone: "error", message: error instanceof Error ? error.message : String(error) }))
       .finally(() => setActionRunning(false));
   };
@@ -370,6 +400,18 @@ function TerminalCardView({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatches, setSearchMatches] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
+  const historicalRequestEpoch = useRef(0);
+  const historicalSearchActive = useRef(false);
+  const searchQueryRef = useRef(searchQuery);
+  searchQueryRef.current = searchQuery;
+  const [historicalOutput, setHistoricalOutput] = useState<{
+    text: string;
+    firstLine: number;
+    targetLine: number;
+    loading: boolean;
+    historyTruncated?: boolean;
+    error?: string;
+  } | null>(null);
   // Last OSC 0/2 title the shell reported; display-only, never persisted.
   const [oscTitle, setOscTitle] = useState<string | null>(null);
   const titleSource = { title: session.title, titleCustomized: session.titleCustomized, oscTitle };
@@ -378,6 +420,11 @@ function TerminalCardView({
   const visibleTitleTooltip = visibleTerminalTitle({ ...titleSource, cwdLabel: session.cwd });
   const visibleTitleRef = useRef(visibleTitle);
   visibleTitleRef.current = visibleTitle;
+  const taskState = session.parentSessionId ? taskCardState(session) : null;
+  const taskStateLabel = taskState === "working" ? "taskStateWorking"
+    : taskState === "waiting" ? "taskStateWaiting"
+      : taskState === "waiting-response" ? "taskStateWaitingResponse"
+        : taskState === "done" ? "taskStateDone" : "taskStateFailed";
 
   restartAction.current = async (resume = false) => {
     if (restarting || !sessionExited.current) return;
@@ -704,6 +751,7 @@ function TerminalCardView({
     markBootOnce("restoredTerminalInteractive");
     const titleChange = terminal.onTitleChange((title) => setOscTitle(title.trim() ? title : null));
     const searchResults = searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+      if (historicalSearchActive.current) return;
       setSearchMatches({
         current: resultCount > 0 && resultIndex >= 0 ? resultIndex + 1 : 0,
         total: resultCount
@@ -928,6 +976,7 @@ function TerminalCardView({
     if (!dragState.current || dragState.current.pointerId !== event.pointerId) return;
     dragState.current = null;
     onBoundsChange(session.id, liveBounds.current);
+    onBoundsPreview?.(session.id, null);
   };
 
   // A group drag takes pointer capture without a pointerup; drop local state so a
@@ -938,12 +987,14 @@ function TerminalCardView({
     if (!dragState.current) return;
     dragState.current = null;
     applyLiveBounds({ position: session.position, size: session.size });
+    onBoundsPreview?.(session.id, null);
   };
 
   const cancelResize = (): void => {
     if (!resizeState.current) return;
     resizeState.current = null;
     applyLiveBounds({ position: session.position, size: session.size });
+    onBoundsPreview?.(session.id, null);
   };
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>, direction: ResizeDirection): void => {
@@ -991,12 +1042,14 @@ function TerminalCardView({
     event.stopPropagation();
     resizeState.current = null;
     onBoundsChange(session.id, liveBounds.current);
+    onBoundsPreview?.(session.id, null);
   };
 
   const applyLiveBounds = (bounds: SessionBounds): void => {
     liveBounds.current = bounds;
     setPosition(bounds.position);
     setSize(bounds.size);
+    onBoundsPreview?.(session.id, bounds);
   };
 
   const activateSummary = (event: React.MouseEvent<HTMLButtonElement>): void => {
@@ -1048,8 +1101,12 @@ function TerminalCardView({
   };
 
   const runSearch = (query: string, direction: "next" | "previous", incremental: boolean): void => {
+    historicalRequestEpoch.current += 1;
+    historicalSearchActive.current = false;
     const addon = searchAddonRef.current;
+    searchQueryRef.current = query;
     setSearchQuery(query);
+    setHistoricalOutput(null);
     if (!addon) return;
     if (!query) {
       addon.clearDecorations();
@@ -1061,10 +1118,38 @@ function TerminalCardView({
     else addon.findPrevious(query, options);
   };
 
+  useEffect(() => {
+    const epoch = ++historicalRequestEpoch.current;
+    historicalSearchActive.current = false;
+    setHistoricalOutput(null);
+    if (!externalSearchRequest || summaryMode) return;
+    const requested = externalSearchRequest;
+    historicalSearchActive.current = true;
+    searchQueryRef.current = requested.query;
+    setSearchOpen(true);
+    setSearchQuery(requested.query);
+    setSearchMatches({ current: 0, total: 0 });
+    searchAddonRef.current?.clearDecorations();
+    setHistoricalOutput({ text: "", firstLine: requested.line, targetLine: requested.line, loading: true });
+    // A text match in xterm is not the selected occurrence in retained history.
+    void backlogTerminalApi().readOutputContext(session.id, requested.offset).then(context => {
+      if (historicalRequestEpoch.current === epoch) setHistoricalOutput({ ...context, loading: false });
+    }).catch((reason: unknown) => {
+      if (historicalRequestEpoch.current !== epoch) return;
+      setHistoricalOutput({ text: "", firstLine: requested.line, targetLine: requested.line, loading: false,
+        error: reason instanceof Error ? reason.message : String(reason) });
+    });
+    terminalRef.current?.focus();
+    return () => { historicalRequestEpoch.current += 1; historicalSearchActive.current = false; };
+  }, [externalSearchRequest, summaryMode, session.id]);
+
   const closeSearch = (): void => {
+    historicalRequestEpoch.current += 1;
+    historicalSearchActive.current = false;
     setSearchOpen(false);
     setSearchQuery("");
     setSearchMatches({ current: 0, total: 0 });
+    setHistoricalOutput(null);
     searchAddonRef.current?.clearDecorations();
     // Hand the keyboard back to the terminal so the next keystrokes reach the PTY.
     if (!renaming && !summaryMode) terminalRef.current?.focus();
@@ -1139,7 +1224,7 @@ function TerminalCardView({
   );
   return (
     <article
-      className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""} ${session.status === "needs_approval" || session.status === "failed" ? "terminal-card--attention" : ""} ${fullscreen ? "terminal-card--fullscreen" : ""}`}
+      className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""} ${session.status === "needs_approval" || session.status === "failed" ? "terminal-card--attention" : ""} ${broadcastTarget ? "terminal-card--broadcast-target" : ""} ${session.role === "orchestrator" && (taskChildren.length > 0 || Boolean(session.taskBudget)) ? "terminal-card--with-task-summary" : ""} terminal-card--with-activity-summary ${fullscreen ? "terminal-card--fullscreen" : ""}`}
       data-interactive="true"
       data-canvas-layer-id={`terminal:${session.id}`}
       data-canvas-widget-id={terminalCanvasWidgetId(session.id)}
@@ -1168,25 +1253,25 @@ function TerminalCardView({
       onClick={activateCard}
       onDoubleClick={activateCardDouble}
       onDragOver={(event) => {
-        if (!event.dataTransfer.types.includes("Files")) return;
+        if (!event.dataTransfer.types.includes("Files")
+          && !event.dataTransfer.types.includes("text/plain")
+          && !event.dataTransfer.types.includes("text/uri-list")) return;
         event.preventDefault();
         event.stopPropagation();
         event.dataTransfer.dropEffect = sessionExited.current || renaming ? "none" : "copy";
       }}
       onDrop={(event) => {
-        if (!event.dataTransfer.types.includes("Files")) return;
+        if (!event.dataTransfer.types.includes("Files")
+          && !event.dataTransfer.types.includes("text/plain")
+          && !event.dataTransfer.types.includes("text/uri-list")) return;
         event.preventDefault();
         event.stopPropagation();
-        const terminal = terminalRef.current;
-        if (!terminal || sessionExited.current || renaming) return;
-        try {
-          const text = window.canvasTTY.terminal.fileDropText(Array.from(event.dataTransfer.files));
-          onSelect(session.id);
-          terminal.focus();
-          terminal.paste(text);
-        } catch {
-          terminal.write(`\r\n[CanvasTTY] ${t(locale, "terminalFileDropFailed")}\r\n`);
-        }
+        if (sessionExited.current || renaming) return;
+        onDropContext(session.id, {
+          files: Array.from(event.dataTransfer.files),
+          url: event.dataTransfer.getData("text/uri-list").split("\n").find((line) => line && !line.startsWith("#")) ?? "",
+          text: event.dataTransfer.getData("text/plain")
+        }, { x: event.clientX, y: event.clientY });
       }}
       style={{
         width: size.width,
@@ -1253,6 +1338,8 @@ function TerminalCardView({
           {session.role === "orchestrator" && (
             <span className="terminal-card__role" title={t(locale, "orchestratorRoleNote")}>{t(locale, "roleOrchestrator")}</span>
           )}
+          {taskState && <span className={`terminal-card__task-status terminal-card__task-status--${taskState}`}
+            data-state={taskState} title={backlogText(locale, taskStateLabel)}>{backlogText(locale, taskStateLabel)}</span>}
           {session.profile === "auto" && (
             <span className="terminal-card__role" title={t(locale, session.autoDowngraded ? "autoDowngradedNote" : "autoProfileNote")}>
               {t(locale, session.autoDowngraded ? "autoDowngraded" : "autoProfile")}
@@ -1265,7 +1352,7 @@ function TerminalCardView({
           )}
           {session.isolation && (
             <span className={`terminal-card__role terminal-card__isolation terminal-card__isolation--${session.isolation.state}`} data-isolation={session.isolation.state}
-              title={session.isolation.state === "on" ? t(locale, "isolationOnNote") : session.isolation.reason ?? ""}>
+              title={session.isolation.state === "on" ? [t(locale, "isolationOnNote"), session.isolation.reason].filter(Boolean).join("\n") : session.isolation.reason ?? ""}>
               {t(locale, session.isolation.state === "on" ? "isolationOn" : session.isolation.state === "off" ? "isolationOff"
                 : session.isolation.state === "environment" ? "isolationEnvironment" : "isolationUnavailable")}
             </span>
@@ -1275,6 +1362,12 @@ function TerminalCardView({
               {t(locale, "configuredModeBadge")}: {session.configuredMode.mode}
             </span>
           )}
+          {session.isolation?.network && <span className="terminal-card__role" title={session.isolation.network.domains.join(", ")}>
+            {locale==="ru" ? "Сеть" : "Network"}: {session.isolation.network.mode==="open" ? (locale==="ru" ? "открыта" : "open") : session.isolation.network.mode==="offline" ? (locale==="ru" ? "отключена" : "offline") : (locale==="ru" ? "разрешённые домены" : "allowed domains")}
+          </span>}
+          {session.reviewRequested && <span className="terminal-card__review-requested" title={backlogText(locale, "reviewRequested")}>
+            {backlogText(locale, "reviewRequested")}
+          </span>}
           {session.environment && (
             <span className="terminal-card__environment" title={session.environment.detail ?? `${session.environment.pluginId} · ${session.environment.kind}`}>
               {session.environment.label}
@@ -1289,7 +1382,18 @@ function TerminalCardView({
         </div>
         {!pixelControls && terminalActions}
       </header>
+      <TaskSummaryBar parent={session} children={taskChildren} locale={locale} onGather={() => onGatherTask(session.id)} />
       <div className="terminal-card__surface" data-suspended={!surfaceIsLive(lifecycle)} ref={terminalHost} />
+      <div className="terminal-card__activity-summary" data-interactive="true" role="group" aria-label={locale === "ru" ? "Расходы сессии" : "Session usage"}>
+        <span title={usageDetails(session.usage, locale)}>{locale === "ru" ? "Расход" : "Usage"}: {compactUsage(session.usage, locale)}</span>
+        {(session.reviewUsage || session.reviewRequested) && <span title={usageDetails(session.reviewUsage, locale)}>
+          {locale === "ru" ? "Проверяющий" : "Reviewer"}: {compactUsage(session.reviewUsage, locale)}
+        </span>}
+        {session.sessionReport && <button type="button" onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => onOpenInspector(session.id, "report")} title={locale === "ru" ? "Открыть готовый отчёт" : "Open the completed report"}>
+          {locale === "ru" ? "Отчёт готов" : "Report ready"}
+        </button>}
+      </div>
       {pixelSkinTheme && (
         <Canvas2DSkinView theme={pixelSkinTheme} status={session.status} artState={pixelArtState}
           width={size.width} height={size.height} detail={pixelDetail} surfaceBounds={pixelSurfaceBounds ?? undefined} />
@@ -1302,6 +1406,10 @@ function TerminalCardView({
       {pixelControls && terminalActions}
       {optionsOpen && hasOptions && (
         <div className="terminal-card__menu" role="menu" onKeyDown={(event) => { if (event.key === "Escape") setOptionsOpen(false); }}>
+          <button className="terminal-card__menu-action" type="button" role="menuitem" onClick={() => {
+            setOptionsOpen(false);
+            onOpenInspector(session.id);
+          }}>{locale === "ru" ? "События и задача…" : "Activity and task…"}</button>
           {restoreEnabled && (
             <label role="menuitemcheckbox" aria-checked={session.skipRestore === true}>
               <input
@@ -1332,6 +1440,24 @@ function TerminalCardView({
           </button>
         </div>
       )}
+      {pluginReview && <Suspense fallback={null}>
+        <PluginChangesReviewDialog
+          key={`${pluginReview.pluginId}:${pluginReview.actionId}:${session.id}`}
+          cardSessionId={session.id}
+          reviewActionId={pluginReview.actionId}
+          review={pluginReview.review}
+          locale={locale}
+          invokeAction={(actionId: string, input?: PluginChangeReviewActionInput) => (
+            window.canvasTTY.plugins.invokeCardAction(pluginReview.pluginId, actionId, session.id, input)
+          )}
+          onReviewChange={(review) => setPluginReview((current) => current ? { ...current, review } : current)}
+          onActionResult={(result) => {
+            setPluginReview(null);
+            setActionToast({ tone: result.tone, message: result.message ?? t(locale, "cardActionDone") });
+          }}
+          onClose={() => setPluginReview(null)}
+        />
+      </Suspense>}
       {confirmClose && session.environment && (
         <div className="terminal-card__menu terminal-card__confirm" role="alertdialog" aria-label={t(locale, "environmentKeepTitle")}
           onKeyDown={(event) => { if (event.key === "Escape") setConfirmClose(false); }}>
@@ -1407,6 +1533,28 @@ function TerminalCardView({
           </button>
         </div>
       )}
+      {historicalOutput && !summaryMode && (
+        <section className="terminal-card__historical-output" aria-label={backlogText(locale, "historicalOutput")}>
+          <header><div><strong>{backlogText(locale, "historicalOutput")}</strong><span>{backlogText(locale, "historicalOutputContext")}</span></div>
+            <button type="button" onClick={() => { setHistoricalOutput(null); closeSearch(); }} aria-label={t(locale, "close")}>
+              <UiIcon name="close" size="1em" />
+            </button>
+          </header>
+          {historicalOutput.loading && <p role="status">{backlogText(locale, "historicalOutputLoading")}</p>}
+          {historicalOutput.error && <p role="alert">{historicalOutput.error}</p>}
+          {!historicalOutput.loading && !historicalOutput.error && (
+            <>
+            {historicalOutput.historyTruncated && <p role="status">{backlogText(locale, "outputHistoryPruned")}</p>}
+            <pre>{historicalOutput.text.split(/\r?\n/u).map((line, index) => {
+              const lineNumber = historicalOutput.firstLine + index;
+              return <span key={`${lineNumber}:${index}`} data-target={lineNumber === historicalOutput.targetLine ? "true" : undefined}>
+                <small>{lineNumber}</small>{line || " "}{"\n"}
+              </span>;
+            })}</pre>
+            </>
+          )}
+        </section>
+      )}
       <button
         className="terminal-card__summary"
         type="button"
@@ -1445,6 +1593,31 @@ function terminalTheme(palette: PaletteId, pixelSkin: string | null = null): { b
     cursor: palette === "lilac" ? "#bfc9ee" : "#b8cf99",
     selectionBackground: "#7b789966"
   };
+}
+
+function compactUsage(summary: SessionSnapshot["usage"], locale: LocaleId): string {
+  if (!summary?.source) return locale === "ru" ? "неизвестно" : "unknown";
+  const tokens = summary.tokens.total === null
+    ? (locale === "ru" ? "токены неизвестны" : "tokens unknown")
+    : `${summary.tokens.total.toLocaleString(locale)} ${locale === "ru" ? "токенов" : "tokens"}`;
+  const cost = summary.cost === null
+    ? (locale === "ru" ? "стоимость неизвестна" : "cost unknown")
+    : `${summary.currency === "USD" ? "$" : `${summary.currency} `}${summary.cost.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+  return `${tokens} · ${cost}`;
+}
+
+function usageDetails(summary: SessionSnapshot["usage"], locale: LocaleId): string {
+  if (!summary?.source) return locale === "ru" ? "Источник данных о расходе недоступен." : "Usage source is unavailable.";
+  const unknown = locale === "ru" ? "неизвестно" : "unknown";
+  const cost = summary.cost === null ? unknown : `${summary.currency} ${summary.cost.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
+  const value = (count: number | null): string => count === null ? unknown : count.toLocaleString(locale);
+  return [
+    `${locale === "ru" ? "Источник" : "Source"}: ${summary.source}`,
+    `${locale === "ru" ? "Вход" : "Input"}: ${value(summary.tokens.input)}`,
+    `${locale === "ru" ? "Выход" : "Output"}: ${value(summary.tokens.output)}`,
+    `${locale === "ru" ? "Всего" : "Total"}: ${value(summary.tokens.total)}`,
+    `${locale === "ru" ? "Стоимость" : "Cost"}: ${cost}`
+  ].join("\n");
 }
 
 function isCardControl(target: EventTarget): boolean {

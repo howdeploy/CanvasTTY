@@ -1,8 +1,34 @@
+import { WorkspaceArchive } from "./services/WorkspaceArchive";
+import { configuredApiDomains, apiProfileDomains } from "./services/isolation/configuredApiDomains";
+import { registerNetworkPolicyIpc } from "./ipc/registerNetworkPolicyIpc";
+import { NetworkPolicyManager } from "./services/isolation/networkPolicy";
+import { SecretGrantService } from "./services/SecretGrantService";
+import { secretApiRequestExecutor } from "./services/SecretCommandExecutor";
+import { runShutdownSteps } from "./services/shutdownSteps";
+import { BACKLOG_TERMINAL_IPC } from "../shared/backlog";
+import { AttentionService } from "./services/AttentionService";
+import { SessionReports } from "./services/SessionReports";
+import { collectTerminalHistoryRecoverySnapshots, TerminalOutputHistory } from "./services/TerminalOutputHistory";
+import { actionFromHook } from "./services/safety/baseProtection";
+import { normalizedActionHashFromHook } from "../agent-runtime/runtime-protocol.mjs";
+import { acceptLoopSignal } from "./services/AssistantLoopSignal";
+import { UsagePrices } from "./services/UsagePrices";
+import { ProviderUsageSource } from "./services/ProviderUsageSource";
+import { SessionTimelineService } from "./services/SessionTimelineService";
+import { configuredModel } from "./services/configuredModel";
+import { subagentWorktreeResolver } from "./services/SubagentWorktreeResolver";
+import { GitCheckpoints } from "./services/GitCheckpoints";
+import { OrchestrationBudgetService } from "./services/OrchestrationBudgetService";
+import { OrchestrationTaskBoard } from "./services/OrchestrationTaskBoard";
+import { OrchestrationTemplateService } from "./services/OrchestrationTemplateService";
+import { resolveAgentHistoryPaths } from "./services/agent-history/historyPaths";
+import { refreshOrchestrationUsageBatch, type OrchestrationUsageScope } from "./services/OrchestrationUsageSync";
+import { registerBacklogIpc } from "./ipc/registerBacklogIpc";
 import "./stdio";
 import appIcon from "../../build/icon.png?asset";
 import appManifest from "../../package.json";
 import { ipcMain } from "electron";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute } from "node:path";
 import { EvenG2Controller } from "./services/companion/EvenG2Controller";
 import { join } from "node:path";
@@ -84,7 +110,7 @@ import {
   RuntimeGateway
 } from "./services/agent-runtime";
 import type { RuntimeHookHelperLaunch } from "./services/agent-runtime/ProviderRuntimeLaunch";
-import { agentHelperLaunches } from "./services/agentHelpers";
+import { agentHelperLaunches, nativeHelperPath } from "./services/agentHelpers";
 import {
   recoverHermesConfigurationOnStartup,
   resolveHermesHomeDirectory
@@ -92,6 +118,7 @@ import {
 import { startupPageUrl } from "./startupPage";
 import { mainWindowChromeOptions } from "./windowChrome";
 import { markMainBoot, mainBootMarks } from "./bootMarks";
+import { attachEditContextMenu } from "./editContextMenu";
 import { macApplicationMenuTemplate } from "./macApplicationMenu";
 
 if (process.env.CANVASTTY_USER_DATA_DIR) {
@@ -164,6 +191,13 @@ async function showCompanionBrowser():Promise<{title:string;url:string}> {
   const state=browserService.getState(), tab=state.tabs.find(tab=>tab.id===state.activeTabId);
   return {title:tab?.title||"Browser",url:tab?.url||""};
 }
+let disposeBudgetObservers:(()=>void)|null=null;
+let flushBudgets:(()=>Promise<void>)|null=null;
+let sessionTimeline:SessionTimelineService|null=null;
+let networkPolicies: NetworkPolicyManager | null = null;
+let secretGrants: SecretGrantService | null = null;
+let sessionReports:SessionReports|null=null;
+let terminalOutputHistory:TerminalOutputHistory|null=null;
 let terminalManager: TerminalManager | null = null;
 let agentControl: AgentControlGateway | null = null;
 let limitsService: LimitsService | null = null;
@@ -194,6 +228,8 @@ let appSurfaceReady = false;
 let pendingMenuUpdateCheck = false;
 let checkUpdatesFromMenu: (() => void) | null = null;
 let installMacMenu: (() => void) | null = null;
+/** The locale of the text right-click menu; startApplication points it at the settings once they are loaded. */
+let editMenuLocale: () => LocaleId = () => (app.getLocale().toLowerCase().startsWith("ru") ? "ru" : "en");
 let updateTimer: ReturnType<typeof setTimeout> | null = null;
 let updateInterval: ReturnType<typeof setInterval> | null = null;
 let startupRunning = false;
@@ -256,6 +292,8 @@ function createWindow(): BrowserWindow {
     preventMouseBindings: false,
     captureMacEditShortcuts: process.platform === "darwin"
   });
+  attachEditContextMenu(window.webContents, () => editMenuLocale(),
+    (template, contents) => Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(contents) ?? undefined }));
   // Crash recovery: a dead renderer must never leave the user staring at a
   // blank window. The application surface is reloaded in place — the same entry
   // startup loads — so services, sessions and their scrollback stay untouched
@@ -327,6 +365,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   recoverKimiConfigurationOnStartup(kimiHomeDirectory);
   const userDataPath = app.getPath("userData");
   const settings = new SettingsStore(userDataPath, app.getLocale(), process.platform, providerCliAvailability(providerClis));
+  editMenuLocale = () => settings.get().locale;
   const terminalBorderSkins = new SkinRegistry(userDataPath);
   const pixelSkinPacks = new PixelSkinPackRegistry(userDataPath);
   pluginManager = new PluginManager(userDataPath);
@@ -352,6 +391,78 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   markMainBoot("criticalServicesReady");
   // Secrets this app knows are masked in every text one agent reads from another (EP-8).
   const redaction = new SecretRedactionRegistry();
+  const outputHistory=new TerminalOutputHistory(()=>redaction.snapshotForWorker(), () =>
+    collectTerminalHistoryRecoverySnapshots((terminalManager?.listMetadata() ?? []).map(row => row.id),
+      (id, maxChars) => terminalManager!.readBuffer(id, maxChars)),
+    // Encrypted crash-recovery copy of the worker's history; its key lives only in this process.
+    {spillDirectory:join(userDataPath,"terminal-history")});
+  terminalOutputHistory=outputHistory;
+  const outputHistorySeeded=new Set<string>();
+  const outputHistoryError = (error: unknown): void => {
+    if (!shutdownRunning) console.warn(error);
+  };
+  const timeline = new SessionTimelineService(userDataPath,text => redaction.redact(text));
+  await timeline.load();
+  sessionTimeline=timeline;
+  const reports=new SessionReports(userDataPath,id=>timeline.report(id),(id,at)=>terminalManager?.setSessionReport(id,at));
+  sessionReports=reports;
+  const reviewUsageSessions=new Map<string,string>();
+  const usagePrices=new UsagePrices(join(userDataPath,"usage-prices.json"));
+  await usagePrices.load();
+  const usageSources=new Map<string,ProviderUsageSource>();
+  const usageSourceFor=(home:string):ProviderUsageSource=>{
+    let source=usageSources.get(home);
+    if(!source){source=new ProviderUsageSource(home);usageSources.set(home,source);}
+    return source;
+  };
+  const attention=new AttentionService(join(userDataPath,"attention-preferences.json"),text=>redaction.redact(text));
+  await attention.load();
+  const notifyAttention=(id:string,kind:string)=>{
+    const row=terminalManager?.getMetadata(id) ?? terminalManager?.listMetadata().find(row=>!row.parentSessionId && row.taskScope?.id===id);if(!row)return;
+    const event=attention.publish(row.id,row.title || row.provider,kind);
+    if(!event || !attention.allows("desktop",event) || !settings.get().attentionNotifications || !Notification.isSupported())return;
+    const labels:Record<string,string>=settings.get().locale==="ru" ? {response:"Ждёт ответа",approval:"Нужно разрешение",done:"Закончил",failed:"Ошибка",budget:"Бюджет требует внимания",loop:"Повторяет одно действие"} : {response:"Waiting for your answer",approval:"Approval required",done:"Finished",failed:"Failed",budget:"Task budget needs attention",loop:"Repeating the same action"};
+    const notice=new Notification({title:event.title,body:labels[kind]});
+    notice.on("click",()=>{mainWindow?.show();mainWindow?.focus();mainWindow?.webContents.send(BACKLOG_TERMINAL_IPC.focusRequested,row.id);});notice.show();
+  };
+  const taskBoard=new OrchestrationTaskBoard(join(userDataPath,"task-boards"));
+  const templates=new OrchestrationTemplateService(join(userDataPath,"flow-approvals.json"));
+  let budgetInputGate:(id:string)=>void=()=>undefined;
+  let markLoopDetected:(id:string)=>boolean=()=>false;
+  const applyBudgetEnforcement=(row:ReturnType<OrchestrationBudgetService["snapshot"]>):void=>{
+    if(!terminalManager)return;
+    const result=terminalManager.setBudgetPaused(row.rootSessionId,row.paused);
+    const failure=result.failed ? redaction.redact(result.failed) : undefined;
+    budgets.setEnforcementFailure(row.rootSessionId,failure);
+    if(failure){row.paused=true;row.reason=`${row.reason ?? "Task budget is paused."} ${failure}`;}
+  };
+  const budgets=new OrchestrationBudgetService(join(userDataPath,"task-budgets.json"),{
+    onWarning:row=>{notifyAttention(row.rootSessionId,"budget");void timeline.append(row.rootSessionId,"budget","Task reached 80% of its budget").catch(console.warn);},
+    onPause:row=>{applyBudgetEnforcement(row);notifyAttention(row.rootSessionId,"budget");void timeline.append(row.rootSessionId,"budget","Task paused at its budget limit",row.reason).catch(console.warn);},
+    onChange:applyBudgetEnforcement
+  });
+  await budgets.load();
+  flushBudgets=()=>budgets.flush();
+  const checkpoints = new GitCheckpoints(text => redaction.redact(text),50,join(userDataPath,"checkpoints.json"));
+  const checkpointTurns = new Map<string,{pending:Promise<void>;signal?:AbortSignal;current:()=>boolean}>();
+  const checkpointBeforeTurn = (id: string, signal?: AbortSignal): Promise<void> => {
+    const row=terminalManager?.getMetadata(id);
+    if (!row || row.exitCode !== null || row.profile !== "auto" && row.profile !== "yolo") return Promise.resolve();
+    if (!terminalManager!.canCaptureCheckpoint(id)) return Promise.resolve();
+    let entry=checkpointTurns.get(id);
+    if (!entry || !entry.current()) {
+      const created={pending:Promise.resolve(),signal,current:terminalManager!.providerSignalGuard(id,{kind:"lifecycle",state:"working"})};
+      created.pending=checkpoints.capture(id,row.cwd,signal).catch(error => {
+        // Keep the failed attempt until the turn ends or its input generation changes.
+        // Retrying at PostToolUse could snapshot edits as if they preceded the turn.
+        const reason=redaction.redact(String(error));
+        console.warn("Rollback point unavailable",reason);
+        void timeline.append(id,"checkpoint","Rollback point unavailable",reason).catch(console.warn);
+      });
+      checkpointTurns.set(id,created);entry=created;
+    }
+    return entry.pending;
+  };
   diagnostics.configureRedaction(text => redaction.redact(text));
   diagnosticContext = () => ({
     servicesReady,
@@ -373,8 +484,26 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
         await pluginManager!.storageSet(pluginId, key, value);
         broadcastPluginStorageChange(pluginId, key, value);
       },
-      emit: (pluginId, serviceId, event, data) => broadcastPluginServiceEvent({ pluginId, serviceId, event, data }),
+      emit: (pluginId, serviceId, event, data) => {
+        let broadcastData = data;
+        if (event === "loop.detected") {
+          // Verified by the install record (source repository, enabled, trusted services), not the manifest id.
+          const accepted = acceptLoopSignal({
+            installRecord: id => pluginManager?.installRecord(id) ?? null,
+            session: id => terminalManager?.getMetadata(id) ?? undefined,
+            turnEpoch: id => runtimeGateway?.currentTurnEpoch(id) ?? null,
+            consumeEvidence: (id, evidence, epoch) => pluginSessions?.consumeLoopEvidence(id, evidence, epoch) ?? false,
+            markLoopDetected: id => markLoopDetected(id)
+          }, pluginId, serviceId, data, text => redaction.redact(text));
+          if (!accepted) return;
+          notifyAttention(accepted.sessionId,"loop");
+          void timeline.append(accepted.sessionId,"loop",accepted.label,accepted.reason,"canvastty-assistant").catch(console.warn);
+          broadcastData = accepted.data;
+        }
+        broadcastPluginServiceEvent({ pluginId, serviceId, event, data: broadcastData });
+      },
       registerSecrets: (pluginId, values) => redaction.add(`plugin:${pluginId}`, values),
+      maskSecrets: text => redaction.redact(text),
       secretGet: (pluginId, key) => {
         if (!pluginSecretsService) throw new Error("Plugin secrets are not ready yet.");
         return pluginSecretsService.get(pluginId, key);
@@ -512,16 +641,61 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     runtimeGateway = new RuntimeGateway({
       runtimeDirectory: lifecycleRuntimeDirectory,
       windowsHostPath,
+      lifecycleGuard: (terminalSessionId, signal) => terminalManager?.providerSignalGuard(terminalSessionId, {
+        kind:"lifecycle",state:signal.state,event:signal.event,...(signal.turnId ? {requestId:signal.turnId} : {})
+      }) ?? (()=>false),
+      beforeLifecycle: async (terminalSessionId, signal, cancellation) => {
+        const manager=terminalManager;
+        if (!manager) return false;
+        const current=manager.providerSignalGuard(terminalSessionId, {
+          kind: "lifecycle", state: signal.state, event: signal.event,
+          ...(signal.turnId ? {requestId:signal.turnId} : {})
+        });
+        if (!current()) return false;
+        const controller=new AbortController(), abort=():void=>controller.abort();
+        cancellation.addEventListener("abort",abort,{once:true});
+        if(cancellation.aborted)abort();
+        // Only a successful write that changes the captured turn cancels its checkpoint; typing and approval replies do not.
+        const unobserve=manager.observeInputWrites(terminalSessionId,()=>()=>{if(!current())abort();});
+        try { await checkpointBeforeTurn(terminalSessionId,controller.signal);return current(); }
+        finally {unobserve();cancellation.removeEventListener("abort",abort);}
+      },
       onSignal: (terminalSessionId, signal) => {
-        terminalManager?.applyProviderSignal(terminalSessionId, {
+        const accepted = terminalManager?.applyProviderSignal(terminalSessionId, {
           kind: "lifecycle",
           state: signal.state,
           event: signal.event,
           ...(signal.turnId ? { requestId: signal.turnId } : {}),
           ...(signal.threadId ? { threadId: signal.threadId } : {})
         });
-        // A subagent's final answer (Codex Stop hook, OpenCode plugin) for get_agent_result and wait_for_agent.
-        if (signal.result) terminalManager?.recordAnswer(terminalSessionId, signal.result);
+        if (!accepted) return;
+        const usageRow=terminalManager?.getMetadata(terminalSessionId);
+        if(usageRow?.provider==="codex" && signal.threadId && (!terminalManager?.pluginContext(terminalSessionId)?.environment || terminalManager.pluginContext(terminalSessionId)?.environment?.kind==="worktree")) {
+          const account=terminalManager!.usageAccount(terminalSessionId);
+          const source=usageSourceFor(account.home ?? resolveAgentHistoryPaths().codex);
+          void source.codexUsage(signal.threadId).then(usage=>usage===null || !terminalManager?.getMetadata(terminalSessionId) ? undefined : timeline.recordCumulativeUsage(terminalSessionId,usage,"codex-cli conversation counter",signal.threadId,{provider:"codex",accountId:account.id,taskId:agentControlService.taskRoot(terminalSessionId).id,...(usage.model ?? usageRow.model ? {model:usage.model ?? usageRow.model} : {})},{resumed:terminalManager!.resumedConversation(terminalSessionId,signal.threadId!)})).catch(console.warn);
+        }
+        if(signal.state !== "working" && signal.state !== "needs_approval")checkpointTurns.delete(terminalSessionId);
+        if (signal.state === "idle") secretGrants?.turnEnded(terminalSessionId);
+        else secretGrants?.revalidateTurn(terminalSessionId);
+        // The answer belongs to the accepted provider turn and its host-submitted input generation.
+        if (signal.result) terminalManager?.recordAnswer(terminalSessionId, signal.result, { turnId: signal.turnId });
+        void timeline.append(terminalSessionId,"lifecycle",signal.event ?? signal.state,undefined,"provider-hook").catch(console.warn);
+        if (signal.toolOutcome) {
+          pluginSessions?.activity({
+            type: "tool-outcome",
+            sessionId: terminalSessionId,
+            at: Date.now(),
+            turnEpoch: signal.turnEpoch,
+            ...(signal.turnId ? {turnId:signal.turnId} : {}),
+            toolName: redaction.redact(signal.toolOutcome.toolName),
+            resultClass: signal.toolOutcome.resultClass,
+            ...(signal.toolOutcome.normalizedActionHash ? { normalizedActionHash: signal.toolOutcome.normalizedActionHash } : {}),
+            ...(signal.toolOutcome.errorHash ? { errorHash: signal.toolOutcome.errorHash } : {}),
+            ...(signal.toolOutcome.outputHash ? { outputHash: signal.toolOutcome.outputHash } : {}),
+            changedPathHashes: signal.toolOutcome.changedPathHashes
+          });
+        }
         agentControl?.onSignal(terminalSessionId, signal);
         if (signal.lastAssistantMessage !== undefined && signal.answerCaptureGrantExpiresAt !== undefined) {
           evenG2?.answer(
@@ -533,7 +707,29 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
         }
       },
       onAnswerCaptureRevoked: (terminalSessionId) => evenG2?.clearAnswer(terminalSessionId),
-      onPermissionRequest: (terminalSessionId, request, signal) => decisionHooks.decide(terminalSessionId, request, signal),
+      onPermissionRequest: async (terminalSessionId, request, signal) => {
+        if (terminalManager?.isCheckpointRestoreActive(terminalSessionId)) return {behavior:"deny",message:"Workspace checkpoint restoration is in progress."};
+        try {budgetInputGate(terminalSessionId);}catch(error) {
+          const message=redaction.redact(error instanceof Error ? error.message : "Task budget is paused.");
+          void timeline.append(terminalSessionId,"budget","Tool blocked by task budget",message).catch(console.warn);
+          return {behavior:"deny",message};
+        }
+        const current=terminalManager?.providerSignalGuard(terminalSessionId,{kind:"lifecycle",state:"working"});
+        await checkpointBeforeTurn(terminalSessionId, signal);
+        if(!current?.() || terminalManager?.isCheckpointRestoreActive(terminalSessionId))return {behavior:"deny",message:"The agent turn changed while preparing its rollback point."};
+        const action=actionFromHook(request.toolName,request.toolInput,request.toolInputPreview);
+        const detail=redaction.redact(JSON.stringify({kind:action.kind,command:action.command,paths:action.paths}));
+        void timeline.append(terminalSessionId,action.kind === "shell" ? "command" : action.kind === "edit" ? "file" : "tool",request.toolName,detail,"provider-hook").catch(console.warn);
+        const decision=await decisionHooks.decide(terminalSessionId,request,signal);
+        if (decision.behavior !== "none") void timeline.append(terminalSessionId,"decision",decision.behavior,decision.message,"core").catch(console.warn);
+        const normalizedActionHash=normalizedActionHashFromHook(request.toolName,request.toolInput);
+        pluginSessions?.activity({type:"pretool",sessionId:terminalSessionId,at:Date.now(),turnEpoch:request.turnEpoch,toolName:redaction.redact(request.toolName),
+          ...(request.turnId ? {turnId:request.turnId} : {}),
+          normalizedAction:createHash("sha256").update(`${request.toolName}:${detail}`).digest("hex"),
+          ...(normalizedActionHash ? {normalizedActionHash} : {}),
+          ...(decision.behavior!=="none" ? {resultClass:decision.behavior} : {})});
+        return decision;
+      },
       // Claude Code's lifecycle hooks go straight to a loopback listener where ClaudeHttpHookPolicy allows it.
       httpHooks: true
     });
@@ -548,6 +744,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     const claudeHttpHookPolicy = new ClaudeHttpHookPolicy();
     agentRuntimeBridge = new AgentRuntimeBridge(runtimeGateway, {
       helper: agentRuntimeHelper,
+      onTurnAuthorityChanged: id => secretGrants?.revalidateTurn(id),
       runtimeDirectory: lifecycleRuntimeDirectory,
       openCodePluginPath,
       hermesHomeDirectory,
@@ -573,6 +770,10 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   }
 
   // Output batches of every session flushed in one task leave as one IPC message.
+  const reportedSafety = new Map<string,{isolation?:string;gitRisk?:string}>();
+  let forgetOrchestrationSession=(_id:string):void=>undefined;
+  let scheduleUsageRefresh=():void=>undefined;
+  const usageMembership=new Map<string,string>();
   const rendererOutbox = new TerminalRendererOutbox((channel, payload) => {
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send(channel, payload);
   });
@@ -581,6 +782,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     // only, and the replay when it is shown again to the renderer only; the
     // event says which (TerminalDataEvent.audience).
     if (reachesObservers(payload)) {
+      if(!shutdownRunning && channel===IPC.terminalData && "data" in payload)void outputHistory.append(payload.id,payload.data,payload.outputOffset).catch(outputHistoryError);
       agentControl?.observe(channel, payload);
       evenG2?.observe(channel, payload);
       pluginSessions?.observe(channel, payload);
@@ -595,33 +797,68 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     // re-derived state (a restored session, already on screen) or the outcome
     // of a launch the user just asked for, which is news either way.
     if (channel === IPC.terminalSession && "session" in payload) {
-      const { id, status, title, provider } = payload.session;
+      const { id, status, provider } = payload.session;
+      const membership=JSON.stringify([payload.session.parentSessionId,payload.session.taskScope]);
+      if(usageMembership.get(id)!==membership){usageMembership.set(id,membership);scheduleUsageRefresh();}
+      if(!outputHistorySeeded.has(id)){
+        outputHistorySeeded.add(id);
+        const snapshot=terminalManager?.readBuffer(id);
+        if(!shutdownRunning && snapshot?.buffer)void outputHistory.append(id,snapshot.buffer,snapshot.outputOffset).catch(outputHistoryError);
+      }
+      if (payload.session.exitCode !== null) secretGrants?.sessionEnded(id);
+      const oldSafety=reportedSafety.get(id) ?? {};
+      const nextSafety={isolation:payload.session.isolation ? JSON.stringify(payload.session.isolation) : undefined,gitRisk:payload.session.gitRisk ? JSON.stringify(payload.session.gitRisk) : undefined};
+      if(nextSafety.isolation && nextSafety.isolation!==oldSafety.isolation)void timeline.append(id,"isolation","Effective session protection",nextSafety.isolation,"core").catch(console.warn);
+      if(nextSafety.gitRisk && nextSafety.gitRisk!==oldSafety.gitRisk)void timeline.append(id,"git-risk","Git settings require attention",nextSafety.gitRisk,"core").catch(console.warn);
+      reportedSafety.set(id,nextSafety);
       const previousStatus = notifiedAttentionStatus.get(id);
+      if (previousStatus !== status) void timeline.append(id,"status",status,undefined,"session-manager").catch(console.warn);
       if (previousStatus !== status) diagnostics.record(status === "failed" ? "error" : "info", "terminal", "session.state", {
         id, provider, status, exitCode: payload.session.exitCode
       });
       notifiedAttentionStatus.set(id, status);
+      if(previousStatus!==status){
+        if(status==="working")reports.invalidate(id);
+        else if(status==="done" || status==="failed" || status==="idle" && previousStatus==="working" && payload.session.turnCompleted)void reports.complete(id).catch(console.warn);
+      }
       const failureOrigin = status === "failed" ? terminalManager?.consumeFailureOrigin() ?? null : null;
-      if ((status === "needs_approval" || status === "failed")
-        && failureOrigin !== "restore"
-        && (failureOrigin === "user" || previousStatus !== status)
-        && settings.get().attentionNotifications
-        && Notification.isSupported()) {
-        new Notification({
-          title: title || provider,
-          body: attentionStatusLabel(status, settings.get().locale)
-        }).show();
+      if(failureOrigin!=="restore" && (failureOrigin==="user" || previousStatus!==status)) {
+        if(status==="needs_approval")notifyAttention(id,"approval");
+        else if(status==="idle" && previousStatus==="working")notifyAttention(id,payload.session.turnCompleted ? "done" : "response");
+        else if(status==="failed")notifyAttention(id,"failed");
+        else if(status==="done" && previousStatus!==undefined)notifyAttention(id,"done");
       }
     } else if (channel === IPC.terminalRemoved && "id" in payload) {
+      usageMembership.delete(payload.id);scheduleUsageRefresh();
+      outputHistorySeeded.delete(payload.id);
+      if(!shutdownRunning)void outputHistory.remove(payload.id).catch(outputHistoryError);
+      reports.forget(payload.id);
+      reviewUsageSessions.delete(payload.id);
+      for(const [worker,reviewer] of reviewUsageSessions)if(reviewer===payload.id)reviewUsageSessions.delete(worker);
       diagnostics.record("info", "terminal", "session.closed", { id: payload.id });
       notifiedAttentionStatus.delete(payload.id);
+      reportedSafety.delete(payload.id);
+      checkpointTurns.delete(payload.id);
+      secretGrants?.sessionEnded(payload.id);
+      forgetOrchestrationSession(payload.id);
     }
   }, providerClis, agentBrowserBridge ?? undefined, agentRuntimeBridge ?? undefined, settings.get().agentLifecycleHooksEnabled);
   terminalManager.configureRedaction(redaction);
+  timeline.configureSessionContext(id=>{
+    const row=terminalManager?.getMetadata(id);
+    return row ? {taskId:terminalManager!.taskScopeFor(id).id,title:row.title || row.provider} : undefined;
+  });
   terminalManager.setKeyboardShortcuts(settings.get().shortcuts);
   // The operating-system isolation layer (Settings → Agents → Agent isolation) and YOLO only where the person
   // acknowledged it: both decided here, in the main process, for every launch whoever asks for it.
-  terminalManager.configureIsolation(new AgentIsolation({ userDataPath, enabled: () => settings.get().agentIsolation !== "off" }));
+  const configuredDomains=configuredApiDomains({...process.env,HOME:app.getPath("home")});
+  networkPolicies = new NetworkPolicyManager({ userDataPath,providerDomains:provider=>[...(configuredDomains[provider] ?? []),...apiProfileDomains(settings.get().apiProfiles)] });
+  await networkPolicies.start().catch(error => console.warn("Restricted-network proxy unavailable:", String(error)));
+  const isolation = new AgentIsolation({
+    userDataPath, enabled: () => settings.get().agentIsolation !== "off", networkPolicy: networkPolicies,
+    networkHelperPath: nativeHelperPath({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, appPath: app.getAppPath(), execPath: process.execPath })
+  });
+  terminalManager.configureIsolation(isolation);
   terminalManager.configureYoloAcknowledgement((provider) => settings.get().acknowledgedDangerousProfiles.includes(provider as AgentProviderId));
   // OpenCode's auto profile runs shell commands without asking only while base protection guards them.
   terminalManager.configureBaseProtection(() => settings.get().baseProtectionEnabled);
@@ -632,6 +869,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   // Plugin services see card events and control only the cards they start (EP-4).
   const sessionsForPlugins = new PluginSessions({
     terminals: terminalManager,
+    installRecord:id=>pluginManager?.installRecord(id) ?? null,
     notify: (pluginId, serviceId, method, params) => pluginServices!.notify(pluginId, serviceId, method, params)
   });
   pluginSessions = sessionsForPlugins;
@@ -659,7 +897,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
 
   // list_providers: the CLI registry resolved at startup, the last usage read (never started from here) and the
   // launch options trusted plugins declared.
-  const providerModels = new ProviderModelCatalog(providerClis);
+  const providerModels = new ProviderModelCatalog(providerClis,{codexHome:resolveAgentHistoryPaths().codex});
+  await providerModels.refresh("codex");
   // OpenCode with a model it does not list fails with only "Unexpected server error": refuse it up front.
   terminalManager.configureModelCheck((provider, model) => provider === "terminal" ? null : providerModels.unknownModelCached(provider, model));
   const providerDirectorySources: ProviderDirectorySources = {
@@ -678,8 +917,86 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   const managedTerminals = terminalManager;
   const agentControlService = new AgentControlService(managedTerminals, {
     limits: () => ({ maxDepth: settings.get().orchestrationMaxDepth, maxSubagents: settings.get().orchestrationMaxSubagents }),
-    containment: () => managedTerminals.containment()
+    containment: () => managedTerminals.containment(),
+    currentTurnEpoch: id => runtimeGateway?.currentTurnEpoch(id) ?? null,
+    budget:budgets,
+    resolveSubagentEnvironment: subagentWorktreeResolver({
+      isGitProject: projectRoot => checkpoints.available(projectRoot),
+      providers: () => pluginManager!.environmentProviders()
+    }),
+    workerModel:async worker=>{
+      const account=managedTerminals.usageAccount(worker.id);
+      const actual=worker.provider==="codex" && worker.threadId ? await usageSourceFor(account.home ?? resolveAgentHistoryPaths().codex).codexUsage(worker.threadId) : null;
+      return actual?.model ?? configuredModel(worker.provider as AgentProviderId,{codex:resolveAgentHistoryPaths().codex,claude:join(app.getPath("home"),".claude"),opencode:join(process.env.XDG_CONFIG_HOME ?? join(app.getPath("home"),".config"),"opencode")});
+    },
+    reviewCost:id=>timeline.usage([id],usagePrices.get()).cost,
+    reviewModel:(provider,model)=>model ? providerDirectorySources.models?.(provider)?.models.find(candidate=>candidate!==model) ?? null : null,
+    onReview:(id,result)=>{if(result.reviewerSessionId)reviewUsageSessions.set(id,result.reviewerSessionId);managedTerminals.setTaskMetadata(id,{reviewRequested:true});void timeline.append(id,"review",result.status,result.notes ?? result.reason,"reviewer").catch(console.warn);}
   });
+  budgetInputGate=id=>agentControlService.assertInputAllowed(id);
+  markLoopDetected=id=>agentControlService.markLoopDetected(id);
+  managedTerminals.configureInputGate(budgetInputGate);
+  secretGrants = new SecretGrantService({
+    getSecret: id => providerSecretsService!.get(id),
+    getApiProfiles: () => settings.get().apiProfiles,
+    getTurnIdentity: id => {
+      const turn = agentRuntimeBridge?.currentTurnIdentity(id);
+      const generation = managedTerminals.observedTurnGeneration(id);
+      return turn && generation !== null ? `${turn}:${generation}` : null;
+    },
+    watchTurn: (id, changed) => managedTerminals.observeInputWrites(id, () => {
+      const generation = managedTerminals.answerCaptureGeneration(id);
+      return () => { if (generation !== managedTerminals.answerCaptureGeneration(id)) changed(); };
+    }),
+    getSession: id => {
+      const context = managedTerminals.pluginContext(id);
+      if (!context || context.environment && context.environment.kind !== "worktree") return null;
+      budgetInputGate(id);
+      const row = context.metadata;
+      return { provider: row.provider, cwd: context.workingDirectory, networkProjectRoot: agentControlService.taskRoot(id).cwd, profile: row.profile, active: row.exitCode === null && row.status !== "failed" && row.status !== "done" };
+    },
+    execute: secretApiRequestExecutor(isolation),
+    rememberSecret: value => redaction.add("vault", [value]), redact: text => redaction.redact(text),
+    onRequest: request => { notifyAttention(request.sessionId, "approval"); void timeline.append(request.sessionId,"secret-request",request.secretId,request.reason,"core").catch(console.warn); },
+    onDecision: event => { void timeline.append(event.request.sessionId,"secret-decision",`${event.decision}: ${event.request.secretId}`,event.duration,"human").catch(console.warn); },
+    onRevoke: event => { void timeline.append(event.sessionId,"secret-revoked",event.secretId,event.reason,"core").catch(console.warn); }
+  });
+  let usageRefreshPending=false;
+  const refreshUsage=()=>{
+    const rows=managedTerminals.listMetadata(),scopes=agentControlService.taskRoots(rows);
+    const prices=usagePrices.get();
+    const roots=new Map<string,{id:string;cwd:string;startedAt:number}>();
+    const members=new Map<string,string[]>(),parents=new Map<string,string>();
+    for(const row of rows){
+      if(row.provider==="terminal")continue;
+      const reviewer=reviewUsageSessions.get(row.id);
+      managedTerminals.setObservedUsage(row.id,timeline.usage([row.id],prices),reviewer ? timeline.usage([reviewer],prices) : undefined);
+      const root=scopes.get(row.id);if(!root)continue;
+      const ids=members.get(root.id) ?? [];ids.push(row.id);members.set(root.id,ids);
+      if(!row.parentSessionId)parents.set(root.id,row.id);
+      if(row.exitCode===null)roots.set(root.id,root);
+    }
+    const usageScopes:OrchestrationUsageScope[]=[];
+    for(const root of roots.values()) {
+      usageScopes.push({rootSessionId:root.id,rootStartedAt:root.startedAt,memberSessionIds:members.get(root.id) ?? [],
+        budgetEnabled:budgets.hasLimits(root.id)});
+    }
+    refreshOrchestrationUsageBatch(budgets,timeline,usageScopes,prices,(scope,snapshot)=>{
+      const parent=parents.get(scope.rootSessionId);
+      if(parent)managedTerminals.setTaskBudget(parent,snapshot ? {...snapshot.remaining,paused:snapshot.paused,warning:snapshot.warning,
+        ...(snapshot.paused && !managedTerminals.processSuspensionSupported() ? {processesKeepRunning:true} : {})} : undefined);
+    },scope=>{budgets.snapshot(scope.rootSessionId,scope.rootStartedAt);});
+  };
+  scheduleUsageRefresh=()=>{
+    if(usageRefreshPending)return;
+    usageRefreshPending=true;
+    queueMicrotask(()=>{usageRefreshPending=false;refreshUsage();});
+  };
+  const offUsage=timeline.subscribeUsage(scheduleUsageRefresh),offPrices=usagePrices.subscribe(scheduleUsageRefresh),offBudgets=budgets.subscribe(scheduleUsageRefresh);
+  disposeBudgetObservers=()=>{offUsage();offPrices();offBudgets();budgets.dispose();scheduleUsageRefresh=()=>undefined;};
+  scheduleUsageRefresh();
+  const orchestrationHandler=new ScopedOrchestrationHandler(agentControlService, pluginTools, providerDirectorySources,{budget:budgets,taskBoard,templates,secretGrants});
+  forgetOrchestrationSession=id=>agentControlService.forgetSession(id);
   orchestrationGateway = new OrchestrationGateway({
     runtimeDirectory: join(userDataPath, "orchestration", "runtime"),
     windowsHostPath: process.platform === "win32"
@@ -687,11 +1004,11 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
         ? join(process.resourcesPath, "agent-browser", WINDOWS_PIPE_HOST_FILENAME)
         : join(app.getAppPath(), "build", "windows-agent-pipe-host", WINDOWS_PIPE_HOST_FILENAME)
       : undefined,
-    handler: new ScopedOrchestrationHandler(agentControlService, pluginTools, providerDirectorySources)
+    handler: orchestrationHandler
   });
   await orchestrationGateway.start();
   terminalManager.configureOrchestration(new OrchestrationBridge(orchestrationGateway));
-  terminalManager.configureAgentTools((role, provider) => pluginTools.names(role, provider));
+  terminalManager.configureAgentTools((role, provider) => [...(provider!=="terminal" ? ["list_tasks","claim_task","update_task","complete_task","get_task_budget", "request_secret", "run_secret_request"] : []),...pluginTools.names(role, provider)]);
 
   const launchPipeline = new LaunchPipeline({
     contributors: () => pluginManager!.launchContributors(),
@@ -704,13 +1021,19 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   terminalManager.configureEnvironments(new EnvironmentRegistry({
     providers: () => pluginManager!.environmentProviders(),
     call: (pluginId, serviceId, method, params, timeoutMs) => pluginServices!.hostCall(pluginId, serviceId, method, params, timeoutMs),
-    secret: (pluginId, key) => pluginSecretsService!.get(pluginId, key)
+    secret: (pluginId, key) => pluginSecretsService!.get(pluginId, key),
+    onRetained:(id,environment,reason)=>{
+      const detail=redaction.redact(`${environment.label}: ${reason}`);
+      void timeline.append(id,"environment-retained","Unreviewed worktree retained",detail,"core").catch(console.warn);
+      if(settings.get().attentionNotifications && Notification.isSupported())new Notification({title:settings.get().locale==="ru" ? "Worktree сохранён" : "Worktree retained",body:detail}).show();
+    }
   }));
   // Every host API a service may call exists now (sessions, cards, tools, secrets, launch, environments): services
   // start, and one that subscribes on initialize does so before the restored cards' events. Restored cards with
   // launch options or an environment ask their plugin's service, so start services first.
   pluginServices.hostReady();
   await pluginServicesStarted.catch(() => undefined);
+  for(const budget of budgets.snapshots())if(budget.paused)applyBudgetEnforcement(budget);
   await terminalManager.restorePersistedSessions();
   // The agent-control endpoint follows Settings → Agents → "Agent orchestration
   // endpoint"; the start flag / env var force it on for one launch (CI smoke)
@@ -836,6 +1159,9 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       if (active) browserService?.cancelCanvasNavigationGesture();
       canvasNavigationInput?.setShortcutCaptureActive(active);
     },
+    setCanvasNavigationTerminalEditFocus: (contents, active) => {
+      canvasNavigationInput?.setTerminalEditFocus(contents, active);
+    },
     setCanvasNavigationPointerBinding: (input) => {
       canvasNavigationInput?.updatePointerBinding(input);
     },
@@ -846,8 +1172,23 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     broadcastPluginStorageChange
   });
   markMainBoot("coreServicesReady");
+  const workspace = new WorkspaceArchive(userDataPath,{
+    descriptors: () => managedTerminals.archiveDescriptors(),
+    create: request => managedTerminals.create(request), setBounds: (id,bounds) => managedTerminals.setBounds(id,bounds),
+    available: provider => provider === "terminal" || providerCliAvailability(providerClis!)[provider as AgentProviderId] === true,
+    bypassAcknowledged: provider => settings.get().acknowledgedDangerousProfiles.includes(provider as AgentProviderId),
+    redact: text => redaction.redact(text)
+  });
+  registerBacklogIpc(ipc,{outputHistory,reports,secretGrants,usagePrices,board:taskBoard,budgets,flows:templates,taskRoot:id=>agentControlService.taskRoot(id),attention,terminals:managedTerminals,timeline,checkpoints,workspace,getMainWindow:()=>mainWindow});
+  registerNetworkPolicyIpc(ipc,{manager:networkPolicies,getMainWindow:()=>mainWindow,
+    taskRoot:id=>agentControlService.taskRoot(id),
+    revokeBrowserCapabilities:cwd=>{managedTerminals.revokeBrowserCapabilitiesForStrictNetwork(cwd);},
+    audit:(id,policy)=>{if(id)void timeline.append(id,"network-policy","Person changed project network policy",JSON.stringify(policy),"human").catch(console.warn);}
+  });
   // The Even G2 companion is the last group: nothing on the first frame needs it.
   evenG2 = new EvenG2Controller({
+    notifications:(channel,id)=>attention.list(channel,id),
+    loopWarningActive:id=>agentControlService.hasCurrentLoopWarning(id),
     userDataPath, terminals: terminalManager,
     localDiscovery: process.platform === "darwin",
     defaultWorkspace: join(app.getPath("documents"), "CanvasTTY Projects"),
@@ -1143,12 +1484,6 @@ async function showStartupFailure(window: BrowserWindow, error: unknown): Promis
   }
 }
 
-/** Notification body for the two statuses that deserve the user's attention. */
-function attentionStatusLabel(status: "needs_approval" | "failed", locale: LocaleId): string {
-  if (status === "needs_approval") return locale === "ru" ? "Требуется подтверждение" : "Needs approval";
-  return locale === "ru" ? "Сессия завершилась с ошибкой" : "Session failed";
-}
-
 if (hasSingleInstanceLock) {
   void app.whenReady()
     .then(() => {
@@ -1214,6 +1549,7 @@ app.on("child-process-gone", (_event, details) => {
 void IPC.terminalData;
 
 async function shutdownServices(): Promise<void> {
+  disposeBudgetObservers?.();disposeBudgetObservers=null;
   diagnostics.record("info", "application", "shutdown.started");
   agentChatHistory?.dispose();
   if (agentControl) await Promise.allSettled([agentControl.close()]);
@@ -1221,8 +1557,12 @@ async function shutdownServices(): Promise<void> {
   if (updateInterval) clearInterval(updateInterval);
   for (const request of browserRequests.values()) { clearTimeout(request.timer); request.reject(new Error("App closing")); }
   browserRequests.clear();
-  await evenG2?.close();
-  if (terminalManager) await terminalManager.shutdown();
+  await runShutdownSteps([
+    {name:"Even G2",run:()=>evenG2?.close()},
+    {name:"terminal processes",run:()=>terminalManager?.shutdown()},
+    {name:"network proxy",run:()=>networkPolicies?.close()}
+  ]);
+  networkPolicies = null;
   // The hung-up PTYs exit while the other services close; quitting waits for them (see waitForProcessExits).
   const ptyExits = terminalManager?.waitForProcessExits().then((left) => {
     if (left > 0) console.warn(`CanvasTTY quit with ${left} terminal process(es) that did not exit after SIGKILL.`);
@@ -1230,10 +1570,17 @@ async function shutdownServices(): Promise<void> {
   limitsService?.dispose();
   if (agentGateway) await Promise.allSettled([agentGateway.close()]);
   if (runtimeGateway) await Promise.allSettled([runtimeGateway.close()]);
-  if (browserService) await Promise.allSettled([browserService.dispose()]);
-  if (pluginServices) await Promise.allSettled([pluginServices.dispose()]);
-  if (pluginManager) await Promise.allSettled([pluginManager.dispose()]);
-  if (materialService) await Promise.allSettled([materialService.dispose()]);
+  if(terminalOutputHistory)await terminalOutputHistory.close().catch(console.warn);
+  terminalOutputHistory=null;
+  await runShutdownSteps([
+    {name:"session reports",run:()=>sessionReports?.flush()},
+    {name:"session timeline",run:()=>sessionTimeline?.flush()},
+    {name:"budgets",run:async()=>{try{await flushBudgets?.();}finally{flushBudgets=null;}}},
+    {name:"browser",run:()=>browserService?.dispose()},
+    {name:"plugin services",run:()=>pluginServices?.dispose()},
+    {name:"plugins",run:()=>pluginManager?.dispose()},
+    {name:"materials",run:()=>materialService?.dispose()}
+  ]);
   await ptyExits;
   diagnostics.record("info", "application", "shutdown.completed");
   await diagnostics.flush();
@@ -1264,6 +1611,8 @@ async function openPluginWindow(pluginId: string, contributionId: string): Promi
     }
   });
   pluginWindows.set(window, pluginId);
+  attachEditContextMenu(window.webContents, () => editMenuLocale(),
+    (template, contents) => Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(contents) ?? undefined }));
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => {
     if (!url.startsWith(`canvastty-plugin://${pluginId}/`)) event.preventDefault();

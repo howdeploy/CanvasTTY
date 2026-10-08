@@ -85,7 +85,9 @@ gh variable set SPARKLE_PUBLIC_ED_KEY --repo howdeploy/CanvasTTY \
 - **启动模式**：自动（默认）、手动、接受编辑、计划、绕过，仅在 CLI 支持时提供。绕过由用户按 CLI 确认，在主进程中检查，绝不交给子智能体，并且仍处于下列各层之内。
 - **基础保护**（hooks）为有 hooks 的智能体拒绝提权、`curl | sh`、磁盘命令以及项目外的写入；它检查命令，不是沙箱。
 - **委派规则**：子智能体的权限不超过其编排者（绝不为 YOLO），只在项目文件夹内工作，并受用户设定的深度和数量限制；智能体无法更改设置、防护、配置档或隔离。
-- **智能体隔离**（macOS 使用 sandbox-exec，Linux 使用 bubblewrap）：只能写入项目、自身临时目录和其 CLI 的目录；密钥和令牌不可读；其他进程、应用和守护进程不可达；无法建立时拒绝启动。网络不受限制；Windows 暂无此层，子智能体在那里以手动模式运行。详见 [agent-orchestration.md](agent-orchestration.md)。
+- **智能体隔离**（macOS 使用 sandbox-exec，Linux 使用 bubblewrap）：只能写入项目、自身临时目录和其 CLI 的目录；密钥和令牌不可读；其他进程、应用和守护进程不可达；无法建立时拒绝启动。未设置网络策略时网络不受限制；Windows 暂无此层，子智能体在那里以手动模式运行。详见 [agent-orchestration.md](agent-orchestration.md)。
+- **网络策略**按项目设置：开放、仅允许的域名（可选包括提供方 API 和软件包仓库）或离线；在下次启动智能体时生效，并显示在卡片上。策略保存在 CanvasTTY 的私有数据中，项目文件或插件无法放宽它。严格模式需要 macOS 沙箱，或在 Linux 上需要随附的 helper 和 Landlock ABI 9；否则严格启动会被拒绝。普通 SSH 会话不在此范围内。
+- **按需使用密钥**：智能体通过 `request_secret` 请求一个已配置的提供方密钥，用户授权 10 分钟、一轮或整个会话，随后 `run_secret_request` 用它发送类型化 HTTPS 请求。密钥本身不会交给智能体；授权可在卡片详情中撤销。
 
 **Git 审计。** 隔离的智能体会话结束、被关闭或在退出后恢复时，CanvasTTY 会检查其文件夹下 git 目录发生变化的仓库。如果 git 现在会在隔离外运行某些东西（`core.hooksPath`、filter 或 diff 驱动、`fsmonitor`、hook 文件、`info/attributes`），会出现一条列出具体变化的通知；**Neutralize** 删除这些键并停用这些文件，**Keep as is** 保持不变。它不会撤销项目内的其他文件改动。
 

@@ -102,6 +102,7 @@ function kindOf(command) {
   if (helper) return /^\/bin\/sh -c/u.test(command) ? "wrapper" : helper[1];
   const native = /canvastty-helper (mcp-browser|mcp-orchestration|permission-gate|hook)\b/u.exec(command);
   if (native) return /^\/bin\/sh -c/u.test(command) ? "wrapper" : `native:${native[1]}`;
+  if (command.includes("TerminalOutputHistoryWorker")) return "history-worker";
   if (command.includes("flood.mjs")) return "flood";
   if (/(^|\/)-?(zsh|bash|sh)(\s|$)/u.test(command)) return "shell";
   return `other:${command.split(/\s+/u)[0].split("/").at(-1)}`;

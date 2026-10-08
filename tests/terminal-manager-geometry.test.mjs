@@ -1,18 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ProcessTreePause } from "../src/main/services/ProcessTreePause.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 
-test("Grok PTY starts and restarts only with the renderer-measured grid", () => {
+test("Grok PTY starts and restarts only with the renderer-measured grid and releases completed PTYs", (t) => {
   const calls = [];
+  const signals = [];
   const manager = new TerminalManager(
     () => undefined,
     availableRegistry(),
     undefined,
     undefined,
     true,
-    fakeSpawner(calls, { pidBase: 10_000 })
+    fakeSpawner(calls, { pidBase: 10_000 }),
+    new ProcessTreePause("darwin", (pid, signal) => signals.push([pid, signal]))
   );
+  t.after(() => manager.disposeAll());
   const session = manager.create({
     provider: "grok",
     cwd: process.cwd(),
@@ -26,15 +30,29 @@ test("Grok PTY starts and restarts only with the renderer-measured grid", () => 
   assert.equal(calls[0].options.cols, 73);
   assert.equal(calls[0].options.rows, 18);
 
+  calls[0].process.emitData("kept scrollback\r\n");
   calls[0].process.emitExit(0);
   assert.equal(manager.list()[0].exitCode, 0);
+  const exitedBuffer = manager.readBuffer(session.id);
+  assert.equal(exitedBuffer.buffer, "kept scrollback\r\n");
+  manager.setBudgetPaused(session.id, true);
+  assert.deepEqual(signals, [], "budget changes must not signal a completed PTY");
+  manager.setBudgetPaused(session.id, false);
+  assert.deepEqual(signals, [], "clearing a budget must not signal a completed PTY");
+
   manager.restart(session.id);
   assert.equal(calls.length, 1);
   manager.resize(session.id, 69, 16);
   assert.equal(calls.length, 2);
   assert.equal(calls[1].options.cols, 69);
   assert.equal(calls[1].options.rows, 16);
-  manager.disposeAll();
+  calls[1].process.emitData("restarted\r\n");
+  calls[1].process.emitExit(0);
+  assert.equal(manager.readBuffer(session.id).buffer, "kept scrollback\r\nrestarted\r\n");
+  let staleKills = 0;
+  calls[1].process.kill = () => { staleKills += 1; };
+  manager.dispose(session.id);
+  assert.equal(staleKills, 0, "closing a completed card must not kill its old PTY");
 });
 
 test("other providers retain immediate startup and subsequent PTY resize", () => {

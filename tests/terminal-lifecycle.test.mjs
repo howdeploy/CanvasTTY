@@ -290,7 +290,7 @@ test("session metadata revisions advance before lifecycle events cross IPC", asy
   assert.match(source, /metadata\.revision \+= 1;[\s\S]{0,120}?this\.emit\(IPC\.terminalSession/);
 });
 
-test("revoking lifecycle hooks makes live agent status unavailable until a restarted session gets a new parser", async () => {
+test("revoking lifecycle hooks makes live agent status unavailable until a restarted session gets a new parser", async (t) => {
   const source = await readFile(terminalManagerPath, "utf8");
 
   assert.match(source, /setLifecycleHooksEnabled\(enabled: boolean\): void/);
@@ -298,7 +298,20 @@ test("revoking lifecycle hooks makes live agent status unavailable until a resta
   assert.match(source, /session\.lifecycle = null;/);
   assert.match(source, /session\.metadata\.provider === "terminal"/);
   assert.match(source, /session\.metadata\.status = "unavailable";\s*this\.emitSession\(session\.metadata\)/);
-  assert.match(source, /if \(!this\.lifecycleHooksEnabled \|\| !session/);
+  const { TerminalManager } = await import("../src/main/services/TerminalManager.ts");
+  const { availableRegistry, fakeSpawner } = await import("./helpers/terminal.mjs");
+  const manager = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner([]));
+  t.after(() => manager.disposeAll());
+  const session = manager.create({ provider: "codex", profile: "normal", cwd: process.cwd(), position: { x: 0, y: 0 } });
+  manager.applyProviderSignal(session.id, { state: "working" });
+  assert.equal(manager.getMetadata(session.id).status, "working");
+  manager.setLifecycleHooksEnabled(false);
+  assert.equal(manager.getMetadata(session.id).status, "unavailable");
+  assert.equal(manager.sessions.get(session.id).lifecycle, null);
+  for (const state of ["needs_approval", "working", "idle"]) {
+    manager.applyProviderSignal(session.id, { state });
+    assert.equal(manager.getMetadata(session.id).status, "unavailable", "capture signals must not restore disabled UI status");
+  }
   assert.match(source, /session\.lifecycle = this\.lifecycleHooksEnabled\s*\? createProviderLifecycleParser/);
 });
 
@@ -377,7 +390,9 @@ test("failed PTYs preserve their final sanitized output as failure details", asy
 
   // Masked whole before the last lines are chosen (a cut inside a secret would leave its tail readable).
   assert.match(source, /terminalFailureDetails\(this\.redactSecrets\(current\.bufferChunks\.slice\(current\.bufferStart\)\.join\(""\)\)\)/);
-  assert.match(source, /current\.metadata\.failureDetails = exitCode === 0/);
+  assert.match(source, /const details = exitCode === 0/);
+  // A signal death (node-pty: exitCode 0 plus the signal) is a failure named by its signal, not a clean exit.
+  assert.match(source, /const exitCode = killedBy \? 128 \+ killedBy : reportedExitCode;/);
 });
 
 function effectDependenciesContaining(source, marker) {

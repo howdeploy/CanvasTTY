@@ -10,6 +10,8 @@ export interface PrepareAgentBrowserLaunchInput {
   terminalSessionId: string;
   provider: AgentProvider;
   cwd: string;
+  /** Strict OS network modes must never receive the host-side browser capability. */
+  networkMode?: "open" | "allowed-domains" | "offline";
   /** Include the canvastty_agents MCP server: orchestrators, and sessions a plugin tool applies to. */
   includeOrchestration?: boolean;
   /** The canvastty_agents tools this session may use (default: the core tools). */
@@ -63,6 +65,11 @@ export class AgentBrowserBridge implements AgentBrowserLaunchCoordinator {
   }
 
   prepareLaunch(input: PrepareAgentBrowserLaunchInput): PreparedAgentBrowserPtyLaunch | null {
+    // The browser gateway can make external requests from the host, outside an agent's OS network policy. Strict
+    // launches may retain orchestration only; never issue a browser token or write browser credentials into config.
+    if (input.networkMode && input.networkMode !== "open") {
+      return input.includeOrchestration ? this.prepareOrchestrationOnly(input) : null;
+    }
     // Browser access off: no canvastty_browser and no browser capability, but a session that gets canvastty_agents
     // (orchestrators, plugin tools) still gets it; that server has its own capability and gateway.
     if (!this.gateway.isEnabled) return input.includeOrchestration ? this.prepareOrchestrationOnly(input) : null;

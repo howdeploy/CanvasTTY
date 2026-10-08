@@ -18,6 +18,13 @@ import {
   type CanvasMarqueeRect
 } from "./canvasSelectionGesture";
 import { EDGE_PAN_SPEEDS, createEdgePanLoop, edgePanVelocity } from "./edgePan";
+import { createRafAccumulator } from "./rafAccumulator";
+
+interface PanFrame {
+  startClient: Point;
+  startCamera: CameraState;
+  client: Point;
+}
 
 interface PanState {
   pointerId: number;
@@ -111,6 +118,28 @@ export function useCanvasPointerNavigation({
     velocity: (pointer) => edgePanVelocityRef.current(pointer),
     commit: (velocity, dt) => edgePanCommitRef.current(velocity, dt)
   }));
+  const commitCameraRef = useRef(commitCamera);
+  commitCameraRef.current = commitCamera;
+  const [panFrames] = useState(() => createRafAccumulator<PanFrame>(
+    (_pending, next) => next,
+    ({ startClient, startCamera, client }) => commitCameraRef.current({
+      ...cameraRef.current,
+      x: startCamera.x + client.x - startClient.x,
+      y: startCamera.y + client.y - startClient.y
+    })
+  ));
+
+  const queuePan = useCallback((
+    state: Pick<PanState, "startClient" | "startCamera">,
+    clientX: number,
+    clientY: number
+  ): void => {
+    panFrames.push({
+      startClient: state.startClient,
+      startCamera: state.startCamera,
+      client: { x: clientX, y: clientY }
+    });
+  }, [panFrames]);
 
   const panTo = useCallback((clientX: number, clientY: number): void => {
     const state = panState.current;
@@ -118,16 +147,13 @@ export function useCanvasPointerNavigation({
     if (Math.abs(clientX - state.startClient.x) > 3 || Math.abs(clientY - state.startClient.y) > 3) {
       state.moved = true;
     }
-    commitCamera({
-      ...state.startCamera,
-      x: state.startCamera.x + clientX - state.startClient.x,
-      y: state.startCamera.y + clientY - state.startClient.y
-    });
-  }, [commitCamera]);
+    queuePan(state, clientX, clientY);
+  }, [queuePan]);
 
   const finishPan = useCallback((): void => {
     const state = panState.current;
     if (!state) return;
+    panFrames.flush();
     if (state.moved || state.suppressClick) {
       suppressClick.current = true;
       window.setTimeout(() => { suppressClick.current = false; }, 0);
@@ -137,12 +163,12 @@ export function useCanvasPointerNavigation({
     panState.current = null;
     window.canvasTTY.canvasNavigation.setPointerGestureActive(false);
     setPanning(false);
-  }, [viewport]);
+  }, [panFrames, viewport]);
 
   /**
-   * Aborts every in-flight gesture without committing: nothing is written back, so a
-   * cancelled pan, marquee, or group move leaves the camera, the selection, and the
-   * committed bounds untouched. Shared by cancel events and window blur.
+   * Aborts every in-flight gesture without adding a completion delta. The last real pan
+   * sample is flushed before state is cleared; marquee and group moves stay uncommitted.
+   * Shared by cancel events and window blur.
    */
   const cancelPointerGesture = useCallback((): void => {
     const pointerId = panState.current?.pointerId
@@ -150,6 +176,8 @@ export function useCanvasPointerNavigation({
       ?? groupDrag.current?.pointerId;
     const element = viewport.current;
     if (pointerId !== undefined && element?.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
+    // Keep the latest real move even when a blur/cancel arrives before the next paint.
+    panFrames.flush();
     if (panState.current) window.canvasTTY.canvasNavigation.setPointerGestureActive(false);
     panState.current = null;
     nativePanState.current = null;
@@ -161,7 +189,7 @@ export function useCanvasPointerNavigation({
     // Losing focus leaves no pointermove to ever clear the edge-pan pointer (handlePointerLeave,
     // the loop's other exit, only fires on a real pointer leave): stop the loop here.
     edgePan.stop();
-  }, [edgePan, viewport]);
+  }, [edgePan, panFrames, viewport]);
 
   const localPoint = useCallback((clientX: number, clientY: number): Point | null => {
     const bounds = viewport.current?.getBoundingClientRect();
@@ -252,16 +280,21 @@ export function useCanvasPointerNavigation({
 
   useEffect(() => () => {
     edgePan.stop();
+    panFrames.dispose();
     if (panState.current) window.canvasTTY.canvasNavigation.setPointerGestureActive(false);
-  }, []);
+  }, [edgePan, panFrames]);
 
   useEffect(() => window.canvasTTY.browser.onCanvasNavigationPointer((event) => {
     if (panState.current && event.type !== "down") {
       if (event.type === "move") panTo(event.clientX, event.clientY);
-      else finishPan();
+      else {
+        if (event.type === "up") panTo(event.clientX, event.clientY);
+        finishPan();
+      }
       return;
     }
     if (event.type === "down") {
+      panFrames.flush();
       nativePanState.current = {
         tabId: event.tabId,
         startClient: { x: event.clientX, y: event.clientY },
@@ -273,16 +306,14 @@ export function useCanvasPointerNavigation({
     const state = nativePanState.current;
     if (!state || state.tabId !== event.tabId) return;
     if (event.type === "move") {
-      commitCamera({
-        ...state.startCamera,
-        x: state.startCamera.x + event.clientX - state.startClient.x,
-        y: state.startCamera.y + event.clientY - state.startClient.y
-      });
+      queuePan(state, event.clientX, event.clientY);
       return;
     }
+    if (event.type === "up") queuePan(state, event.clientX, event.clientY);
+    panFrames.flush();
     nativePanState.current = null;
     setPanning(false);
-  }), [cameraRef, commitCamera, finishPan, panTo]);
+  }), [cameraRef, finishPan, panFrames, panTo, queuePan]);
 
   const isMousePanBinding = useCallback((event: {
     button: number;
@@ -337,6 +368,7 @@ export function useCanvasPointerNavigation({
       event.preventDefault();
       event.stopPropagation();
     }
+    panFrames.flush();
     event.currentTarget.setPointerCapture(event.pointerId);
     panState.current = {
       pointerId: event.pointerId,
@@ -348,7 +380,7 @@ export function useCanvasPointerNavigation({
     window.canvasTTY.canvasNavigation.setPointerGestureActive(true);
     setPanning(true);
     return true;
-  }, [cameraRef, isMousePanBinding]);
+  }, [cameraRef, isMousePanBinding, panFrames]);
 
   edgePanVelocityRef.current = (pointer) => {
     if (panState.current || nativePanState.current || marqueeState.current || groupDrag.current
@@ -443,8 +475,10 @@ export function useCanvasPointerNavigation({
   }, [edgePan, panTo]);
 
   const handlePointerEnd = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
-    if (panState.current?.pointerId === event.pointerId) finishPan();
-  }, [finishPan]);
+    if (panState.current?.pointerId !== event.pointerId) return;
+    panTo(event.clientX, event.clientY);
+    finishPan();
+  }, [finishPan, panTo]);
 
   const handlePointerLeave = useCallback((): void => {
     edgePan.leave();

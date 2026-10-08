@@ -10,6 +10,21 @@ test("publishable repository files contain no high-confidence secrets or persona
   assert.deepEqual(await collectRepositoryIssues(), []);
 });
 
+test("source auditing excludes local context while artifact auditing detects a packaged copy", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "canvastty-context-audit-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const local = join(root, ".context");
+  const packaged = join(root, "out", ".context");
+  await mkdir(local, { recursive: true });
+  await writeFile(join(local, "credentials.json"), "synthetic fixture only\n");
+  assert.deepEqual(await collectRepositoryIssues(root), []);
+  await mkdir(packaged, { recursive: true });
+  await writeFile(join(packaged, "credentials.json"), "synthetic fixture only\n");
+  assert.deepEqual(await collectArtifactIssues(root), [
+    { path: "out/.context/credentials.json", rule: "sensitive filename" }
+  ]);
+});
+
 test("secret audit ignores the Git metadata file used by linked worktrees", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "canvastty-secret-audit-"));
   t.after(() => rm(root, { recursive: true, force: true }));

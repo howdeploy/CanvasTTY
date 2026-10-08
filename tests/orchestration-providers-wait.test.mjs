@@ -22,10 +22,10 @@ test("the catalog lists list_providers first and wait_for_agent with a bounded t
   assert.deepEqual(definition("list_providers").inputSchema, { type: "object", properties: {}, required: [], additionalProperties: false });
   const wait = definition("wait_for_agent").inputSchema;
   assert.deepEqual(wait.required, ["sessionId"]);
-  assert.equal(wait.properties.timeoutSeconds.maximum, 600);
-  assert.equal(MAX_AGENT_WAIT_SECONDS, 600);
-  assert.equal(validateOrchestrationArguments("wait_for_agent", { sessionId: "a", timeoutSeconds: 600 }).ok, true);
-  assert.match(validateOrchestrationArguments("wait_for_agent", { sessionId: "a", timeoutSeconds: 601 }).error, /above the maximum/u);
+  assert.equal(wait.properties.timeoutSeconds.maximum, 100);
+  assert.equal(MAX_AGENT_WAIT_SECONDS, 100);
+  assert.equal(validateOrchestrationArguments("wait_for_agent", { sessionId: "a", timeoutSeconds: 100 }).ok, true);
+  assert.match(validateOrchestrationArguments("wait_for_agent", { sessionId: "a", timeoutSeconds: 101 }).error, /above the maximum/u);
   assert.equal(validateOrchestrationArguments("list_providers", {}).ok, true);
   assert.match(validateOrchestrationArguments("list_providers", { x: 1 }).error, /Unexpected argument/u);
   assert.match(definition("list_providers").description, /Never search the filesystem/u);
@@ -217,7 +217,7 @@ test("wait_for_agent stops at once when the call is canceled", async () => {
   const controller = new AbortController();
   const started = Date.now();
   setTimeout(() => controller.abort(), 20);
-  await assert.rejects(call(handler, "wait_for_agent", { sessionId: "child", timeoutSeconds: 600 }, controller.signal),
+  await assert.rejects(call(handler, "wait_for_agent", { sessionId: "child", timeoutSeconds: 100 }, controller.signal),
     (error) => error.bridgeError?.code === "CANCELED");
   assert.ok(Date.now() - started < 1_000);
   const aborted = new AbortController();
@@ -302,4 +302,38 @@ test("the skill tells the orchestrator to pass a model the person names", async 
   const { readFile } = await import("node:fs/promises");
   const skill = await readFile(new URL("../agent/orchestrator/SKILL.md", import.meta.url), "utf8");
   assert.match(skill, /If the person names a model, pass it as `model`/u);
+});
+
+test("OpenCode waits return within 50 seconds and never block on a separate review", async () => {
+  const { control } = setup();
+  let received;
+  control.waitFor = async (_id, request) => {
+    received = request;
+    return { sessionId: "child", reason: "timeout", status: "working", output: "progress", exitCode: null, waitedMs: 100000 };
+  };
+  control.resultWithReview = () => { throw new Error("must not wait beyond the tool deadline"); };
+  const handler = new ScopedOrchestrationHandler(control);
+  const result = await call(handler, "wait_for_agent", { sessionId: "child", timeoutSeconds: 600 });
+  assert.equal(received.timeoutMs, 50000);
+  assert.equal(received.deferReview, true);
+  assert.equal(result.output, "progress");
+  assert.match(result.message, /Call wait_for_agent again/);
+});
+
+
+test("get_agent_result returns pending during a slow review and reuses its final outcome", { timeout: 1000 }, async () => {
+  const { terminals, control, handler } = setup();
+  terminals.sessions.get("child").status = "idle";
+  control.reviewRequested.add("child");
+  let finish;
+  let reviews = 0;
+  control.performReview = () => { reviews++; return new Promise((resolve) => { finish = resolve; }); };
+  const pending = await call(handler, "get_agent_result", { sessionId: "child" });
+  assert.equal(pending.review.status, "pending");
+  assert.equal((await call(handler, "get_agent_result", { sessionId: "child" })).review.status, "pending");
+  assert.equal(reviews, 1);
+  finish({ status: "accepted", costUsd: null });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await call(handler, "get_agent_result", { sessionId: "child" })).review.status, "accepted");
+  assert.equal(reviews, 1);
 });

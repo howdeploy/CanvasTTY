@@ -56,7 +56,7 @@ function staticallyReachableBytes(metafile, entry) {
   return { paths: seen, bytes: [...seen].reduce((sum, path) => sum + metafile.outputs[path].bytes, 0) };
 }
 
-test("Settings and the launch/link dialogs are split out of the app's static import graph", async () => {
+test("deferred settings, dialogs, and terminal rendering stay out of the app's static import graph", async () => {
   const metafile = await bundleApp();
   const appPath = outputFor(metafile, "App.js");
   assert.ok(appPath, "expected an App.js bundle output");
@@ -72,6 +72,25 @@ test("Settings and the launch/link dialogs are split out of the app's static imp
   assert.ok(!eagerPaths.has(settingsPath), "SettingsPanel must only be reachable through a dynamic import()");
   assert.ok(!eagerPaths.has(launchDialogPath), "AgentLaunchDialog must only be reachable through a dynamic import()");
   assert.ok(!eagerPaths.has(linkDialogPath), "TerminalLinkDialog must only be reachable through a dynamic import()");
+
+  const terminalCardSource = "src/renderer/src/features/terminal/TerminalCard.tsx";
+  const terminalCardOutputs = Object.entries(metafile.outputs).filter(([, output]) => (
+    Object.keys(output.inputs).some((input) => input.replaceAll("\\", "/").endsWith(terminalCardSource))
+  ));
+  assert.ok(terminalCardOutputs.length > 0, "TerminalCard must be emitted in an on-demand chunk");
+  assert.ok(
+    terminalCardOutputs.every(([path]) => !eagerPaths.has(path)),
+    "TerminalCard must only be reachable through a dynamic import()"
+  );
+
+  const xtermOutputs = Object.entries(metafile.outputs).filter(([, output]) => (
+    Object.keys(output.inputs).some((input) => /node_modules\/@xterm\//u.test(input.replaceAll("\\", "/")))
+  ));
+  assert.ok(xtermOutputs.length > 0, "expected the terminal card's xterm dependencies in the bundled graph");
+  assert.ok(
+    xtermOutputs.every(([path]) => !eagerPaths.has(path)),
+    "xterm dependencies must not be eagerly loaded with the app"
+  );
 
   const settingsBytes = metafile.outputs[settingsPath].bytes;
   assert.ok(settingsBytes > 100_000, `SettingsPanel chunk should carry real weight, got ${settingsBytes} bytes`);

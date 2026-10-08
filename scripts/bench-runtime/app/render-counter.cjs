@@ -5,8 +5,9 @@ const { contextBridge } = require("electron");
 
 contextBridge.executeInMainWorld({
   func: () => {
-    const counts = { commits: 0, rendered: 0, terminalCards: 0, byName: {} };
+    const counts = { commits: 0, rendered: 0, terminalCards: 0, taskEdgeHosts: 0, byName: {} };
     const seen = new WeakSet();
+    const seenTaskEdges = new WeakSet();
     const renderers = new Map();
     const walk = (root) => {
       const stack = [root];
@@ -23,6 +24,15 @@ contextBridge.executeInMainWorld({
             const name = (type && (type.displayName || type.name)) || "?";
             counts.byName[name] = (counts.byName[name] ?? 0) + 1;
             if ("focusChangeSource" in props && "session" in props) counts.terminalCards++;
+          }
+        }
+        // Workspace task edges are inline host divs rather than their own component. Count committed
+        // edge prop objects separately so a pan run can measure their React reconciliation directly.
+        if (fiber.tag === 5) {
+          const props = fiber.memoizedProps;
+          if (props?.className === "workspace__task-edge" && !seenTaskEdges.has(props)) {
+            seenTaskEdges.add(props);
+            counts.taskEdgeHosts++;
           }
         }
         if (fiber.sibling) stack.push(fiber.sibling);

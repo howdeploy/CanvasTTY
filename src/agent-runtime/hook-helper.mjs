@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import {
+  AGENT_RUNTIME_ENV,
   CAPTURE_ANSWER_ENV,
   CAPTURE_ANSWER_EXPIRES_AT_ENV,
   CAPTURE_RESULT_ENV,
   MAX_ANSWER_CHARS,
   MAX_HOOK_INPUT_BYTES,
   MAX_RESULT_CHARS,
-  RUNTIME_STATES
+  RUNTIME_STATES,
+  toolOutcomeFromHook
 } from "./runtime-protocol.mjs";
 import { reportLifecycle } from "./runtime-client.mjs";
 
@@ -34,11 +36,13 @@ try {
 } catch {
   input = null;
 }
+const provider = process.env[AGENT_RUNTIME_ENV.provider];
 const turnId = firstString(
   input?.turn_id,
   input?.turnId,
   input?.prompt_id,
-  input?.promptId
+  input?.promptId,
+  provider === "hermes" ? input?.extra?.turn_id : undefined
 );
 // The provider's own conversation id; runtime-client keeps it only in a shape that provider issues.
 const threadId = firstString(
@@ -60,13 +64,15 @@ if (captureResult && finalAnswer !== null) {
 const lastAssistantMessage = captureAnswer && finalAnswer !== null
   ? boundedText(finalAnswer, MAX_ANSWER_CHARS)
   : undefined;
+const toolOutcome = toolOutcomeFromHook(provider, event, input);
 await reportLifecycle({
   state,
   event,
   turnId,
   ...(threadId ? { threadId } : {}),
   ...(result === undefined ? {} : { result }),
-  ...(lastAssistantMessage === undefined ? {} : { lastAssistantMessage })
+  ...(lastAssistantMessage === undefined ? {} : { lastAssistantMessage }),
+  ...(toolOutcome === undefined ? {} : { toolOutcome })
 });
 
 /** Cuts at the limit without leaving a dangling high surrogate. */

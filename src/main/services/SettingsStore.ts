@@ -994,7 +994,7 @@ function normalizePluginCanvas(candidate: unknown, fallback: readonly PluginCanv
   return instances;
 }
 
-function normalizeCanvasRegions(
+export function normalizeCanvasRegions(
   candidate: unknown,
   fallback: readonly CanvasRegion[] = []
 ): CanvasRegion[] {
@@ -1053,7 +1053,7 @@ export function normalizeStickyNotes(
   return notes;
 }
 
-function normalizeBrowserCanvas(candidate: unknown, fallback: BrowserCanvasState | null): BrowserCanvasState | null {
+export function normalizeBrowserCanvas(candidate: unknown, fallback: BrowserCanvasState | null): BrowserCanvasState | null {
   if (candidate === null) return null;
   if (!candidate || typeof candidate !== "object") return fallback ? structuredClone(fallback) : null;
   const source = candidate as Partial<BrowserCanvasState>;

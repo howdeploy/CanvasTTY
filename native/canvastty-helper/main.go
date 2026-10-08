@@ -19,7 +19,7 @@ const helperVersion = "canvastty-helper 1"
 
 func main() {
 	if len(os.Args) < 2 {
-		os.Stderr.WriteString("usage: canvastty-helper mcp-browser | mcp-orchestration | permission-gate pretool | hook <state> <event> | version\n")
+		os.Stderr.WriteString("usage: canvastty-helper mcp-browser | mcp-orchestration | permission-gate pretool | hook <state> <event> | network-bridge | version\n")
 		os.Exit(2)
 	}
 	args := os.Args[2:]
@@ -32,6 +32,8 @@ func main() {
 		os.Exit(runPermissionGate(args))
 	case "hook":
 		os.Exit(runHook(args))
+	case "network-bridge":
+		os.Exit(runNetworkBridge(args))
 	case "version":
 		os.Stdout.WriteString(helperVersion + "\n")
 		os.Exit(0)

@@ -99,6 +99,49 @@ async function managerFixture(t, pipeline, { mode = "continue", directory } = {}
 
 const card = (manager, id) => manager.list().find((session) => session.id === id);
 
+test("only the trusted Accounts contributor attributes usage to the selected account",async(t)=>{
+  const context={sessionId:"attributed",provider:"codex",profile:"normal",role:"agent",cwd,restoring:false,resume:false,options:{"canvastty-accounts":{account:"alternate"}}};
+  const {pipeline}=await pipelineFixture(t,{contributors:[contributor("canvastty-accounts")],answers:{"canvastty-accounts":{accountId:"alternate"}}});
+  const accepted=await pipeline.prepare(context);
+  assert.equal(accepted.ok,true);assert.equal(accepted.accountId,"alternate");await accepted.cleanup();
+  const mismatched=await pipeline.prepare({...context,options:{"canvastty-accounts":{account:"none"}}});
+  assert.equal(mismatched.ok,false);assert.match(mismatched.reason,/differs from the selected account/u);
+  const {pipeline:untrusted}=await pipelineFixture(t,{contributors:[contributor("other")],answers:{other:{accountId:"alternate"}}});
+  const refused=await untrusted.prepare({...context,options:{other:{}}});
+  assert.equal(refused.ok,false);assert.match(refused.reason,/cannot attribute/u);
+});
+
+test("Accounts attribution treats an empty selection as the default account", async (t) => {
+  const { pipeline } = await pipelineFixture(t, {
+    contributors: [contributor("canvastty-accounts")],
+    answers: { "canvastty-accounts": { accountId: "default" } }
+  });
+  for (const account of ["", "none", undefined]) {
+    const prepared = await pipeline.prepare({
+      sessionId: "default-attribution", provider: "codex", profile: "normal", role: "agent", cwd,
+      restoring: false, resume: false, options: { "canvastty-accounts": { account } }
+    });
+    assert.equal(prepared.ok, true, `default attribution must accept ${JSON.stringify(account)}`);
+    assert.equal(prepared.accountId, "default");
+    await prepared.cleanup();
+  }
+});
+
+test("an empty Accounts selection without attribution is billed to the provider's default sign-in", async (t) => {
+  const { pipeline } = await pipelineFixture(t, {
+    contributors: [contributor("canvastty-accounts", { launch: { fields: [{ key: "account", label: "Account", kind: "text", default: "" }] } })],
+    answers: { "canvastty-accounts": {} }
+  });
+  const { manager, calls } = await managerFixture(t, pipeline);
+  for (const account of ["", "none"]) {
+    const started = manager.create({ provider: "codex", profile: "normal", cwd, position: at,
+      launchOptions: { "canvastty-accounts": { account } } });
+    await waitFor(() => calls.length > 0 && card(manager, started.id).status !== "starting");
+    assert.equal(manager.usageAccount(started.id).id, "default", `selection ${JSON.stringify(account)}`);
+    calls.length = 0;
+  }
+});
+
 test("manifests declare launch options on one service and need launch:contribute", () => {
   const manifest = validatePluginManifest(exampleManifest);
   assert.deepEqual(manifest.services[0].launch.appliesTo, ["claude"]);
@@ -311,8 +354,13 @@ test("secret env comes from the plugin's own secrets, reaches the child, and is 
 
   const control = new AgentControlService(manager);
   const observed = control.observe(created.id).output;
-  assert.match(observed, /PROVIDER_API_KEY=<redacted:secret> PLAIN=visible/u);
+  // The combined source-range mask can also consume a high-entropy assignment label. Its kind and label retention
+  // are presentation details; the secret, its fragments, and unrelated public output are the integration contract.
+  assert.match(observed, /<redacted:(?:secret|assignment|high-entropy)> PLAIN=visible/u);
   assert.doesNotMatch(observed, new RegExp(SECRET, "u"));
+  for (const fragment of [SECRET.slice(0, 13), SECRET.slice(-12)]) {
+    assert.equal(observed.includes(fragment), false, "partial secret fragments must also remain masked");
+  }
   calls[0].exit(1);
   assert.doesNotMatch(control.result(created.id).output, new RegExp(SECRET, "u"));
   assert.doesNotMatch(card(manager, created.id).failureDetails ?? "", new RegExp(SECRET, "u"));

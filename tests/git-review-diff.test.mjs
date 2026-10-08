@@ -1,0 +1,33 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, writeFile, symlink, rm, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import test from "node:test";
+import { GitCheckpoints } from "../src/main/services/GitCheckpoints.ts";
+
+test("review diffs include masked untracked source and omit ignored, binary, oversized and external symlink files", async t => {
+  const base = await mkdtemp(join(tmpdir(), "ctty-review-diff-")), root = join(base, "project");
+  t.after(() => rm(base, { recursive:true, force:true }));
+  await mkdir(root);
+  const git = (...args) => execFileSync("git", args, {cwd:root,stdio:"ignore"});
+  git("init"); git("config", "user.name", "Review fixture"); git("config", "user.email", "fixture@example.invalid");
+  await writeFile(join(root, "tracked.txt"), "original\n");
+  await writeFile(join(root, ".gitignore"), "ignored.txt\n");
+  git("add", "."); git("commit", "-m", "fixture baseline");
+  await writeFile(join(root, "tracked.txt"), "changed tracked\n");
+  await writeFile(join(root, "new source.ts"), "export const result = 'PRIVATE_REVIEW_VALUE';\n");
+  await writeFile(join(root, "ignored.txt"), "ignored marker");
+  await writeFile(join(root, "binary.bin"), Buffer.from([0,1,2]));
+  await writeFile(join(root, "large.txt"), "oversized marker".repeat(3000));
+  await writeFile(join(base, "external.txt"), "external private marker");
+  await symlink(join(base, "external.txt"), join(root, "external-link"));
+  const checkpoints = new GitCheckpoints(text => text.replaceAll("PRIVATE_REVIEW_VALUE", "[MASKED]"));
+  const diff = await checkpoints.workingDiff(root);
+  assert.match(diff, /\+changed tracked/u);
+  assert.match(diff, /new source\.ts/u);
+  assert.match(diff, /\+export const result = '\[MASKED\]';/u);
+  assert.doesNotMatch(diff, /PRIVATE_REVIEW_VALUE|ignored marker|oversized marker|external private marker/u);
+  assert.match(diff, /3 untracked file\(s\) omitted/u);
+  assert.ok(diff.length <= 512 * 1024);
+});

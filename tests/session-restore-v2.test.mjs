@@ -100,7 +100,7 @@ test("v2 slots are validated: thread ids, 4 KB plugin options and environment re
   });
   assert.deepEqual(sessions, [
     record("kept", { lastState: "failed", exitCode: 2, threadId: CONVERSATION,
-      options: { "good.plugin": { a: 1 } }, environment }),
+      options: { "good.plugin": { a: 1 } }, environment, isolatedEnvironmentScopes: { roots: [], ambiguous: true } }),
     record("flag-id", { restore: false }),
     record("hermes-id", { provider: "hermes", threadId: HERMES_CONVERSATION }),
     record("bad-hermes-id", { provider: "hermes" })

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   AgentProviderId,
   AppSettings,
@@ -22,6 +22,7 @@ import {
   resolveDefaultLaunchProfile
 } from "../../../../shared/autoMode";
 import type { TranslationKey } from "../../lib/i18n";
+import { backlogApi } from "../workspace/backlogRendererApi";
 
 /** The mode the launcher starts in for this CLI: the person's default, else the next one the CLI has. */
 export function initialProfile(provider: ProviderId, settings: AppSettings, platform: string): LaunchProfileId {
@@ -59,7 +60,8 @@ interface AgentLaunchDialogProps {
     cwd: string,
     role: LaunchRole,
     launchOptions?: Record<string, PluginLaunchValues>,
-    environment?: SessionEnvironmentChoice
+    environment?: SessionEnvironmentChoice,
+    initialPrompt?: string
   ): Promise<void>;
 }
 
@@ -81,6 +83,14 @@ export function AgentLaunchDialog({
   const [launchOptions, setLaunchOptions] = useState<Record<string, PluginLaunchValues>>({});
   const changeLaunchOptions = useCallback((options: Record<string, PluginLaunchValues>) => setLaunchOptions(options), []);
   const [environment, setEnvironment] = useState<SessionEnvironmentChoice | null>(null);
+  const [flowId, setFlowId] = useState("");
+  const [flowTask, setFlowTask] = useState("");
+  const [flows, setFlows] = useState<Array<Awaited<ReturnType<ReturnType<typeof backlogApi>["flows"]>>["templates"][number]>>([]);
+  const [flowErrors, setFlowErrors] = useState<Array<{ file: string; line: number; message: string }>>([]);
+  const [flowLoading, setFlowLoading] = useState(false);
+  const [flowRefresh, setFlowRefresh] = useState(0);
+  const [flowPreview, setFlowPreview] = useState<{projectRoot:string;flowId:string;instructions:string;digest:string|null} | null>(null);
+  const backlog = useMemo(() => backlogApi(), []);
   const changeEnvironment = useCallback((choice: SessionEnvironmentChoice | null) => setEnvironment(choice), []);
   const locale = settings.locale;
 
@@ -88,10 +98,55 @@ export function AgentLaunchDialog({
     if (!provider) return;
     setProfile(initialProfile(provider, settings, platform));
     setRole("agent");
+    setFlowId("");
+    setFlowTask("");
+    setFlows([]);
+    setFlowErrors([]);
     setCwd(settings.lastDirectory);
     setConfirmDanger(false);
     setError(null);
   }, [provider, settings.lastDirectory]);
+
+  useEffect(() => {
+    if (!provider || provider === "terminal") return;
+    let alive = true;
+    setFlowLoading(true);
+    void backlog.flows(cwd).then((result) => {
+      if (!alive) return;
+      setFlows(result.templates);
+      setFlowErrors(result.errors);
+      setFlowId((current) => current && !result.templates.some((flow) => flow.id === current) ? "" : current);
+    }).catch((reason: unknown) => {
+      if (!alive) return;
+      setFlows([]);
+      setFlowErrors([{ file: "flows", line: 0, message: reason instanceof Error ? reason.message : String(reason) }]);
+    }).finally(() => { if (alive) setFlowLoading(false); });
+    return () => { alive = false; };
+  }, [backlog, cwd, flowRefresh, provider]);
+
+  const selectedFlow = flows.find(flow => flow.id === flowId);
+  useEffect(() => {
+    setFlowPreview(null);
+    if (!flowId || selectedFlow?.trusted === true) return;
+    let alive = true;
+    void backlog.previewFlow(cwd, flowId).then(preview => {
+      if (alive) setFlowPreview({ ...preview, projectRoot: cwd, flowId });
+    }).catch((reason: unknown) => {
+      if (alive) setError(reason instanceof Error ? reason.message : String(reason));
+    });
+    return () => { alive = false; };
+  }, [backlog, cwd, flowId, selectedFlow?.digest, selectedFlow?.trusted]);
+
+  const approveFlow = async (): Promise<void> => {
+    if (!flowPreview?.digest || flowPreview.projectRoot !== cwd || flowPreview.flowId !== flowId) return;
+    setBusy(true);
+    try {
+      await backlog.approveFlow(cwd, flowId, flowPreview.digest);
+      setFlowRefresh(value => value + 1);
+      setError(null);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBusy(false); }
+  };
 
   useEffect(() => {
     if (!provider) return;
@@ -109,7 +164,7 @@ export function AgentLaunchDialog({
   const dangerKey = PROVIDERS[provider].dangerKey ?? "confirmLaunch";
   // An orchestrator without the endpoint would be a plain session with a
   // misleading badge, so the launch waits for the explicit enable button.
-  const endpointMissing = role === "orchestrator" && !settings.agentControlEnabled;
+  const endpointMissing = (role === "orchestrator" || Boolean(flowId)) && !settings.agentControlEnabled;
 
   const enableEndpoint = async (): Promise<void> => {
     setBusy(true);
@@ -147,6 +202,10 @@ export function AgentLaunchDialog({
 
   const submit = async (): Promise<void> => {
     if (endpointMissing) return;
+    if (flowId && !flowTask.trim()) {
+      setError(locale === "ru" ? "Опишите задачу для рабочего процесса." : "Describe the task for this workflow.");
+      return;
+    }
     if (profile === "yolo" && !acknowledged && !confirmDanger) {
       setConfirmDanger(true);
       return;
@@ -156,8 +215,11 @@ export function AgentLaunchDialog({
     setError(null);
     try {
       if (profile === "yolo" && !acknowledged && !isTerminal) await onAcknowledge(provider);
-      await onLaunch(provider, profile, cwd, role, Object.keys(launchOptions).length > 0 ? launchOptions : undefined,
-        environment ?? undefined);
+      const initialPrompt = flowId
+        ? await backlog.redactText((await backlog.flowInstructions(cwd, flowId)).split("{{TASK}}").join(flowTask))
+        : undefined;
+      await onLaunch(provider, profile, cwd, flowId ? "orchestrator" : role, Object.keys(launchOptions).length > 0 ? launchOptions : undefined,
+        environment ?? undefined, initialPrompt);
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t(locale, "launchFailed"));
@@ -194,9 +256,46 @@ export function AgentLaunchDialog({
         </div>
 
         {!isTerminal && <div className="role-row" role="group" aria-label={t(locale, "launchRole")}>
-          <button className={role === "agent" ? "profile-button profile-button--active" : "profile-button"} type="button" aria-pressed={role === "agent"} onClick={() => setRole("agent")}>{t(locale, "roleAgent")}</button>
+          <button className={role === "agent" && !flowId ? "profile-button profile-button--active" : "profile-button"} type="button"
+            aria-pressed={role === "agent" && !flowId} disabled={Boolean(flowId)} onClick={() => setRole("agent")}>{t(locale, "roleAgent")}</button>
           <button className={role === "orchestrator" ? "profile-button profile-button--active" : "profile-button"} type="button" aria-pressed={role === "orchestrator"} onClick={() => setRole("orchestrator")}>{t(locale, "roleOrchestrator")}</button>
         </div>}
+
+        {!isTerminal && <section className="launch-flow-picker" aria-label={locale === "ru" ? "Шаблон рабочего процесса" : "Workflow template"}>
+          <label htmlFor="launch-flow-select">{locale === "ru" ? "Рабочий процесс" : "Workflow"}</label>
+          <div className="launch-flow-picker__row">
+            <select id="launch-flow-select" value={flowId} disabled={flowLoading || flows.length === 0}
+              onChange={(event) => {
+                const next = event.currentTarget.value;
+                setFlowId(next);
+                if (next) setRole("orchestrator");
+              }}>
+              <option value="">{flowLoading ? t(locale, "loading") : locale === "ru" ? "Без шаблона" : "No template"}</option>
+              {flows.map((flow) => <option key={flow.id} value={flow.id}>{flow.name} · {flow.expectedSubagents}</option>)}
+            </select>
+            <button type="button" disabled={flowLoading} onClick={() => setFlowRefresh((value) => value + 1)}
+              aria-label={locale === "ru" ? "Обновить шаблоны" : "Refresh templates"}>↻</button>
+          </div>
+          {flowId && <>
+            <label htmlFor="launch-flow-task">{locale === "ru" ? "Задача" : "Task"}</label>
+            <textarea id="launch-flow-task" className="launch-flow-picker__task" rows={3} required
+              value={flowTask} disabled={busy} onChange={(event) => setFlowTask(event.currentTarget.value)}
+              placeholder={locale === "ru" ? "Что должен сделать этот рабочий процесс?" : "What should this workflow accomplish?"} />
+          </>}
+          {flowId && <small>{locale === "ru" ? "Ожидается подагентов" : "Expected subagents"}: {flows.find((flow) => flow.id === flowId)?.expectedSubagents ?? 0}</small>}
+          {flowId && selectedFlow?.trusted !== true && <div className="launch-flow-picker__approval">
+            <p>{locale === "ru" ? "Просмотрите инструкции из файла проекта перед их использованием. Изменённые инструкции потребуют нового одобрения." : "Review the project file's instructions before using them. Changed instructions require approval again."}</p>
+            {flowPreview && <pre style={{maxHeight:240,overflow:"auto",whiteSpace:"pre-wrap"}}>{flowPreview.instructions}</pre>}
+            <button type="button" disabled={busy || !flowPreview?.digest} onClick={() => void approveFlow()}>
+              {locale === "ru" ? "Одобрить эти инструкции" : "Approve these instructions"}
+            </button>
+          </div>}
+          {flowErrors.length > 0 && <ul className="launch-flow-picker__errors" role="status">
+            {flowErrors.map((issue, index) => <li key={`${issue.file}:${issue.line}:${index}`}>
+              {issue.file}{issue.line > 0 ? `:${issue.line}` : ""}: {issue.message}
+            </li>)}
+          </ul>}
+        </section>}
 
         <div className="profile-row">
           {!isTerminal && availableProfiles(provider, isolationAvailable(settings, platform)).map((mode) => (
@@ -206,7 +305,7 @@ export function AgentLaunchDialog({
                 setConfirmDanger(false);
               }}>{t(locale, PROFILE_LABEL[mode])}</button>
           ))}
-          <button className="launch-submit" type="button" disabled={busy || endpointMissing} onClick={() => void submit()}>
+          <button className="launch-submit" type="button" disabled={busy || endpointMissing || Boolean(flowId && (selectedFlow?.trusted !== true || !flowTask.trim()))} onClick={() => void submit()}>
             {busy ? <span className="launch-submit__busy" /> : <UiIcon name="arrow" size={38} />}
           </button>
         </div>

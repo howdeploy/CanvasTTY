@@ -82,7 +82,7 @@ test("WorkspaceCanvas holds back xterm, plugin iframes and the browser view unti
   assert.match(source, /surfacesMounted = true\r?\n\s*\} = props;/);
   assert.match(source, /\{surfacesMounted && renderedSessions\.filter\(\(session\) => fullscreenSessionId !== session\.id\)\.map/);
   assert.match(source, /\{surfacesMounted && renderedPluginCanvas\.map/);
-  assert.match(source, /\{surfacesMounted && renderedBrowserCanvas && \(\s*<BrowserCard/);
+  assert.match(source, /\{surfacesMounted && renderedBrowserCanvas && \(\s*<Suspense fallback=\{null\}>\s*<BrowserCard/);
   assert.match(source, /\{surfacesMounted && renderedSessions\s*\.filter\(\(session\) => fullscreenSessionId === session\.id\)/);
   // HOME itself is not deferred: it is the first frame.
   const home = source.indexOf("<HomeZone");

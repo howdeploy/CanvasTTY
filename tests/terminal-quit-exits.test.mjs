@@ -110,6 +110,6 @@ test("the quit path awaits the PTY exits before the app may finish quitting", ()
   const main = readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8").replaceAll("\r\n", "\n");
   const shutdown = main.slice(main.indexOf("async function shutdownServices"));
   const body = shutdown.slice(0, shutdown.indexOf("\n}\n"));
-  assert.match(body, /terminalManager\.shutdown\(\)[\s\S]*waitForProcessExits\(\)[\s\S]*await ptyExits;/u);
+  assert.match(body, /terminalManager(?:\?\.|\.)shutdown\(\)[\s\S]*waitForProcessExits\(\)[\s\S]*await ptyExits;/u);
   assert.ok(body.indexOf("await diagnostics.flush()") > body.indexOf("await ptyExits;"));
 });

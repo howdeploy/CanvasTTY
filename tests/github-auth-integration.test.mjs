@@ -9,13 +9,15 @@ const settingsPath = new URL(
   "../src/renderer/src/features/plugins/PluginSettingsSection.tsx",
   import.meta.url
 );
+const ipcPath = new URL("../src/main/ipc/registerIpc.ts", import.meta.url);
 
-test("GitHub sign-in supports optional build input and both browser routes", async () => {
-  const [config, main, releaseWorkflow, settings] = await Promise.all([
+test("GitHub sign-in keeps optional build input, both browser routes, and trusted cancellation IPC", async () => {
+  const [config, main, releaseWorkflow, settings, ipc] = await Promise.all([
     readFile(configPath, "utf8"),
     readFile(mainPath, "utf8"),
     readFile(releaseWorkflowPath, "utf8"),
-    readFile(settingsPath, "utf8")
+    readFile(settingsPath, "utf8"),
+    readFile(ipcPath, "utf8")
   ]);
 
   assert.match(config, /__CANVASTTY_GITHUB_OAUTH_CLIENT_ID__/);
@@ -29,5 +31,8 @@ test("GitHub sign-in supports optional build input and both browser routes", asy
   assert.match(settings, /runGithubSignIn\("external"\)/);
   assert.match(settings, /target === "embedded"\) await onOpenBrowser\(url\)/);
   assert.match(settings, /else await window\.canvasTTY\.githubAuth\.openUrl\(url\)/);
-  assert.match(settings, /const url = flow\.verificationUri/);
+
+  const cancelIpcStart = ipc.indexOf("IPC.githubAuthCancel,");
+  const cancelIpcHandler = ipc.slice(cancelIpcStart, ipc.indexOf("ipcMain.", cancelIpcStart));
+  assert.match(cancelIpcHandler, /assertMainRenderer\(event, getMainWindow\)/);
 });

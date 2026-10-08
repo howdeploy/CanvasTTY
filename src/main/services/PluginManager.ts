@@ -1,3 +1,4 @@
+import { ACCOUNTS_PLUGIN_ID } from "./accountHomeIsolation.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import {
@@ -326,6 +327,12 @@ export class PluginManager {
     return this.list();
   }
 
+  /** The host's install record for one plugin: where it was installed from and what the person trusted. */
+  installRecord(pluginId: string): { sourceUrl: string; enabled: boolean; nativeCodeTrusted: boolean } | null {
+    const plugin = this.plugins.get(pluginId);
+    return plugin ? { sourceUrl: plugin.sourceUrl, enabled: plugin.enabled, nativeCodeTrusted: plugin.nativeCodeTrusted } : null;
+  }
+
   list(): InstalledPlugin[] {
     return [...this.plugins.values()]
       .sort((left, right) => left.manifest.name.localeCompare(right.manifest.name))
@@ -597,6 +604,7 @@ export class PluginManager {
         pluginName: manifest.name,
         serviceId: service.id,
         launch: structuredClone(service.launch),
+        ...(plugin.manifest.id === ACCOUNTS_PLUGIN_ID ? { dataDir: join(this.dataRoot, plugin.manifest.id) } : {}),
         secrets: manifest.permissions.includes("secrets")
       });
     }
@@ -1801,7 +1809,7 @@ function validateBrowserEngine(value: unknown): PluginBrowserEngine {
   return { id, title, ...(description ? { description } : {}), layout: value.layout === true };
 }
 
-const MAX_CARD_ACTIONS = 8;
+const MAX_CARD_ACTIONS = 16;
 
 function validateCardActions(value: unknown): PluginCardAction[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_CARD_ACTIONS) {

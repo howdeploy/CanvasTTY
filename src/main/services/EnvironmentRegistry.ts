@@ -30,6 +30,7 @@ export interface EnvironmentRegistryDependencies {
   secret(pluginId: string, key: string): Promise<string | null>;
   timeouts?: Partial<Record<EnvironmentStep, number>>;
   platform?: NodeJS.Platform;
+  onRetained?(sessionId:string,environment:PersistedEnvironmentRef,reason:string):void;
 }
 
 /** The core never waits longer and never falls back to a local launch when a step runs out. */
@@ -137,6 +138,7 @@ export class EnvironmentRegistry {
     provider: ProviderId;
     cwd: string;
     choice: SessionEnvironmentChoice;
+    projectRoot?:string;
   }): Promise<PreparedEnvironment> {
     const found = this.lookup(request.choice.pluginId, request.choice.kind);
     if (!found) return { ok: false, reason: `Environment ${request.choice.kind} from plugin ${request.choice.pluginId} is not available.` };
@@ -145,6 +147,7 @@ export class EnvironmentRegistry {
       kind: request.choice.kind,
       provider: request.provider,
       cwd: request.cwd,
+      ...(request.projectRoot ? {projectRoot:request.projectRoot} : {}),
       options: request.choice.options ?? {}
     }, undefined, {
       budgetMs: LATE_ANSWER_BUDGET_MS,
@@ -297,6 +300,11 @@ export class EnvironmentRegistry {
       reason: options.reason
     }, options.timeoutMs);
     if (!answer.ok) console.warn(`CanvasTTY environment ${environment.label} could not be released: ${answer.reason}`);
+    else if(isRecord(answer.value) && answer.value.released===false) {
+      const reason=plainText(answer.value.reason,500) ?? "Unreviewed work was kept.";
+      console.warn(`CanvasTTY environment ${environment.label} retained: ${reason}`);
+      this.dependencies.onRetained?.(sessionId,environment,reason);
+    }
   }
 
   /** `canvastty.environment.describe`: the card badge text; null when the plugin gave none. */

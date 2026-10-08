@@ -8,12 +8,13 @@ import {
   MAX_RUNTIME_MESSAGE_BYTES,
   normalizeThreadId,
   RUNTIME_PROTOCOL_VERSION,
-  RUNTIME_STATES
+  RUNTIME_STATES,
+  sanitizeToolOutcome
 } from "./runtime-protocol.mjs";
 
 const CONNECT_TIMEOUT_MS = 1_000;
 
-export async function reportLifecycle({ state, event, turnId = null, threadId, result, lastAssistantMessage }) {
+export async function reportLifecycle({ state, event, turnId = null, threadId, result, lastAssistantMessage, toolOutcome }) {
   if (!RUNTIME_STATES.includes(state)) return false;
   if (typeof event !== "string" || event.length === 0 || event.length > 80) return false;
   const address = process.env[AGENT_RUNTIME_ENV.address];
@@ -23,6 +24,7 @@ export async function reportLifecycle({ state, event, turnId = null, threadId, r
   if (!address || !terminalSessionId || !provider || !capabilityToken) return false;
 
   const validThreadId = normalizeThreadId(provider, threadId);
+  const safeToolOutcome = sanitizeToolOutcome(toolOutcome);
 
   const message = {
     v: RUNTIME_PROTOCOL_VERSION,
@@ -34,7 +36,8 @@ export async function reportLifecycle({ state, event, turnId = null, threadId, r
     event,
     turnId: normalizedId(turnId),
     ...(validThreadId !== undefined ? { threadId: validThreadId } : {}),
-    ...(result === undefined ? {} : { result })
+    ...(result === undefined ? {} : { result }),
+    ...(safeToolOutcome === undefined ? {} : { toolOutcome: safeToolOutcome })
   };
   const answerCaptureExpiresAt = Number(process.env[CAPTURE_ANSWER_EXPIRES_AT_ENV]);
   const shouldCheckAnswerGrant = process.env[CAPTURE_ANSWER_ENV] === "1"

@@ -29,8 +29,8 @@ export function bubblewrapArguments(
     "--die-with-parent",
     "--unshare-pid",
     "--unshare-ipc",
-    "--ro-bind", "/", "/",
-    "--dev-bind", "/dev", "/dev",
+    ...(paths.restrictReads ? ["--tmpfs","/",...paths.readableAgain.flatMap(path=>exists(path) ? ["--ro-bind",path,path] : [])] : ["--ro-bind", "/", "/"]),
+    ...(!paths.restrictReads ? ["--dev-bind", "/dev", "/dev"] : []),
     "--proc", "/proc"
   ];
   const seen = new Set<string>();
@@ -39,8 +39,10 @@ export function bubblewrapArguments(
     seen.add(path);
     args.push("--bind", path, path);
   }
+  // Linux cannot permit atomic ref updates to one branch without making the containing directory writable (which
+  // also permits new sibling refs). Linked-worktree Git metadata therefore stays read-only under bubblewrap.
   for (const path of paths.writableFiles) {
-    if (exists(path) === "file") args.push("--bind", path, path);
+    if (exists(path) === "file" && ![...seen].some((folder) => within(path, folder))) args.push("--bind", path, path);
   }
   for (const path of paths.unreadable) {
     const kind = exists(path);
@@ -87,6 +89,8 @@ export function bubblewrapArguments(
   for (const path of paths.socketFolders) {
     if (exists(path) === "directory" && !seen.has(path)) args.push("--bind", path, path);
   }
+  // Last mount: read exceptions and socket grants must never restore host devices inside a reviewer.
+  if (paths.restrictReads) args.push("--dev", "/dev");
   args.push("--chdir", launch.cwd, "--", launch.command, ...launch.args);
   return args;
 }

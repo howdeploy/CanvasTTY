@@ -34,11 +34,11 @@ function clis() {
 function spawner(calls) {
   return (command, args, options) => {
     const exits = [];
-    const call = { command, args, options, written: [], exit: (code) => exits.forEach((listener) => listener({ exitCode: code })) };
+    const call = { command, args, options, written: [], emit: null, exit: (code) => exits.forEach((listener) => listener({ exitCode: code })) };
     calls.push(call);
     return {
       pid: 60_000 + calls.length, process: command, write(text) { call.written.push(text); }, resize() {}, kill() {}, pause() {}, resume() {},
-      onData() { return { dispose() {} }; },
+      onData(listener) { call.emit = listener; return { dispose() {} }; },
       onExit(listener) { exits.push(listener); return { dispose() {} }; }
     };
   };
@@ -208,4 +208,85 @@ test("the control CLI says a starting session is not ready instead of claiming t
   for (let i = 0; i < 50 && f.calls.length < 2; i++) await tick();
   assert.equal(f.calls.length, 2);
   assert.deepEqual(f.calls[1].written, [], "the refused send was not queued");
+});
+
+for (const provider of ["opencode", "claude", "codex"]) {
+  test(`${provider}: a slow CLI receives the prompt only after readiness and acknowledges it`, async (t) => {
+    const calls = [];
+    const runtime = { prepareLaunch: () => ({ args: [], environment: {}, cleanup() {} }), currentStatus: () => null };
+    const terminals = new TerminalManager(() => {}, clis(), undefined, runtime, true, spawner(calls));
+    t.after(() => terminals.disposeAll());
+    const session = terminals.create({ provider, profile: "normal", cwd, position: at });
+    const delivery = terminals.deliverInput(session.id, "slow first task\r", 1000);
+    await tick();
+    assert.deepEqual(calls[0].written, [], "PTY creation is not CLI readiness");
+    terminals.applyProviderSignal(session.id, { state: "idle", event: "SessionStart" });
+    for (let i = 0; i < 30 && !calls[0].written.length; i++) await tick();
+    assert.deepEqual(calls[0].written, ["slow first task\r"]);
+    assert.equal(await state(delivery), "pending", "a write alone is not acceptance");
+    terminals.applyProviderSignal(session.id, { state: "working", event: "UserPromptSubmit" });
+    assert.deepEqual(await delivery, { delivered: true });
+  });
+}
+
+test("a CLI that never becomes ready gets no prompt and a bounded diagnostic", async (t) => {
+  const calls = [];
+  const runtime = { prepareLaunch: () => ({ args: [], environment: {}, cleanup() {} }), currentStatus: () => null };
+  const terminals = new TerminalManager(() => {}, clis(), undefined, runtime, true, spawner(calls));
+  t.after(() => terminals.disposeAll());
+  const session = terminals.create({ provider: "opencode", profile: "normal", cwd, position: at });
+  const result = await terminals.deliverInput(session.id, "never\r", 60);
+  assert.equal(result.delivered, false);
+  assert.match(result.reason, /ready/i);
+  assert.deepEqual(calls[0].written, []);
+});
+
+test("a dropped Enter is retried only after the full prompt was echoed, without replaying text", async (t) => {
+  const calls = [];
+  const runtime = { prepareLaunch: () => ({ args: [], environment: {}, cleanup() {} }), currentStatus: () => null };
+  const terminals = new TerminalManager(() => {}, clis(), undefined, runtime, true, spawner(calls));
+  t.after(() => terminals.disposeAll());
+  const session = terminals.create({ provider: "opencode", profile: "normal", cwd, position: at });
+  terminals.applyProviderSignal(session.id, { state: "idle", event: "session.created" });
+  const pending = terminals.deliverInput(session.id, "exactly once\r", 3000);
+  calls[0].emit("exactly once");
+  for (let i = 0; i < 100 && calls[0].written.length < 2; i++) await tick();
+  assert.deepEqual(calls[0].written, ["exactly once\r", "\r"]);
+  terminals.applyProviderSignal(session.id, { state: "working" });
+  assert.deepEqual(await pending, { delivered: true });
+});
+
+test("cancellation and restart while awaiting CLI readiness never deliver queued text", async (t) => {
+  const calls = [];
+  const runtime = { prepareLaunch: () => ({ args: [], environment: {}, cleanup() {} }), currentStatus: () => null };
+  const terminals = new TerminalManager(() => {}, clis(), undefined, runtime, true, spawner(calls));
+  t.after(() => terminals.disposeAll());
+  const session = terminals.create({ provider: "codex", profile: "normal", cwd, position: at });
+  const controller = new AbortController();
+  const pending = terminals.deliverInput(session.id, "cancel\r", 1000, controller.signal);
+  controller.abort();
+  assert.equal((await pending).delivered, false);
+  const replaced = terminals.deliverInput(session.id, "old epoch\r", 1000);
+  calls[0].exit(0);
+  terminals.restart(session.id);
+  terminals.applyProviderSignal(session.id, { state: "idle", event: "SessionStart" });
+  assert.equal((await replaced).delivered, false);
+  assert.ok(calls.every(call => call.written.length === 0));
+});
+
+test("OpenCode's first home prompt becomes ready before a conversation lifecycle hook exists", async (t) => {
+  const calls = [];
+  const runtime = { prepareLaunch: () => ({ args: [], environment: {}, cleanup() {} }), currentStatus: () => null };
+  const terminals = new TerminalManager(() => {}, clis(), undefined, runtime, true, spawner(calls));
+  t.after(() => terminals.disposeAll());
+  const session = terminals.create({ provider: "opencode", profile: "normal", cwd, position: at });
+  const pending = terminals.deliverInput(session.id, "home screen task\r", 1000);
+  calls[0].emit("Ask anything…");
+  await tick();
+  assert.deepEqual(calls[0].written, []);
+  calls[0].emit("\x1b[32mctrl+p\x1b[0m commands");
+  for (let i = 0; i < 30 && !calls[0].written.length; i++) await tick();
+  assert.deepEqual(calls[0].written, ["home screen task\r"]);
+  terminals.applyProviderSignal(session.id, { state: "working", event: "UserPromptSubmit" });
+  assert.equal((await pending).delivered, true);
 });

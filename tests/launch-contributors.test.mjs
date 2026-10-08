@@ -311,8 +311,13 @@ test("secret env comes from the plugin's own secrets, reaches the child, and is 
 
   const control = new AgentControlService(manager);
   const observed = control.observe(created.id).output;
-  assert.match(observed, /PROVIDER_API_KEY=<redacted:secret> PLAIN=visible/u);
+  // The combined source-range mask can also consume a high-entropy assignment label. Its kind and label retention
+  // are presentation details; the secret, its fragments, and unrelated public output are the integration contract.
+  assert.match(observed, /<redacted:(?:secret|assignment|high-entropy)> PLAIN=visible/u);
   assert.doesNotMatch(observed, new RegExp(SECRET, "u"));
+  for (const fragment of [SECRET.slice(0, 13), SECRET.slice(-12)]) {
+    assert.equal(observed.includes(fragment), false, "partial secret fragments must also remain masked");
+  }
   calls[0].exit(1);
   assert.doesNotMatch(control.result(created.id).output, new RegExp(SECRET, "u"));
   assert.doesNotMatch(card(manager, created.id).failureDetails ?? "", new RegExp(SECRET, "u"));

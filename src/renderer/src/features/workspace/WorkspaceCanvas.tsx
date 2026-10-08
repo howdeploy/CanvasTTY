@@ -106,6 +106,10 @@ import { snapMove } from "./snap";
 import { useCanvasPointerNavigation } from "./useCanvasPointerNavigation";
 import { useCanvasWheelNavigation } from "./useCanvasWheelNavigation";
 import { useCanvasWidgetFocus } from "./useCanvasWidgetFocus";
+import { BacklogSessionInspector } from "./BacklogSessionInspector";
+import { createTaskBoundsPreviewStore, TaskEdgeLayer } from "./TaskEdgeLayer";
+import { taskTreeBounds } from "./workspaceTaskLayout";
+import { directTaskEdges, sessionLayoutItems } from "./workspaceTaskGraph";
 import { useRemarkPopoverRect } from "./useRemarkPopoverRect";
 import { webglContextPool } from "../terminal/webglContextPool";
 
@@ -127,6 +131,8 @@ const CANVAS_FOCUS_ARROWS: Readonly<Record<string, CanvasFocusDirection | undefi
   focusRight: "right"
 };
 
+const EMPTY_TASK_CHILDREN: readonly SessionSnapshot[] = [];
+
 /** What the workspace does for a terminal card; the card gets stable functions that call the latest of these. */
 interface TerminalCardHandlers {
   activate(selectedSession: SessionSnapshot, fullscreen: boolean): void;
@@ -138,6 +144,9 @@ interface TerminalCardHandlers {
   restart(id: string, resume?: boolean): Promise<void>;
   dispose(id: string, keepEnvironmentData?: boolean): void;
   openUrl(url: string): void;
+  openInspector(id: string, initialTab?: "timeline" | "report"): void;
+  gatherTask(id: string): void;
+  boundsPreview(id: string, bounds: SessionBounds | null): void;
 }
 
 /** A group drag's commit basis, frozen once when the press activates: the pressed layer's start
@@ -650,6 +659,28 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const routeWidgetWheelToCanvas = wheelNavigation.routeWidgetWheelToCanvas;
   // TerminalCard is memoized: its callbacks are the same functions on every render and call the latest
   // handlers through this ref, so a pan (a workspace render per pointer move) renders no card.
+  const liveTaskBounds = useMemo(createTaskBoundsPreviewStore, []);
+  const taskEdges = useMemo(() => directTaskEdges(renderedSessions), [renderedSessions]);
+  const taskSessionsById = useMemo(() => new Map(renderedSessions.map((session) => [session.id, session])), [renderedSessions]);
+  const [inspectedSessionId, setInspectedSessionId] = useState<string | null>(null);
+  const [inspectorTab, setInspectorTab] = useState<"timeline" | "report">("timeline");
+  const inspectedSession = sessions.find((session) => session.id === inspectedSessionId);
+  const taskChildrenByParent = useMemo(() => {
+    const result = new Map<string, SessionSnapshot[]>();
+    for (const session of sessions) {
+      if (!session.parentSessionId) continue;
+      const children = result.get(session.parentSessionId) ?? [];
+      children.push(session);
+      result.set(session.parentSessionId, children);
+    }
+    return result;
+  }, [sessions]);
+  const handleGatherTask = useCallback((id: string): void => {
+    const items = sessionLayoutItems(renderedSessions);
+    const parent = items.find((item) => item.id === id);
+    if (!parent) return;
+    for (const [sessionId, bounds] of taskTreeBounds(parent, items)) onSessionBoundsChange(sessionId, bounds);
+  }, [onSessionBoundsChange, renderedSessions]);
   const terminalCardHandlers = useRef<TerminalCardHandlers | null>(null);
   terminalCardHandlers.current = {
     activate(selectedSession, fullscreen) {
@@ -669,7 +700,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     boundsChange: onSessionBoundsChange,
     restart: onRestartSession,
     dispose: onDisposeSession,
-    openUrl: onOpenTerminalUrl
+    openUrl: onOpenTerminalUrl,
+    openInspector: (id, initialTab = "timeline") => {setInspectorTab(initialTab);setInspectedSessionId(id);},
+    gatherTask: handleGatherTask,
+    boundsPreview: liveTaskBounds.set
   };
   const terminalCardCallbacks = useMemo(() => {
     const latest = terminalCardHandlers;
@@ -678,7 +712,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       onRenameEnd: () => latest.current!.renameEnd(),
       onRestart: (id: string, resume?: boolean) => latest.current!.restart(id, resume),
       onDispose: (id: string, keepEnvironmentData?: boolean) => latest.current!.dispose(id, keepEnvironmentData),
-      onOpenUrl: (url: string) => latest.current!.openUrl(url)
+      onOpenUrl: (url: string) => latest.current!.openUrl(url),
+      onOpenInspector: (id: string, initialTab?: "timeline" | "report") => latest.current!.openInspector(id, initialTab),
+      onGatherTask: (id: string) => latest.current!.gatherTask(id),
+      onBoundsPreview: (id: string, bounds: SessionBounds | null) => latest.current!.boundsPreview(id, bounds)
     };
     return {
       canvas: {
@@ -1081,6 +1118,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             />
           ))}
         </div>
+        {!homeEditing && <TaskEdgeLayer edges={taskEdges} sessions={taskSessionsById} previews={liveTaskBounds}
+          selected={marqueeSelection} groupNudge={pointerNavigation.groupNudge} />}
         <HomeZone
           settings={settings}
           mediaData={mediaData}
@@ -1114,6 +1153,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         <div className={`workspace__windows ${homeEditing ? "workspace__windows--hidden" : ""}`} aria-hidden={homeEditing}>
           {surfacesMounted && renderedSessions.filter((session) => fullscreenSessionId !== session.id).map((session) => (
             <TerminalCard
+              taskChildren={taskChildrenByParent.get(session.id) ?? EMPTY_TASK_CHILDREN}
               key={session.id}
               session={withGroupNudge(terminalLayerId(session.id), session)}
               shortcuts={settings.shortcuts}
@@ -1269,6 +1309,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           .filter((session) => fullscreenSessionId === session.id)
           .map((session) => (
             <TerminalCard
+              taskChildren={taskChildrenByParent.get(session.id) ?? EMPTY_TASK_CHILDREN}
               key={session.id}
               session={withGroupNudge(terminalLayerId(session.id), session)}
               shortcuts={settings.shortcuts}
@@ -1447,6 +1488,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           onClose={() => setRegionEditor(null)}
         />
       )}
+
+      {inspectedSession && <BacklogSessionInspector key={inspectedSession.id} session={inspectedSession}
+        sessions={sessions} locale={settings.locale} initialTab={inspectorTab} onClose={() => setInspectedSessionId(null)} />}
 
       {commandPaletteOpen && (
         <CanvasCommandPalette

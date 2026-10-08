@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
@@ -6,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import test from "node:test";
 
-import { AGENT_RUNTIME_ENV, CAPTURE_RESULT_ENV, CLAUDE_HTTP_HOOK } from "../src/agent-runtime/runtime-protocol.mjs";
+import { AGENT_RUNTIME_ENV, CAPTURE_RESULT_ENV, CLAUDE_HTTP_HOOK, normalizedActionHashFromHook } from "../src/agent-runtime/runtime-protocol.mjs";
 import { AgentRuntimeBridge } from "../src/main/services/agent-runtime/AgentRuntimeBridge.ts";
 import {
   ClaudeHttpHookPolicy,
@@ -92,6 +93,10 @@ test("an HTTP lifecycle hook reports exactly what the command helper reports for
   const inputs = [
     ["working", "UserPromptSubmit", { prompt: "stays local", prompt_id: "turn-1", session_id: "5F1C2A90-AA11-4B22-9C33-0D44E55F6677" }],
     ["working", "PostToolUse", { prompt_id: "turn-1", tool_name: "Bash", tool_input: { command: "ls" }, tool_response: { stdout: "secret" } }],
+    ["working", "PostToolUse", { prompt_id: "turn-1", tool_name: "Write", tool_input: { file_path: "/private/secrets.txt", content: "fixture secret content" }, tool_response: { filePath: "/private/secrets.txt", type: "create" } }],
+    ["working", "PostToolUseFailure", { prompt_id: "turn-1", tool_name: "Bash", tool_input: { command: "npm test" }, error: "Exit code 1\nfixture secret error", is_interrupt: false }],
+    ["working", "PostToolUseFailure", { prompt_id: "turn-1", tool_name: "Bash", tool_input: { command: "npm test" }, error: "fixture secret interrupt", is_interrupt: true }],
+    ["needs_approval", "PermissionRequest", { prompt_id: "turn-1", tool_name: "Bash", tool_input: { command: "sudo something" } }],
     ["idle", "Stop", { prompt_id: "turn-1", session_id: "5f1c2a90-aa11-4b22-9c33-0d44e55f6677", last_assistant_message: `${"a".repeat(4095)}😀tail` }],
     ["idle", "Stop", { prompt_id: "x".repeat(161), session_id: "not-a-uuid", last_assistant_message: "short" }],
     ["needs_approval", "Notification", "not json at all"]
@@ -108,7 +113,32 @@ test("an HTTP lifecycle hook reports exactly what the command helper reports for
       const helperSignal = signals.filter((entry) => entry.id === "helper-session").at(-1)?.signal;
       const httpSignal = signals.filter((entry) => entry.id === "http-session").at(-1)?.signal;
       assert.ok(helperSignal, `${event} reached the gateway through the helper`);
-      assert.deepEqual(httpSignal, helperSignal, `${state}/${event} capture=${captureResult}`);
+      const { turnEpoch: _helperEpoch, ...helperContract } = helperSignal;
+      const { turnEpoch: _httpEpoch, ...httpContract } = httpSignal;
+      assert.deepEqual(httpContract, helperContract, `${state}/${event} capture=${captureResult}`);
+      if (event === "PermissionRequest") assert.equal(helperSignal.toolOutcome, undefined, "permission prompts are not tool outcomes");
+      if (event.startsWith("PostToolUse")) {
+        assert.ok(helperSignal.toolOutcome, `${event} includes a completed-tool summary`);
+        assert.equal(helperSignal.toolOutcome.normalizedActionHash,
+          normalizedActionHashFromHook(input.tool_name, input.tool_input),
+          "pretool activity and posttool outcome use the same action hash for identical hook inputs");
+        assert.equal(JSON.stringify(helperSignal).includes("secret"), false, "tool response text stays local");
+        assert.equal(JSON.stringify(helperSignal).includes("fixture secret"), false, "tool input and error text stay local");
+        assert.equal(JSON.stringify(helperSignal).includes("/private/secrets.txt"), false, "file paths stay local");
+        if (event === "PostToolUse" && input.tool_name === "Bash") {
+          assert.equal(helperSignal.toolOutcome.outputHash, createHash("sha256").update(JSON.stringify(input.tool_response)).digest("hex"),
+            "a successful tool's output is summarized only as a hash, so repeated output is recognizable");
+        }
+        if (event === "PostToolUseFailure") assert.equal(helperSignal.toolOutcome.outputHash, undefined, "errors keep only their error hash");
+        if (input.tool_name === "Write") {
+          assert.deepEqual(helperSignal.toolOutcome.changedPathHashes, [createHash("sha256").update("/private/secrets.txt").digest("hex")]);
+        }
+        if (event === "PostToolUseFailure" && input.is_interrupt === false) {
+          assert.equal(helperSignal.toolOutcome.resultClass, "error");
+          assert.match(helperSignal.toolOutcome.errorHash, /^[a-f0-9]{64}$/u);
+        }
+        if (input.is_interrupt === true) assert.equal(helperSignal.toolOutcome.resultClass, "unknown");
+      }
       signals.length = 0;
     }
   }
@@ -172,7 +202,7 @@ test("an input over 512 KB still reports its state, without any of its fields", 
   const response = await post(gateway.httpHookBase, `${CLAUDE_HTTP_HOOK.pathPrefix}idle/Stop`, { headers: hookHeaders(capability), body });
   assert.equal(response.status, 200);
   await flush();
-  assert.deepEqual(signals, [{ id: "claude-one", signal: { state: "idle", event: "Stop", turnId: null } }]);
+  assert.deepEqual(signals, [{ id: "claude-one", signal: { state: "idle", event: "Stop", turnId: null, turnEpoch: 0 } }]);
 });
 
 test("an input found over 512 KB only while it streams (no Content-Length) reports its state once", POSIX, async (t) => {
@@ -184,7 +214,7 @@ test("an input found over 512 KB only while it streams (no Content-Length) repor
   });
   assert.equal(response.status, 200);
   await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.deepEqual(signals, [{ id: "claude-one", signal: { state: "idle", event: "Stop", turnId: null } }]);
+  assert.deepEqual(signals, [{ id: "claude-one", signal: { state: "idle", event: "Stop", turnId: null, turnEpoch: 0 } }]);
 });
 
 test("hooks get their answer before the app reacts (HTTP and socket)", POSIX, async (t) => {

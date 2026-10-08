@@ -557,6 +557,16 @@ export type AgentChatHistoryResumeResult =
   | { error: { code: "invalid-id" | "cli-unavailable" | "conversation-missing" | "cwd-unknown" | "cwd-unavailable" | "resume-failed"; message: string } };
 
 export interface SessionMetadata {
+  /** Observed provider counters; missing fields are unknown, never inferred from limits. */
+  usage?: import("./backlog.ts").UsageSummary;
+  reviewUsage?: import("./backlog.ts").UsageSummary;
+  sessionReport?: {readyAt:number};
+  /** Host-owned logical task identity for budgets and read-only reviewers. */
+  taskScope?: {id:string;cwd:string;startedAt:number};
+  reviewRequested?: boolean;
+  /** `processesKeepRunning`: the pause blocks input and launches only, because the platform cannot suspend processes. */
+  taskBudget?: {tokens:number|null;costUsd:number|null;durationMs:number|null;paused:boolean;warning:boolean;processesKeepRunning?:boolean};
+
   id: string;
   revision: number;
   provider: ProviderId;
@@ -643,6 +653,14 @@ export interface TerminalDataEvent {
   audience?: TerminalDataAudience;
 }
 
+export interface TerminalOutputSearchResult {
+  matches:Array<{sessionId:string;line:number;text:string;offset:number}>;
+  prunedSessionIds:string[];
+}
+export interface TerminalOutputContext {
+  text:string;firstLine:number;targetLine:number;
+  historyTruncated:boolean;historyBaseOffset:number;
+}
 export interface TerminalBufferSnapshot {
   buffer: string;
   outputOffset: number;
@@ -832,10 +850,45 @@ export interface PluginCardDecorations {
   actions: PluginCardActionEntry[];
 }
 
-/** What a card action answered, shown as a toast on the card. */
+export interface PluginReviewTextPage {
+  label?: string;
+  text: string;
+  startLine: number;
+  totalLines: number;
+  hasMore: boolean;
+}
+
+export interface PluginChangeReviewFile {
+  path: string;
+  status?: string;
+  diff: string;
+  page?: number;
+  hasMore?: boolean;
+  truncated?: boolean;
+  conflict?: { current: PluginReviewTextPage; agent: PluginReviewTextPage };
+}
+
+export interface PluginChangeReviewGroup {
+  sessionId: string;
+  title: string;
+  files: PluginChangeReviewFile[];
+  error?: string;
+}
+
+/** Plain-text review supplied by an existing plugin; actions still require a human click. */
+export interface PluginChangeReview {
+  title: string;
+  groups: PluginChangeReviewGroup[];
+  acceptActionId?: string;
+  rejectActionId?: string;
+  nextOffset?: number;
+}
+
+/** What a card action answered, shown as a toast or a structured review on the card. */
 export interface PluginCardActionResult {
   message?: string;
   tone: PluginCardTone;
+  review?: PluginChangeReview;
 }
 
 export type PluginDecisionEvent = "pre-tool";
@@ -1665,6 +1718,7 @@ export interface DiagnosticRendererError {
 }
 
 export interface CanvasTTYApi {
+  backlog: import("./backlog.ts").BacklogApi;
   diagnostics: {
     configuration(): Promise<DiagnosticConfiguration>;
     send(description: string, attachment?: DiagnosticAttachment): Promise<DiagnosticReportReceipt>;
@@ -1766,7 +1820,7 @@ export interface CanvasTTYApi {
     onServiceEvent(listener: (event: PluginServiceEvent) => void): () => void;
     cardDecorations(): Promise<PluginCardDecorations>;
     onCardDecorations(listener: (decorations: PluginCardDecorations) => void): () => void;
-    invokeCardAction(pluginId: string, actionId: string, sessionId: string): Promise<PluginCardActionResult>;
+    invokeCardAction(pluginId: string, actionId: string, sessionId: string, input?: Record<string, unknown>): Promise<PluginCardActionResult>;
     /** The service-provided choices of a plugin's `optionsFrom: "service"` launch fields for this agent; empty on any failure. */
     launchFieldOptions(pluginId: string, provider: ProviderId): Promise<PluginLaunchFieldOptions>;
     uninstall(pluginId: string): Promise<void>;
@@ -1823,6 +1877,8 @@ export interface CanvasTTYApi {
   canvasNavigation: {
     armOwnerWheelSequence(clientX: number, clientY: number): void;
     setShortcutCaptureActive(active: boolean): void;
+    /** macOS: a terminal surface gained or lost keyboard focus (decides who handles Command+C/V/A). */
+    setTerminalEditFocus(active: boolean): void;
     setPointerBindingState(input: CanvasNavigationPointerBindingInput): void;
     setPointerGestureActive(active: boolean): void;
     onOverrideState(listener: (event: CanvasNavigationOverrideStateEvent) => void): () => void;
@@ -1834,6 +1890,7 @@ export interface CanvasTTYApi {
     openUrl(url: string): Promise<void>;
   };
   terminal: {
+    onFocusRequested(listener: (id: string) => void): () => void;
     openFile(id: string, reference: string): Promise<void>;
     fileDropText(files: File[]): string;
     list(): Promise<SessionSnapshot[]>;
@@ -1992,6 +2049,7 @@ export const IPC = {
   browserCanvasPointer: "browser:canvas-pointer",
   browserCanvasNavigationPointer: "browser:canvas-navigation-pointer",
   canvasNavigationShortcutCapture: "canvas-navigation:shortcut-capture",
+  canvasNavigationTerminalEditFocus: "canvas-navigation:terminal-edit-focus",
   canvasNavigationPointerBinding: "canvas-navigation:pointer-binding",
   canvasNavigationOwnerWheel: "canvas-navigation:owner-wheel",
   canvasNavigationPointerGesture: "canvas-navigation:pointer-gesture",

@@ -1,4 +1,5 @@
 import type { ProviderId } from "../../../shared/contracts.ts";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   AGENT_RUNTIME_ENV,
   CAPTURE_ANSWER_ENV,
@@ -38,6 +39,7 @@ export interface PreparedAgentRuntimePtyLaunch {
 export interface AgentRuntimeLaunchCoordinator {
   prepareLaunch(input: PrepareAgentRuntimeLaunchInput): PreparedAgentRuntimePtyLaunch;
   currentStatus(terminalSessionId: string): RuntimeLifecycleState | null;
+  readableRuntimePaths?(): readonly string[];
 }
 
 export interface AgentRuntimeBridgeOptions extends ProviderRuntimeLaunchOptions {
@@ -52,11 +54,12 @@ export interface AgentRuntimeBridgeOptions extends ProviderRuntimeLaunchOptions 
 }
 
 export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
+  private readonly runtimeReadPaths: readonly string[];
   private readonly gateway: RuntimeGateway;
   private readonly providers: ProviderRuntimeLaunchAdapters;
   /** Running sessions and whether each got the decision hook. */
   /** Live launches by card id; the entry object is the launch identity a late cleanup checks against. */
-  private readonly activeSessions = new Map<string, { decisions: boolean }>();
+  private readonly activeSessions = new Map<string, { decisions: boolean; captureResult: boolean }>();
   private coreHooksEnabled: boolean;
   private readonly wantsDecisions: AgentRuntimeBridgeOptions["wantsDecisions"];
   private readonly decisionBudgetMs: AgentRuntimeBridgeOptions["decisionBudgetMs"];
@@ -68,9 +71,20 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
     this.decisionBudgetMs = options.decisionBudgetMs;
     this.claudeHttpHooks = options.claudeHttpHooks;
     this.providers = new ProviderRuntimeLaunchAdapters(options);
+    // File grants, never the containing source tree: a reviewer may review CanvasTTY itself.
+    const helpers = [options.helper, ...(options.permissionGate ? [options.permissionGate] : []),
+      ...(options.pluginHooks ? [options.pluginHooks.runner] : [])];
+    const runtimeFiles = ["hook-helper.mjs", "permission-gate.mjs", "runtime-client.mjs", "runtime-protocol.mjs",
+      "ndjson.mjs", "path-inside.mjs", "opencode-plugin.mjs", "opencode-final-answer.mjs", "opencode-decisions.mjs", "omp-extension.mjs",
+      "plugin-hook-runner.mjs", "plugin-hook-dispatch.mjs"];
+    this.runtimeReadPaths = Object.freeze([...new Set([
+      ...helpers.flatMap(helper => [helper.command, ...helper.args.filter(isAbsolute)]),
+      ...runtimeFiles.map(file => join(dirname(options.openCodePluginPath), file))])]);
     this.coreHooksEnabled = options.coreHooksEnabled !== false;
     if (options.recoverOnStart) this.providers.recoverConfigurations();
   }
+
+  readableRuntimePaths(): readonly string[] { return this.runtimeReadPaths; }
 
   prepareLaunch(input: PrepareAgentRuntimeLaunchInput): PreparedAgentRuntimePtyLaunch {
     // The decision hook talks to the gateway over its own capability, with or without agent status hooks.
@@ -78,11 +92,12 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
       && this.providers.decisionsSupported(input.provider);
     let budgetMs: number | undefined;
     try { budgetMs = decisions ? this.decisionBudgetMs?.(input.provider) : undefined; } catch { budgetMs = undefined; }
-    const capability = this.coreHooksEnabled || decisions
+    const captureResult = input.captureResult === true;
+    const capability = this.coreHooksEnabled || decisions || captureResult
       ? this.gateway.registerSession(
         input.terminalSessionId,
         input.provider,
-        input.captureResult === true,
+        captureResult,
         isLiveGrant(input.answerCaptureGrantExpiresAt) ? input.answerCaptureGrantExpiresAt : undefined,
         decisions,
         budgetMs
@@ -92,12 +107,12 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
     let prepared;
     try {
       prepared = this.providers.prepare(input.provider, input.terminalSessionId, this.coreHooksEnabled, decisions, budgetMs,
-        httpHookBase ?? undefined);
+        httpHookBase ?? undefined, captureResult);
     } catch (error) {
       if (capability) this.gateway.revokeTerminalSession(input.terminalSessionId, capability.capabilityToken);
       throw error;
     }
-    const launch = { decisions };
+    const launch = { decisions, captureResult };
     this.activeSessions.set(input.terminalSessionId, launch);
     let cleaned = false;
     return {
@@ -153,9 +168,9 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
     if (this.coreHooksEnabled === next) return;
     this.coreHooksEnabled = next;
     if (next) return;
-    // A session with the decision hook keeps its lease: its protection must not silently stop.
-    for (const [terminalSessionId, { decisions }] of this.activeSessions) {
-      if (!decisions) this.gateway.revokeTerminalSession(terminalSessionId);
+    // Decisions and explicitly requested result capture are independent of lifecycle UI updates.
+    for (const [terminalSessionId, { decisions, captureResult }] of this.activeSessions) {
+      if (!decisions && !captureResult) this.gateway.revokeTerminalSession(terminalSessionId);
     }
   }
 }

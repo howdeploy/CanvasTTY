@@ -128,7 +128,10 @@ test("OpenCode runs each plugin hook as one process per event, not a runner proc
   const { CanvasTTYLifecycle } = await import("../src/agent-runtime/opencode-plugin.mjs?plugin-hook-processes");
   const plugin = await CanvasTTYLifecycle();
   await plugin.event({ event: { type: "session.created", properties: { info: { id: "opencode-root" } } } });
-  await plugin.event({ event: { type: "tool.execute.after", properties: { sessionID: "opencode-root", tool: "bash" } } });
+  await plugin.event({ event: { type: "session.status", properties: { sessionID: "opencode-root", status: {type:"busy"} } } });
+  const hookInput={sessionID:"opencode-root",callID:"call",tool:"bash"};
+  await plugin["tool.execute.before"](hookInput,{args:{command:"private-command"}});
+  await plugin["tool.execute.after"]({...hookInput,args:{command:"private-command"}}, {title:"secret title",output:"secret output",metadata:{exit:0}});
   const read = async (path) => { try { return await readFile(path, "utf8"); } catch { return null; } };
   for (let i = 0; i < 200 && (!(await read(join(root, "one.json"))) || !(await read(join(root, "two.json")))); i++) {
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -141,6 +144,9 @@ test("OpenCode runs each plugin hook as one process per event, not a runner proc
     assert.equal(received.input.event, "after-tool");
     assert.equal(received.session, "terminal-opencode");
     assert.equal(received.capability, null, "host capabilities stay out");
+    assert.equal(received.input.payload.input.args.command,"private-command","explicit native hook permission retains provider payload");
+    assert.equal(received.input.payload.output.output,"secret output");
+    assert.ok(!JSON.stringify(received).includes("normalizedActionHash"),"no host-generated fingerprint added to provider payload");
   }
   assert.equal(await read(runnerCalls), null, "no runner process in between");
 });

@@ -1,3 +1,4 @@
+import { BACKLOG_IPC, BACKLOG_TERMINAL_IPC, BACKLOG_EVENTS, type BacklogApi } from "../shared/backlog";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AppSettings,
@@ -182,8 +183,8 @@ const api: CanvasTTYApi = {
     onCardDecorations: (listener: (decorations: PluginCardDecorations) => void) => (
       subscribe(IPC.pluginsCardDecorationsChanged, listener)
     ),
-    invokeCardAction: (pluginId: string, actionId: string, sessionId: string) => (
-      ipcRenderer.invoke(IPC.pluginsInvokeCardAction, pluginId, actionId, sessionId)
+    invokeCardAction: (pluginId: string, actionId: string, sessionId: string, input?: Record<string, unknown>) => (
+      ipcRenderer.invoke(IPC.pluginsInvokeCardAction, pluginId, actionId, sessionId, input)
     ),
     launchFieldOptions: (pluginId: string, provider: ProviderId) => (
       ipcRenderer.invoke(IPC.pluginsLaunchFieldOptions, pluginId, provider)
@@ -262,6 +263,7 @@ const api: CanvasTTYApi = {
       ipcRenderer.sendSync(IPC.canvasNavigationOwnerWheel, { clientX, clientY });
     },
     setShortcutCaptureActive: (active: boolean) => ipcRenderer.send(IPC.canvasNavigationShortcutCapture, active),
+    setTerminalEditFocus: (active: boolean) => ipcRenderer.send(IPC.canvasNavigationTerminalEditFocus, active),
     setPointerBindingState: (input: CanvasNavigationPointerBindingInput) => (
       ipcRenderer.send(IPC.canvasNavigationPointerBinding, input)
     ),
@@ -271,6 +273,7 @@ const api: CanvasTTYApi = {
     )
   },
   terminal: {
+    onFocusRequested: (listener) => subscribe(BACKLOG_TERMINAL_IPC.focusRequested, listener),
     openFile: (id: string, reference: string) => ipcRenderer.invoke(IPC.terminalOpenFile, id, reference),
     fileDropText: (files: File[]) => terminalFileDropText(
       files.map((file) => webUtils.getPathForFile(file)),
@@ -293,6 +296,10 @@ const api: CanvasTTYApi = {
     resolveGitRisk: (reportId: string, action: "neutralize" | "keep") => ipcRenderer.invoke(IPC.terminalResolveGitRisk, reportId, action),
     onGitRisk: (listener: (report: GitRiskReport) => void) => subscribe(IPC.terminalGitRisk, listener)
   },
+  backlog: {
+    ...Object.fromEntries(Object.entries(BACKLOG_IPC).map(([name, channel]) => [name, (...args: unknown[]) => ipcRenderer.invoke(channel, ...args)])),
+    onTaskBoardChanged:(listener)=>subscribe(BACKLOG_EVENTS.taskBoardChanged,listener)
+  } as BacklogApi,
   window: {
     isMacOS: process.platform === "darwin",
     platform: process.platform,

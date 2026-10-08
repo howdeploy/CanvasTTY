@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { IPC } from "../src/shared/contracts.ts";
 import { EvenG2Controller } from "../src/main/services/companion/EvenG2Controller.ts";
 
 async function fixture(t, extra = {}) {
@@ -31,6 +32,7 @@ async function fixture(t, extra = {}) {
     renames = [];
   const terminals = {
     listMetadata: () => sessions.map((s) => ({ ...s })),
+    redactSecrets: text => text,
     geometry: () => ({ cols: 100, rows: 30 }),
     readBuffer: () => ({ buffer: "Ready\r\n", outputOffset: 7 }),
     inputChecked: (id, data) => {
@@ -140,6 +142,7 @@ async function fixture(t, extra = {}) {
   };
   return {
     controller,
+    sessions,
     setAddresses: (value) => {
       addresses = value;
     },
@@ -925,4 +928,125 @@ test("a configure that cannot be saved changes nothing; a revoke that cannot be 
   await f.controller.close();
   const saved = JSON.parse(await readFile(join(f.directory, "even-g2.json"), "utf8"));
   assert.deepEqual(saved.peers.map((peer) => peer.id), [], "the revoke reached the disk once it could");
+});
+
+
+test("glasses clears resolved attention while retaining notification history", async t => {
+  const history=[];let loopActive=false;
+  const f=await fixture(t,{notifications:()=>history,loopWarningActive:()=>loopActive});
+  await f.enable();const {token}=await f.pair(), session=f.sessions[0];
+  session.exitCode=null;
+  const poll=async()=>{const response=await f.call('/g2/api/terminal?id=one',{token});assert.equal(response.status,200);return response.data.attention;};
+  const publish=kind=>{const event={id:String(history.length),sessionId:'one',title:'one',kind,at:Date.now()};history.push(event);return event;};
+  session.status='needs_approval';const approval=publish('approval');assert.deepEqual(await poll(),approval);
+  session.status='working';assert.equal(await poll(),null,'accepted approval is not replayed');
+  session.status='needs_approval';const nextApproval=publish('approval');assert.deepEqual(await poll(),nextApproval,'new permission request remains visible');
+  session.status='idle';session.turnCompleted=false;const response=publish('response');assert.deepEqual(await poll(),response);
+  session.turnCompleted=true;assert.equal(await poll(),null,'completed turn no longer asks for a response');
+  const done=publish('done');assert.deepEqual(await poll(),done);
+  session.status='working';assert.equal(await poll(),null,'new task clears completion notice');
+  session.status='failed';const failed=publish('failed');assert.deepEqual(await poll(),failed);
+  session.status='idle';session.turnCompleted=false;assert.equal(await poll(),null);
+  session.taskBudget={warning:true,paused:false};const budget=publish('budget');assert.deepEqual(await poll(),budget);
+  session.taskBudget={warning:false,paused:true};assert.deepEqual(await poll(),budget);
+  session.taskBudget={warning:false,paused:false};assert.equal(await poll(),null,'reset budget clears notice');
+  session.status='working';loopActive=true;const loop=publish('loop');assert.deepEqual(await poll(),loop);
+  loopActive=false;assert.equal(await poll(),null,'expired or replaced host epoch clears loop notice');
+  loopActive=true;session.exitCode=0;assert.equal(await poll(),null,'exited agent cannot keep an active loop notice');
+  assert.equal(history.length,7,'resolving current attention never deletes historical events');
+});
+
+
+for(const mode of ['text','voice'])test(`accepted glasses ${mode} input resolves response attention until a fresh answer; failed input preserves it`,async t=>{
+ const history=[{id:'response-1',sessionId:'one',title:'one',kind:'response',at:1}];
+ const speech={available:true,model:'fixture',configure(){},async inspect(){},cancel(){},cancelAll(){},async run(body,accept){return{accepted:await accept('next task',()=>false),transcript:'next task'};}};
+ const f=await fixture(t,{notifications:()=>history,speech});await f.enable();const {token}=await f.pair();
+ const poll=async()=>{const result=await f.call('/g2/api/terminal?id=one',{token});assert.equal(result.status,200);return result.data.attention;};
+ const send=()=>f.call(mode==='text'?'/g2/api/control':'/g2/api/voice',{token,body:mode==='text'?{sessionId:'one',action:'text',text:'next task'}:{sessionId:'one',purpose:'input',audio:Buffer.alloc(8000).toString('base64')}});
+ assert.deepEqual(await poll(),history[0]);
+ const write=f.options.terminals.inputChecked;f.options.terminals.inputChecked=()=>false;
+ assert.ok((await send()).status>=400);assert.deepEqual(await poll(),history[0],'no write means no resolved attention');
+ f.options.terminals.inputChecked=write;assert.equal((await send()).status,200);
+ assert.equal(f.sessions[0].status,'idle','fixture provider emits no working event');
+ assert.equal(await poll(),null);assert.equal(await poll(),null,'old notice stays cleared while provider remains idle');
+ f.controller.answer('one','fresh answer','new-turn',Date.now()+60_000);history.push({...history[0],id:'response-2'});
+ assert.deepEqual(await poll(),history[1],'captured fresh answer permits new response attention');
+ assert.equal(history.length,2,'attention history remains untouched');
+});
+
+test('fallback response attention returns after real working-to-idle progress without captured answers',async t=>{
+ const event={id:'response',sessionId:'one',title:'one',kind:'response',at:1};
+ const f=await fixture(t,{notifications:()=>[event]});await f.enable();const {token}=await f.pair();
+ const poll=async()=>(await f.call('/g2/api/terminal?id=one',{token})).data.attention;
+ assert.deepEqual(await poll(),event);
+ await f.call('/g2/api/control',{token,body:{sessionId:'one',action:'text',text:'next task'}});
+ assert.equal(await poll(),null);
+ f.sessions[0].status='working';f.controller.observe(IPC.terminalSession,{session:f.sessions[0]});
+ f.sessions[0].status='idle';f.controller.observe(IPC.terminalSession,{session:f.sessions[0]});
+ assert.deepEqual(await poll(),event,'working flag must not leave fallback response notices permanently suppressed');
+ await f.call('/g2/api/control',{token,body:{sessionId:'one',action:'text',text:'another task'}});assert.equal(await poll(),null);
+ const output='\x1b[2J\x1b[HNew fallback reply';
+ f.controller.observe(IPC.terminalData,{id:'one',data:output,outputOffset:7+output.length});
+ assert.deepEqual(await poll(),event,'a changed parsed reply also resolves pending input without lifecycle hooks');
+});
+
+
+test('terminal navigation and interrupt keys do not acknowledge response attention; replayed text cannot acknowledge a fresh response',async t=>{
+ const history=[{id:'response-1',sessionId:'one',kind:'response',title:'one',at:1}];
+ const f=await fixture(t,{notifications:()=>history});await f.enable();
+ const {connectionFromCode,localFetcher}=await import('../integrations/even-g2/src/local-fetch.mjs');
+ const origin=f.controller.state().transport.origin;await f.controller.command({type:'begin-pairing'});
+ const bootstrap=await connectionFromCode(f.controller.state().pairing.code,{origins:[origin],allowLoopback:true});
+ const encrypted=localFetcher(bootstrap.connection,{allowLoopback:true});
+ const paired=await encrypted(origin+'/g2/api/pair',{method:'POST',body:JSON.stringify({code:bootstrap.code,name:'Input regression'})});
+ assert.equal(paired.status,202);const {token,id}=await paired.json();await f.controller.command({type:'approve',id});
+ const poll=async()=>(await f.call('/g2/api/terminal?id=one',{token})).data.attention;
+ assert.deepEqual(await poll(),history[0]);
+ const mobile=action=>encrypted(origin+'/g2/api/mobile',{method:'POST',headers:{Authorization:'Bearer '+token},body:JSON.stringify({version:1,id:randomBytes(16).toString('hex'),sentAt:Date.now(),action})});
+ for(const key of ['up','down','left','right','backspace','escape','ctrl-c','enter']) {
+  assert.equal((await mobile({type:'session.key',sessionId:'one',key})).status,200);
+  assert.deepEqual(await poll(),history[0],`${key} is navigation/control, not a submitted response`);
+ }
+ assert.equal((await mobile({type:'session.interrupt',sessionId:'one'})).status,200);assert.deepEqual(await poll(),history[0]);
+ const body={sessionId:'one',action:'text',text:'answer',requestId:randomBytes(16).toString('hex'),sentAt:Date.now()};
+ assert.equal((await f.call('/g2/api/control',{token,body})).status,200);assert.equal(await poll(),null);
+ f.controller.answer('one','fresh answer','fresh',Date.now()+60000);history.push({...history[0],id:'response-2'});
+ assert.deepEqual(await poll(),history[1]);const writes=f.writes.length;
+ assert.equal((await f.call('/g2/api/control',{token,body})).status,200);assert.equal(f.writes.length,writes);
+ assert.deepEqual(await poll(),history[1],'ledger replay does not acknowledge a newer response');
+});
+
+test('newest current attention survives newer resolved events without mutating history or resurrecting an acknowledged approval',async t=>{
+ const history=[];let loopActive=false;
+ const f=await fixture(t,{notifications:()=>history,loopWarningActive:()=>loopActive});
+ f.sessions[0].provider='codex';f.sessions[0].status='needs_approval';f.sessions[0].exitCode=null;
+ const menu='Would you like to run this command?\n$ npm test\n\n› 1. Yes, proceed (y)\n  2. No (esc)\n\nPress enter to confirm or esc to cancel';
+ f.options.terminals.readBuffer=()=>({buffer:menu,outputOffset:menu.length});
+ await f.enable();const {token}=await f.pair();
+ const publish=kind=>{const event={id:String(history.length),sessionId:'one',title:'one',kind,at:history.length};history.push(event);return event;};
+ const read=async()=>{const response=await f.call('/g2/api/terminal?id=one',{token});assert.equal(response.status,200);return response.data;};
+ const approval=publish('approval');assert.deepEqual((await read()).attention,approval);
+ f.sessions[0].taskBudget={warning:true,paused:false};const budget=publish('budget');assert.deepEqual((await read()).attention,budget);
+ loopActive=true;const loop=publish('loop');assert.deepEqual((await read()).attention,loop);
+ loopActive=false;assert.deepEqual((await read()).attention,budget);
+ f.sessions[0].taskBudget.warning=false;assert.deepEqual((await read()).attention,approval,'resolved budget cannot hide pending approval');
+ history.push({...approval,id:'foreign',sessionId:'private'});assert.deepEqual((await read()).attention,approval,'history callback cannot leak another session');
+ const view=await read();assert.ok(view.interaction);
+ assert.equal((await f.call('/g2/api/control',{token,body:{sessionId:'one',action:'choose',menuId:view.interaction.id,index:0}})).status,200);
+ assert.equal((await read()).attention,null,'selected approval cannot return through history fallback');
+ assert.deepEqual(history.map(e=>e.id),['0','1','2','foreign'],'search does not reverse or delete retained history');
+});
+
+test('response history fallback respects observed progress and submitted input even when intermediate states are not polled',async t=>{
+ const response={id:'response',sessionId:'one',title:'one',kind:'response',at:1},history=[response];
+ const f=await fixture(t,{notifications:()=>history});await f.enable();const {token}=await f.pair();
+ const session=f.sessions[0],poll=async()=>(await f.call('/g2/api/terminal?id=one',{token})).data.attention;
+ const status=value=>{session.status=value;f.controller.observe(IPC.terminalSession,{session});};
+ assert.deepEqual(await poll(),response);
+ status('failed');status('idle');assert.equal(await poll(),null,'failed→idle cannot revive an earlier response notice');
+ status('working');status('idle');assert.deepEqual(await poll(),response,'fresh response can reuse a coalesced notification after real progress');
+ session.taskBudget={warning:true,paused:false};const budget={...response,id:'budget',kind:'budget'};history.push(budget);
+ assert.deepEqual(await poll(),budget);session.taskBudget.warning=false;assert.deepEqual(await poll(),response);
+ assert.equal((await f.call('/g2/api/control',{token,body:{sessionId:'one',action:'text',text:'answered'}})).status,200);
+ assert.equal(await poll(),null,'resolved newer budget must not resurrect a submitted response');
 });

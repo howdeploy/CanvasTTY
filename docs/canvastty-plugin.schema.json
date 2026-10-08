@@ -149,7 +149,7 @@
         },
         "cardActions": {
           "description": "Card actions (needs cards:decorate): items in the options menu of matching cards; the host calls canvastty.cards.invoke and shows the answer's message as a toast.",
-          "type": "array", "minItems": 1, "maxItems": 8,
+          "type": "array", "minItems": 1, "maxItems": 16,
           "items": { "$ref": "#/$defs/cardAction" }
         },
         "browserEngine": { "$ref": "#/$defs/browserEngine" }

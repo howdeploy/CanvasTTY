@@ -29,8 +29,8 @@ export function bubblewrapArguments(
     "--die-with-parent",
     "--unshare-pid",
     "--unshare-ipc",
-    "--ro-bind", "/", "/",
-    "--dev-bind", "/dev", "/dev",
+    ...(paths.restrictReads ? ["--tmpfs","/",...paths.readableAgain.flatMap(path=>exists(path) ? ["--ro-bind",path,path] : [])] : ["--ro-bind", "/", "/"]),
+    ...(!paths.restrictReads ? ["--dev-bind", "/dev", "/dev"] : []),
     "--proc", "/proc"
   ];
   const seen = new Set<string>();
@@ -87,6 +87,8 @@ export function bubblewrapArguments(
   for (const path of paths.socketFolders) {
     if (exists(path) === "directory" && !seen.has(path)) args.push("--bind", path, path);
   }
+  // Last mount: read exceptions and socket grants must never restore host devices inside a reviewer.
+  if (paths.restrictReads) args.push("--dev", "/dev");
   args.push("--chdir", launch.cwd, "--", launch.command, ...launch.args);
   return args;
 }

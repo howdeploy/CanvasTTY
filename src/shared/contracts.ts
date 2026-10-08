@@ -557,6 +557,12 @@ export type AgentChatHistoryResumeResult =
   | { error: { code: "invalid-id" | "cli-unavailable" | "conversation-missing" | "cwd-unknown" | "cwd-unavailable" | "resume-failed"; message: string } };
 
 export interface SessionMetadata {
+  /** Host-owned logical task identity for budgets and read-only reviewers. */
+  taskScope?: {id:string;cwd:string;startedAt:number};
+  reviewRequested?: boolean;
+  /** `processesKeepRunning`: the pause blocks input and launches only, because the platform cannot suspend processes. */
+  taskBudget?: {tokens:number|null;costUsd:number|null;durationMs:number|null;paused:boolean;warning:boolean;processesKeepRunning?:boolean};
+
   id: string;
   revision: number;
   provider: ProviderId;
@@ -1665,6 +1671,7 @@ export interface DiagnosticRendererError {
 }
 
 export interface CanvasTTYApi {
+  backlog: import("./backlog.ts").BacklogApi;
   diagnostics: {
     configuration(): Promise<DiagnosticConfiguration>;
     send(description: string, attachment?: DiagnosticAttachment): Promise<DiagnosticReportReceipt>;
@@ -1823,6 +1830,8 @@ export interface CanvasTTYApi {
   canvasNavigation: {
     armOwnerWheelSequence(clientX: number, clientY: number): void;
     setShortcutCaptureActive(active: boolean): void;
+    /** macOS: a terminal surface gained or lost keyboard focus (decides who handles Command+C/V/A). */
+    setTerminalEditFocus(active: boolean): void;
     setPointerBindingState(input: CanvasNavigationPointerBindingInput): void;
     setPointerGestureActive(active: boolean): void;
     onOverrideState(listener: (event: CanvasNavigationOverrideStateEvent) => void): () => void;
@@ -1992,6 +2001,7 @@ export const IPC = {
   browserCanvasPointer: "browser:canvas-pointer",
   browserCanvasNavigationPointer: "browser:canvas-navigation-pointer",
   canvasNavigationShortcutCapture: "canvas-navigation:shortcut-capture",
+  canvasNavigationTerminalEditFocus: "canvas-navigation:terminal-edit-focus",
   canvasNavigationPointerBinding: "canvas-navigation:pointer-binding",
   canvasNavigationOwnerWheel: "canvas-navigation:owner-wheel",
   canvasNavigationPointerGesture: "canvas-navigation:pointer-gesture",

@@ -25,6 +25,7 @@ export const MAX_PLUGIN_SLOT_BYTES = 4_096;
 const MAX_OPTION_PLUGINS = 16;
 
 export interface PersistedTerminalSession {
+  taskScope?:{id:string;cwd:string;startedAt:number};
   id: string;
   provider: ProviderId;
   profile: LaunchProfileId;
@@ -57,6 +58,7 @@ export interface PersistedTerminalSession {
   /** The model and reasoning effort its launches ask the CLI for (launchModel.ts). */
   model?: string;
   effort?: ReasoningEffort;
+  reviewRequested?: boolean;
   /** An isolated session ran since then and its repositories were not audited yet, or a report is still open. */
   gitAuditSince?: number;
 }
@@ -242,6 +244,7 @@ export function persistedTerminalSession(
     position: { ...metadata.position },
     size: { ...metadata.size },
     ...(metadata.parentSessionId !== undefined ? { parentSessionId: metadata.parentSessionId } : {}),
+    ...(metadata.taskScope ? {taskScope:{...metadata.taskScope}} : {}),
     ...(normalizedThreadId !== undefined ? { threadId: normalizedThreadId } : {}),
     lastState,
     ...(lastState !== "running" ? { exitCode: metadata.exitCode } : {}),
@@ -252,7 +255,8 @@ export function persistedTerminalSession(
     ...(extras.ownerPluginId ? { ownerPluginId: extras.ownerPluginId } : {}),
     ...(extras.gitAuditSince !== undefined ? { gitAuditSince: extras.gitAuditSince } : {}),
     ...(metadata.model !== undefined ? { model: metadata.model } : {}),
-    ...(metadata.effort !== undefined ? { effort: metadata.effort } : {})
+    ...(metadata.effort !== undefined ? { effort: metadata.effort } : {}),
+    ...(metadata.reviewRequested !== undefined ? { reviewRequested: metadata.reviewRequested } : {})
   };
 }
 
@@ -322,6 +326,7 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
         height: clamp(session.size.height, 260, 1_100)
       },
       ...(parentSessionId !== undefined ? { parentSessionId } : {}),
+      ...(isTaskScope(session.taskScope) ? {taskScope:{...session.taskScope}} : {}),
       ...(threadId !== undefined ? { threadId } : {}),
       lastState,
       ...(lastState !== "running" ? { exitCode } : {}),
@@ -336,7 +341,8 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
       ...(session.provider !== "terminal" && session.model !== undefined && launchModelProblem(session.provider as ProviderId, session.model) === null
         ? { model: session.model } : {}),
       ...(session.provider !== "terminal" && session.effort !== undefined && launchEffortProblem(session.provider as ProviderId, session.effort) === null
-        ? { effort: session.effort } : {})
+        ? { effort: session.effort } : {}),
+      ...(typeof session.reviewRequested === "boolean" ? { reviewRequested: session.reviewRequested } : {})
     });
     ids.add(session.id);
   }
@@ -426,4 +432,8 @@ function isReadableState(value: unknown): boolean {
 
 function isMissingFile(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}
+
+function isTaskScope(value:unknown):value is {id:string;cwd:string;startedAt:number} {
+  return isRecord(value) && typeof value.id==="string" && /^[\w-]{1,160}$/.test(value.id) && typeof value.cwd==="string" && value.cwd.length>0 && value.cwd.length<=4096 && typeof value.startedAt==="number" && Number.isFinite(value.startedAt) && value.startedAt>0;
 }

@@ -1,3 +1,6 @@
+import { taskCardState } from "../workspace/workspaceTaskGraph";
+import { TaskSummaryBar } from "../workspace/TaskSummaryBar";
+import { backlogText } from "../workspace/workspaceBacklogText";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { summaryScaleForZoom, useCameraSelector, type CameraStore } from "../workspace/cameraStore";
 import { FitAddon } from "@xterm/addon-fit";
@@ -107,12 +110,16 @@ interface TerminalCardProps {
   onRename(id: string, title: string): Promise<void>;
   onRenameEnd(): void;
   onBoundsChange(id: string, bounds: SessionBounds): void;
+  onBoundsPreview?(id: string, bounds: SessionBounds | null): void;
   onRestart(id: string, resume?: boolean): Promise<void>;
   /** `keepEnvironmentData` is the answer to "Keep environment data?" for a card in a plugin environment. */
   onDispose(id: string, keepEnvironmentData?: boolean): void;
   /** Saving sessions is on, so the per-card "Don't restore" choice applies. */
   restoreEnabled?: boolean;
   onOpenUrl(url: string): void;
+  taskChildren?: readonly SessionSnapshot[];
+  onOpenInspector?(id: string): void;
+  onGatherTask?(id: string): void;
 }
 
 interface DragState {
@@ -181,9 +188,13 @@ function TerminalCardView({
   onRename,
   onRenameEnd,
   onBoundsChange,
+  onBoundsPreview,
   onRestart,
   onDispose,
   onOpenUrl,
+  taskChildren = [],
+  onOpenInspector,
+  onGatherTask,
   restoreEnabled = false
 }: TerminalCardProps): React.JSX.Element {
   const borderSkin = terminalBorderSkinFallback(selectedBorderSkin);
@@ -241,7 +252,7 @@ function TerminalCardView({
   const pluginDecorations = usePluginCardDecorations(session);
   const [actionRunning, setActionRunning] = useState(false);
   const [actionToast, setActionToast] = useState<PluginCardActionResult | null>(null);
-  const hasOptions = restoreEnabled || pluginDecorations.actions.length > 0;
+  const hasOptions = Boolean(onOpenInspector) || restoreEnabled || pluginDecorations.actions.length > 0;
   const runPluginAction = (action: PluginCardActionEntry): void => {
     setOptionsOpen(false);
     setActionRunning(true);
@@ -376,6 +387,11 @@ function TerminalCardView({
   const visibleTitle = visibleTerminalTitle({ ...titleSource, cwdLabel: compactPath(session.cwd) });
   // Same precedence, but the tooltip shows the full path when the cwd is the label.
   const visibleTitleTooltip = visibleTerminalTitle({ ...titleSource, cwdLabel: session.cwd });
+  const taskState = session.parentSessionId ? taskCardState(session) : null;
+  const taskStateLabel = taskState === "working" ? "taskStateWorking"
+    : taskState === "waiting" ? "taskStateWaiting"
+      : taskState === "waiting-response" ? "taskStateWaitingResponse"
+        : taskState === "done" ? "taskStateDone" : "taskStateFailed";
   const visibleTitleRef = useRef(visibleTitle);
   visibleTitleRef.current = visibleTitle;
 
@@ -928,6 +944,7 @@ function TerminalCardView({
     if (!dragState.current || dragState.current.pointerId !== event.pointerId) return;
     dragState.current = null;
     onBoundsChange(session.id, liveBounds.current);
+    onBoundsPreview?.(session.id, null);
   };
 
   // A group drag takes pointer capture without a pointerup; drop local state so a
@@ -938,12 +955,14 @@ function TerminalCardView({
     if (!dragState.current) return;
     dragState.current = null;
     applyLiveBounds({ position: session.position, size: session.size });
+    onBoundsPreview?.(session.id, null);
   };
 
   const cancelResize = (): void => {
     if (!resizeState.current) return;
     resizeState.current = null;
     applyLiveBounds({ position: session.position, size: session.size });
+    onBoundsPreview?.(session.id, null);
   };
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>, direction: ResizeDirection): void => {
@@ -991,12 +1010,14 @@ function TerminalCardView({
     event.stopPropagation();
     resizeState.current = null;
     onBoundsChange(session.id, liveBounds.current);
+    onBoundsPreview?.(session.id, null);
   };
 
   const applyLiveBounds = (bounds: SessionBounds): void => {
     liveBounds.current = bounds;
     setPosition(bounds.position);
     setSize(bounds.size);
+    onBoundsPreview?.(session.id, bounds);
   };
 
   const activateSummary = (event: React.MouseEvent<HTMLButtonElement>): void => {
@@ -1139,7 +1160,7 @@ function TerminalCardView({
   );
   return (
     <article
-      className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""} ${session.status === "needs_approval" || session.status === "failed" ? "terminal-card--attention" : ""} ${fullscreen ? "terminal-card--fullscreen" : ""}`}
+      className={`terminal-card ${session.role === "orchestrator" && (taskChildren.length > 0 || Boolean(session.taskBudget)) ? "terminal-card--with-task-summary" : ""} terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""} ${session.status === "needs_approval" || session.status === "failed" ? "terminal-card--attention" : ""} ${fullscreen ? "terminal-card--fullscreen" : ""}`}
       data-interactive="true"
       data-canvas-layer-id={`terminal:${session.id}`}
       data-canvas-widget-id={terminalCanvasWidgetId(session.id)}
@@ -1253,6 +1274,8 @@ function TerminalCardView({
           {session.role === "orchestrator" && (
             <span className="terminal-card__role" title={t(locale, "orchestratorRoleNote")}>{t(locale, "roleOrchestrator")}</span>
           )}
+          {taskState && <span className={`terminal-card__task-status terminal-card__task-status--${taskState}`}
+            data-state={taskState} title={backlogText(locale, taskStateLabel)}>{backlogText(locale, taskStateLabel)}</span>}
           {session.profile === "auto" && (
             <span className="terminal-card__role" title={t(locale, session.autoDowngraded ? "autoDowngradedNote" : "autoProfileNote")}>
               {t(locale, session.autoDowngraded ? "autoDowngraded" : "autoProfile")}
@@ -1275,6 +1298,7 @@ function TerminalCardView({
               {t(locale, "configuredModeBadge")}: {session.configuredMode.mode}
             </span>
           )}
+          {session.reviewRequested && <span className="terminal-card__review-requested" title={backlogText(locale, "reviewRequested")}>{backlogText(locale, "reviewRequested")}</span>}
           {session.environment && (
             <span className="terminal-card__environment" title={session.environment.detail ?? `${session.environment.pluginId} · ${session.environment.kind}`}>
               {session.environment.label}
@@ -1289,6 +1313,7 @@ function TerminalCardView({
         </div>
         {!pixelControls && terminalActions}
       </header>
+      <TaskSummaryBar parent={session} children={taskChildren} locale={locale} onGather={() => onGatherTask?.(session.id)} />
       <div className="terminal-card__surface" data-suspended={!surfaceIsLive(lifecycle)} ref={terminalHost} />
       {pixelSkinTheme && (
         <Canvas2DSkinView theme={pixelSkinTheme} status={session.status} artState={pixelArtState}
@@ -1302,6 +1327,7 @@ function TerminalCardView({
       {pixelControls && terminalActions}
       {optionsOpen && hasOptions && (
         <div className="terminal-card__menu" role="menu" onKeyDown={(event) => { if (event.key === "Escape") setOptionsOpen(false); }}>
+          {onOpenInspector && <button className="terminal-card__menu-action" type="button" role="menuitem" onClick={() => { setOptionsOpen(false); onOpenInspector(session.id); }}>{locale === "ru" ? "Задачи и бюджет…" : "Tasks and budget…"}</button>}
           {restoreEnabled && (
             <label role="menuitemcheckbox" aria-checked={session.skipRestore === true}>
               <input

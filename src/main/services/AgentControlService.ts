@@ -15,6 +15,9 @@ import { onDiskPath, otherSpellings } from "./onDiskPath.ts";
 import { LaunchRefusal } from "./launchRefusal.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
 import { RESULT_CAPTURE_PROVIDERS } from "./resultCapture.ts";
+import { ACCOUNTS_PLUGIN_ID, selectedAccountId } from "./accountHomeIsolation.ts";
+import type { OrchestrationBudgetService } from "./OrchestrationBudgetService.ts";
+import { createDiffOnlyReviewWorkspace, type DiffOnlyReviewWorkspace } from "./DiffOnlyReviewWorkspace.ts";
 
 // Cards one parent may have in total, live or exited (the live limit is the person's setting).
 const MAX_CHILDREN_PER_PARENT = 16;
@@ -32,6 +35,13 @@ const MAX_OBSERVE_CHARS = 8_192;
 const MAX_EXIT_WINDOW_CHARS = 16_384;
 const MAX_EXIT_LINES = 20;
 const CHILD_POSITION_STEP = { x: 60, y: 60 };
+const MAX_RETRY_COUNT = 2;
+const MAX_RETRY_OUTPUT_BYTES = 4 * 1024;
+const MAX_RETRY_OUTPUT_WINDOW_CHARS = 16 * 1024;
+const MAX_REVIEW_DIFF_BYTES = 64 * 1024;
+const MAX_REVIEW_ANSWER_CHARS = 16 * 1024;
+const REVIEW_TIMEOUT_MS = 180_000;
+const REVIEW_STARTUP_QUIET_MS = 90_000;
 
 export interface SpawnAgentRequest {
   parentSessionId: string;
@@ -46,6 +56,11 @@ export interface SpawnAgentRequest {
   /** The CLI's --model and reasoning effort for this subagent (checked by the launch for its CLI). */
   model?: string;
   effort?: CreateSessionRequest["effort"];
+  review?: boolean;
+  /** Optional known model reserved for this worker's read-only reviewer. */
+  reviewModel?: string;
+  /** Internal-only role: suppresses all agent/plugin tools for a Plan-profile reviewer. */
+  readOnlyReview?: boolean;
 }
 
 export interface AgentObservation {
@@ -75,6 +90,8 @@ export interface AgentWaitResult {
   exitLines?: string;
   /** The final answer of the turn that ended (Codex, OpenCode subagents), masked. */
   answer?: AgentAnswer;
+  /** Present when spawn_agent requested a read-only second-agent review. */
+  review?: AgentReviewResult;
 }
 
 export interface AgentWaitTiming {
@@ -93,6 +110,19 @@ export interface AgentControlOptions {
   limits?: () => DelegationLimits;
   /** CanvasTTY's isolation layer can contain an agent on this computer now (a "contained" auto needs it). */
   containment?: () => boolean;
+  /** Persistent task budgets. Only usage from a real provider/timeline source is counted. */
+  budget?: Pick<OrchestrationBudgetService, "snapshot">;
+  /** Returns a known model different from the worker's model. Null means a safe alternative is unavailable. */
+  reviewModel?: (provider: AgentProviderId, workerModel: string | undefined) => string | null;
+  /** Actual CLI model metadata/configuration, used when the worker kept its CLI default. */
+  workerModel?: (session:SessionMetadata) => string | null | Promise<string|null>;
+  reviewCost?: (reviewerSessionId:string) => number|null;
+  /** Trusted host override: the returned diff must already be scoped to this worker and its launch. */
+  reviewDiff?: (session: SessionMetadata) => Promise<string>;
+  reviewTimeoutMs?: number;
+  /** How long an OpenCode reviewer may take to expose its input prompt before startup is refused. */
+  reviewStartupMs?: number;
+  onReview?: (sessionId: string, review: AgentReviewResult) => void;
 }
 
 /** The longest wait one call may ask for (wait_for_agent's timeoutSeconds maximum). */
@@ -110,6 +140,19 @@ export interface AgentResult {
   exitLines?: string;
   /** The last turn's final answer as the agent reported it (Codex, OpenCode subagents), masked; absent otherwise. */
   answer?: AgentAnswer;
+  /** Present when spawn_agent requested a read-only second-agent review. */
+  review?: AgentReviewResult;
+}
+
+export interface AgentReviewResult {
+  status: "pending" | "accepted" | "revise" | "rejected" | "unavailable";
+  verdict?: "accept" | "revise" | "reject";
+  notes?: string;
+  reason?: string;
+  reviewerSessionId?: string;
+  model?: string;
+  /** F-15 usage integrations can replace null when the provider reports a separate review cost. */
+  costUsd: number | null;
 }
 
 export interface AgentAnswer {
@@ -132,6 +175,20 @@ export class PromptNotDeliveredError extends Error {
 export class AgentControlService {
   private readonly terminals: TerminalManager;
   private readonly options: AgentControlOptions;
+  private readonly launchRequests = new Map<string, SpawnAgentRequest>();
+  private readonly retryOrigins = new Map<string, string>();
+  private readonly retryCounts = new Map<string, number>();
+  private readonly pendingRetries = new Map<string, number>();
+  private readonly retryableQuiet = new Set<string>();
+  private readonly reviewRequested = new Set<string>();
+  private readonly readOnlyReviewers = new Set<string>();
+  private readonly reviews = new Map<string, AgentReviewResult>();
+  private readonly reviewGenerations = new Map<string, object>();
+  private readonly reviewInputObservers = new Map<string, () => void>();
+  private readonly reviewPending = new Map<string, Promise<AgentReviewResult>>();
+  private readonly reviewControllers = new Map<string, AbortController>();
+  private readonly reviewAgents = new Map<string, string>();
+  private readonly reviewWatchers = new Map<string, { controller: AbortController; promise: Promise<void> }>();
 
   constructor(terminals: TerminalManager, options: AgentControlOptions = {}) {
     this.terminals = terminals;
@@ -151,34 +208,38 @@ export class AgentControlService {
     const capabilities = PROVIDER_CAPABILITIES[request.provider];
     if (!capabilities) throw new Error("Unknown agent provider.");
     if (!capabilities.send) throw new Error(`${request.provider} cannot receive prompts.`);
+    const account = this.subagentAccount(parent.id, request.provider, request.launchOptions);
+    if (account.launchOptions !== request.launchOptions) request = { ...request, launchOptions: account.launchOptions };
 
-    const children = this.children(parent.id);
-    if (children.length >= MAX_CHILDREN_PER_PARENT) {
-      throw new DelegationRefusal(`Session ${parent.id} already has ${MAX_CHILDREN_PER_PARENT} subagent cards; cancel_agent the finished ones first.`);
-    }
-    const lineage = this.lineage(parent.id);
-    const root = lineage.at(-1)!;
+    const taskScope = this.taskRoot(parent.id);
     // What the request asks for first (its folder, its profile), then the person's limits.
-    const cwd = subagentFolder(root.cwd, parent.cwd, request.cwd);
+    const cwd = subagentFolder(taskScope.cwd, parent.cwd, request.cwd);
     if ("error" in cwd) throw new DelegationRefusal(cwd.error);
+    this.requireBudgetActive(parent.id);
     const profile = subagentProfile(parent.profile, request.provider, request.profile, this.containment());
     if ("error" in profile) throw new DelegationRefusal(profile.error);
-    const limits = this.limits();
-    // The parent is at level lineage.length - 1 below its top-level agent; the new card one further down.
-    if (lineage.length > limits.maxDepth) {
-      throw new DelegationRefusal(`Subagents may nest at most ${limits.maxDepth} level${limits.maxDepth === 1 ? "" : "s"} deep below the agent the person started; this one would be level ${lineage.length}. The person sets this limit in Settings → Agents.`);
-    }
-    const live = this.descendants(root.id).filter((session) => session.exitCode === null).length;
-    if (live >= limits.maxSubagents) {
-      throw new DelegationRefusal(`This orchestration already runs ${live} live subagent${live === 1 ? "" : "s"}, its limit (Settings → Agents, set by the person). Wait for one to finish or cancel_agent one first.`);
-    }
+    this.assertSpawnCapacity(parent.id);
+    return this.createSubagent(parent, request, cwd.cwd, profile.profile, signal);
+  }
+
+  private createSubagent(
+    parent: SessionMetadata,
+    request: SpawnAgentRequest,
+    cwd: string,
+    profile: LaunchProfile,
+    signal?: AbortSignal
+  ): Promise<SessionMetadata> {
     // A call cancelled before its agent starts launches nothing.
     if (signal?.aborted) return Promise.reject(spawnCanceled());
-    const cascade = children.length;
+    // Recheck immediately before synchronous card creation, which reserves the live slot.
+    this.requireSession(parent.id);
+    this.requireBudgetActive(parent.id);
+    const { childrenCount } = this.assertSpawnCapacity(parent.id);
+    const cascade = childrenCount;
     const created = this.terminals.create({
       provider: request.provider,
-      cwd: cwd.cwd,
-      profile: profile.profile,
+      cwd,
+      profile,
       position: {
         x: parent.position.x + CHILD_POSITION_STEP.x * (cascade + 1),
         y: parent.position.y + CHILD_POSITION_STEP.y * (cascade + 1)
@@ -189,15 +250,62 @@ export class AgentControlService {
       ...(request.launchOptions !== undefined ? { launchOptions: request.launchOptions } : {}),
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.effort !== undefined ? { effort: request.effort } : {})
-    }, { ...(RESULT_CAPTURE_PROVIDERS.has(request.provider) ? { captureResult: true } : {}), origin: "subagent" });
+    }, { ...(RESULT_CAPTURE_PROVIDERS.has(request.provider) ? { captureResult: true } : {}), origin: "subagent", captureReviewDiff: request.review === true });
+    this.launchRequests.set(created.id, { ...request, cwd, profile });
+    this.retryOrigins.set(created.id, created.id);
+    if (request.review === true) {
+      this.reviewRequested.add(created.id);
+      this.reviewInputObservers.set(created.id, this.terminals.observeInputWrites(created.id, (_data, submitted) => {
+        this.invalidateReview(created.id);
+        const generation = this.reviewGeneration(created.id);
+        this.retryableQuiet.delete(created.id);
+        if (!submitted) {
+          this.reviews.set(created.id, { status: "unavailable", reason: "Input has not been submitted as a new worker task.", costUsd: null });
+          return;
+        }
+        return () => queueMicrotask(() => {
+          if (this.reviewRequested.has(created.id) && this.reviewGenerations.get(created.id) === generation) this.scheduleReview(created.id);
+        });
+      }));
+    }
+    if (request.readOnlyReview === true) this.readOnlyReviewers.add(created.id);
     if (request.initialPrompt === undefined || request.initialPrompt.length === 0) return Promise.resolve(created);
     return this.deliver(created.id, `${request.initialPrompt}\r`, "prompt", signal)
-      .then(() => this.terminals.getMetadata(created.id) ?? created, (error: unknown) => {
+      .then(() => {
+        this.scheduleReview(created.id);
+        return this.terminals.getMetadata(created.id) ?? created;
+      }, (error: unknown) => {
         // Cancelled while it started: nobody receives its id, so the card is closed instead of left running.
         if (!signal?.aborted) throw error;
         try { this.terminals.dispose(created.id); } catch { /* it already ended */ }
         throw spawnCanceled();
       });
+  }
+
+  /**
+   * Which model account a subagent of this parent runs on. A spawn that names no account inherits the orchestrator's
+   * own: it never falls back silently to the CLI's default model (for OpenCode that is OpenCode Zen, a third party).
+   * Naming one is explicit: "none" runs on the CLI's own sign-in, another account needs the plugin's delegable
+   * declaration (checked by the launch). An orchestrator without an account keeps the request as it is.
+   */
+  subagentAccount(parentSessionId: string, provider: AgentProviderId, requested: SpawnAgentRequest["launchOptions"]): {
+    launchOptions: SpawnAgentRequest["launchOptions"];
+    account: string | null;
+    source: "inherited" | "explicit" | "none";
+  } {
+    const parent = this.requireSession(parentSessionId);
+    const named = requested?.[ACCOUNTS_PLUGIN_ID];
+    if (named !== undefined) {
+      const account = selectedAccountId(requested);
+      return { launchOptions: requested, account: account === "default" ? null : account, source: "explicit" };
+    }
+    const parentAccount = typeof this.terminals.modelAccountOf === "function" ? this.terminals.modelAccountOf(parent.id) : undefined;
+    if (!parentAccount) return { launchOptions: requested, account: null, source: "none" };
+    if (parent.provider !== provider) {
+      throw new DelegationRefusal(`This orchestrator runs on model account ${parentAccount.slice(0, 40)} for ${parent.provider}; a ${provider} subagent cannot inherit it. `
+        + `Pass launchOptions {"${ACCOUNTS_PLUGIN_ID}":{"account":"<id>"}} with a ${provider} account (list_accounts / pick_account), or {"account":"none"} to run it on ${provider}'s own sign-in and default model.`);
+    }
+    return { launchOptions: { ...(requested ?? {}), [ACCOUNTS_PLUGIN_ID]: { account: parentAccount } }, account: parentAccount, source: "inherited" };
   }
 
   /** The profile a subagent of this parent gets for this request (what spawn will use), or why it gets none. */
@@ -213,6 +321,7 @@ export class AgentControlService {
     if (!capabilities.send) throw new Error(`${session.provider} cannot receive prompts.`);
     if (typeof text !== "string" || text.length === 0) throw new Error("Prompt text is required.");
     if (session.exitCode !== null) throw new Error("Agent session has already exited.");
+    this.assertInputAllowed(sessionId);
     return this.deliver(sessionId, submit ? `${text}\r` : text, "text", signal);
   }
 
@@ -239,6 +348,62 @@ export class AgentControlService {
     return chain;
   }
 
+  /** The top-level orchestrator and project folder governing this session's shared task scope. */
+  taskRoot(sessionId: string): { id: string; cwd: string; startedAt: number } {
+    const root = this.lineage(sessionId).at(-1)!;
+    const taskScope = root.taskScope;
+    return taskScope ? { ...taskScope } : { id: root.id, cwd: root.cwd, startedAt: root.startedAt };
+  }
+
+  /** Resolve every card against one host snapshot, sharing parent traversal and preserving continuation scopes. */
+  taskRoots(sessions: readonly SessionMetadata[]): Map<string, { id: string; cwd: string; startedAt: number }> {
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+    const resolved = new Map<string, { id: string; cwd: string; startedAt: number }>();
+    const visiting = new Set<string>();
+    const resolveTaskRoot = (sessionId: string): { id: string; cwd: string; startedAt: number } | null => {
+      const cached = resolved.get(sessionId);
+      if (cached) return cached;
+      const session = byId.get(sessionId);
+      if (!session || visiting.has(sessionId)) return null;
+      visiting.add(sessionId);
+      const scope = (session.parentSessionId ? resolveTaskRoot(session.parentSessionId) : null)
+        ?? session.taskScope
+        ?? { id: session.id, cwd: session.cwd, startedAt: session.startedAt };
+      visiting.delete(sessionId);
+      resolved.set(sessionId, scope);
+      return scope;
+    };
+    for (const session of sessions) resolveTaskRoot(session.id);
+    return resolved;
+  }
+
+  /** Called when TerminalManager removes a card; retries belonging to a live replacement retain their shared count. */
+  forgetSession(sessionId: string): void {
+    this.reviewInputObservers.get(sessionId)?.();
+    this.reviewInputObservers.delete(sessionId);
+    this.invalidateReview(sessionId);
+    this.reviewGenerations.delete(sessionId);
+    this.launchRequests.delete(sessionId);
+    this.retryableQuiet.delete(sessionId);
+    this.reviewRequested.delete(sessionId);
+    this.readOnlyReviewers.delete(sessionId);
+    this.reviews.delete(sessionId);
+
+    const sourceId = this.retryOrigins.get(sessionId) ?? sessionId;
+    this.retryOrigins.delete(sessionId);
+    if (!this.pendingRetries.has(sourceId) && ![...this.retryOrigins.values()].includes(sourceId)) this.retryCounts.delete(sourceId);
+
+    for (const [workerId, workerReviewerId] of this.reviewAgents) {
+      if (workerReviewerId !== sessionId) continue;
+      this.reviewAgents.delete(workerId);
+    }
+  }
+
+  /** Apply the terminal manager's existing secret masks to host-only task context before it leaves the core. */
+  maskText(text: string, maxChars: number): string {
+    return this.redactTail(text, Math.max(0, Math.min(65_536, maxChars)));
+  }
+
   /** Every card below this one, at any depth. */
   descendants(sessionId: string): SessionMetadata[] {
     const all = this.terminals.listMetadata();
@@ -263,6 +428,24 @@ export class AgentControlService {
       if (limits && Number.isInteger(limits.maxDepth) && Number.isInteger(limits.maxSubagents)) return limits;
     } catch { /* the defaults */ }
     return DEFAULT_DELEGATION_LIMITS;
+  }
+
+  private assertSpawnCapacity(parentSessionId: string, replacingSessionId?: string): { live: number; childrenCount: number } {
+    const childrenCount = this.children(parentSessionId).filter(session => session.id !== replacingSessionId).length;
+    if (childrenCount >= MAX_CHILDREN_PER_PARENT) {
+      throw new DelegationRefusal(`Session ${parentSessionId} already has ${MAX_CHILDREN_PER_PARENT} subagent cards; cancel_agent the finished ones first.`);
+    }
+    const lineage = this.lineage(parentSessionId);
+    const limits = this.limits();
+    if (lineage.length > limits.maxDepth) {
+      throw new DelegationRefusal(`Subagents may nest at most ${limits.maxDepth} level${limits.maxDepth === 1 ? "" : "s"} deep below the agent the person started; this one would be level ${lineage.length}. The person sets this limit in Settings → Agents.`);
+    }
+    const live = this.descendants(lineage.at(-1)!.id)
+      .filter(session => session.id !== replacingSessionId && session.exitCode === null).length;
+    if (live >= limits.maxSubagents) {
+      throw new DelegationRefusal(`This orchestration already runs ${live} live subagent${live === 1 ? "" : "s"}, its limit (Settings → Agents, set by the person). Wait for one to finish or cancel_agent one first.`);
+    }
+    return { live, childrenCount };
   }
 
   private containment(): boolean {
@@ -326,28 +509,151 @@ export class AgentControlService {
     };
   }
 
+  /** Gets a result with its review; tool calls defer unfinished reviews to stay within client deadlines. */
+  async resultWithReview(sessionId: string, options: { deferReview?: boolean } = {}): Promise<AgentResult> {
+    const current = this.result(sessionId);
+    if (!this.reviewRequested.has(sessionId)) return current;
+    const status = this.resultLifecycleStatus(sessionId) ?? current.status;
+    if (status !== "idle" && status !== "done" && status !== "failed" && current.exitCode === null) {
+      return { ...current, review: this.reviewWithCost(this.reviews.get(sessionId) ?? { status: "pending", costUsd: null }) };
+    }
+    if (options.deferReview) {
+      void this.ensureReview(sessionId);
+      return { ...current, review: this.reviewWithCost(this.reviews.get(sessionId) ?? { status: "pending", costUsd: null }) };
+    }
+    const generation = this.reviewGeneration(sessionId);
+    const review = await this.ensureReview(sessionId);
+    return { ...this.result(sessionId), review: this.reviewWithCost(
+      this.reviewGenerations.get(sessionId) === generation ? review : supersededReview()) };
+  }
+
+  private reviewWithCost(review:AgentReviewResult):AgentReviewResult{
+    try{
+      const cost=review.reviewerSessionId ? this.options.reviewCost?.(review.reviewerSessionId) : null;
+      return typeof cost==="number" && Number.isFinite(cost) && cost>=0 ? {...review,costUsd:cost} : review;
+    }catch{return review;}
+  }
+
+  /** Retry is restricted to a failed or observed quiet agent. */
+  async retry(sessionId: string, reason?: string, signal?: AbortSignal): Promise<SessionMetadata> {
+    const session = this.requireSession(sessionId);
+    if (session.provider === "terminal") throw new Error("Plain terminals are not agents.");
+    const capabilities = PROVIDER_CAPABILITIES[session.provider as AgentProviderId];
+    if (!capabilities?.send) throw new Error(`${session.provider} cannot receive prompts.`);
+    const failed = (session.exitCode !== null && session.exitCode !== 0) || session.status === "failed";
+    if (!failed && !this.retryableQuiet.has(sessionId)) {
+      throw new DelegationRefusal("retry_agent works only for a failed or quiet subagent; a running agent must finish or be canceled first.");
+    }
+    const sourceId = this.retryOrigins.get(sessionId) ?? sessionId;
+    if (this.pendingRetries.has(sourceId)) throw new DelegationRefusal("A retry of this agent is already in progress.");
+    const count = this.retryCounts.get(sourceId) ?? 0;
+    if (count >= MAX_RETRY_COUNT) throw new DelegationRefusal(`This agent has already used its limit of ${MAX_RETRY_COUNT} retries.`);
+    const original = this.launchRequests.get(sessionId) ?? this.launchRequests.get(sourceId);
+    if (!original) throw new DelegationRefusal("CanvasTTY no longer has the original launch request for this agent, so it cannot retry it safely.");
+    const raw = this.terminals.readBuffer(sessionId).buffer;
+    const output = utf8Tail(this.redactTail(raw, MAX_RETRY_OUTPUT_WINDOW_CHARS), MAX_RETRY_OUTPUT_BYTES);
+    const failureReason = (typeof reason === "string" && reason.trim().slice(0, 500))
+      || session.failureDetails
+      || (session.exitCode !== null ? `process exited with code ${session.exitCode}` : "the agent stopped producing output");
+    const context = [
+      "\n\nCanvasTTY retry context:",
+      `Failure reason: ${this.redactTail(failureReason, 500)}`,
+      output ? `Masked output tail (up to ${MAX_RETRY_OUTPUT_BYTES} UTF-8 bytes):\n${output}` : "No terminal output was available."
+    ].join("\n");
+    const retryPrompt = `${original.initialPrompt ?? ""}${context}`;
+    // Reserve synchronously: concurrent tool calls must share the same finite allowance.
+    this.retryCounts.set(sourceId, count + 1);
+    this.pendingRetries.set(sourceId, (this.pendingRetries.get(sourceId) ?? 0) + 1);
+    try {
+      if (signal?.aborted) throw spawnCanceled();
+      const parentId = session.parentSessionId ?? original.parentSessionId;
+      const validate = (): void => {
+        const parent = this.requireSession(parentId);
+        const taskScope = this.taskRoot(parentId);
+        const cwd = subagentFolder(taskScope.cwd, parent.cwd, session.cwd);
+        if ("error" in cwd) throw new DelegationRefusal(cwd.error);
+        const profile = subagentProfile(parent.profile, session.provider as AgentProviderId, session.profile, this.containment());
+        if ("error" in profile) throw new DelegationRefusal(profile.error);
+        if (profile.profile !== session.profile) throw new DelegationRefusal("The original launch profile is no longer allowed; choose a new agent with an allowed profile.");
+        this.requireBudgetActive(parentId);
+        // This replaces the same card, and the manager waits for its old PTY to exit before starting a successor.
+        this.assertSpawnCapacity(parentId, sessionId);
+      };
+      validate();
+      const retried = await this.terminals.retryAgentLaunch(sessionId, retryPrompt, validate, signal, () => this.invalidateReview(sessionId));
+      this.retryableQuiet.delete(sessionId);
+      this.scheduleReview(sessionId);
+      this.retryOrigins.set(retried.id, sourceId);
+      // Each attempt starts from the original request, with only this attempt's masked failure context appended.
+      this.launchRequests.set(retried.id, original);
+      if (original.review === true) this.reviewRequested.add(retried.id);
+      return retried;
+    } catch (error) {
+      this.retryCounts.set(sourceId, Math.max(0, (this.retryCounts.get(sourceId) ?? 1) - 1));
+      throw error;
+    } finally {
+      const pending = (this.pendingRetries.get(sourceId) ?? 1) - 1;
+      if (pending > 0) this.pendingRetries.set(sourceId, pending);
+      else {
+        this.pendingRetries.delete(sourceId);
+        if (![...this.retryOrigins.values()].includes(sourceId)) this.retryCounts.delete(sourceId);
+      }
+    }
+  }
+
+  taskBudget(sessionId: string): ReturnType<OrchestrationBudgetService["snapshot"]> | null {
+    if (!this.options.budget) return null;
+    const root = this.taskRoot(sessionId);
+    return this.options.budget.snapshot(root.id, root.startedAt);
+  }
+
+  isReadOnlyReviewer(sessionId: string): boolean {
+    return this.readOnlyReviewers.has(sessionId);
+  }
+
+  /** App-level PTY input gate. A hard task pause blocks input without signaling or killing any process. */
+  assertInputAllowed(sessionId: string): void {
+    this.requireSession(sessionId);
+    this.requireBudgetActive(sessionId);
+  }
+
   /**
    * Waits until the agent is at rest (idle, needs_approval, exited, or quiet when it reports no status), its card
    * closed, or the timeout passed. Only reads metadata and the output offset while it waits; the tail is read and
    * masked once, as it returns. Rejects with an AbortError once `signal` aborts.
    */
-  async waitFor(sessionId: string, request: { timeoutMs: number; signal?: AbortSignal }): Promise<AgentWaitResult> {
+  async waitFor(sessionId: string, request: { timeoutMs: number; signal?: AbortSignal; quietMs?: number; deferReview?: boolean }): Promise<AgentWaitResult> {
     const { signal } = request;
     signal?.throwIfAborted();
     const first = this.requireSession(sessionId);
     if (first.provider === "terminal") throw new Error("Plain terminals are not agents.");
     if (typeof request.timeoutMs !== "number" || !Number.isFinite(request.timeoutMs)) throw new Error("A wait timeout is required.");
-    const timing = this.options.waitTiming ?? AGENT_WAIT_TIMING;
+    const base = this.options.waitTiming ?? AGENT_WAIT_TIMING;
+    const timing = request.quietMs !== undefined ? { ...base, quietMs: Math.max(base.quietMs, request.quietMs) } : base;
     const timeoutMs = Math.min(MAX_AGENT_WAIT_MS, Math.max(0, request.timeoutMs));
     const started = Date.now();
-    const answer = (session: SessionMetadata | null, reason: AgentWaitReason): AgentWaitResult => {
+    const answer = async (session: SessionMetadata | null, reason: AgentWaitReason): Promise<AgentWaitResult> => {
       const waitedMs = Date.now() - started;
       if (!session) return { sessionId, reason, exitCode: null, waitedMs, output: "" };
+      if (reason === "quiet") this.retryableQuiet.add(sessionId);
+      else if (reason === "idle" || reason === "done" || reason === "failed") this.retryableQuiet.delete(sessionId);
       let observation: AgentObservation | null = null;
       try { observation = this.observe(sessionId); } catch { observation = null; }
-      const answer = reason === "timeout" || reason === "needs_approval" ? null : this.answer(sessionId);
+      const finalAnswer: AgentAnswer | null = reason === "timeout" || reason === "needs_approval" ? null : this.answer(sessionId);
+      let review: AgentReviewResult | undefined;
+      const generation = this.reviewGeneration(sessionId);
+      if (this.reviewRequested.has(sessionId) && (reason === "idle" || reason === "done" || reason === "failed" || reason === "quiet")) {
+        if (request.deferReview) {
+          const readiness = this.reviewReadiness(sessionId, reason === "quiet");
+          if (!readiness) void this.ensureReview(sessionId, reason === "quiet");
+          review = this.reviewWithCost(readiness ?? this.reviews.get(sessionId) ?? { status: "pending", costUsd: null });
+        } else {
+          const result = await this.ensureReview(sessionId, reason === "quiet");
+          review = this.reviewWithCost(this.reviewGenerations.get(sessionId) === generation ? result : supersededReview());
+        }
+      }
       return { sessionId, reason, status: session.status, exitCode: session.exitCode, waitedMs, output: observation?.output ?? "",
-        ...(observation?.exitLines ? { exitLines: observation.exitLines } : {}), ...(answer ? { answer } : {}) };
+        ...(observation?.exitLines ? { exitLines: observation.exitLines } : {}), ...(finalAnswer ? { answer: finalAnswer } : {}), ...(review ? { review } : {}) };
     };
     let offset = this.outputOffset(sessionId);
     let changedAt = started;
@@ -359,16 +665,17 @@ export class AgentControlService {
       if (current !== offset) { offset = current; changedAt = now; }
       const quietFor = now - changedAt;
       if (session.exitCode !== null) return answer(session, session.exitCode === 0 ? "done" : "failed");
-      if (session.status === "needs_approval") return answer(session, "needs_approval");
+      const status = this.resultLifecycleStatus(sessionId) ?? session.status;
+      if (status === "needs_approval") return answer(session, "needs_approval");
       // After a prompt, an idle that no turn followed (the CLI's startup idle, or one reported before the turn began)
       // is not the answer: only an idle after a turn that started since that prompt is. A CLI that never reports its
       // turns still ends as "quiet" once its screen stops changing.
       const progress = this.turnProgress(sessionId);
       const awaitingTurn = progress !== null && progress.promptSent && !progress.turnStartedSincePrompt;
-      if (!awaitingTurn && (session.status === "idle" || session.status === "done" || session.status === "failed") && quietFor >= timing.settleMs) {
-        return answer(session, session.status);
+      if (!awaitingTurn && (status === "idle" || status === "done" || status === "failed") && quietFor >= timing.settleMs) {
+        return answer(session, status);
       }
-      if ((session.status === "unavailable" || awaitingTurn) && quietFor >= timing.quietMs) return answer(session, "quiet");
+      if ((status === "unavailable" || awaitingTurn) && quietFor >= timing.quietMs) return answer(session, "quiet");
       const waited = now - started;
       if (waited >= timeoutMs) return answer(session, "timeout");
       await pause(Math.min(timing.checkMs, timeoutMs - waited), signal);
@@ -378,6 +685,248 @@ export class AgentControlService {
   cancel(sessionId: string): void {
     this.requireSession(sessionId);
     this.terminals.dispose(sessionId);
+  }
+
+  private reviewGeneration(sessionId: string): object {
+    let generation = this.reviewGenerations.get(sessionId);
+    if (!generation) { generation = {}; this.reviewGenerations.set(sessionId, generation); }
+    return generation;
+  }
+
+  private invalidateReview(sessionId: string): void {
+    const reviewerIds = new Set([this.reviews.get(sessionId)?.reviewerSessionId, this.reviewAgents.get(sessionId)]);
+    this.reviewGenerations.set(sessionId, {});
+    this.reviews.delete(sessionId);
+    this.reviewWatchers.get(sessionId)?.controller.abort();
+    this.reviewWatchers.delete(sessionId);
+    this.reviewControllers.get(sessionId)?.abort();
+    this.reviewControllers.delete(sessionId);
+    this.reviewPending.delete(sessionId);
+    this.reviewAgents.delete(sessionId);
+    for (const reviewerId of reviewerIds) this.disposeReviewer(reviewerId);
+  }
+
+  private disposeReviewer(reviewerId: string | undefined): void {
+    if (!reviewerId) return;
+    this.readOnlyReviewers.delete(reviewerId);
+    try { this.terminals.dispose(reviewerId); } catch { /* the reviewer may already have ended */ }
+  }
+
+  private reviewReadiness(sessionId: string, quiet = false): AgentReviewResult | null {
+    // An old idle/answer can remain visible until the provider acknowledges the submitted input.
+    const progress = this.turnProgress(sessionId);
+    if (progress?.promptSent && !progress.turnStartedSincePrompt && !this.answer(sessionId)) {
+      return quiet || this.terminals.getMetadata(sessionId)?.exitCode !== null
+        ? { status: "unavailable", reason: "The provider did not report a new completed turn or final answer after the submitted input.", costUsd: null }
+        : { status: "pending", costUsd: null };
+    }
+    return null;
+  }
+
+  private async ensureReview(sessionId: string, quiet = false): Promise<AgentReviewResult> {
+    const readiness = this.reviewReadiness(sessionId, quiet);
+    if (readiness) return readiness;
+    const generation = this.reviewGeneration(sessionId);
+    const cached = this.reviews.get(sessionId);
+    if (cached) return cached;
+    const active = this.reviewPending.get(sessionId);
+    if (active) {
+      const result = await active;
+      return this.reviewGenerations.get(sessionId) === generation ? result : supersededReview();
+    }
+    const controller = new AbortController();
+    this.reviewControllers.set(sessionId, controller);
+    // Store the guarded promise, so every concurrent caller observes invalidation, not the raw verdict.
+    const pending = this.performReview(sessionId, controller.signal).catch((error: unknown): AgentReviewResult => ({
+      status: "unavailable",
+      reason: this.redactTail(error instanceof Error ? error.message : "The reviewer failed.", 500),
+      costUsd: null
+    })).then(result => {
+      if (controller.signal.aborted || this.reviewGenerations.get(sessionId) !== generation) {
+        this.disposeReviewer(result.reviewerSessionId);
+        return supersededReview();
+      }
+      this.reviews.set(sessionId, result);
+      try { this.options.onReview?.(sessionId, result); } catch { /* review observers cannot affect the result */ }
+      return result;
+    }).finally(() => {
+      if (this.reviewPending.get(sessionId) === pending) this.reviewPending.delete(sessionId);
+      if (this.reviewControllers.get(sessionId) === controller) this.reviewControllers.delete(sessionId);
+    });
+    this.reviewPending.set(sessionId, pending);
+    const result = await pending;
+    return this.reviewGenerations.get(sessionId) === generation ? result : supersededReview();
+  }
+
+  private async performReview(sessionId: string, signal: AbortSignal): Promise<AgentReviewResult> {
+    const worker = this.requireSession(sessionId);
+    const request = this.launchRequests.get(sessionId);
+    if (!request) return { status: "unavailable", reason: "CanvasTTY no longer has the worker launch details.", costUsd: null };
+    // A worker on a model account (Accounts plugin) is reviewed on that same account unless a review model was named:
+    // the agent's own sign-in may not exist, and only the account carries the key for this model.
+    const account = request.reviewModel ? null : selectedModelAccount(request.launchOptions);
+    if (!account && !request.reviewModel && !this.options.reviewModel) return { status: "unavailable", reason: "No different known reviewer model is available.", costUsd: null };
+    let workerModel=worker.model ?? request.model;
+    if(!workerModel)try{workerModel=await this.options.workerModel?.(worker) ?? undefined;}catch{ /* Unknown remains unknown. */ }
+    if(signal.aborted)return {status:"unavailable",reason:"The worker session was removed before review.",costUsd:null};
+    let model: string | null;
+    try { model = account ? `account:${account}` : request.reviewModel ?? this.options.reviewModel?.(worker.provider as AgentProviderId, workerModel) ?? null; }
+    catch { model = null; }
+    if (!model || (!account && workerModel && model === workerModel)) {
+      return { status: "unavailable", reason: "No known model different from the worker's model is available.", costUsd: null };
+    }
+    const profile = this.profileFor(this.lineage(sessionId).at(-1)!.id, worker.provider as AgentProviderId, "plan");
+    if ("error" in profile) return { status: "unavailable", reason: `A read-only Plan reviewer is unavailable: ${profile.error}`, costUsd: null };
+    let diff: string;
+    try {
+      diff = this.options.reviewDiff ? await this.options.reviewDiff(worker) : await this.terminals.readReviewDiff(sessionId);
+    } catch (error) {
+      return { status: "unavailable", reason: `The worker diff could not be read: ${error instanceof Error ? error.message : "unknown error"}`, costUsd: null };
+    }
+    if (signal.aborted) return { status: "unavailable", reason: "The worker session was removed before review.", costUsd: null };
+    const maskedDiff = utf8Tail(this.redactTail(diff, MAX_REVIEW_DIFF_BYTES + 8_192), MAX_REVIEW_DIFF_BYTES);
+    const answer = this.answer(sessionId);
+    const maskedAnswer = answer ? this.redactTail(answer.text, MAX_REVIEW_ANSWER_CHARS) : "No final answer was available from this provider.";
+    const root = this.lineage(sessionId).at(-1)!;
+    const prompt = [
+      "Review only the supplied answer and diff. The temporary review workspace also contains the same patch as review.diff. Do not inspect or modify project files; this is a read-only review.",
+      "Return one JSON object with exactly these fields: verdict (accept, revise, or reject) and findings (short actionable notes).",
+      "Use accept when no material issue is visible, revise when the author can address concrete issues, and reject when the result does not satisfy the request.",
+      "Worker answer:", maskedAnswer,
+      "Diff:", maskedDiff || "(No reviewable diff was found.)"
+    ].join("\n\n");
+    let reviewer: SessionMetadata | undefined;
+    let keepReviewer = false;
+    let reviewerAccount: Awaited<ReturnType<TerminalManager["prepareReviewerAccount"]>> | undefined;
+    let workspace: DiffOnlyReviewWorkspace;
+    try {
+      workspace = createDiffOnlyReviewWorkspace(maskedDiff);
+    } catch (error) {
+      return { status: "unavailable", reason: `The diff-only review workspace could not be prepared: ${error instanceof Error ? error.message : "unknown error"}`, costUsd: null, model };
+    }
+    try {
+      try {
+        reviewerAccount = account
+          ? await this.terminals.prepareReviewerAccount({ taskRootSessionId: root.id, provider: worker.provider as AgentProviderId, workspace,
+            launchOptions: { [MODEL_ACCOUNTS_PLUGIN_ID]: { account } } })
+          : undefined;
+        if (signal.aborted) throw new Error("The worker session was removed before review.");
+        reviewer = this.terminals.createReadOnlyReviewer({
+          taskRootSessionId: root.id,
+          provider: worker.provider as AgentProviderId,
+          workspace,
+          title: `Review: ${worker.title}`.slice(0, 80),
+          ...(reviewerAccount ? { account: reviewerAccount } : { model })
+        });
+        // Once creation succeeds, TerminalManager owns the contribution and cleans it up with the session.
+        reviewerAccount = undefined;
+        this.readOnlyReviewers.add(reviewer.id);
+        // OpenCode's fresh home has no conversation until submission; wait for its rendered input prompt or hook.
+        if (worker.provider === "opencode") {
+          const readyBy = Date.now() + (this.options.reviewStartupMs ?? REVIEW_STARTUP_QUIET_MS);
+          const ready = (): boolean => typeof this.terminals.inputReady === "function"
+            ? this.terminals.inputReady(reviewer!.id)
+            : (this.resultLifecycleStatus(reviewer!.id) ?? this.terminals.getMetadata(reviewer!.id)?.status) !== "unavailable";
+          while (Date.now() < readyBy && !ready()) await pause(250, signal);
+          if (!ready()) throw new Error("The reviewer CLI did not expose its input prompt before the startup deadline.");
+        }
+        await this.deliver(reviewer.id, `${prompt}\r`, "prompt", signal);
+      } catch (error) {
+        return { status: "unavailable", reason: `The read-only reviewer could not start: ${error instanceof Error ? error.message : "unknown error"}`, costUsd: null, model };
+      }
+      const reviewerSession = reviewer!;
+      this.reviewAgents.set(sessionId, reviewerSession.id);
+      if (signal.aborted) {
+        return { status: "unavailable", reason: "The worker session was removed before review.", reviewerSessionId: reviewerSession.id, model, costUsd: null };
+      }
+      const waited = await this.waitFor(reviewerSession.id, {
+        timeoutMs: this.options.reviewTimeoutMs ?? REVIEW_TIMEOUT_MS,
+        // A reviewer starts its CLI in a fresh, empty home (OpenCode may fetch its provider package first) and reports
+        // no turn until then: ten silent seconds are not yet "stopped responding".
+        quietMs: REVIEW_STARTUP_QUIET_MS,
+        signal
+      }).catch((error: unknown) => ({
+        sessionId: reviewerSession.id, reason: "failed" as const, exitCode: 1, waitedMs: 0, output: "",
+        exitLines: error instanceof Error ? this.redactTail(error.message, 500) : "review failed"
+      }));
+      if (signal.aborted) {
+        return { status: "unavailable", reason: "The worker session was removed during review.", reviewerSessionId: reviewerSession.id, model, costUsd: null };
+      }
+      if (waited.reason === "timeout" || waited.reason === "quiet" || waited.reason === "failed" || !waited.answer) {
+        return {
+          status: "unavailable",
+          reason: waited.reason === "timeout" ? "The reviewer timed out." : waited.reason === "quiet" ? "The reviewer stopped responding without a readable verdict." : waited.exitLines ? `The reviewer failed before returning a verdict: ${this.redactTail(waited.exitLines, 500)}` : "The reviewer failed before returning a verdict.",
+          reviewerSessionId: reviewerSession.id,
+          model,
+          costUsd: null
+        };
+      }
+      const parsed = parseReview(waited.answer.text);
+      if (!parsed) {
+        return { status: "unavailable", reason: "The reviewer did not return a valid accept, revise, or reject verdict.", reviewerSessionId: reviewerSession.id, model, costUsd: null };
+      }
+      keepReviewer = true;
+      return {
+        status: parsed.verdict === "accept" ? "accepted" : parsed.verdict === "revise" ? "revise" : "rejected",
+        verdict: parsed.verdict,
+        notes: [account ? "Reviewed on the worker's model account (the same model; name reviewModel for another)." : "", parsed.findings ? this.redactTail(parsed.findings, 8_000) : ""].filter(Boolean).join("\n") || undefined,
+        reviewerSessionId: reviewerSession.id,
+        model,
+        costUsd: null
+      };
+    } finally {
+      if (reviewerAccount) await reviewerAccount.contribution.cleanup().catch(() => undefined);
+      if (reviewer && this.reviewAgents.get(sessionId) === reviewer.id) this.reviewAgents.delete(sessionId);
+      if (!keepReviewer) {
+        if (reviewer) try { this.terminals.dispose(reviewer.id); } catch { /* the task may already have removed it */ }
+        workspace.cleanup();
+        if (reviewer) this.readOnlyReviewers.delete(reviewer.id);
+      }
+    }
+  }
+
+
+  private requireBudgetActive(sessionId: string): void {
+    if (!this.options.budget) return;
+    let snapshot: ReturnType<OrchestrationBudgetService["snapshot"]>;
+    const root = this.taskRoot(sessionId);
+    try { snapshot = this.options.budget.snapshot(root.id, root.startedAt); }
+    catch (error) { throw new DelegationRefusal(`Task budget state is unavailable; new subagent activity is paused. ${error instanceof Error ? error.message : ""}`); }
+    if (snapshot.paused) throw new DelegationRefusal(snapshot.reason ?? "This task's budget is exhausted. Increase or clear it in CanvasTTY before continuing.");
+  }
+
+  private scheduleReview(sessionId: string): void {
+    if (!this.reviewRequested.has(sessionId) || this.reviewWatchers.has(sessionId)) return;
+    const controller = new AbortController();
+    let watcher: { controller: AbortController; promise: Promise<void> };
+    const promise = this.monitorReview(sessionId, controller.signal).catch(() => undefined).finally(() => {
+      if (this.reviewWatchers.get(sessionId) === watcher) this.reviewWatchers.delete(sessionId);
+    });
+    watcher = { controller, promise };
+    this.reviewWatchers.set(sessionId, watcher);
+  }
+
+  /** Waits for the worker's next completed turn and starts its review without requiring a result poll. */
+  private async monitorReview(sessionId: string, signal: AbortSignal): Promise<void> {
+    for (;;) {
+      if (signal.aborted) return;
+      const session = this.terminals.getMetadata(sessionId);
+      if (!session || !this.reviewRequested.has(sessionId)) return;
+      if (session.exitCode !== null) {
+        await this.ensureReview(sessionId);
+        return;
+      }
+      const result = await this.waitFor(sessionId, { timeoutMs: MAX_AGENT_WAIT_MS, signal });
+      if (signal.aborted) return;
+      if (result.reason === "idle" || result.reason === "done" || result.reason === "failed" || result.reason === "quiet") {
+        const review = result.review ?? await this.ensureReview(sessionId, result.reason === "quiet");
+        if (signal.aborted) return;
+        if (review.status !== "pending") return;
+      }
+      if (result.reason === "closed") return;
+      // Approval and quiet states need a later human input or another output sample; avoid spinning on either.
+      await pause(1_000, signal);
+    }
   }
 
   /** Through the terminal manager's one delivery rule: exactly once, into the launch that is starting now. */
@@ -399,6 +948,10 @@ export class AgentControlService {
   private redactTail(text: string, maxChars: number): string {
     if (typeof this.terminals.redactSecretsTail === "function") return this.terminals.redactSecretsTail(text, maxChars);
     return tail(typeof this.terminals.redactSecrets === "function" ? this.terminals.redactSecrets(text) : text, maxChars);
+  }
+
+  private resultLifecycleStatus(sessionId: string): "idle" | "working" | "needs_approval" | null {
+    return typeof this.terminals.resultLifecycleState === "function" ? this.terminals.resultLifecycleState(sessionId) : null;
   }
 
   private turnProgress(sessionId: string): { promptSent: boolean; turnStartedSincePrompt: boolean } | null {
@@ -518,6 +1071,38 @@ function tail(text: string, maxChars: number): string {
   return text.slice(text.length - maxChars);
 }
 
+function utf8Tail(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.byteLength <= maxBytes) return text;
+  let value = bytes.subarray(bytes.byteLength - maxBytes).toString("utf8");
+  // A UTF-8 byte window can begin in the middle of a code point; drop that partial character.
+  if (value.startsWith("\uFFFD")) value = value.slice(1);
+  return value;
+}
+
+function parseReview(text: string): { verdict: "accept" | "revise" | "reject"; findings: string } | null {
+  const match = text.match(/\{[\s\S]*\}/u);
+  if (!match) return null;
+  let value: unknown;
+  try { value = JSON.parse(match[0]); } catch { return null; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.verdict !== "accept" && record.verdict !== "revise" && record.verdict !== "reject") return null;
+  const findings = typeof record.findings === "string" ? record.findings : typeof record.notes === "string" ? record.notes : "";
+  return { verdict: record.verdict, findings: findings.slice(0, 8_000) };
+}
+
 function spawnCanceled(): Error {
   return new DOMException("The spawn was canceled before its agent started.", "AbortError");
+}
+
+const MODEL_ACCOUNTS_PLUGIN_ID = "canvastty-accounts";
+/** The model account a worker was launched on through the Accounts plugin, if any. */
+function selectedModelAccount(launchOptions: SpawnAgentRequest["launchOptions"]): string | null {
+  const account = launchOptions?.[MODEL_ACCOUNTS_PLUGIN_ID]?.account;
+  return typeof account === "string" && account && account !== "none" ? account : null;
+}
+
+function supersededReview(): AgentReviewResult {
+  return { status: "unavailable", reason: "The worker prompt changed or the session was removed before this review completed.", costUsd: null };
 }

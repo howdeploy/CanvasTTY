@@ -47,6 +47,7 @@ function mountFor(args, path) {
     if (flag === "--bind" || flag === "--dev-bind") { target = args[i + 2]; mode = "bind"; i += 2; }
     else if (flag === "--ro-bind") { target = args[i + 2]; mode = "ro"; i += 2; }
     else if (flag === "--tmpfs") { target = args[i + 1]; mode = "tmpfs"; i += 1; }
+    else if (flag === "--dev") { target = args[i + 1]; mode = "private-dev"; i += 1; }
     else if (flag === "--proc" || flag === "--chdir") { i += 1; continue; }
     else continue;
     if (path === target || path.startsWith(`${target.replace(/\/+$/u, "")}/`)) found = { target, mode };
@@ -186,4 +187,31 @@ test("OpenCode custom permission sources are read-only without creating an empty
   second.cleanup();
   assert.equal(existsSync(join(custom, "agent")), false, "empty temporary directory is released");
   assert.equal(await readFile(explicit, "utf8"), '{"permission":{"edit":"deny"}}', "person config is preserved");
+});
+
+
+test("read-restricted reviewers receive a private minimal /dev while ordinary isolation retains host devices", () => {
+  const paths = { writable: [], writableFiles: [], unreadable: [], readableAgain: ["/usr"], gitHooks: [], protectedWrites: [], socketFolders: [] };
+  const launch = { command: "/usr/bin/node", args: [], cwd: "/review" };
+  const restricted = bubblewrapArguments({ ...paths, restrictReads: true }, launch, () => "directory");
+  assert.deepEqual(restricted.slice(restricted.indexOf("--dev"), restricted.indexOf("--dev") + 2), ["--dev", "/dev"]);
+  assert.equal(restricted.includes("--dev-bind"), false, "the review sandbox must not expose host disks, terminals or device aliases");
+  const ordinary = bubblewrapArguments(paths, launch, () => "directory");
+  assert.deepEqual(ordinary.slice(ordinary.indexOf("--dev-bind"), ordinary.indexOf("--dev-bind") + 3), ["--dev-bind", "/dev", "/dev"]);
+});
+
+
+test("generated reviewer read grants cannot remount host /dev over the final minimal device filesystem", posixHost, async t => {
+  const w = await freshHome(t);
+  const paths = isolationPaths({ provider: "codex", cwd: w.project, sessionTemp: join(w.temp, "review"),
+    env: w.env, userDataPath: w.userData, sessionId: "review", readOnlyProject: true, restrictHomeReads: true });
+  assert.ok(paths.readableAgain.includes("/dev"), "exercise the real read-exception generator");
+  // A nested read/socket/writable grant must also be hidden by the final private device mount.
+  const withDeviceGrants = { ...paths, readableAgain: [...paths.readableAgain, "/dev/shm"],
+    writable: [...paths.writable, "/dev/shm"], socketFolders: [...paths.socketFolders, "/dev/shm"] };
+  const args = bubblewrapArguments(withDeviceGrants, { command: "/usr/bin/node", args: [], cwd: w.project }, () => "directory");
+  for (const device of ["/dev", "/dev/video0", "/dev/input/event0", "/dev/shm", "/dev/shm/shared-host-file"]) {
+    assert.deepEqual(mountFor(args, device), { target: "/dev", mode: "private-dev" }, device);
+  }
+  assert.equal(args.lastIndexOf("--dev"), args.indexOf("--chdir") - 2, "no later bind can expose devices again");
 });

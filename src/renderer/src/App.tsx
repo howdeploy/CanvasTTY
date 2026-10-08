@@ -81,7 +81,8 @@ import {
   isShortcutCaptureTarget,
   matchesPointerShortcut,
   matchesShortcut,
-  shouldKeepNativeKeyboardInput
+  shouldKeepNativeKeyboardInput,
+  trackTerminalEditFocus
 } from "./lib/shortcuts";
 import { homeGridPixelSize, homeLayoutFitsGrid, placeHomeWidget } from "./features/home/homeLayout";
 import { boundsInsideRegion, translateBounds } from "./features/workspace/canvasRegions";
@@ -681,9 +682,11 @@ export function App(): React.JSX.Element {
     cwd: string,
     role: LaunchRole,
     launchOptions?: Record<string, PluginLaunchValues>,
-    environment?: SessionEnvironmentChoice
+    environment?: SessionEnvironmentChoice,
+    initialPrompt?: string
   ): Promise<void> => {
-    await createSession(provider, profile, cwd, launchPosition ?? undefined, role, launchOptions, environment);
+    const session = await createSession(provider, profile, cwd, launchPosition ?? undefined, role, launchOptions, environment);
+    if (initialPrompt) await window.canvasTTY.backlog.sendInstructions(session.id, initialPrompt);
     setLaunchPosition(null);
     showToast(provider === "terminal" ? t(settings.locale, "terminalStarted") : `${t(settings.locale, "sessionStarted")}: ${provider}`);
   }, [createSession, launchPosition, settings.locale, showToast]);
@@ -1482,9 +1485,13 @@ export function App(): React.JSX.Element {
 
     window.addEventListener("keydown", handleShortcut, true);
     window.addEventListener("pointerdown", handlePointerShortcut, true);
+    const stopTerminalFocus = window.canvasTTY.window.isMacOS
+      ? trackTerminalEditFocus(document, (focused) => window.canvasTTY.canvasNavigation.setTerminalEditFocus(focused))
+      : () => undefined;
     return () => {
       window.removeEventListener("keydown", handleShortcut, true);
       window.removeEventListener("pointerdown", handlePointerShortcut, true);
+      stopTerminalFocus();
     };
   }, [activeSessionId, fullscreenSessionId, goHome, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, shortcutReferenceOpen, showToast, toggleSessionFullscreen]);
 

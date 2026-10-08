@@ -877,7 +877,8 @@ function isTurnStart(event: string): boolean {
   return event === "UserPromptSubmit"
     || event === "TurnStarted"
     || event === "pre_llm_call"
-    || event === "session.status:busy";
+    || event === "session.status:busy"
+    || event === "session.status:retry";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

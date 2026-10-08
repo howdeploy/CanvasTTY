@@ -964,7 +964,7 @@
       },
       {
         "name": "spawn_agent",
-        "description": "Launch another provider's agent as a CanvasTTY subagent of this session and optionally deliver a first prompt. Returns the new session id. provider must be an id from list_providers (known ids: codex, claude, qwen, kimi, opencode, hermes, grok, omp, pi, cursor, minimax, devin, antigravity); call list_providers first to see which are installed and signed in. Give each subagent one self-contained part of the task and an absolute cwd. If the person names a model, pass it as model in the format list_providers gives for that provider (OpenCode: provider/model); effort sets the reasoning effort where that CLI has one (list_providers shows its efforts). An unsupported model or effort is refused with the reason. profile: without it the subagent gets this session's launch profile, or the next lower one its CLI has; a subagent never gets more than this session (plan < normal < acceptEdits < auto) and never YOLO. \"auto\" lets it work without asking the person for each edit or command inside the project; CanvasTTY's outer layers (agent isolation, base protection) still stop writes outside the project, secrets and system changes. The answer says the profile it got. cwd must be this project's folder or a folder inside it. launchOptions passes plugin launch options exactly as a plugin tool gives them (for example the account a plugin picked), for plugins that allow an orchestrator to choose them. Refusals say why (a limit the person set, a folder outside the project, a profile above this session's): change the request instead of retrying it. Then call wait_for_agent and get_agent_result.",
+        "description": "Launch another provider's agent as a CanvasTTY subagent of this session and optionally deliver a first prompt. Returns the new session id. provider must be an id from list_providers (known ids: codex, claude, qwen, kimi, opencode, hermes, grok, omp, pi, cursor, minimax, devin, antigravity); call list_providers first to see which are installed and signed in. Give each subagent one self-contained part of the task and an absolute cwd. If the person names a model, pass it as model in the format list_providers gives for that provider (OpenCode: provider/model); omit model to keep the selected account or provider default. effort sets the reasoning effort where that CLI has one (list_providers shows its efforts). An unsupported model or effort is refused with the reason. profile: without it the subagent gets this session's launch profile, or the next lower one its CLI has; a subagent never gets more than this session (plan < normal < acceptEdits < auto) and never YOLO. \"auto\" lets it work without asking the person for each edit or command inside the project; CanvasTTY's outer layers (agent isolation, base protection) still stop writes outside the project, secrets and system changes. The answer says the profile it got. cwd must be this project's folder or a folder inside it. review: true asks CanvasTTY to run a read-only review after this agent finishes; reviewModel optionally selects a different known model for the reviewer. launchOptions passes plugin launch options exactly as a plugin tool gives them (for example the account a plugin picked), for plugins that allow an orchestrator to choose them. Without a model account in launchOptions the subagent runs on this session's own model account when this session has one; {\"canvastty-accounts\":{\"account\":\"none\"}} explicitly runs it on the CLI's own sign-in and default model. The answer's servedBy says which provider, account and model serve it. Refusals say why (a limit the person set, a folder outside this session's project, a profile above this session's): change the request instead of retrying it. Then call wait_for_agent and get_agent_result.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1027,6 +1027,14 @@
                 "xhigh",
                 "max"
               ]
+            },
+            "review": {
+              "type": "boolean"
+            },
+            "reviewModel": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
             },
             "launchOptions": {
               "type": "object",
@@ -1095,7 +1103,7 @@
       },
       {
         "name": "wait_for_agent",
-        "description": "Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason \"idle\" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), \"needs_approval\" (its card shows a prompt only the person may answer; never answer it yourself), \"done\" or \"failed\" (its process exited), \"quiet\" (it reports no status or no turn start and its screen stopped changing, so judge from output), \"closed\" (its card was closed) or \"timeout\" after timeoutSeconds (default 55, at most 600), with status, exitCode, waitedMs, the masked terminal tail as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. After a timeout, call it again. Then read get_agent_result.",
+        "description": "Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason \"idle\" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), \"needs_approval\" (its card shows a prompt only the person may answer; never answer it yourself), \"done\" or \"failed\" (its process exited), \"quiet\" (it reports no status or no turn start and its screen stopped changing, so judge from output), \"closed\" (its card was closed) or \"timeout\" after timeoutSeconds (default 55, at most 100), with status, exitCode, waitedMs, the masked terminal tail as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. OpenCode calls return within 50 seconds to fit its client's deadline. A timeout means it is still running: use output as progress and call wait_for_agent again. Pending reviews also return within this deadline. Then read get_agent_result.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1107,7 +1115,7 @@
             "timeoutSeconds": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 600
+              "maximum": 100
             }
           },
           "required": [
@@ -1118,7 +1126,7 @@
       },
       {
         "name": "get_agent_result",
-        "description": "Get one of this session's subagents' result: answer (its last turn's final reply as the agent reported it, for Codex and OpenCode subagents; truncated:true when only the end was kept), status (idle once its turn ended), the exit state (running | done | failed; an interactive CLI stays running after a task) and the masked terminal tail as output. Prefer answer; the terminal tail is raw screen output.",
+        "description": "Get one of this session's subagents' result: answer (its last turn's final reply as the agent reported it, for Codex and OpenCode subagents; truncated:true when only the end was kept), status (idle once its turn ended), the exit state (running | done | failed; an interactive CLI stays running after a task) and the masked terminal tail as output. Prefer answer; the terminal tail is raw screen output. An unfinished review returns status pending immediately; call get_agent_result later for its outcome.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1157,6 +1165,183 @@
           "type": "object",
           "properties": {},
           "required": [],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "retry_agent",
+        "description": "Replace one failed or quiet subagent launch with a fresh conversation in the same card, stopping its previous process first. Retains task ownership, history, launch profile, model and folder; sends the original prompt plus a short masked failure tail. Only one retry may run at a time, with at most two successful retries per original agent. A failed retry keeps the stopped card for inspection; it cannot restore a stopped process.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 500
+            }
+          },
+          "required": [
+            "sessionId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "list_tasks",
+        "description": "List the shared task board for this orchestration. Subagents see only tasks belonging to their own root orchestrator.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "claim_task",
+        "description": "Atomically claim one open task whose dependencies are all complete. If another agent owns it, the current owner is returned.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            }
+          },
+          "required": [
+            "taskId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "update_task",
+        "description": "Update the task you own. Only the root orchestrator can reassign tasks or change dependencies; complete work with complete_task.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "description": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8000
+            },
+            "progress": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "open",
+                "claimed"
+              ]
+            },
+            "ownerSessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "ownerName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "dependencies": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "maxItems": 64
+            }
+          },
+          "required": [
+            "taskId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "complete_task",
+        "description": "Mark a task complete and record its result. Only its owner or the root orchestrator can complete it, and dependencies must be complete.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "result": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8000
+            }
+          },
+          "required": [
+            "taskId",
+            "result"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "get_task_budget",
+        "description": "Read the budget for this orchestration tree. Unknown provider token or cost usage is returned as no data; only a person can change or remove limits.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "list_orchestration_templates",
+        "description": "List built-in and project orchestration flows from .canvastty/flows. Invalid files are returned as line-numbered errors.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "apply_orchestration_template",
+        "description": "Get the roles, expected number of subagents and final-step instructions for a flow, ready to apply to a task.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "templateId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "task": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            }
+          },
+          "required": [
+            "templateId",
+            "task"
+          ],
           "additionalProperties": false
         }
       }

@@ -1,3 +1,14 @@
+import { UsagePrices } from "./services/UsagePrices";
+import { ProviderUsageSource } from "./services/ProviderUsageSource";
+import { SessionTimelineService } from "./services/SessionTimelineService";
+import { configuredModel } from "./services/configuredModel";
+import { GitCheckpoints } from "./services/GitCheckpoints";
+import { OrchestrationBudgetService } from "./services/OrchestrationBudgetService";
+import { OrchestrationTaskBoard } from "./services/OrchestrationTaskBoard";
+import { OrchestrationTemplateService } from "./services/OrchestrationTemplateService";
+import { resolveAgentHistoryPaths } from "./services/agent-history/historyPaths";
+import { refreshOrchestrationUsageBatch, type OrchestrationUsageScope } from "./services/OrchestrationUsageSync";
+import { registerBacklogIpc } from "./ipc/registerBacklogIpc";
 import "./stdio";
 import appIcon from "../../build/icon.png?asset";
 import appManifest from "../../package.json";
@@ -92,6 +103,7 @@ import {
 import { startupPageUrl } from "./startupPage";
 import { mainWindowChromeOptions } from "./windowChrome";
 import { markMainBoot, mainBootMarks } from "./bootMarks";
+import { attachEditContextMenu } from "./editContextMenu";
 import { macApplicationMenuTemplate } from "./macApplicationMenu";
 
 if (process.env.CANVASTTY_USER_DATA_DIR) {
@@ -164,6 +176,9 @@ async function showCompanionBrowser():Promise<{title:string;url:string}> {
   const state=browserService.getState(), tab=state.tabs.find(tab=>tab.id===state.activeTabId);
   return {title:tab?.title||"Browser",url:tab?.url||""};
 }
+let disposeBudgetObservers:(()=>void)|null=null;
+let flushBudgets:(()=>Promise<void>)|null=null;
+let sessionTimeline:SessionTimelineService|null=null;
 let terminalManager: TerminalManager | null = null;
 let agentControl: AgentControlGateway | null = null;
 let limitsService: LimitsService | null = null;
@@ -194,6 +209,8 @@ let appSurfaceReady = false;
 let pendingMenuUpdateCheck = false;
 let checkUpdatesFromMenu: (() => void) | null = null;
 let installMacMenu: (() => void) | null = null;
+/** The locale of the text right-click menu; startApplication points it at the settings once they are loaded. */
+let editMenuLocale: () => LocaleId = () => (app.getLocale().toLowerCase().startsWith("ru") ? "ru" : "en");
 let updateTimer: ReturnType<typeof setTimeout> | null = null;
 let updateInterval: ReturnType<typeof setInterval> | null = null;
 let startupRunning = false;
@@ -256,6 +273,8 @@ function createWindow(): BrowserWindow {
     preventMouseBindings: false,
     captureMacEditShortcuts: process.platform === "darwin"
   });
+  attachEditContextMenu(window.webContents, () => editMenuLocale(),
+    (template, contents) => Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(contents) ?? undefined }));
   // Crash recovery: a dead renderer must never leave the user staring at a
   // blank window. The application surface is reloaded in place — the same entry
   // startup loads — so services, sessions and their scrollback stay untouched
@@ -327,6 +346,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   recoverKimiConfigurationOnStartup(kimiHomeDirectory);
   const userDataPath = app.getPath("userData");
   const settings = new SettingsStore(userDataPath, app.getLocale(), process.platform, providerCliAvailability(providerClis));
+  editMenuLocale = () => settings.get().locale;
   const terminalBorderSkins = new SkinRegistry(userDataPath);
   const pixelSkinPacks = new PixelSkinPackRegistry(userDataPath);
   pluginManager = new PluginManager(userDataPath);
@@ -352,6 +372,34 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   markMainBoot("criticalServicesReady");
   // Secrets this app knows are masked in every text one agent reads from another (EP-8).
   const redaction = new SecretRedactionRegistry();
+  const timeline = new SessionTimelineService(userDataPath,text => redaction.redact(text));
+  await timeline.load();
+  sessionTimeline=timeline;
+  const usagePrices=new UsagePrices(join(userDataPath,"usage-prices.json"));
+  await usagePrices.load();
+  const usageSources=new Map<string,ProviderUsageSource>();
+  const usageSourceFor=(home:string):ProviderUsageSource=>{
+    let source=usageSources.get(home);
+    if(!source){source=new ProviderUsageSource(home);usageSources.set(home,source);}
+    return source;
+  };
+  const taskBoard=new OrchestrationTaskBoard(join(userDataPath,"task-boards"));
+  const templates=new OrchestrationTemplateService(join(userDataPath,"flow-approvals.json"));
+  let budgetInputGate:(id:string)=>void=()=>undefined;
+  const applyBudgetEnforcement=(row:ReturnType<OrchestrationBudgetService["snapshot"]>):void=>{
+    if(!terminalManager)return;
+    const result=terminalManager.setBudgetPaused(row.rootSessionId,row.paused);
+    const failure=result.failed ? redaction.redact(result.failed) : undefined;
+    budgets.setEnforcementFailure(row.rootSessionId,failure);
+    if(failure){row.paused=true;row.reason=`${row.reason ?? "Task budget is paused."} ${failure}`;}
+  };
+  const budgets=new OrchestrationBudgetService(join(userDataPath,"task-budgets.json"),{
+    onPause:applyBudgetEnforcement,
+    onChange:applyBudgetEnforcement
+  });
+  await budgets.load();
+  flushBudgets=()=>budgets.flush();
+  const checkpoints=new GitCheckpoints(text=>redaction.redact(text));
   diagnostics.configureRedaction(text => redaction.redact(text));
   diagnosticContext = () => ({
     servicesReady,
@@ -513,15 +561,23 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       runtimeDirectory: lifecycleRuntimeDirectory,
       windowsHostPath,
       onSignal: (terminalSessionId, signal) => {
-        terminalManager?.applyProviderSignal(terminalSessionId, {
+        const usageRow=terminalManager?.getMetadata(terminalSessionId);
+        if(usageRow?.provider==="codex" && signal.threadId && (!terminalManager?.pluginContext(terminalSessionId)?.environment || terminalManager.pluginContext(terminalSessionId)?.environment?.kind==="worktree")) {
+          const account=terminalManager!.usageAccount(terminalSessionId);
+          const source=usageSourceFor(account.home ?? resolveAgentHistoryPaths().codex);
+          void source.codexUsage(signal.threadId).then(usage=>usage===null || !terminalManager?.getMetadata(terminalSessionId) ? undefined : timeline.recordCumulativeUsage(terminalSessionId,usage,"codex-cli conversation counter",signal.threadId,{provider:"codex",accountId:account.id,taskId:agentControlService.taskRoot(terminalSessionId).id,...(usage.model ?? usageRow.model ? {model:usage.model ?? usageRow.model} : {})},{resumed:terminalManager!.resumedConversation(terminalSessionId,signal.threadId!)})).catch(console.warn);
+        }
+
+        const accepted = terminalManager?.applyProviderSignal(terminalSessionId, {
           kind: "lifecycle",
           state: signal.state,
           event: signal.event,
           ...(signal.turnId ? { requestId: signal.turnId } : {}),
           ...(signal.threadId ? { threadId: signal.threadId } : {})
         });
-        // A subagent's final answer (Codex Stop hook, OpenCode plugin) for get_agent_result and wait_for_agent.
-        if (signal.result) terminalManager?.recordAnswer(terminalSessionId, signal.result);
+        if (!accepted) return;
+        // The answer belongs to the accepted provider turn and its host-submitted input generation.
+        if (signal.result) terminalManager?.recordAnswer(terminalSessionId, signal.result, { turnId: signal.turnId });
         agentControl?.onSignal(terminalSessionId, signal);
         if (signal.lastAssistantMessage !== undefined && signal.answerCaptureGrantExpiresAt !== undefined) {
           evenG2?.answer(
@@ -533,7 +589,11 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
         }
       },
       onAnswerCaptureRevoked: (terminalSessionId) => evenG2?.clearAnswer(terminalSessionId),
-      onPermissionRequest: (terminalSessionId, request, signal) => decisionHooks.decide(terminalSessionId, request, signal),
+      onPermissionRequest: (terminalSessionId, request, signal) => {
+        try { budgetInputGate(terminalSessionId); }
+        catch(error) { return {behavior:"deny",message:redaction.redact(error instanceof Error ? error.message : "Task budget is paused.")}; }
+        return decisionHooks.decide(terminalSessionId, request, signal);
+      },
       // Claude Code's lifecycle hooks go straight to a loopback listener where ClaudeHttpHookPolicy allows it.
       httpHooks: true
     });
@@ -573,6 +633,9 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   }
 
   // Output batches of every session flushed in one task leave as one IPC message.
+  let forgetOrchestrationSession=(_id:string):void=>undefined;
+  let scheduleUsageRefresh=():void=>undefined;
+  const usageMembership=new Map<string,string>();
   const rendererOutbox = new TerminalRendererOutbox((channel, payload) => {
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send(channel, payload);
   });
@@ -613,11 +676,14 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
         }).show();
       }
     } else if (channel === IPC.terminalRemoved && "id" in payload) {
+      usageMembership.delete(payload.id);scheduleUsageRefresh();
+      forgetOrchestrationSession(payload.id);
       diagnostics.record("info", "terminal", "session.closed", { id: payload.id });
       notifiedAttentionStatus.delete(payload.id);
     }
   }, providerClis, agentBrowserBridge ?? undefined, agentRuntimeBridge ?? undefined, settings.get().agentLifecycleHooksEnabled);
   terminalManager.configureRedaction(redaction);
+  timeline.configureSessionContext(id=>{const row=terminalManager?.getMetadata(id);return row ? {taskId:terminalManager!.taskScopeFor(id).id,title:row.title || row.provider} : undefined;});
   terminalManager.setKeyboardShortcuts(settings.get().shortcuts);
   // The operating-system isolation layer (Settings → Agents → Agent isolation) and YOLO only where the person
   // acknowledged it: both decided here, in the main process, for every launch whoever asks for it.
@@ -659,7 +725,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
 
   // list_providers: the CLI registry resolved at startup, the last usage read (never started from here) and the
   // launch options trusted plugins declared.
-  const providerModels = new ProviderModelCatalog(providerClis);
+  const providerModels = new ProviderModelCatalog(providerClis,{codexHome:resolveAgentHistoryPaths().codex});
+  await providerModels.refresh("codex");
   // OpenCode with a model it does not list fails with only "Unexpected server error": refuse it up front.
   terminalManager.configureModelCheck((provider, model) => provider === "terminal" ? null : providerModels.unknownModelCached(provider, model));
   const providerDirectorySources: ProviderDirectorySources = {
@@ -678,8 +745,53 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   const managedTerminals = terminalManager;
   const agentControlService = new AgentControlService(managedTerminals, {
     limits: () => ({ maxDepth: settings.get().orchestrationMaxDepth, maxSubagents: settings.get().orchestrationMaxSubagents }),
-    containment: () => managedTerminals.containment()
+    containment: () => managedTerminals.containment(),
+    budget:budgets,
+    workerModel:async worker=>{
+      const account=managedTerminals.usageAccount(worker.id);
+      const actual=worker.provider==="codex" && worker.threadId ? await usageSourceFor(account.home ?? resolveAgentHistoryPaths().codex).codexUsage(worker.threadId) : null;
+      return actual?.model ?? configuredModel(worker.provider as AgentProviderId,{codex:resolveAgentHistoryPaths().codex,claude:join(app.getPath("home"),".claude"),opencode:join(process.env.XDG_CONFIG_HOME ?? join(app.getPath("home"),".config"),"opencode")});
+    },
+    reviewCost:id=>timeline.usage([id],usagePrices.get()).cost,
+    reviewModel:(provider,model)=>model ? providerDirectorySources.models?.(provider)?.models.find(candidate=>candidate!==model) ?? null : null,
+    onReview:id=>managedTerminals.setTaskMetadata(id,{reviewRequested:true})
   });
+  budgetInputGate=id=>agentControlService.assertInputAllowed(id);
+  managedTerminals.configureInputGate(budgetInputGate);
+  let usageRefreshPending=false;
+  const refreshUsage=()=>{
+    const rows=managedTerminals.listMetadata(),scopes=agentControlService.taskRoots(rows);
+    const prices=usagePrices.get();
+    const roots=new Map<string,{id:string;cwd:string;startedAt:number}>();
+    const members=new Map<string,string[]>(),parents=new Map<string,string>();
+    for(const row of rows){
+      if(row.provider==="terminal")continue;
+      const root=scopes.get(row.id);if(!root)continue;
+      const ids=members.get(root.id) ?? [];ids.push(row.id);members.set(root.id,ids);
+      if(!row.parentSessionId)parents.set(root.id,row.id);
+      if(row.exitCode===null)roots.set(root.id,root);
+    }
+    const usageScopes:OrchestrationUsageScope[]=[];
+    for(const root of roots.values()) {
+      usageScopes.push({rootSessionId:root.id,rootStartedAt:root.startedAt,memberSessionIds:members.get(root.id) ?? [],
+        budgetEnabled:budgets.hasLimits(root.id)});
+    }
+    refreshOrchestrationUsageBatch(budgets,timeline,usageScopes,prices,(scope,snapshot)=>{
+      const parent=parents.get(scope.rootSessionId);
+      if(parent)managedTerminals.setTaskBudget(parent,snapshot ? {...snapshot.remaining,paused:snapshot.paused,warning:snapshot.warning,
+        ...(snapshot.paused && !managedTerminals.processSuspensionSupported() ? {processesKeepRunning:true} : {})} : undefined);
+    },scope=>{budgets.snapshot(scope.rootSessionId,scope.rootStartedAt);});
+  };
+  scheduleUsageRefresh=()=>{
+    if(usageRefreshPending)return;
+    usageRefreshPending=true;
+    queueMicrotask(()=>{usageRefreshPending=false;refreshUsage();});
+  };
+  const offUsage=timeline.subscribeUsage(scheduleUsageRefresh),offPrices=usagePrices.subscribe(scheduleUsageRefresh),offBudgets=budgets.subscribe(scheduleUsageRefresh);
+  disposeBudgetObservers=()=>{offUsage();offPrices();offBudgets();budgets.dispose();scheduleUsageRefresh=()=>undefined;};
+  scheduleUsageRefresh();
+  const orchestrationHandler=new ScopedOrchestrationHandler(agentControlService, pluginTools, providerDirectorySources,{budget:budgets,taskBoard,templates});
+  forgetOrchestrationSession=id=>agentControlService.forgetSession(id);
   orchestrationGateway = new OrchestrationGateway({
     runtimeDirectory: join(userDataPath, "orchestration", "runtime"),
     windowsHostPath: process.platform === "win32"
@@ -687,11 +799,11 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
         ? join(process.resourcesPath, "agent-browser", WINDOWS_PIPE_HOST_FILENAME)
         : join(app.getAppPath(), "build", "windows-agent-pipe-host", WINDOWS_PIPE_HOST_FILENAME)
       : undefined,
-    handler: new ScopedOrchestrationHandler(agentControlService, pluginTools, providerDirectorySources)
+    handler: orchestrationHandler
   });
   await orchestrationGateway.start();
   terminalManager.configureOrchestration(new OrchestrationBridge(orchestrationGateway));
-  terminalManager.configureAgentTools((role, provider) => pluginTools.names(role, provider));
+  terminalManager.configureAgentTools((role, provider) => [...(provider!=="terminal" ? ["list_tasks","claim_task","update_task","complete_task","get_task_budget"] : []),...pluginTools.names(role, provider)]);
 
   const launchPipeline = new LaunchPipeline({
     contributors: () => pluginManager!.launchContributors(),
@@ -711,6 +823,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   // launch options or an environment ask their plugin's service, so start services first.
   pluginServices.hostReady();
   await pluginServicesStarted.catch(() => undefined);
+  for(const budget of budgets.snapshots())if(budget.paused)applyBudgetEnforcement(budget);
   await terminalManager.restorePersistedSessions();
   // The agent-control endpoint follows Settings → Agents → "Agent orchestration
   // endpoint"; the start flag / env var force it on for one launch (CI smoke)
@@ -785,6 +898,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   });
   await materialService.load();
   registerMaterialIpc(ipc, { materials: materialService, getMainWindow: () => mainWindow });
+  registerBacklogIpc(ipc,{board:taskBoard,budgets,flows:templates,taskRoot:id=>agentControlService.taskRoot(id),terminals:managedTerminals,getMainWindow:()=>mainWindow});
   registerIpc(ipc, {
     settings,
     recheckProviderClis: async () => {
@@ -835,6 +949,9 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     setCanvasNavigationShortcutCapture: (active) => {
       if (active) browserService?.cancelCanvasNavigationGesture();
       canvasNavigationInput?.setShortcutCaptureActive(active);
+    },
+    setCanvasNavigationTerminalEditFocus: (contents, active) => {
+      canvasNavigationInput?.setTerminalEditFocus(contents, active);
     },
     setCanvasNavigationPointerBinding: (input) => {
       canvasNavigationInput?.updatePointerBinding(input);
@@ -1214,6 +1331,9 @@ app.on("child-process-gone", (_event, details) => {
 void IPC.terminalData;
 
 async function shutdownServices(): Promise<void> {
+  disposeBudgetObservers?.();disposeBudgetObservers=null;
+  await Promise.allSettled([flushBudgets?.(), sessionTimeline?.flush()]);
+
   diagnostics.record("info", "application", "shutdown.started");
   agentChatHistory?.dispose();
   if (agentControl) await Promise.allSettled([agentControl.close()]);
@@ -1264,6 +1384,8 @@ async function openPluginWindow(pluginId: string, contributionId: string): Promi
     }
   });
   pluginWindows.set(window, pluginId);
+  attachEditContextMenu(window.webContents, () => editMenuLocale(),
+    (template, contents) => Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(contents) ?? undefined }));
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => {
     if (!url.startsWith(`canvastty-plugin://${pluginId}/`)) event.preventDefault();

@@ -8,6 +8,8 @@ import { parse as parseYaml } from "yaml";
 
 import {
   AGENT_RUNTIME_ENV,
+  CAPTURE_RESULT_ENV,
+  OPENCODE_DECISIONS_ENV,
   CAPTURE_ANSWER_ENV,
   CAPTURE_ANSWER_EXPIRES_AT_ENV
 } from "../src/agent-runtime/runtime-protocol.mjs";
@@ -452,3 +454,35 @@ function runtimeOptionsFor(root, qwenSystemSettingsPath, pluginHooks) {
     environment: {}
   };
 }
+
+
+test("result capture independently provisions a minimal transport and survives disabling lifecycle UI",async t=>{
+  const root=await fixture(t),registrations=[],leases=new Map();let serial=0;
+  const gateway={
+    registerSession(id,provider,capture,_grant,decisions){const capability={address:join(root,'runtime.sock'),terminalSessionId:id,provider,capabilityToken:String(++serial)};leases.set(id,capability.capabilityToken);registrations.push({id,capture,decisions});return capability;},
+    revokeTerminalSession(id,token){if(token===undefined||leases.get(id)===token)leases.delete(id);},
+    currentStatus:id=>leases.has(id)?'idle':null
+  };
+  const bridge=new AgentRuntimeBridge(gateway,{...runtimeOptionsFor(root),coreHooksEnabled:false,wantsDecisions:()=>true,permissionGate:{command:helper.command,args:[join(root,'permission-gate.mjs')]}});
+  for(const provider of ['codex','opencode']){
+    const launch=bridge.prepareLaunch({terminalSessionId:provider,provider,cwd:root,captureResult:true,decisions:false});
+    assert.equal(launch.environment[CAPTURE_RESULT_ENV],'1');
+    assert.ok(launch.environment[AGENT_RUNTIME_ENV.capabilityToken]);assert.equal(launch.decisions,false);
+    if(provider==='codex'){
+      const events=launch.args.filter(arg=>/^hooks\.[A-Z]/u.test(arg)).map(arg=>arg.split('=')[0]);
+      assert.deepEqual(events,['hooks.SessionStart','hooks.UserPromptSubmit','hooks.PermissionRequest','hooks.PostToolUse','hooks.Stop']);
+      assert.ok(!launch.args.some(arg=>arg.includes('permission-gate')));
+    }else{
+      assert.equal(launch.environment.CANVASTTY_LIFECYCLE_HOOKS_ENABLED,'0');
+      assert.equal(launch.environment[OPENCODE_DECISIONS_ENV],undefined);
+      assert.ok(JSON.parse(launch.environment.OPENCODE_CONFIG_CONTENT).plugin.length);
+    }
+    bridge.setCoreHooksEnabled(true);bridge.setCoreHooksEnabled(false);
+    assert.equal(gateway.currentStatus(provider),'idle','result lease retained');assert.equal(bridge.currentStatus(provider),null);
+    launch.cleanup();launch.cleanup();assert.equal(gateway.currentStatus(provider),null);
+  }
+  assert.deepEqual(registrations.map(({capture,decisions})=>({capture,decisions})),[{capture:true,decisions:false},{capture:true,decisions:false}]);
+  const old=bridge.prepareLaunch({terminalSessionId:'reused',provider:'codex',cwd:root,captureResult:true,decisions:false});
+  const replacement=bridge.prepareLaunch({terminalSessionId:'reused',provider:'codex',cwd:root,captureResult:true,decisions:false});
+  old.cleanup();assert.equal(gateway.currentStatus('reused'),'idle');replacement.cleanup();assert.equal(gateway.currentStatus('reused'),null);
+});

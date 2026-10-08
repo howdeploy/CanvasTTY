@@ -62,6 +62,38 @@ export function isRenameInputTarget(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest('[data-terminal-rename="true"]'));
 }
 
+/**
+ * Renderer-owned editing includes terminal surfaces and shortcut recorders: both need Command+C/V/A delivered
+ * as keyboard events. The terminal-named focus API also covers these recorder controls. Ordinary fields and plugin
+ * pages (an iframe is the active element) use the menu's native editing.
+ */
+export function isTerminalEditTarget(target: EventTarget | null): boolean {
+  return isShortcutCaptureTarget(target)
+    || (target instanceof Element && Boolean(target.closest(".terminal-card__surface, .xterm")));
+}
+
+/** Reports changes in renderer-owned edit focus, including shortcut recorders (macOS edit-shortcut routing). */
+export function trackTerminalEditFocus(doc: Document, report: (focused: boolean) => void): () => void {
+  let last: boolean | null = null;
+  const update = (): void => {
+    const focused = isTerminalEditTarget(doc.activeElement);
+    if (focused === last) return;
+    last = focused;
+    report(focused);
+  };
+  // focusout runs before the next element is active: read it once the move has settled.
+  const settle = (): void => { queueMicrotask(update); };
+  doc.addEventListener("focusin", update, true);
+  doc.addEventListener("focusout", settle, true);
+  doc.defaultView?.addEventListener("blur", settle);
+  update();
+  return () => {
+    doc.removeEventListener("focusin", update, true);
+    doc.removeEventListener("focusout", settle, true);
+    doc.defaultView?.removeEventListener("blur", settle);
+  };
+}
+
 export function shouldKeepNativeKeyboardInput(
   target: EventTarget | null,
   _isMacOS: boolean,

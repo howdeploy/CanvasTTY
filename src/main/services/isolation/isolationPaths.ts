@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ProviderId } from "../../../shared/contracts.ts";
 import { AGENT_PROVIDERS } from "../../../shared/contracts.ts";
@@ -30,9 +30,18 @@ export interface IsolationPathInput {
   socketFolders?: readonly string[];
   /** Plan: the project is readable only (the CLI's own folders stay writable). */
   readOnlyProject?: boolean;
+  /** Additional host-selected trees that a diff-only reviewer must not read. */
+  deniedReadPaths?: readonly string[];
+  /** Host-only diff reviewer: hide the rest of HOME while keeping its CLI state and explicit runtime files. */
+  restrictHomeReads?: boolean;
+  /** Exact host-created reviewer run folder; replaces the ordinary session launch-runs grant. */
+  privateRunDirectory?: string;
+  runtimeReadable?: readonly string[];
 }
 
 export interface IsolationPaths {
+  /** A diff reviewer reads only supplied files, fresh state, trusted runtime and OS libraries. */
+  restrictReads?:boolean;
   /** Writable folders (subpaths), every spelling. */
   writable: string[];
   /** Writable single files (with their `.lock` / `.tmp` / backup siblings). */
@@ -144,7 +153,7 @@ function sensitiveHomeFolders(home: string, xdgConfig: string): string[] {
  * token-authenticated sockets and per-run hook settings the CLI must read.
  */
 export function privateAppData(userDataPath: string): string[] {
-  return ["agent-control", "provider-secrets.bin", "plugin-secrets", "account-homes", "github-oauth.json", "launch-runs"]
+  return ["agent-control", "provider-secrets.bin", "plugin-secrets", "account-homes", "github-oauth.json", "launch-runs", "plugin-data", "task-budgets.json", "usage-prices.json", "flow-approvals.json", "session-timeline"]
     .map((name) => join(userDataPath, name));
 }
 
@@ -212,8 +221,36 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
     // variable pointing at HOME or above the project would hide them, so it is not followed.
     .filter((folder) => !ownFolders.includes(folder) && !hides(folder));
   const privateData = privateAppData(input.userDataPath);
-  const grants = [...(input.grantedPrivate ?? []), join(input.userDataPath, "launch-runs", safeSegment(input.sessionId))];
+  if (input.privateRunDirectory !== undefined && (!input.restrictHomeReads || !isAbsolute(input.privateRunDirectory))) {
+    throw new Error("A private reviewer run grant must be an absolute path in restricted mode.");
+  }
+  let privateRunDirectory = input.privateRunDirectory;
+  if (privateRunDirectory) {
+    const runsRoot = join(realpathSync(input.userDataPath), "launch-runs");
+    const rootInfo = lstatSync(runsRoot);
+    const runInfo = lstatSync(privateRunDirectory);
+    const canonicalRun = realpathSync(privateRunDirectory);
+    if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory() || realpathSync(runsRoot) !== runsRoot
+      || runInfo.isSymbolicLink() || !runInfo.isDirectory() || canonicalRun !== privateRunDirectory
+      || dirname(canonicalRun) !== runsRoot) {
+      throw new Error("A private reviewer run grant must be one exact directory below the canonical launch-runs folder.");
+    }
+    privateRunDirectory = canonicalRun;
+  }
+  const grants = [...(input.grantedPrivate ?? []), privateRunDirectory ?? join(input.userDataPath, "launch-runs", safeSegment(input.sessionId))];
   const project = input.cwd;
+  if (input.readOnlyProject) {
+    const projectPaths = pathSpellings(project);
+    const otherWritePaths = all([
+      ...ownFolders, ...own.files, input.sessionTemp,
+      join(home, ".npm"), join(home, ".bun"), join(xdg.cache, "npm"), join(xdg.cache, "bun")
+    ]);
+    for (const path of otherWritePaths) {
+      if (projectPaths.some((root) => isWithin(root, path) || isWithin(path, root))) {
+        throw new Error(`Writable CLI state ${path} overlaps the read-only project ${project}.`);
+      }
+    }
+  }
   const trustedOwn = providerFolders(input.provider, {}, hostHome);
   const trustedOthers = AGENT_PROVIDERS.filter((provider) => provider !== input.provider).flatMap((provider) => {
     const defaults = providerFolders(provider, {}, hostHome);
@@ -240,10 +277,40 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
       if (!overlaps(hidden.spellings)) continue;
       const withinGrant = candidates.every((candidate) => grantSpellings.some((grant) => isWithin(candidate, grant)));
       const ownAccount = hidden.path === accountRoot && candidates.every((candidate) => accountSpellings.some((base) => candidate !== base && isWithin(candidate, base)));
-      if (!withinGrant && !ownAccount) throw new Error(`CLI home ${folder} overlaps protected CanvasTTY data.`);
+      // A CLI home inside this exact project adds no visibility beyond the project already granted. A moved home in
+      // the plugin-data parent or a sibling is never enough to reopen that larger private tree.
+      const insideProject = candidates.every((candidate) => pathSpellings(project).some((base) => isWithin(candidate, base)));
+      if (!withinGrant && !ownAccount && !(hidden.path === join(input.userDataPath, "plugin-data") && insideProject)) {
+        throw new Error(`CLI home ${folder} overlaps protected CanvasTTY data.`);
+      }
     }
   }
   const configSources = input.provider === "opencode" ? openCodeConfigPaths(input.env, input.cwd) : { jsonFiles: [], agentDirectories: [] };
+  if (input.restrictHomeReads) {
+    const forbidden = all([...sensitive, ...privateData, ...(input.deniedReadPaths ?? [])]);
+    const exceptions = [...ownFolders, ...own.files];
+    for (const path of exceptions) {
+      if (!isAbsolute(path)) throw new Error("A reviewer read exception must be absolute.");
+      const candidates = pathSpellings(path);
+      const broad = candidates.some(candidate => pathSpellings(home).concat(pathSpellings(hostHome))
+        .some(root => isWithin(root,candidate)));
+      const overlaps = candidates.some(candidate => forbidden.some(hidden => isWithin(candidate,hidden) || isWithin(hidden,candidate)));
+      const inGrant = candidates.every(candidate => grantSpellings.some(grant => isWithin(candidate,grant)));
+      if (broad || overlaps && !inGrant) throw new Error("A reviewer read exception overlaps a protected tree.");
+    }
+    // Trusted host executables and bundled hooks may be files in the reviewed repository. Grant exact files only;
+    // no runtime directory may reopen project contents or another provider's credentials.
+    const privateForbidden = all([...sensitive, ...others, ...privateData]);
+    for (const path of input.runtimeReadable ?? []) {
+      if (!isAbsolute(path)) throw new Error("A reviewer runtime file must be absolute.");
+      if (!existsSync(path)) continue; // A different provider's optional bundled adapter may be absent.
+      const stat = statSync(path);
+      if (!stat.isFile()) throw new Error("A reviewer runtime grant must be a file.");
+      if (stat.nlink !== 1) throw new Error("A reviewer runtime grant must be a single-link file.");
+      if (pathSpellings(path).some(candidate => privateForbidden.some(hidden => isWithin(candidate, hidden))))
+        throw new Error("A reviewer runtime file overlaps protected data.");
+    }
+  }
   const socketFolders = [
     ...Object.entries(input.env)
       .filter(([name, value]) => /^CANVASTTY_.*_ADDRESS$/u.test(name) && typeof value === "string" && isAbsolute(value))
@@ -255,6 +322,7 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
     join(input.userDataPath, "orchestration", "runtime")
   ];
   return {
+    ...(input.restrictHomeReads ? {restrictReads:true} : {}),
     writable: all([
       ...(input.readOnlyProject ? [] : [project]),
       input.sessionTemp,
@@ -262,7 +330,9 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
       join(home, ".npm"), join(home, ".bun"), join(xdg.cache, "npm"), join(xdg.cache, "bun")
     ]),
     writableFiles: all(own.files),
-    creatableFolders: all([...ownFolders, join(home, ".npm"), join(home, ".bun")].flatMap((folder) => ancestorsBelow(home, folder))),
+    creatableFolders: all([
+      ...[...ownFolders, join(home, ".npm"), join(home, ".bun")].flatMap((folder) => ancestorsBelow(home, folder)),
+    ]),
     protectedWrites: all([
       // A repository that exists keeps its config (hooksPath, fsmonitor, filters run code when the person uses git
       // later, outside the layer); a new one may be created, which writes its config.
@@ -271,15 +341,25 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
       ...(input.provider === "claude" ? ownFolders.flatMap((folder) => [join(folder, "settings.json"), join(folder, "settings.local.json")]) : []),
       ...configSources.jsonFiles
     ]),
-    protectedDirectories: all(configSources.agentDirectories.flatMap((folder) => [join(folder, "agent"), join(folder, "agents")])),
+    protectedDirectories: all([
+      ...configSources.agentDirectories.flatMap((folder) => [join(folder, "agent"), join(folder, "agents")]),
+    ]),
     gitHooks: all([join(project, ".git", "hooks")]),
     projectRoots: input.readOnlyProject ? [] : all([project]),
-    unreadable: all([...sensitive, ...others, ...privateData]),
-    readableAgain: all([...grants, ...movedHomes]),
+    unreadable: all([
+      ...sensitive, ...others, ...privateData,
+      ...(input.restrictHomeReads ? [home, hostHome] : []),
+      ...(input.deniedReadPaths ?? []),
+    ]),
+    readableAgain: all([...grants, ...movedHomes,
+      ...(input.restrictHomeReads ? [...ownFolders, ...own.files, input.sessionTemp, input.cwd,
+        "/bin","/usr/bin","/sbin","/usr/sbin","/usr/lib","/usr/libexec","/usr/share","/System/Library","/System/Library/dyld",
+        "/System/Volumes/Preboot/Cryptexes/OS","/dev","/private/var/db/dyld","/private/var/select/sh",
+        join(home,".npm"),join(home,".bun"),join(xdg.cache,"npm"),join(xdg.cache,"bun"),...(input.runtimeReadable ?? [])] : [])]),
     socketFolders: all(socketFolders),
+    socketPrefixes: all([dirname(dirname(realish(input.sessionTemp))), "/private/tmp", "/tmp"].map((folder) => join(folder, "ctty-")))
     // The temporary folder a launch's own folder lives in (sessionTemp is <temp root>/ctty-iso-…/tmp), and /tmp: where
     // CanvasTTY's gateways put their sockets when the userData path is too long for one.
-    socketPrefixes: all([dirname(dirname(realish(input.sessionTemp))), "/private/tmp", "/tmp"].map((folder) => join(folder, "ctty-")))
   };
 }
 

@@ -57,6 +57,10 @@ export function isPriorityLocalCanvasWheelTarget(target: EventTarget | null): bo
     && target.closest('[data-canvas-wheel-priority="local"]') !== null;
 }
 
+export function acceptsTextInput(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest("textarea, input, select, [contenteditable='true']"));
+}
+
 export type CanvasFocusDirection = "up" | "down" | "left" | "right";
 
 export interface CanvasFocusCandidate {

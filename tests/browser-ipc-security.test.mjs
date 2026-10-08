@@ -47,6 +47,7 @@ test("channels that change settings, plugins, secrets or terminals accept only t
     "providerSecretsStatus",
     "providerSecretsSet",
     "providerSecretsClear",
+    "terminalOpenFile",
     "terminalCreate",
     "terminalRestart",
     "terminalInput",

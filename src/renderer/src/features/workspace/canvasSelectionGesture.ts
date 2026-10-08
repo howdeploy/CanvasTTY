@@ -3,8 +3,9 @@ import type { CameraState, Point, SessionBounds } from "../../../../shared/contr
 /** Client pixels a gesture must travel before it counts as a drag, not a click. */
 export const CANVAS_DRAG_THRESHOLD = 3;
 
-/** The kinds of window the canvas renders, side by side, in one scene. */
-export type CanvasLayerKind = "terminal" | "plugin" | "browser" | "note" | "files";
+/** Every kind of window the canvas renders, side by side, in one scene. */
+export type CanvasLayerKind = "terminal" | "plugin" | "browser" | "note" | "files" | "material";
+
 
 /** A canvas layer id decoded into what it names. The browser has no target of its own. */
 export interface CanvasLayerRef {
@@ -31,9 +32,14 @@ export function filesLayerId(id: string): string {
   return `files:${id}`;
 }
 
+export function materialLayerId(id: string): string {
+  return `material:${id}`;
+}
+
 /**
  * The inverse of the layer-id helpers, and the single place that decodes the scheme.
- * Anything that is not one of the five layer prefixes — including an id with nothing
+ * Anything that is not one of the layer prefixes — including an id with nothing
+
  * after the colon — is not a layer id.
  */
 export function parseCanvasLayerId(layerId: string): CanvasLayerRef | null {
@@ -42,17 +48,18 @@ export function parseCanvasLayerId(layerId: string): CanvasLayerRef | null {
   if (separator === -1 || separator === layerId.length - 1) return null;
   const kind = layerId.slice(0, separator);
   const targetId = layerId.slice(separator + 1);
-  if (kind !== "terminal" && kind !== "plugin" && kind !== "note" && kind !== "files") return null;
+  if (kind !== "terminal" && kind !== "plugin" && kind !== "note" && kind !== "files" && kind !== "material") return null;
+
   return { kind, targetId };
 }
 
 /**
  * Card surfaces that own their own press. A group drag must never preempt them,
  * so the press reaches the control, the search input, the editor, or the resize handle.
- * The resize handle class is shared by all four cards. `textarea` is required: the
+ * The resize handle class is shared by every card. `textarea` is required: the
  * sticky-note editor is one, and a drag anchor there would break text selection.
  */
-export const CANVAS_CARD_CONTROL_SELECTOR = "button, input, textarea, .terminal-card__resize-handle";
+export const CANVAS_CARD_CONTROL_SELECTOR = "button, input, textarea, video, audio, .terminal-card__resize-handle";
 
 /** Viewport-local marquee rectangle, ready for absolute positioning. */
 export interface CanvasMarqueeRect {

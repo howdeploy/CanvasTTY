@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "materials": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "kind": "image",
+      "name": "hero.png",
+      "mimeType": "image/png",
+      "position": {
+        "x": 10,
+        "y": 20
+      },
+      "size": {
+        "width": 220,
+        "height": 150
+      },
+      "path": "/legacy/hero.png",
+      "identity": {
+        "dev": 1,
+        "ino": 2
+      },
+      "origin": null,
+      "createdAt": 1,
+      "versions": [],
+      "nextVersion": 1
+    },
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "kind": "image",
+      "name": "clipboard.png",
+      "mimeType": "image/png",
+      "position": {
+        "x": 500,
+        "y": 20
+      },
+      "size": {
+        "width": 220,
+        "height": 150
+      },
+      "path": null,
+      "identity": null,
+      "origin": {
+        "kind": "clipboard"
+      },
+      "createdAt": 1,
+      "versions": [
+        {
+          "id": "33333333-3333-4333-8333-333333333333",
+          "number": 1,
+          "sha256": "8d5a02bdc72e8a1d079300f1032b3272f2035923cd175ef50ca889908baf9ad3",
+          "byteSize": 33,
+          "mimeType": "image/png",
+          "createdAt": 1,
+          "reason": "capture"
+        }
+      ],
+      "nextVersion": 2
+    }
+  ]
+}

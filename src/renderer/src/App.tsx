@@ -17,7 +17,9 @@ import type {
   HomeWidgetPlacement,
   InstalledPlugin,
   LaunchProfileId,
+  MaterialsAddResult,
   LaunchRole,
+  MaterialRemark,
   PluginLaunchValues,
   SessionEnvironmentChoice,
   LimitsSnapshot,
@@ -28,6 +30,9 @@ import type {
   PluginManifest,
   PluginUpdateStatus,
   ProviderId,
+  RemarkDraft,
+  RemarkPatch,
+  RemarkResult,
   SessionBounds,
   SessionSnapshot,
   StickyNote,
@@ -90,6 +95,13 @@ import {
 import { homeGridPixelSize, homeLayoutFitsGrid, placeHomeWidget } from "./features/home/homeLayout";
 import { boundsInsideRegion, translateBounds } from "./features/workspace/canvasRegions";
 import { DEFAULT_SESSION_SIZE, findNearHomeSessionPosition } from "./features/workspace/sessionPlacement";
+import { useMaterials } from "./features/materials/useMaterials";
+import {
+  addResultNeedsNotice,
+  materialFailureKey,
+  materialRejectionKey,
+  type MaterialCommand
+} from "./features/materials/materialCardModel";
 
 interface HomeEditDraft {
   homeGridSize: HomeGridSize;
@@ -113,6 +125,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   sessionRestoreMode: "off",
   persistCanvasRegions: true,
   persistStickyNotes: true,
+  persistMaterials: true,
   palette: "sage",
   homeAccentPreset: "classic",
   homeAccentColors: { ...DEFAULT_HOME_ACCENT_COLORS },
@@ -182,7 +195,8 @@ const FALLBACK_SETTINGS: AppSettings = {
   agentIsolation: "on",
   orchestrationMaxDepth: 2,
   orchestrationMaxSubagents: 8,
-  defaultLaunchProfile: "auto"
+  defaultLaunchProfile: "auto",
+  defaultLaunchProfiles: {}
 };
 
 const EMPTY_BROWSER_SNAPSHOT: BrowserSnapshot = {
@@ -359,6 +373,10 @@ export function App(): React.JSX.Element {
     () => sessions.map((session) => ({ sessionId: session.id, label: session.title })),
     [sessions]
   );
+  const materials = useMaterials();
+  const materialsRef = useRef(materials.materials);
+  materialsRef.current = materials.materials;
+
 
   const openUpdates = useCallback((): void => {
     setSettingsOpen(true);
@@ -617,6 +635,7 @@ export function App(): React.JSX.Element {
             ...sessionsRef.current,
             ...currentSettings.pluginCanvas,
             ...currentSettings.stickyNotes,
+            ...materialsRef.current,
             ...(currentSettings.browserCanvas ? [currentSettings.browserCanvas] : []),
             ...pendingSessionPlacements.current
           ],
@@ -877,6 +896,10 @@ export function App(): React.JSX.Element {
         const fileCards = settingsRef.current.fileCards.map((card) => boundsInsideRegion(card, previous)
           ? { ...card, ...translateBounds(card, delta) }
           : card);
+        for (const material of materialsRef.current) {
+          if (boundsInsideRegion(material, previous)) materials.setBounds(material.id, translateBounds(material, delta));
+        }
+
         setSessions(movedSessions);
         patch.pluginCanvas = pluginCanvas;
         patch.browserCanvas = browserCanvas;
@@ -889,7 +912,108 @@ export function App(): React.JSX.Element {
     settingsRef.current = { ...settingsRef.current, ...patch };
     setSettings((current) => ({ ...current, ...patch }));
     void saveSettings(patch);
-  }, [saveSettings, sessions]);
+  }, [materials, saveSettings, sessions]);
+
+  const reportMaterialsAdded = useCallback((result: MaterialsAddResult): void => {
+    if (!addResultNeedsNotice(result)) return;
+    const locale = settingsRef.current.locale;
+    if (result.rejected.length > 0) {
+      const details = result.rejected
+        .map((rejection) => `${rejection.name}: ${t(locale, materialRejectionKey(rejection.reason))}`)
+        .join("; ");
+      showToast(result.rejected.every((rejection) => rejection.reason === "empty-clipboard")
+        ? t(locale, "materialsEmptyClipboard")
+        : `${t(locale, "materialsNotAdded")} — ${details}`);
+      return;
+    }
+    const existing = materialsRef.current.find((material) => material.id === result.existing[0]);
+    showToast(t(locale, "materialsAlreadyOnCanvas"));
+    if (existing) {
+      isHomeCamera.current = false;
+      setCamera(focusCamera(existing.position, existing.size));
+    }
+  }, [showToast]);
+
+  const reportMaterialsFailure = useCallback((): void => {
+    showToast(t(settingsRef.current.locale, "materialsFailed"));
+  }, [showToast]);
+
+  const addMaterialFiles = useCallback((files: File[], point: Point): void => {
+    void materials.addFiles(files, point).then(reportMaterialsAdded, reportMaterialsFailure);
+  }, [materials, reportMaterialsAdded, reportMaterialsFailure]);
+
+  const pickMaterials = useCallback((point: Point): void => {
+    void materials.pick(point).then(reportMaterialsAdded, reportMaterialsFailure);
+  }, [materials, reportMaterialsAdded, reportMaterialsFailure]);
+
+  const pasteMaterials = useCallback((point: Point): void => {
+    void materials.paste(point).then(reportMaterialsAdded, reportMaterialsFailure);
+  }, [materials, reportMaterialsAdded, reportMaterialsFailure]);
+
+  const removeMaterial = useCallback((id: string): void => {
+    void materials.remove(id).catch(reportMaterialsFailure);
+  }, [materials, reportMaterialsFailure]);
+
+  const runMaterialCommand = useCallback((id: string, command: MaterialCommand): void => {
+    const locale = settingsRef.current.locale;
+    const fail = (reason: Parameters<typeof materialFailureKey>[0]): void => {
+      const key = materialFailureKey(reason);
+      if (key) showToast(t(locale, key));
+    };
+    if (command === "reveal") {
+      void materials.reveal(id).catch(reportMaterialsFailure);
+    } else if (command === "copy-path") {
+      const location = materialsRef.current.find((material) => material.id === id)?.location;
+      if (!location) return;
+      window.canvasTTY.clipboard.writeText(location);
+      showToast(t(locale, "materialPathCopied"));
+    } else if (command === "pin") {
+      void materials.pinVersion(id).then((result) => {
+        if (!result.ok) fail(result.reason);
+      }, reportMaterialsFailure);
+    } else {
+      const request = command === "relink" ? materials.relink(id) : materials.acceptMove(id);
+      void request.then((result) => {
+        if (!result.ok) fail(result.reason);
+      }, reportMaterialsFailure);
+    }
+  }, [materials, reportMaterialsFailure, showToast]);
+
+  const addRemark = useCallback(async (draft: RemarkDraft): Promise<boolean> => {
+    const locale = settingsRef.current.locale;
+    const fail = (reason: Parameters<typeof materialFailureKey>[0]): void => {
+      const key = materialFailureKey(reason);
+      if (key) showToast(t(locale, key));
+    };
+    const result = await materials.addRemark(draft);
+    if (!result.ok) {
+      fail(result.reason);
+      return false;
+    }
+    showToast(t(locale, "remarkAdded"));
+    return true;
+  }, [materials, showToast]);
+
+  const updateRemark = useCallback(async (id: string, patch: RemarkPatch): Promise<RemarkResult> => {
+    const locale = settingsRef.current.locale;
+    const fail = (reason: Parameters<typeof materialFailureKey>[0]): void => {
+      const key = materialFailureKey(reason);
+      if (key) showToast(t(locale, key));
+    };
+    const result = await materials.updateRemark(id, patch);
+    if (!result.ok) fail(result.reason);
+    return result;
+  }, [materials, showToast]);
+
+  const deleteRemark = useCallback((id: string): Promise<void> => (
+    materials.deleteRemark(id)
+  ), [materials]);
+
+  const remarkAction = useCallback((remarkId: string, action: "delete"): void => {
+    if (action === "delete") {
+      void deleteRemark(remarkId).catch(() => showToast(t(settingsRef.current.locale, "materialFailureUnavailable")));
+    }
+  }, [deleteRemark, showToast]);
 
   const deleteCanvasRegion = useCallback((id: string): void => {
     const canvasRegions = settingsRef.current.canvasRegions.filter((region) => region.id !== id);
@@ -1840,6 +1964,17 @@ export function App(): React.JSX.Element {
               showToast(error instanceof Error ? error.message : t(settings.locale, "browserActionFailed"));
             });
           }}
+          materials={materials.materials}
+          onAddMaterialFiles={addMaterialFiles}
+          onPickMaterials={pickMaterials}
+          onPasteMaterials={pasteMaterials}
+          onMaterialBoundsChange={materials.setBounds}
+          onMaterialBoundsChangeBatch={materials.setBoundsBatch}
+          onRemoveMaterial={removeMaterial}
+          onMaterialCommand={runMaterialCommand}
+          remarks={materials.remarks}
+          onAddRemark={addRemark}
+          onRemarkAction={remarkAction}
         />}
       </main>
 
@@ -1882,6 +2017,7 @@ export function App(): React.JSX.Element {
           onRecheckAgentClis={recheckAgentClis}
           plugins={plugins}
           browser={browser}
+          materialStorage={materials.snapshot.storage}
           onClose={() => setSettingsOpen(false)}
           onChange={saveSettings}
           onPreviewPlugin={previewPlugin}
@@ -1925,6 +2061,9 @@ export function App(): React.JSX.Element {
           if (updateStatus.type === "available" || updateStatus.type === "ready") setDismissedUpdateNotice(updateNoticeKey(updateStatus));
         }}
       />
+      {materials.snapshot.loadError && (
+        <div className="materials-load-error" role="alert">{t(settings.locale, "materialsLoadFailed")}</div>
+      )}
       <Toast message={toast} />
     </div>
   );

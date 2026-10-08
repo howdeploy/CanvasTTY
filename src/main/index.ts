@@ -21,6 +21,8 @@ import { registerDiagnosticIpc } from "./ipc/diagnosticIpc";
 import { DiagnosticLog } from "./services/DiagnosticLog";
 import { UpdateController, type UpdateAdapter } from "./services/updates/UpdateController";
 import { ManualReleaseAdapter } from "./services/updates/ManualReleaseAdapter";
+import { registerMaterialIpc } from "./ipc/registerMaterialIpc";
+import { textResponse } from "./services/fileResponse";
 import { SettingsStore } from "./services/SettingsStore";
 import { FileAccessService } from "./services/FileAccessService";
 import { SkinRegistry } from "./services/SkinRegistry";
@@ -48,6 +50,8 @@ import { PluginSessions } from "./services/PluginSessions";
 import { PluginCards } from "./services/PluginCards";
 import { GithubAuthService } from "./services/GithubAuthService";
 import { PluginMediaService } from "./services/PluginMediaService";
+import { MaterialService } from "./services/materials/MaterialService";
+import { MATERIAL_SCHEME } from "../shared/materials.ts";
 import { PluginSecretsService } from "./services/PluginSecretsService";
 import { ProviderSecretsService } from "./services/ProviderSecretsService";
 import { listProviderDirectory, type ProviderDirectorySources } from "./services/providerDirectory";
@@ -127,6 +131,14 @@ protocol.registerSchemesAsPrivileged([
       corsEnabled: true,
       stream: true
     }
+  },
+  {
+    scheme: MATERIAL_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      stream: true
+    }
   }
 ]);
 
@@ -162,6 +174,7 @@ let pluginSessions: PluginSessions | null = null;
 let pluginCards: PluginCards | null = null;
 let githubAuth: GithubAuthService | null = null;
 let pluginMediaService: PluginMediaService | null = null;
+let materialService: MaterialService | null = null;
 let pluginSecretsService: PluginSecretsService | null = null;
 let providerSecretsService: ProviderSecretsService | null = null;
 let hermesHudService: HermesHudService | null = null;
@@ -770,6 +783,18 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     resolveSessionCwd: (sessionId) =>
       terminalManager?.listMetadata().find((session) => session.id === sessionId)?.cwd
   });
+  materialService = new MaterialService({
+    userDataPath: app.getPath("userData"),
+    persist: () => settings.get().persistMaterials,
+    emit: (snapshot) => {
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send(IPC.materialsChanged, snapshot);
+      }
+    }
+  });
+  await materialService.load();
+  registerMaterialIpc(ipc, { materials: materialService, getMainWindow: () => mainWindow });
+
   registerIpc(ipc, {
     settings,
     recheckProviderClis: async () => {
@@ -816,6 +841,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
         navigationBinding: next.canvasNavigationOverride
       });
       await terminalManager?.setSessionRestoreMode(next.sessionRestoreMode);
+      await materialService?.flush();
     },
     setCanvasNavigationShortcutCapture: (active) => {
       if (active) browserService?.cancelCanvasNavigationGesture();
@@ -1138,6 +1164,8 @@ if (hasSingleInstanceLock) {
   void app.whenReady()
     .then(() => {
       markMainBoot("appReady");
+      protocol.handle(MATERIAL_SCHEME, (request) => materialService?.protocolResponse(request)
+        ?? Promise.resolve(textResponse("Materials are starting.", 503)));
       return startApplication();
     })
     .catch((error) => {
@@ -1216,6 +1244,7 @@ async function shutdownServices(): Promise<void> {
   if (browserService) await Promise.allSettled([browserService.dispose()]);
   if (pluginServices) await Promise.allSettled([pluginServices.dispose()]);
   if (pluginManager) await Promise.allSettled([pluginManager.dispose()]);
+  if (materialService) await Promise.allSettled([materialService.dispose()]);
   await ptyExits;
   diagnostics.record("info", "application", "shutdown.completed");
   await diagnostics.flush();

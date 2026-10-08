@@ -43,6 +43,12 @@ Launch modes are **Auto** (the default), **Manual**, **Accept edits**, **Plan** 
 - `Shift+Enter` sends a modified Enter sequence to insert a line break in compatible agent prompts without submitting. `Enter` keeps its normal PTY behavior.
 - With terminal text selected, `Ctrl+C`/`Ctrl+Shift+C` or `Cmd+C` copies it. Paste with `Ctrl+Shift+V`, `Cmd+V`, or `Shift+Insert`. Plain `Ctrl+C` without a selection remains the PTY interrupt.
 
+## File links
+
+Click a local file reference such as `src/main.ts:42:7` in terminal or agent output to open it in VS Code at that line and column. CanvasTTY reuses the last active VS Code window. Absolute paths, quoted paths containing spaces, and local `file://` or `vscode://file/` hyperlinks are supported; relative paths use the terminal session's launch directory. The target must be an existing regular file.
+
+VS Code must be installed. CanvasTTY checks its standard macOS and Windows installation locations and the shell's `PATH`. HTTP(S) links continue to use the browser selected in Settings.
+
 ## Browser controls and activity
 
 - The browser follows the same independent selection and input-focus rules as terminal cards. Native page hover transfers focus after the configured delay; leaving the page does not clear it. In Off or released-Key mode, that focus also lets plain wheel scroll the live page. Pinch and `Cmd/Ctrl + scroll` still zoom the canvas. A page can also scroll through scrollbar drag, keyboard input, or site controls.

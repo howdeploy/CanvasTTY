@@ -12,10 +12,12 @@ const contextMenuComponentPath = new URL(
   import.meta.url
 );
 
-test("the canvas owns only empty, region, and note context menus", () => {
+test("the canvas owns only empty, region, note, and material context menus", () => {
   assert.equal(routeCanvasContextMenu("empty", false), "empty");
   assert.equal(routeCanvasContextMenu("region", false), "region");
   assert.equal(routeCanvasContextMenu("note", false), "note");
+  assert.equal(routeCanvasContextMenu("material", false), "material");
+  assert.equal(routeCanvasContextMenu("material", true), null);
   assert.equal(routeCanvasContextMenu("native", false), null);
   assert.equal(routeCanvasContextMenu("blocked", false), null);
   assert.equal(routeCanvasContextMenu("empty", true), null);

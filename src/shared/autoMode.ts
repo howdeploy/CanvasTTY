@@ -14,11 +14,14 @@
  * CLIs' `--help` under a fake HOME (Claude Code 2.1.281, codex-cli 0.156.1, grok 1.0.41, opencode 1.18.33).
  */
 import type { ProviderId } from "./providerCatalog.ts";
+import type { AppSettings } from "./contracts.ts";
 
 export type LaunchProfile = "normal" | "yolo" | "auto" | "acceptEdits" | "plan";
+export type DefaultLaunchProfile = Exclude<LaunchProfile, "yolo">;
 /** The order the launcher offers them in. */
 export const LAUNCH_PROFILES: readonly LaunchProfile[] = ["auto", "normal", "acceptEdits", "plan", "yolo"];
 export const isLaunchProfile = (value: unknown): value is LaunchProfile => typeof value === "string" && (LAUNCH_PROFILES as readonly string[]).includes(value);
+export const isDefaultLaunchProfile = (value: unknown): value is DefaultLaunchProfile => isLaunchProfile(value) && value !== "yolo";
 
 /**
  * How much a profile lets an agent do without the person: a subagent never gets more than its orchestrator.
@@ -122,6 +125,29 @@ export function profileAvailable(provider: ProviderId, profile: LaunchProfile, c
 /** The profiles the launcher offers for this provider, in order. */
 export function availableProfiles(provider: ProviderId, containment: boolean): LaunchProfile[] {
   return LAUNCH_PROFILES.filter((profile) => profileAvailable(provider, profile, containment));
+}
+
+/** Agent isolation can contain an agent on systems with a supported OS layer. */
+export function isolationAvailable(settings: Pick<AppSettings, "agentIsolation">, platform: string): boolean {
+  return settings.agentIsolation !== "off" && (platform === "darwin" || platform === "linux");
+}
+
+/** Resolve the first available launch mode at or after the requested default. */
+export function resolveDefaultLaunchProfile(
+  provider: ProviderId,
+  settings: Pick<AppSettings, "defaultLaunchProfile" | "defaultLaunchProfiles">,
+  containment: boolean
+): DefaultLaunchProfile {
+  if (provider === "terminal") return "normal";
+
+  const personal = settings.defaultLaunchProfiles?.[provider];
+  const wanted = isDefaultLaunchProfile(personal)
+    ? personal
+    : isDefaultLaunchProfile(settings.defaultLaunchProfile)
+      ? settings.defaultLaunchProfile
+      : "auto";
+  const order: DefaultLaunchProfile[] = ["auto", "acceptEdits", "normal", "plan"];
+  return order.slice(order.indexOf(wanted)).find((profile) => profileAvailable(provider, profile, containment)) ?? "normal";
 }
 
 /**

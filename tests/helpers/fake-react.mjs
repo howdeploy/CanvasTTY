@@ -29,7 +29,12 @@ export function useEffect(effect, deps) {
 }
 export const useLayoutEffect = useEffect;
 export function useCallback(callback) { return callback; }
-export function useSyncExternalStore(_subscribe, getSnapshot) { cursor++; return getSnapshot(); }
+export function useSyncExternalStore(_subscribe, getSnapshot) {
+  cursor++;
+  const snapshot = getSnapshot();
+  if (CHECK_SNAPSHOTS && !Object.is(snapshot, getSnapshot())) throw new Error("The result of getSnapshot should be cached.");
+  return snapshot;
+}
 export function memo(component) { return component; }
 export function useMemo(factory) { return factory(); }
 export function jsx(type, props, key) { return { type, props, key }; }
@@ -61,7 +66,7 @@ export default { useState, useRef, useEffect, useLayoutEffect, useCallback, useM
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
 /** Imports `exports` (comma-separated names) from a repository-relative module, plus the fake React controls. */
-export async function importWithFakeReact(modulePath, exports) {
+export async function importWithFakeReact(modulePath, exports, { checkSnapshots = false } = {}) {
   const { outputFiles } = await build({
     stdin: {
       contents: `export { ${exports} } from "./${modulePath}"; export { __render, __flush, __pending, __unmount, __reset } from "react";`,
@@ -69,6 +74,7 @@ export async function importWithFakeReact(modulePath, exports) {
       loader: "ts"
     },
     jsx: "automatic",
+    define: { CHECK_SNAPSHOTS: JSON.stringify(checkSnapshots) },
     bundle: true,
     platform: "node",
     format: "esm",

@@ -42,6 +42,14 @@ interface CanvasContextMenuProps {
   onEditNote(): void;
   onBringNoteToFront(): void;
   onDeleteNote(): void;
+  materialHasLocation: boolean;
+  onAddFiles(): void;
+  onPasteFiles(): void;
+  onPinMaterial(): void;
+  onRevealMaterial(): void;
+  onCopyMaterialPath(): void;
+  onBringMaterialToFront(): void;
+  onRemoveMaterial(): void;
   onClose(): void;
 }
 
@@ -63,6 +71,14 @@ export function CanvasContextMenu({
   onEditNote,
   onBringNoteToFront,
   onDeleteNote,
+  materialHasLocation,
+  onAddFiles,
+  onPasteFiles,
+  onPinMaterial,
+  onRevealMaterial,
+  onCopyMaterialPath,
+  onBringMaterialToFront,
+  onRemoveMaterial,
   onClose
 }: CanvasContextMenuProps): React.JSX.Element {
   const menu = useRef<HTMLDivElement>(null);
@@ -126,6 +142,15 @@ export function CanvasContextMenu({
             role="menuitem"
             onClick={onCreateNote}
           >{t(locale, "newStickyNote")}</CanvasMenuRow>
+          <CanvasMenuRow icon="image-plus" role="menuitem" onClick={onAddFiles}>
+            {t(locale, "materialsAddFiles")}
+          </CanvasMenuRow>
+          <CanvasMenuRow
+            icon="clipboard-paste"
+            right={<CanvasMenuKbd>{window.canvasTTY.window.isMacOS ? "⌘V" : "Ctrl+V"}</CanvasMenuKbd>}
+            role="menuitem"
+            onClick={onPasteFiles}
+          >{t(locale, "materialsPaste")}</CanvasMenuRow>
           <CanvasMenuDivider />
           <div className="canvas-menu__submenu-anchor">
             <CanvasMenuRow
@@ -211,6 +236,9 @@ export function CanvasContextMenu({
           <CanvasMenuRow icon="sticky-note" role="menuitem" onClick={onCreateNote}>
             {t(locale, "canvasMenuNoteInRegion")}
           </CanvasMenuRow>
+          <CanvasMenuRow icon="image-plus" role="menuitem" onClick={onAddFiles}>
+            {t(locale, "materialsAddFiles")}
+          </CanvasMenuRow>
           <CanvasMenuDivider />
           <CanvasMenuRow icon="trash" danger role="menuitem" onClick={onDeleteRegion}>
             {t(locale, "canvasMenuDeleteRegion")}
@@ -233,6 +261,27 @@ export function CanvasContextMenu({
           <CanvasMenuDivider />
           <CanvasMenuRow icon="trash" danger role="menuitem" onClick={onDeleteNote}>
             {t(locale, "deleteStickyNote")}
+          </CanvasMenuRow>
+        </>
+      )}
+
+      {kind === "material" && (
+        <>
+          <CanvasMenuRow icon="pin" role="menuitem" onClick={onPinMaterial}>
+            {t(locale, "materialPinVersion")}
+          </CanvasMenuRow>
+          <CanvasMenuRow icon="folder-open" role="menuitem" disabled={!materialHasLocation} onClick={onRevealMaterial}>
+            {t(locale, "materialShowInFolder")}
+          </CanvasMenuRow>
+          <CanvasMenuRow icon="copy" role="menuitem" disabled={!materialHasLocation} onClick={onCopyMaterialPath}>
+            {t(locale, "materialCopyPath")}
+          </CanvasMenuRow>
+          <CanvasMenuRow icon="bring-to-front" role="menuitem" onClick={onBringMaterialToFront}>
+            {t(locale, "canvasMenuBringToFront")}
+          </CanvasMenuRow>
+          <CanvasMenuDivider />
+          <CanvasMenuRow icon="trash" danger role="menuitem" onClick={onRemoveMaterial}>
+            {t(locale, "materialRemove")}
           </CanvasMenuRow>
         </>
       )}

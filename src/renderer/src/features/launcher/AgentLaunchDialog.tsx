@@ -14,20 +14,18 @@ import { t } from "../../lib/i18n";
 import { PROVIDERS } from "../../lib/providers";
 import { directoryPathFromClipboard } from "../../lib/directoryPathFromClipboard";
 import { LaunchOptionsSection } from "./LaunchOptionsSection";
-import { autoKind, availableProfiles, BYPASS_CHANGES_NOTHING } from "../../../../shared/autoMode";
+import {
+  autoKind,
+  availableProfiles,
+  BYPASS_CHANGES_NOTHING,
+  isolationAvailable,
+  resolveDefaultLaunchProfile
+} from "../../../../shared/autoMode";
 import type { TranslationKey } from "../../lib/i18n";
-
-/** Agent isolation can contain an agent here: the person has it on and this system has a layer (macOS, Linux). */
-export function isolationAvailable(settings: AppSettings, platform: string): boolean {
-  return settings.agentIsolation !== "off" && (platform === "darwin" || platform === "linux");
-}
 
 /** The mode the launcher starts in for this CLI: the person's default, else the next one the CLI has. */
 export function initialProfile(provider: ProviderId, settings: AppSettings, platform: string): LaunchProfileId {
-  const offered = availableProfiles(provider, isolationAvailable(settings, platform));
-  const order: LaunchProfileId[] = ["auto", "acceptEdits", "normal", "plan"];
-  const wanted = settings.defaultLaunchProfile ?? "auto";
-  return order.slice(Math.max(0, order.indexOf(wanted))).find((profile) => offered.includes(profile)) ?? "normal";
+  return resolveDefaultLaunchProfile(provider, settings, isolationAvailable(settings, platform));
 }
 
 const PROFILE_LABEL: Record<LaunchProfileId, TranslationKey> = {

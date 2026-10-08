@@ -1,4 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+
 import type { MutableRefObject } from "react";
 import { BUNDLED_CANVAS_BACKGROUND_IDS } from "../../../../shared/contracts";
 import type {
@@ -8,15 +9,19 @@ import type {
   BrowserCanvasState,
   BrowserSnapshot,
   CameraState,
+  CanvasMaterial,
   CanvasOverlayPlacement,
   CanvasRegion,
   HomeGridSize,
   HomeWidgetPlacement,
   InstalledPlugin,
   LimitsSnapshot,
+  MaterialRemark,
   Point,
   ProviderId,
   RadialLauncherItemId,
+  RemarkAnchor,
+  RemarkDraft,
   SessionBounds,
   SessionSnapshot,
   Size,
@@ -37,6 +42,11 @@ import { sessionStatusLabel } from "../../lib/sessionStatus";
 import { sessionStatusTone } from "../../lib/sessionStatusTone";
 import { RadialLauncher } from "../launcher/QuickRadialMenu";
 import { StickyNoteCard } from "../notes/StickyNoteCard";
+const MaterialCard = lazy(() => import("../materials/MaterialCard").then((module) => ({ default: module.MaterialCard })));
+import { remarkDrawable, remarkPickable, type MaterialCommand } from "../materials/materialCardModel";
+import { remarkNeedsWork } from "../materials/materialRemarksModel";
+import { RemarkPopover } from "../materials/RemarkPopover";
+import { useRemarkDraft } from "../materials/useRemarkDraft";
 import { stickyNoteAtPoint } from "../notes/stickyNoteBounds";
 import { PluginCanvasCard } from "../plugins/PluginCanvasCard";
 import { TerminalCard } from "../terminal/TerminalCard";
@@ -77,6 +87,7 @@ import {
 } from "./canvasStacking";
 import type { SnapLayout } from "./canvasStacking";
 import {
+  acceptsTextInput,
   browserCanvasWidgetId,
   canvasWidgetInDirection,
   canvasWidgetTarget,
@@ -90,6 +101,8 @@ import { boundsIntersect } from "./minimapGeometry";
 import {
   browserLayerId,
   filesLayerId,
+  materialLayerId,
+
   noteLayerId,
   parseCanvasLayerId,
   pluginLayerId,
@@ -99,27 +112,26 @@ import { snapMove } from "./snap";
 import { useCanvasPointerNavigation } from "./useCanvasPointerNavigation";
 import { useCanvasWheelNavigation } from "./useCanvasWheelNavigation";
 import { useCanvasWidgetFocus } from "./useCanvasWidgetFocus";
+import { useRemarkPopoverRect } from "./useRemarkPopoverRect";
 import { webglContextPool } from "../terminal/webglContextPool";
 
 const CANVAS_OVERLAY_PLACEMENTS: readonly CanvasOverlayPlacement[] = [
-  "top-left",
-  "top-right",
+  "top-left",  "top-right",
   "bottom-left",
   "bottom-right"
 ];
 
-/** Focus commands use the shared keyboard settings. */
+const EMPTY_MARQUEE_SELECTION: ReadonlySet<string> = new Set<string>();
+const NO_SNAP_TARGETS = (): readonly SessionBounds[] => [];
+/** The fullscreen layer is outside the scene: its card always draws at scale 1. */
+const FULLSCREEN_CAMERA = fixedCameraStore({ x: 0, y: 0, zoom: 1 });
+
 const CANVAS_FOCUS_ARROWS: Readonly<Record<string, CanvasFocusDirection | undefined>> = {
   focusUp: "up",
   focusDown: "down",
   focusLeft: "left",
   focusRight: "right"
 };
-
-const EMPTY_MARQUEE_SELECTION: ReadonlySet<string> = new Set<string>();
-const NO_SNAP_TARGETS = (): readonly SessionBounds[] => [];
-/** The fullscreen layer is outside the scene: its card always draws at scale 1. */
-const FULLSCREEN_CAMERA = fixedCameraStore({ x: 0, y: 0, zoom: 1 });
 
 /** What the workspace does for a terminal card; the card gets stable functions that call the latest of these. */
 interface TerminalCardHandlers {
@@ -170,6 +182,8 @@ type RegionMovePreview = {
   browserBounds: SessionBounds | null;
   noteBounds: ReadonlyMap<string, SessionBounds>;
   fileCardBounds: ReadonlyMap<string, SessionBounds>;
+  materialBounds: ReadonlyMap<string, SessionBounds>;
+
 };
 
 interface WorkspaceCanvasProps {
@@ -246,6 +260,18 @@ interface WorkspaceCanvasProps {
   onOpenFile(id: string, relativePath: string): void;
   onFileQuickOpen(id: string, query: string): void;
   onOpenLink(href: string): void;
+  materials: readonly CanvasMaterial[];
+  onAddMaterialFiles(files: File[], point: Point): void;
+  onPickMaterials(point: Point): void;
+  onPasteMaterials(point: Point): void;
+  onMaterialBoundsChange(id: string, bounds: SessionBounds): void;
+  onMaterialBoundsChangeBatch(entries: { id: string; bounds: SessionBounds }[]): void;
+  onRemoveMaterial(id: string): void;
+  onMaterialCommand(id: string, command: MaterialCommand): void;
+  remarks: readonly MaterialRemark[];
+  onAddRemark(draft: RemarkDraft): Promise<boolean>;
+  onRemarkAction(remarkId: string, action: "delete"): void;
+
 }
 
 // The Files card and its rich renderers (react-markdown / rehype / lowlight) are
@@ -269,7 +295,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     onStickyNoteBoundsChange, onStickyNoteTextChange, onDeleteStickyNote,
     fileCardState, fileSessionOptions, onOpenFiles, onFocusFileCard, onFileCardBoundsChange,
     onCloseFileCard, onChooseFileFolder, onRegisterFileSession, onOpenFileDirectory, onOpenFile,
-    onFileQuickOpen, onOpenLink, surfacesMounted = true
+    onFileQuickOpen, onOpenLink,
+    materials, onAddMaterialFiles, onPickMaterials, onPasteMaterials, onMaterialBoundsChange,
+    onMaterialBoundsChangeBatch, onRemoveMaterial, onMaterialCommand, remarks, onAddRemark, onRemarkAction, surfacesMounted = true
   } = props;
   const viewport = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<CanvasMenuState | null>(null);
@@ -285,10 +313,13 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const pendingRadialContextMenu = useRef<CanvasMenuState | null>(null);
   const [noteEditRequest, setNoteEditRequest] = useState<{ id: string; version: number } | null>(null);
   const [fileQuickOpenRequest, setFileQuickOpenRequest] = useState<{ id: string; version: number } | null>(null);
+  const [materialRemoveRequest, setMaterialRemoveRequest] = useState<{ id: string; version: number } | null>(null);
+
   const [regionMovePreview, setRegionMovePreview] = useState<RegionMovePreview | null>(null);
   const [marqueeSelection, setMarqueeSelection] = useState<ReadonlySet<string>>(EMPTY_MARQUEE_SELECTION);
   const [masterPixelSkinSessionIds, setMasterPixelSkinSessionIds] = useState<ReadonlySet<string>>(() => new Set());
   const overlays = useRef<HTMLDivElement>(null);
+  const lastPointerClient = useRef<Point | null>(null);
   const [overlayRects, setOverlayRects] = useState<SessionBounds[]>([]);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
@@ -336,10 +367,12 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           ? copyBounds(settings.browserCanvas)
           : null,
         noteBounds: containedBounds(settings.stickyNotes, startRegion),
-        fileCardBounds: containedBounds(settings.fileCards, startRegion)
+        fileCardBounds: containedBounds(settings.fileCards, startRegion),
+        materialBounds: containedBounds(materials, startRegion)
       };
     });
-  }, [sessions, settings.browserCanvas, settings.canvasRegions, settings.fileCards, settings.pluginCanvas, settings.stickyNotes]);
+  }, [materials, sessions, settings.browserCanvas, settings.canvasRegions, settings.fileCards, settings.pluginCanvas, settings.stickyNotes]);
+
 
   // A press can lose its pointer (window blur, leaving Edit HOME) before it reaches a
   // pointer-up, so the scene drops any live preview instead of leaving it stuck.
@@ -390,6 +423,17 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   // hotkey mapped to the latest rendered cards without re-subscribing.
   const renderedFileCardsRef = useRef(renderedFileCards);
   renderedFileCardsRef.current = renderedFileCards;
+  const { remarkDraft, selectedRemarkId, materialNames, remarkActions, remarkingFor } = useRemarkDraft({
+    materials,
+    remarks,
+    onAddRemark,
+    onRemarkAction
+  });
+  const renderedMaterials = useMemo(() => materials.map((material) => {
+    const start = regionMovePreview?.materialBounds.get(material.id);
+    return start && previewDelta ? { ...material, ...translateBounds(start, previewDelta) } : material;
+  }), [materials, previewDelta, regionMovePreview]);
+
 
   const renderablePluginIds = useMemo(() => new Set(settings.pluginCanvas.filter((instance) => {
     const plugin = plugins.find((candidate) => candidate.manifest.id === instance.pluginId && candidate.enabled);
@@ -406,8 +450,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)).map((instance) => pluginLayerId(instance.id)),
     ...(renderedBrowserCanvas ? [browserLayerId] : []),
     ...renderedStickyNotes.map((note) => noteLayerId(note.id)),
-    ...renderedFileCards.map((card) => filesLayerId(card.id))
-  ], [renderablePluginIds, renderedBrowserCanvas, renderedFileCards, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
+    ...renderedFileCards.map((card) => filesLayerId(card.id)),
+    ...renderedMaterials.map((material) => materialLayerId(material.id))
+  ], [renderablePluginIds, renderedBrowserCanvas, renderedFileCards, renderedMaterials, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
+
   const [layerOrder, setLayerOrder] = useState<string[]>(activeLayerIds);
   useEffect(() => {
     setLayerOrder((current) => reconcileCanvasLayerOrder(current, activeLayerIds));
@@ -424,16 +470,19 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     if (renderedBrowserCanvas) result.set(browserLayerId, renderedBrowserCanvas);
     for (const note of renderedStickyNotes) result.set(noteLayerId(note.id), note);
     for (const card of renderedFileCards) result.set(filesLayerId(card.id), card);
+    for (const material of renderedMaterials) result.set(materialLayerId(material.id), material);
     return result;
-  }, [renderablePluginIds, renderedBrowserCanvas, renderedFileCards, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
-  // Every window on the canvas, in the order they are rendered: terminals, plugin canvases, browser, notes, files.
+  }, [renderablePluginIds, renderedBrowserCanvas, renderedFileCards, renderedMaterials, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
+
   const allWindowBounds = useMemo((): SessionBounds[] => [
     ...renderedSessions,
     ...renderedPluginCanvas.filter((instance) => renderablePluginIds.has(instance.id)),
     ...(renderedBrowserCanvas ? [renderedBrowserCanvas] : []),
     ...renderedStickyNotes,
-    ...renderedFileCards
-  ], [renderablePluginIds, renderedBrowserCanvas, renderedFileCards, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
+    ...renderedFileCards,
+    ...renderedMaterials
+  ], [renderablePluginIds, renderedBrowserCanvas, renderedFileCards, renderedMaterials, renderedPluginCanvas, renderedSessions, renderedStickyNotes]);
+
   const focusCandidates: CanvasFocusCandidate[] = [
     ...renderedSessions.map((session) => ({ id: terminalCanvasWidgetId(session.id), bounds: session })),
     ...renderedPluginCanvas
@@ -513,6 +562,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       x: anchorPosition.x - anchor.position.x,
       y: anchorPosition.y - anchor.position.y
     };
+    const materialBatch: { id: string; bounds: SessionBounds }[] = [];
     for (const [memberLayerId, memberBounds] of members) {
       const moved = translateBounds(memberBounds, rigid);
       const ref = parseCanvasLayerId(memberLayerId);
@@ -522,9 +572,12 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       else if (ref.kind === "plugin" && ref.targetId !== null) onPluginCanvasBoundsChange(ref.targetId, moved);
       else if (ref.kind === "note" && ref.targetId !== null) onStickyNoteBoundsChange(ref.targetId, moved);
       else if (ref.kind === "files" && ref.targetId !== null) onFileCardBoundsChange(ref.targetId, moved);
+      else if (ref.kind === "material" && ref.targetId !== null) materialBatch.push({ id: ref.targetId, bounds: moved });
       else if (ref.kind === "browser" && settings.browserCanvas) onBrowserBoundsChange({ ...settings.browserCanvas, ...moved });
     }
-  }, [boundsByLayer, homeBounds, onBrowserBoundsChange, onFileCardBoundsChange, onPluginCanvasBoundsChange,
+    if (materialBatch.length > 0) onMaterialBoundsChangeBatch(materialBatch);
+  }, [boundsByLayer, homeBounds, onBrowserBoundsChange, onFileCardBoundsChange, onMaterialBoundsChangeBatch, onPluginCanvasBoundsChange,
+
     onSessionBoundsChange, onStickyNoteBoundsChange, renderedCanvasRegions, settings.browserCanvas, settings.snapToGrid]);
 
   const focusController = useCanvasWidgetFocus({
@@ -544,6 +597,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       settings.pluginCanvas.map((instance) => instance.id).join(","),
       settings.stickyNotes.map((note) => note.id).join(","),
       settings.fileCards.map((card) => card.id).join(","),
+      materials.map((material) => material.id).join(","),
+
       settings.homeLayout.map((placement) => placement.widgetId).join(",")
     ].join("|")
   });
@@ -595,15 +650,29 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     settings.minimapPlacement,
     settings.shortcutHintsPlacement,
     settings.showShortcutHints,
-    settings.uiScale
+    settings.uiScale,
+    remarkDraft?.picking
   ]);
   const browserOccluded = renderedBrowserCanvas !== null
     && canvasLayerIsOccluded(browserLayerId, layerOrder, boundsByLayer);
+  const selectedRemark = selectedRemarkId ? remarks.find((remark) => remark.id === selectedRemarkId) ?? null : null;
+  const popoverMaterial = remarkDraft
+    ? renderedMaterials.find((material) => material.id === remarkDraft.materialId) ?? null
+    : selectedRemark
+      ? renderedMaterials.find((material) => material.id === selectedRemark.target.materialId) ?? null
+      : null;
+  const popoverRect = useRemarkPopoverRect(
+    camera,
+    !homeEditing && !remarkDraft?.picking ? popoverMaterial : null,
+    viewport,
+    settings.uiScale
+  );
   // A boolean derived from the camera: the workspace renders only when it flips.
   const browserUnderOverlay = useCameraSelector(camera, (current) => {
     if (renderedBrowserCanvas === null) return false;
     const browserScreenRect = canvasScreenRect(renderedBrowserCanvas, current);
-    return overlayRects.some((rect) => boundsOverlap(browserScreenRect, rect));
+    return overlayRects.some((rect) => boundsOverlap(browserScreenRect, rect))
+      || (popoverRect !== null && boundsOverlap(browserScreenRect, popoverRect));
   });
   const wheelNavigation = useCanvasWheelNavigation({
     viewport,
@@ -745,6 +814,34 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     setContextMenu(null);
     setCommandPaletteOpen(false);
   }, [onCreateStickyNote]);
+  const pickMaterialsAt = useCallback((point: Point): void => {
+    onPickMaterials(point);
+    setContextMenu(null);
+    setCommandPaletteOpen(false);
+  }, [onPickMaterials]);
+  const pasteMaterialsAt = useCallback((point: Point): void => {
+    onPasteMaterials(point);
+    setContextMenu(null);
+    setCommandPaletteOpen(false);
+  }, [onPasteMaterials]);
+  const pastePoint = useCallback((): Point => {
+    const pointer = lastPointerClient.current;
+    const bounds = viewport.current?.getBoundingClientRect();
+    return pointer && bounds && pointer.x >= bounds.left && pointer.x <= bounds.right
+      && pointer.y >= bounds.top && pointer.y <= bounds.bottom
+      ? worldPoint(pointer.x, pointer.y)
+      : viewportCenterWorldPoint();
+  }, [viewportCenterWorldPoint, worldPoint]);
+  const openMaterialMenu = useCallback((id: string, client: Point): void => {
+    setRegionEditor(null);
+    setCommandPaletteOpen(false);
+    setContextMenu({
+      kind: "material",
+      position: menuPosition(client.x, client.y),
+      worldPoint: worldPoint(client.x, client.y),
+      targetId: id
+    });
+  }, [menuPosition, worldPoint]);
   const launchAt = useCallback((provider: ProviderId, point?: Point): void => {
     if (provider === "terminal") onOpenTerminal(point);
     else onOpenAgent(provider, point);
@@ -852,6 +949,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
 
   const fitCanvasRef = useRef(fitCanvas);
   fitCanvasRef.current = fitCanvas;
+  const pasteMaterialsRef = useRef(() => onPasteMaterials(pastePoint()));
+  pasteMaterialsRef.current = () => onPasteMaterials(pastePoint());
   const focusDirectionRef = useRef(focusDirection);
   focusDirectionRef.current = focusDirection;
 
@@ -923,6 +1022,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           id: activeCard.id,
           version: (current?.version ?? 0) + 1
         }));
+      } else if ((event.ctrlKey || event.metaKey) && !event.altKey && matchesPhysicalOrLayoutKey(event, "KeyV", "v") && !event.shiftKey && !acceptsTextInput(event.target)) {
+        event.preventDefault();
+        pasteMaterialsRef.current();
+
       }
     };
     window.addEventListener("keydown", handleShortcut, true);
@@ -949,6 +1052,16 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           const layerId = element.closest<HTMLElement>("[data-canvas-layer-id]")?.dataset.canvasLayerId;
           if (layerId) raiseLayer(layerId);
         }
+        if (remarkDraft?.picking && event.button === 0) {
+          const materialId = element.closest<HTMLElement>("[data-material-id]")?.dataset.materialId;
+          const material = materialId ? renderedMaterials.find((candidate) => candidate.id === materialId) : null;
+          if (material && remarkPickable(material) && !element.closest(".material-annotator")) {
+            event.preventDefault();
+            event.stopPropagation();
+            remarkActions.draw(material.id, { kind: "whole" });
+            return;
+          }
+        }
         if (contextMenu && !element.closest(".canvas-menu")) setContextMenu(null);
         if (regionEditor && !element.closest(".canvas-region-editor")) setRegionEditor(null);
         if (pointerNavigation.handlePointerDownCapture(event)) return;
@@ -966,7 +1079,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       onPointerOverCapture={focusController.handlePointerOver}
       onPointerOutCapture={focusController.handlePointerOut}
       onPointerDown={pointerNavigation.handlePointerDown}
-      onPointerMove={pointerNavigation.handlePointerMove}
+      onPointerMove={(event) => {
+        lastPointerClient.current = { x: event.clientX, y: event.clientY };
+        pointerNavigation.handlePointerMove(event);
+      }}
       onPointerMoveCapture={pointerNavigation.handlePointerMoveCapture}
       onPointerUp={pointerNavigation.handlePointerEnd}
       onPointerUpCapture={pointerNavigation.handlePointerEndCapture}
@@ -982,15 +1098,18 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         const element = event.target as HTMLElement;
         const regionId = element.closest<HTMLElement>("[data-canvas-region-id]")?.dataset.canvasRegionId;
         const noteId = element.closest<HTMLElement>("[data-sticky-note-id]")?.dataset.stickyNoteId;
+        const materialId = element.closest<HTMLElement>("[data-material-id]")?.dataset.materialId;
         const hit: CanvasContextHit = element.closest("textarea, input, [contenteditable='true'], .terminal-card, .plugin-canvas-card, .browser-card")
           ? "native"
           : noteId
             ? "note"
-            : regionId
-              ? "region"
-              : element.closest(".home-zone, .canvas-overlays, .canvas-menu, .canvas-region-editor, [data-interactive='true']")
-                ? "blocked"
-                : "empty";
+            : materialId
+              ? "material"
+              : regionId
+                ? "region"
+                : element.closest(".home-zone, .canvas-overlays, .canvas-menu, .canvas-region-editor, [data-interactive='true']")
+                  ? "blocked"
+                  : "empty";
         const kind = routeCanvasContextMenu(hit, homeEditing);
         if (!kind) return;
         event.preventDefault();
@@ -1000,13 +1119,23 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           kind,
           position: menuPosition(event.clientX, event.clientY),
           worldPoint: worldPoint(event.clientX, event.clientY),
-          targetId: kind === "region" ? regionId : kind === "note" ? noteId : undefined
+          targetId: kind === "region" ? regionId : kind === "note" ? noteId : kind === "material" ? materialId : undefined
         };
         if (radialLauncher) {
           pendingRadialContextMenu.current = nextContextMenu;
           return;
         }
         setContextMenu(nextContextMenu);
+      }}
+      onDragOver={(event) => {
+        if (homeEditing || !acceptsMaterialDrop(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDrop={(event) => {
+        if (homeEditing || !acceptsMaterialDrop(event)) return;
+        event.preventDefault();
+        onAddMaterialFiles(Array.from(event.dataTransfer.files), worldPoint(event.clientX, event.clientY));
       }}
     >
       <div ref={scene} className="workspace__scene">
@@ -1187,7 +1316,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             />
           ))}
           <Suspense fallback={null}>
-          {renderedFileCards.map((card) => {
+            {renderedFileCards.map((card) => {
             const state = fileCardRuntimeFor(fileCardState, card.id);
             return (
               <WorkspaceFileCard
@@ -1223,7 +1352,27 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                 groupSelected={marqueeSelection.has(filesLayerId(card.id))}
               />
             );
-          })}
+            })}
+            {renderedMaterials.map((material) => (
+              <MaterialCard
+                key={material.id}
+                material={withGroupNudge(materialLayerId(material.id), material)}
+                locale={settings.locale}
+                camera={camera}
+                stackIndex={canvasLayerZIndex(layerOrder, materialLayerId(material.id))}
+              snapEnabled={settings.snapToGrid}
+              getSnapTargets={snapTargets.forLayer(materialLayerId(material.id))}
+              groupSelected={marqueeSelection.has(materialLayerId(material.id))}
+              removeRequest={materialRemoveRequest?.id === material.id ? materialRemoveRequest.version : 0}
+              remarking={remarkingFor(material)}
+              remarkActions={remarkActions}
+              onBoundsChange={onMaterialBoundsChange}
+              onRemove={onRemoveMaterial}
+              onOpenMenu={openMaterialMenu}
+              onAction={onMaterialCommand}
+            />
+          ))}
+
           </Suspense>
         </div>
       </div>
@@ -1263,6 +1412,18 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             />
           ))}
       </div>
+
+      {popoverMaterial && (popoverRect || remarkDraft?.picking) && (
+        <RemarkPopover
+          locale={settings.locale}
+          material={popoverMaterial}
+          rect={popoverRect}
+          remarkDraft={remarkDraft}
+          selectedRemark={selectedRemark}
+          materialNames={materialNames}
+          remarkActions={remarkActions}
+        />
+      )}
 
       {pointerNavigation.marquee && (
         <div
@@ -1341,6 +1502,33 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             if (contextMenu.targetId) onDeleteStickyNote(contextMenu.targetId);
             setContextMenu(null);
           }}
+          materialHasLocation={Boolean(materials.find((material) => material.id === contextMenu.targetId)?.location)}
+          onAddFiles={() => pickMaterialsAt(contextMenu.worldPoint)}
+          onPasteFiles={() => pasteMaterialsAt(contextMenu.worldPoint)}
+          onPinMaterial={() => {
+            if (contextMenu.targetId) onMaterialCommand(contextMenu.targetId, "pin");
+            setContextMenu(null);
+          }}
+          onRevealMaterial={() => {
+            if (contextMenu.targetId) onMaterialCommand(contextMenu.targetId, "reveal");
+            setContextMenu(null);
+          }}
+          onCopyMaterialPath={() => {
+            if (contextMenu.targetId) onMaterialCommand(contextMenu.targetId, "copy-path");
+            setContextMenu(null);
+          }}
+          onBringMaterialToFront={() => {
+            if (contextMenu.targetId) raiseLayer(materialLayerId(contextMenu.targetId));
+            setContextMenu(null);
+          }}
+          onRemoveMaterial={() => {
+            const id = contextMenu.targetId;
+            if (id) {
+              raiseLayer(materialLayerId(id));
+              setMaterialRemoveRequest((current) => ({ id, version: (current?.version ?? 0) + 1 }));
+            }
+            setContextMenu(null);
+          }}
           onClose={() => setContextMenu(null)}
         />
       )}
@@ -1394,6 +1582,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             setRegionEditor({ mode: "create", focus: "title", position: centerMenuPosition(), worldPoint: viewportCenterWorldPoint() });
           }}
           onCreateNote={() => createNote(viewportCenterWorldPoint())}
+          onAddFiles={() => pickMaterialsAt(viewportCenterWorldPoint())}
+          onPasteFiles={() => pasteMaterialsAt(viewportCenterWorldPoint())}
           onFitCanvas={fitCanvas}
           onOpenBrowser={() => onOpenBrowser(viewportCenterWorldPoint())}
           onOpenFiles={() => onOpenFiles(viewportCenterWorldPoint())}
@@ -1403,6 +1593,15 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       )}
 
       <div className="canvas-overlays" ref={overlays}>
+        {remarkDraft?.picking && (
+          <div className="canvas-overlay-slot canvas-overlay-slot--top-center">
+            <div className="material-reference-banner" role="status" data-interactive="true">
+              <UiIcon name="crosshair" size={16} />
+              <span>{t(settings.locale, "remarkPickBanner")}</span>
+              <button type="button" onClick={remarkActions.clearReference}>{t(settings.locale, "cancel")}</button>
+            </div>
+          </div>
+        )}
         {CANVAS_OVERLAY_PLACEMENTS.map((placement) => (
           <div className={`canvas-overlay-slot canvas-overlay-slot--${placement}`} key={placement}>
             {settings.agentChatHistoryVisible && settings.agentChatHistoryPlacement === placement && (
@@ -1443,6 +1642,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               <CanvasMinimap viewport={viewport} camera={camera} homeBounds={homeBounds}
                 canvasRegions={renderedCanvasRegions} sessions={renderedSessions} stickyNotes={renderedStickyNotes}
                 pluginCanvas={minimapPluginCanvas} fileCards={renderedFileCards}
+                materials={renderedMaterials}
                 browserCanvas={renderedBrowserCanvas} layerOrder={layerOrder}
                 locale={settings.locale} interactionMode={settings.minimapInteractionMode}
                 onCameraChange={commitCamera} />
@@ -1508,6 +1708,13 @@ function containedBounds<T extends SessionBounds & { id: string }>(
 
 function shouldKeepCanvasContextMenu(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest(
-    "textarea, input, select, [contenteditable='true'], .terminal-card, .plugin-canvas-card, .browser-card, .home-zone, .canvas-overlays, .canvas-menu, .canvas-region-editor, [data-canvas-region-id], [data-sticky-note-id], [data-interactive='true']"
+    "textarea, input, select, [contenteditable='true'], .terminal-card, .plugin-canvas-card, .browser-card, .home-zone, .canvas-overlays, .canvas-menu, .canvas-region-editor, [data-canvas-region-id], [data-sticky-note-id], [data-material-id], [data-interactive='true']"
   ));
+}
+
+function acceptsMaterialDrop(event: React.DragEvent<HTMLElement>): boolean {
+  return event.dataTransfer.types.includes("Files")
+    && !(event.target instanceof Element && event.target.closest(
+      "[data-canvas-layer-id], .home-zone, .canvas-overlays, .canvas-menu, .canvas-region-editor, .home-editor-toolbar"
+    ));
 }

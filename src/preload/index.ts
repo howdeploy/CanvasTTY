@@ -15,6 +15,8 @@ import type {
   CustomTerminalBorderSkinId,
   CreateSessionRequest,
   FileRootReference,
+  MaterialsSnapshot,
+
   PluginBrowserOpenRequest,
   PluginBrowserOpenResponse,
   PluginCanvasRequest,
@@ -23,6 +25,7 @@ import type {
   PluginCardDecorations,
   PluginStorageChangeEvent,
   PluginUpdateStatus,
+  Point,
   ProviderId,
   PixelSkinPackInstallRequest,
   PixelSkinZipInstallRequest,
@@ -34,8 +37,8 @@ import type {
   SessionRemovedEvent,
   GitRiskReport,
   TerminalDataEvent
-} from "../shared/contracts";
-import { IPC } from "../shared/contracts";
+} from "../shared/contracts.ts";
+import { IPC } from "../shared/contracts.ts";
 import { terminalFileDropText } from "../shared/terminalFileDrop";
 import { TerminalDataRouter } from "../shared/terminalDataRouter";
 
@@ -127,6 +130,28 @@ const api: CanvasTTYApi = {
     read: (rootId: string, relativePath: string) => ipcRenderer.invoke(IPC.filesRead, rootId, relativePath),
     search: (rootId: string, query: string) => ipcRenderer.invoke(IPC.filesSearch, rootId, query),
     closeRoot: (rootId: string) => ipcRenderer.invoke(IPC.filesCloseRoot, rootId)
+  },
+  materials: {
+    snapshot: () => ipcRenderer.invoke(IPC.materialsSnapshot),
+    addFiles: (files: File[], point: Point) => ipcRenderer.invoke(
+      IPC.materialsAddPaths,
+      files.map((file) => webUtils.getPathForFile(file)),
+      point
+    ),
+    pick: (point: Point) => ipcRenderer.invoke(IPC.materialsPick, point),
+    paste: (point: Point) => ipcRenderer.invoke(IPC.materialsPaste, point),
+    setBounds: (id: string, bounds: SessionBounds) => ipcRenderer.send(IPC.materialsSetBounds, id, bounds),
+    setBoundsBatch: (entries: { id: string; bounds: SessionBounds }[]) => ipcRenderer.send(IPC.materialsSetBoundsBatch, entries),
+    remove: (id: string) => ipcRenderer.invoke(IPC.materialsRemove, id),
+    pinVersion: (id: string) => ipcRenderer.invoke(IPC.materialsPinVersion, id),
+    reveal: (id: string) => ipcRenderer.invoke(IPC.materialsReveal, id),
+    relink: (id: string) => ipcRenderer.invoke(IPC.materialsRelink, id),
+    acceptMove: (id: string) => ipcRenderer.invoke(IPC.materialsAcceptMove, id),
+    addRemark: (draft: unknown) => ipcRenderer.invoke(IPC.materialsAddRemark, draft),
+    updateRemark: (id: string, patch: unknown) => ipcRenderer.invoke(IPC.materialsUpdateRemark, id, patch),
+    deleteRemark: (id: string) => ipcRenderer.invoke(IPC.materialsDeleteRemark, id),
+    onChanged: (listener: (snapshot: MaterialsSnapshot) => void) => subscribe(IPC.materialsChanged, listener)
+
   },
   limits: {
     get: () => ipcRenderer.invoke(IPC.limitsGet)
@@ -258,6 +283,7 @@ const api: CanvasTTYApi = {
     )
   },
   terminal: {
+    openFile: (id: string, reference: string) => ipcRenderer.invoke(IPC.terminalOpenFile, id, reference),
     fileDropText: (files: File[]) => terminalFileDropText(
       files.map((file) => webUtils.getPathForFile(file)),
       process.platform

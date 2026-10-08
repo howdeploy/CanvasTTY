@@ -5,6 +5,7 @@ import type {
   AppSkinId,
   AgentCliAvailability,
   AgentProviderId,
+  DefaultLaunchProfile,
   BrowserActivityEvent,
   BrowserCommandType,
   BrowserDownloadSnapshot,
@@ -25,6 +26,7 @@ import type {
   LimitProviderId,
   LocaleId,
   KeyboardPreset,
+  MaterialStorageUsage,
   MinimapInteractionMode,
   PaletteId,
   PluginContribution,
@@ -80,7 +82,8 @@ import {
   setHomeLauncherProviderEnabled
 } from "../../lib/providers";
 import { shortcutFromKeyboardEvent, shortcutFromPointerEvent } from "../../lib/shortcuts";
-import { t } from "../../lib/i18n";
+import { t, type TranslationKey } from "../../lib/i18n";
+import { formatBytes } from "../materials/materialCardModel";
 import {
   createTerminalBorderSkinPreviewStyleController,
   isCustomTerminalBorderSkinId,
@@ -109,6 +112,12 @@ import { isPixelSkinThemeId, pixelSkinAssetFilename } from "../skins/skinCatalog
 import type { PixelSkinThemeId } from "../skins/skinCatalog";
 import type { SkinDetailLevel } from "../skins/SkinLayout";
 import { PixelSkinPackCreator } from "./PixelSkinPackCreator";
+import {
+  availableProfiles,
+  isDefaultLaunchProfile,
+  isolationAvailable,
+  resolveDefaultLaunchProfile
+} from "../../../../shared/autoMode";
 
 type SettingsSection = "general" | "keyboardShortcuts" | "appearance" | "agents" | "controls" | "externalIntegrations" | "browser" | "plugins" | "updates" | "about";
 
@@ -150,6 +159,13 @@ const CANVAS_COLOR_PREVIEWS: Record<CanvasColorId, string> = {
   slate: "#262B36"
 };
 
+const DEFAULT_PROFILE_LABELS: Record<DefaultLaunchProfile, TranslationKey> = {
+  auto: "autoProfile",
+  acceptEdits: "acceptEditsProfile",
+  normal: "manualProfile",
+  plan: "planProfile"
+};
+
 interface SettingsPanelProps {
   open: boolean;
   openUpdatesRequest: number;
@@ -158,6 +174,7 @@ interface SettingsPanelProps {
   onRecheckAgentClis(): Promise<void>;
   plugins: InstalledPlugin[];
   browser: BrowserSnapshot;
+  materialStorage: MaterialStorageUsage | null;
   onClose(): void;
   onChange(patch: Partial<AppSettings>): Promise<void>;
   onPreviewPlugin(sourceUrl: string): Promise<PluginInstallPreview>;
@@ -188,6 +205,7 @@ export function SettingsPanel({
   onRecheckAgentClis,
   plugins,
   browser,
+  materialStorage,
   onClose,
   onChange,
   onPreviewPlugin,
@@ -213,6 +231,7 @@ export function SettingsPanel({
   const appearance = resolveAppearanceSettings(settings);
   const homeLauncherProviders = resolveHomeLauncherProviders(settings);
   const homeLimitProviders = resolveHomeLimitProviders(settings);
+  const containmentAvailable = isolationAvailable(settings, window.canvasTTY?.window?.platform ?? "");
   const [section, setSection] = useState<SettingsSection>("general");
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -228,6 +247,8 @@ export function SettingsPanel({
   const [browserDataMessage, setBrowserDataMessage] = useState<string | null>(null);
   const [pixelPacks, setPixelPacks] = useState<PixelSkinPackSummary[]>([]);
   const [pixelPacksState, setPixelPacksState] = useState<"loading" | "ready" | "error">("loading");
+  const [defaultProfilesBusy, setDefaultProfilesBusy] = useState(false);
+  const defaultProfilesBusyRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -407,6 +428,19 @@ export function SettingsPanel({
     void onChange({ canvasWheelCaptureMode: mode });
   };
 
+  const changeAgentDefaultProfile = (provider: AgentProviderId, profile: DefaultLaunchProfile | null): void => {
+    if (defaultProfilesBusyRef.current) return;
+    defaultProfilesBusyRef.current = true;
+    setDefaultProfilesBusy(true);
+    const defaultLaunchProfiles = { ...settings.defaultLaunchProfiles };
+    if (profile === null) delete defaultLaunchProfiles[provider];
+    else defaultLaunchProfiles[provider] = profile;
+    void onChange({ defaultLaunchProfiles }).finally(() => {
+      defaultProfilesBusyRef.current = false;
+      setDefaultProfilesBusy(false);
+    });
+  };
+
   const canvasOverrideBindingsMatch = settings.canvasWheelCaptureMode === "key"
     && settings.canvasWheelOverride !== null
     && settings.canvasNavigationOverride !== null
@@ -518,6 +552,16 @@ export function SettingsPanel({
                   value={settings.persistStickyNotes ? "save" : "discard"}
                   options={[["discard", t(locale, "doNotSave")], ["save", t(locale, "saveAndContinue")]]}
                   onChange={(value) => void onChange({ persistStickyNotes: value === "save" })}
+                />
+              </SettingGroup>
+              <SettingGroup
+                label={t(locale, "persistMaterials")}
+                description={materialStorage ? `${t(locale, "materialStorageUsed")} ${formatBytes(materialStorage.usedBytes, locale)} / ${formatBytes(materialStorage.limitBytes, locale)}. ${t(locale, "materialStorageRetention")}` : undefined}
+              >
+                <Segmented
+                  value={settings.persistMaterials ? "save" : "discard"}
+                  options={[["discard", t(locale, "doNotSave")], ["save", t(locale, "saveAndContinue")]]}
+                  onChange={(value) => void onChange({ persistMaterials: value === "save" })}
                 />
               </SettingGroup>
             </>
@@ -857,6 +901,49 @@ export function SettingsPanel({
                   options={[["auto", t(locale, "autoProfile")], ["acceptEdits", t(locale, "acceptEditsProfile")], ["normal", t(locale, "manualProfile")], ["plan", t(locale, "planProfile")]]}
                   onChange={(value) => void onChange({ defaultLaunchProfile: value as AppSettings["defaultLaunchProfile"] })}
                 />
+              </SettingGroup>
+              <SettingGroup
+                layout="stacked"
+                label={t(locale, "agentDefaultLaunchProfiles")}
+                description={t(locale, "agentDefaultLaunchProfilesDescription")}
+              >
+                <div className="agent-launcher-settings">
+                  {AGENT_PROVIDERS.map((provider) => {
+                    const savedProfile = settings.defaultLaunchProfiles?.[provider];
+                    const available = availableProfiles(provider, containmentAvailable)
+                      .filter(isDefaultLaunchProfile);
+                    const actualProfile = resolveDefaultLaunchProfile(provider, settings, containmentAvailable);
+                    const desiredProfile = isDefaultLaunchProfile(savedProfile)
+                      ? savedProfile
+                      : settings.defaultLaunchProfile;
+                    const fallback = !available.includes(desiredProfile);
+                    const selected = isDefaultLaunchProfile(savedProfile)
+                      ? (available.includes(savedProfile) ? savedProfile : actualProfile)
+                      : "inherit";
+                    return (
+                      <div className="agent-launcher-settings__row" key={provider}>
+                        <span className="agent-launcher-settings__identity">
+                          <ProviderIcon provider={provider} size="small" />
+                          <strong>{PROVIDERS[provider].label}</strong>
+                          {fallback && <small>{t(locale, "defaultLaunchProfileFallback").replace("{profile}", t(locale, DEFAULT_PROFILE_LABELS[actualProfile]))}</small>}
+                        </span>
+                        <Segmented
+                          value={selected}
+                          wrap
+                          disabled={defaultProfilesBusy}
+                          options={[
+                            ["inherit", t(locale, "inheritDefaultLaunchProfile")],
+                            ...available.map((profile) => [profile, t(locale, DEFAULT_PROFILE_LABELS[profile])] as [string, string])
+                          ]}
+                          onChange={(value) => changeAgentDefaultProfile(
+                            provider,
+                            value === "inherit" ? null : value as DefaultLaunchProfile
+                          )}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
               </SettingGroup>
               <SettingGroup label={t(locale, "orchestrationMaxDepth")} description={t(locale, "orchestrationMaxDepthDescription")}>
                 <Segmented
@@ -1529,11 +1616,13 @@ function Segmented({
   value,
   options,
   wrap = false,
+  disabled = false,
   onChange
 }: {
   value: string;
   options: [string, string][];
   wrap?: boolean;
+  disabled?: boolean;
   onChange(value: string): void;
 }): React.JSX.Element {
   return (
@@ -1543,6 +1632,7 @@ function Segmented({
           className={value === optionValue ? "segmented__button segmented__button--active" : "segmented__button"}
           type="button"
           key={optionValue}
+          disabled={disabled}
           onClick={() => onChange(optionValue)}
         >{label}</button>
       ))}

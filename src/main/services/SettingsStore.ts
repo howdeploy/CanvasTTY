@@ -67,7 +67,7 @@ import {
   UI_SCALE_STEP
 } from "../../shared/contracts.ts";
 import { isTerminalBorderSkinId } from "./SkinRegistry.ts";
-import { isLaunchProfile } from "../../shared/autoMode.ts";
+import { isDefaultLaunchProfile, type DefaultLaunchProfile } from "../../shared/autoMode.ts";
 import {
   canvasNavigationPlatform,
   defaultCanvasWheelBinding,
@@ -192,10 +192,12 @@ export class SettingsStore {
         || !("agentChatHistorySearchAgents" in source)
         || !("agentChatHistorySearchSessions" in source)
         || !("agentControlEnabled" in source)
+        || !("defaultLaunchProfiles" in source)
         || !("sessionRestoreMode" in source)
         || !("terminalLinkOpenMode" in source)
         || !("persistCanvasRegions" in source)
         || !("persistStickyNotes" in source)
+        || !("persistMaterials" in source)
         || !("canvasRegions" in source)
         || !("stickyNotes" in source)
         || !("fileCards" in source)
@@ -361,6 +363,7 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     sessionRestoreMode: "off",
     persistCanvasRegions: true,
     persistStickyNotes: true,
+    persistMaterials: true,
     palette: "sage",
     homeAccentPreset: "classic",
     homeAccentColors: { ...DEFAULT_HOME_ACCENT_COLORS },
@@ -430,7 +433,8 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     agentIsolation: "on",
     orchestrationMaxDepth: DEFAULT_ORCHESTRATION_MAX_DEPTH,
     orchestrationMaxSubagents: DEFAULT_ORCHESTRATION_MAX_SUBAGENTS,
-    defaultLaunchProfile: "auto"
+    defaultLaunchProfile: "auto",
+    defaultLaunchProfiles: {}
   };
 }
 
@@ -556,6 +560,10 @@ export function normalizeSettings(
     source.radialLauncherItems,
     fallback.radialLauncherItems ?? DEFAULT_RADIAL_LAUNCHER_ITEMS
   );
+  const defaultLaunchProfiles = normalizeDefaultLaunchProfiles(
+    source.defaultLaunchProfiles,
+    fallback.defaultLaunchProfiles ?? {}
+  );
   const palette = PALETTES.has(source.palette as PaletteId) ? source.palette as PaletteId : fallback.palette;
   const canvasColorCandidate = (source as Record<string, unknown>).canvasColor;
   const canvasColor = canvasColorCandidate === undefined || canvasColorCandidate === "palette"
@@ -583,6 +591,9 @@ export function normalizeSettings(
     persistStickyNotes: typeof source.persistStickyNotes === "boolean"
       ? source.persistStickyNotes
       : fallback.persistStickyNotes ?? true,
+    persistMaterials: typeof source.persistMaterials === "boolean"
+      ? source.persistMaterials
+      : fallback.persistMaterials ?? true,
     palette,
     homeAccentPreset: HOME_ACCENT_PRESETS.has(source.homeAccentPreset as HomeAccentPresetId)
       ? source.homeAccentPreset as HomeAccentPresetId
@@ -740,10 +751,28 @@ export function normalizeSettings(
     orchestrationMaxSubagents: boundedInteger(source.orchestrationMaxSubagents, 1, MAX_ORCHESTRATION_SUBAGENTS,
       fallback.orchestrationMaxSubagents ?? DEFAULT_ORCHESTRATION_MAX_SUBAGENTS),
     // Bypass (YOLO) is never a default: it is chosen per launch and acknowledged.
-    defaultLaunchProfile: isLaunchProfile(source.defaultLaunchProfile) && source.defaultLaunchProfile !== "yolo"
+    defaultLaunchProfile: isDefaultLaunchProfile(source.defaultLaunchProfile)
       ? source.defaultLaunchProfile
-      : fallback.defaultLaunchProfile ?? "auto"
+      : isDefaultLaunchProfile(fallback.defaultLaunchProfile) ? fallback.defaultLaunchProfile : "auto",
+    defaultLaunchProfiles
   };
+}
+
+function normalizeDefaultLaunchProfiles(
+  candidate: unknown,
+  fallback: Partial<Record<AgentProviderId, DefaultLaunchProfile>>
+): Partial<Record<AgentProviderId, DefaultLaunchProfile>> {
+  if (candidate === undefined) return { ...fallback };
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return {};
+
+  const source = candidate as Record<string, unknown>;
+  const normalized: Partial<Record<AgentProviderId, DefaultLaunchProfile>> = {};
+  for (const provider of AGENT_PROVIDERS) {
+    if (!Object.hasOwn(source, provider)) continue;
+    const profile = source[provider];
+    if (isDefaultLaunchProfile(profile)) normalized[provider] = profile;
+  }
+  return normalized;
 }
 
 export function normalizeCanvasLauncherItems(

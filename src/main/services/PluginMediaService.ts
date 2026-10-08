@@ -1,4 +1,3 @@
-import { createReadStream } from "node:fs";
 import {
   lstat,
   mkdir,
@@ -12,8 +11,8 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { isPathInside } from "../../agent-runtime/path-inside.mjs";
-import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { streamFile, textResponse } from "./fileResponse.ts";
 import type {
   PluginMediaLibrary,
   PluginMediaTrack,
@@ -39,6 +38,7 @@ const AUDIO_MIME: Record<string, string> = {
 };
 
 const PLAYLIST_EXTENSIONS = new Set([".json", ".m3u", ".m3u8", ".pls"]);
+const STREAM_HEADERS = { "access-control-allow-origin": "*" };
 
 interface StoredLibrary {
   id: string;
@@ -232,7 +232,7 @@ export class PluginMediaService {
       const relativePath = safeRelativePath(parts.join("/"));
       if (!(extname(relativePath).toLowerCase() in AUDIO_MIME)) return textResponse("Track is unavailable.", 404);
       const path = await containedExistingFile(library.rootPath, relativePath);
-      return streamFile(request, path, AUDIO_MIME[extname(relativePath).toLowerCase()]);
+      return streamFile(request, path, AUDIO_MIME[extname(relativePath).toLowerCase()], STREAM_HEADERS);
     } catch {
       return textResponse("Track is unavailable.", 404);
     }
@@ -339,65 +339,6 @@ function publicPlaylist(file: ScannedFile): PluginPlaylistFile {
 
 function mediaUrl(pluginId: string, libraryId: string, relativePath: string): string {
   return `canvastty-media://${encodeURIComponent(pluginId)}/${encodeURIComponent(libraryId)}/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
-}
-
-async function streamFile(request: Request, path: string, mimeType: string): Promise<Response> {
-  const metadata = await stat(path);
-  if (metadata.size === 0) {
-    return new Response(null, {
-      status: 200,
-      headers: {
-        "accept-ranges": "bytes",
-        "access-control-allow-origin": "*",
-        "cache-control": "no-store",
-        "content-length": "0",
-        "content-type": mimeType
-      }
-    });
-  }
-  const range = parseRange(request.headers.get("range"), metadata.size);
-  if (range === "invalid") {
-    return new Response(null, { status: 416, headers: { "content-range": `bytes */${metadata.size}` } });
-  }
-  const start = range?.start ?? 0;
-  const end = range?.end ?? metadata.size - 1;
-  const headers = new Headers({
-    "accept-ranges": "bytes",
-    "access-control-allow-origin": "*",
-    "cache-control": "no-store",
-    "content-length": String(Math.max(0, end - start + 1)),
-    "content-type": mimeType
-  });
-  if (range) headers.set("content-range", `bytes ${start}-${end}/${metadata.size}`);
-  if (request.method === "HEAD") return new Response(null, { status: range ? 206 : 200, headers });
-  const stream = Readable.toWeb(createReadStream(path, { start, end })) as ReadableStream<Uint8Array>;
-  return new Response(stream, { status: range ? 206 : 200, headers });
-}
-
-function parseRange(value: string | null, size: number): { start: number; end: number } | "invalid" | null {
-  if (!value) return null;
-  const match = value.match(/^bytes=(\d*)-(\d*)$/);
-  if (!match || (match[1] === "" && match[2] === "")) return "invalid";
-  let start: number;
-  let end: number;
-  if (match[1] === "") {
-    const suffix = Number(match[2]);
-    if (!Number.isInteger(suffix) || suffix <= 0) return "invalid";
-    start = Math.max(0, size - suffix);
-    end = size - 1;
-  } else {
-    start = Number(match[1]);
-    end = match[2] === "" ? size - 1 : Number(match[2]);
-  }
-  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= size || end < start) return "invalid";
-  return { start, end: Math.min(end, size - 1) };
-}
-
-function textResponse(message: string, status: number): Response {
-  return new Response(message, {
-    status,
-    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }
-  });
 }
 
 function isStoredLibrary(value: unknown): value is StoredLibrary {

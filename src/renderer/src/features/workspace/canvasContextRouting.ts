@@ -1,7 +1,7 @@
 import type { Point, Size } from "../../../../shared/contracts";
 
-export type CanvasContextHit = "empty" | "region" | "note" | "native" | "blocked";
-export type CanvasContextMenuKind = "empty" | "region" | "note";
+export type CanvasContextHit = "empty" | "region" | "note" | "material" | "native" | "blocked";
+export type CanvasContextMenuKind = "empty" | "region" | "note" | "material";
 export type CanvasSubmenuSide = "left" | "right";
 
 interface HorizontalBounds {

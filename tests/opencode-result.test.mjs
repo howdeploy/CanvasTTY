@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { AGENT_RUNTIME_ENV, CAPTURE_RESULT_ENV, MAX_RESULT_CHARS } from "../src/agent-runtime/runtime-protocol.mjs";
-import { finalAnswer } from "../src/agent-runtime/opencode-plugin.mjs";
+import { finalAnswer } from "../src/agent-runtime/opencode-final-answer.mjs";
 import { RuntimeGateway } from "../src/main/services/agent-runtime/RuntimeGateway.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { AgentControlService } from "../src/main/services/AgentControlService.ts";

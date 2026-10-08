@@ -3,6 +3,8 @@ import type { CSSProperties, RefObject } from "react";
 import type {
   CameraState,
   FileCard,
+  CanvasMaterial,
+
   LocaleId,
   MinimapInteractionMode,
   ProviderId,
@@ -12,7 +14,8 @@ import type {
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { t } from "../../lib/i18n";
 import { useCameraSelector, type CameraStore } from "./cameraStore";
-import { browserLayerId, filesLayerId, noteLayerId, pluginLayerId, terminalLayerId } from "./canvasSelectionGesture";
+import { browserLayerId, filesLayerId, materialLayerId, noteLayerId, pluginLayerId, terminalLayerId } from "./canvasSelectionGesture";
+
 import { minimapContentEqual, type MinimapContent } from "./minimapContent";
 import {
   cameraWorldViewport,
@@ -35,7 +38,8 @@ interface CanvasMinimapProps extends MinimapContent {
 
 interface MinimapEntity {
   id: string;
-  kind: "terminal" | "plugin" | "browser" | "note" | "files";
+  kind: "terminal" | "plugin" | "browser" | "note" | "files" | "material";
+
   bounds: SessionBounds;
   provider?: ProviderId;
 }
@@ -64,6 +68,7 @@ function CanvasMinimapView({
   canvasRegions,
   sessions,
   stickyNotes,
+  materials,
   pluginCanvas,
   fileCards = [],
   browserCanvas,
@@ -97,10 +102,12 @@ function CanvasMinimapView({
       id: terminalLayerId(session.id), kind: "terminal" as const, bounds: session, provider: session.provider
     })),
     ...stickyNotes.map((note) => ({ id: noteLayerId(note.id), kind: "note" as const, bounds: note })),
+    ...materials.map((material) => ({ id: materialLayerId(material.id), kind: "material" as const, bounds: material })),
     ...pluginCanvas.map((instance) => ({ id: pluginLayerId(instance.id), kind: "plugin" as const, bounds: instance })),
     ...fileCards.map((card) => ({ id: filesLayerId(card.id), kind: "files" as const, bounds: card })),
     ...(browserCanvas ? [{ id: browserLayerId, kind: "browser" as const, bounds: browserCanvas }] : [])
-  ], [browserCanvas, fileCards, pluginCanvas, sessions, stickyNotes]);
+  ], [browserCanvas, fileCards, materials, pluginCanvas, sessions, stickyNotes]);
+
   const layerIndices = useMemo(
     () => new Map(layerOrder.map((id, index) => [id, index + 1])),
     [layerOrder]

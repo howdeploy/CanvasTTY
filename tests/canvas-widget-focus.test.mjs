@@ -73,3 +73,11 @@ test("an unknown current id falls back to the origin instead of jumping backward
   assert.equal(canvasWidgetInDirection(cards, "terminal:gone", "down", origin),
     canvasWidgetInDirection(cards, null, "down", origin));
 });
+
+test("canvas focus directions follow the configured keyboard bindings", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../src/renderer/src/features/workspace/WorkspaceCanvas.tsx", import.meta.url), "utf8");
+  assert.match(source, /CANVAS_FOCUS_ARROWS[^}]*focusUp: "up"/);
+  assert.match(source, /matchesShortcut\(event, settings\.shortcuts\[action\]\)/);
+  assert.doesNotMatch(source, /canvasFocusShortcut/);
+});

@@ -1,5 +1,6 @@
 import type {
   BrowserCanvasState,
+  CanvasMaterial,
   CanvasRegion,
   PluginCanvasInstance,
   SessionBounds,
@@ -13,6 +14,7 @@ export interface MinimapContent {
   canvasRegions: readonly CanvasRegion[];
   sessions: readonly SessionSnapshot[];
   stickyNotes: readonly StickyNote[];
+  materials: readonly CanvasMaterial[];
   pluginCanvas: readonly PluginCanvasInstance[];
   browserCanvas: BrowserCanvasState | null;
   layerOrder: readonly string[];
@@ -29,6 +31,7 @@ export function minimapContentEqual(previous: MinimapContent, next: MinimapConte
       left.id === right.id && left.provider === right.provider && boundsEqual(left, right)
     ))
     && sameItems(previous.stickyNotes, next.stickyNotes, sameWindow)
+    && sameItems(previous.materials, next.materials, sameWindow)
     && sameItems(previous.pluginCanvas, next.pluginCanvas, sameWindow)
     && (previous.browserCanvas === next.browserCanvas || (
       previous.browserCanvas !== null && next.browserCanvas !== null

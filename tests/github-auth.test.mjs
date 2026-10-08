@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { GithubAuthService } from "../src/main/services/GithubAuthService.ts";
@@ -63,7 +63,8 @@ test("GitHub device flow persists an encrypted session atomically without reques
       configured: true,
       authorized: true,
       login: "howdeploy",
-      tokenExpiresAt: null
+      tokenExpiresAt: null,
+      deviceFlowState: "idle"
     });
     assert.equal(await restored.getToken(), "access");
     await service.signOut();
@@ -157,7 +158,8 @@ test("signOut cancels an in-flight device flow and prevents a late token from be
       configured: true,
       authorized: false,
       login: null,
-      tokenExpiresAt: null
+      tokenExpiresAt: null,
+      deviceFlowState: "cancelled"
     });
     await assert.rejects(() => readFile(`${userData}/github-oauth.json`, "utf8"), { code: "ENOENT" });
   } finally {
@@ -211,13 +213,192 @@ test("reports an unconfigured OAuth client before starting device flow", async (
       configured: false,
       authorized: false,
       login: null,
-      tokenExpiresAt: null
+      tokenExpiresAt: null,
+      deviceFlowState: "idle"
     });
     await assert.rejects(
       () => service.startDeviceFlow(),
       /GitHub OAuth is not configured \(missing client id\)\./
     );
   } finally {
+    await rm(userData, { recursive: true, force: true });
+  }
+});
+
+test("device-flow status distinguishes denial, code expiry, and provider errors", async () => {
+  for (const [providerError, expectedState] of [
+    ["access_denied", "denied"],
+    ["expired_token", "expired"],
+    ["server_error", "failed"]
+  ]) {
+    const userData = await mkdtemp(`${tmpdir()}/canvastty-github-auth-${expectedState}-`);
+    const fetcher = async (url) => {
+      if (String(url).endsWith("/login/device/code")) {
+        return Response.json({ device_code: "test-device-code", user_code: "TEST-CODE", verification_uri: "https://github.com/login/device", expires_in: 60, interval: 1 });
+      }
+      if (String(url).endsWith("/login/oauth/access_token")) return Response.json({ error: providerError });
+      return new Response("missing", { status: 404 });
+    };
+    try {
+      const service = new GithubAuthService(userData, "client-id", {
+        fetcher,
+        safeStorage,
+        delay: async () => undefined
+      });
+      await service.startDeviceFlow();
+      await waitFor(async () => (await service.status()).deviceFlowState !== "pending");
+      const status = await service.status();
+      assert.equal(status.authorized, false);
+      assert.equal(status.deviceFlowState, expectedState);
+      await service.signOut();
+    } finally {
+      await rm(userData, { recursive: true, force: true });
+    }
+  }
+});
+
+test("device flow expires after elapsed time even when GitHub stays pending", async () => {
+  const userData = await mkdtemp(`${tmpdir()}/canvastty-github-auth-elapsed-expiry-`);
+  let clock = 1_000_000;
+  let polls = 0;
+  const waits = [];
+  const fetcher = async (url) => {
+    if (String(url).endsWith("/login/device/code")) {
+      return Response.json({ device_code: "test-device-code", user_code: "TEST-CODE", verification_uri: "https://github.com/login/device", expires_in: 60, interval: 1 });
+    }
+    if (String(url).endsWith("/login/oauth/access_token")) {
+      polls += 1;
+      return Response.json({ error: "authorization_pending" });
+    }
+    return new Response("missing", { status: 404 });
+  };
+  try {
+    const service = new GithubAuthService(userData, "client-id", {
+      fetcher,
+      safeStorage,
+      now: () => clock,
+      pollTimeoutMs: 2_500,
+      delay: async (duration) => {
+        await new Promise((resolve) => setImmediate(resolve));
+        waits.push(duration);
+        clock += duration;
+      }
+    });
+    await service.startDeviceFlow();
+    await waitFor(async () => (await service.status()).deviceFlowState === "expired");
+    assert.equal(polls, 2);
+    assert.deepEqual(waits, [1_000, 1_000, 1_000]);
+    await service.signOut();
+  } finally {
+    await rm(userData, { recursive: true, force: true });
+  }
+});
+
+test("cancel after authorization keeps the completed sign-in", async () => {
+  const userData = await mkdtemp(`${tmpdir()}/canvastty-github-auth-cancel-after-success-`);
+  const credential = Buffer.from(["successful", "fixture"].join("-")).toString("base64");
+  const fetcher = async (url) => {
+    if (String(url).endsWith("/login/device/code")) {
+      return Response.json({ device_code: "test-device-code", user_code: "TEST-CODE", verification_uri: "https://github.com/login/device", expires_in: 60, interval: 1 });
+    }
+    if (String(url).endsWith("/login/oauth/access_token")) {
+      return Response.json({ access_token: credential, token_type: "bearer", scope: "" });
+    }
+    if (String(url) === "https://api.github.com/user") return Response.json({ login: "howdeploy" });
+    return new Response("missing", { status: 404 });
+  };
+  try {
+    const service = new GithubAuthService(userData, "client-id", {
+      fetcher,
+      safeStorage,
+      delay: async () => undefined
+    });
+    await service.startDeviceFlow();
+    await waitFor(async () => (await service.status()).authorized);
+    const completedStatus = await service.status();
+    assert.equal(completedStatus.deviceFlowState, "idle");
+
+    service.cancelDeviceFlow();
+
+    assert.deepEqual(await service.status(), completedStatus);
+    assert.equal(await service.getToken(), credential);
+    await service.signOut();
+  } finally {
+    await rm(userData, { recursive: true, force: true });
+  }
+});
+
+test("cancelling a device flow preserves the session and ignores its late token response", async () => {
+  const userData = await mkdtemp(`${tmpdir()}/canvastty-github-auth-cancel-flow-`);
+  const existingCredential = Buffer.from(["existing", "fixture"].join("-")).toString("base64");
+  const lateCredential = Buffer.from(["late", "fixture"].join("-")).toString("base64");
+  const storedTokens = { accessToken: existingCredential, refreshToken: null, expiresAt: null, login: "existing-user" };
+  const storedFile = JSON.stringify({ data: Buffer.from(JSON.stringify(storedTokens)).toString("base64") });
+  await writeFile(`${userData}/github-oauth.json`, storedFile);
+  const delayWaiters = [];
+  let deviceRequests = 0;
+  let oldPollRequested = false;
+  let releaseOldPoll;
+  let profileRequests = 0;
+  const fetcher = async (url, init = {}) => {
+    if (String(url).endsWith("/login/device/code")) {
+      deviceRequests += 1;
+      return Response.json({ device_code: `device-${deviceRequests}`, user_code: `CODE-${deviceRequests}`, verification_uri: "https://github.com/login/device", expires_in: 60, interval: 1 });
+    }
+    if (String(url).endsWith("/login/oauth/access_token")) {
+      if (String(init.body).includes("device_code=device-1")) {
+        oldPollRequested = true;
+        return new Promise((resolve) => { releaseOldPoll = resolve; });
+      }
+      return Response.json({ error: "authorization_pending" });
+    }
+    if (String(url) === "https://api.github.com/user") {
+      profileRequests += 1;
+      return Response.json({ login: "unexpected-user" });
+    }
+    return new Response("missing", { status: 404 });
+  };
+  const service = new GithubAuthService(userData, "client-id", {
+    fetcher,
+    safeStorage,
+    delay: (_duration, signal) => new Promise((resolve, reject) => {
+      const waiter = { resolve };
+      delayWaiters.push(waiter);
+      signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true });
+    })
+  });
+  try {
+    await service.load();
+    await service.startDeviceFlow();
+    await waitFor(() => delayWaiters.length === 1);
+    delayWaiters[0].resolve();
+    await waitFor(() => oldPollRequested);
+
+    service.cancelDeviceFlow();
+    assert.equal((await service.status()).deviceFlowState, "cancelled");
+    assert.equal(await service.getToken(), existingCredential);
+    assert.equal(await readFile(`${userData}/github-oauth.json`, "utf8"), storedFile);
+
+    await service.startDeviceFlow();
+    await waitFor(() => delayWaiters.length === 2);
+    releaseOldPoll(Response.json({ access_token: lateCredential, token_type: "bearer", scope: "" }));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const status = await service.status();
+    assert.equal(status.authorized, true);
+    assert.equal(status.login, "existing-user");
+    assert.equal(status.deviceFlowState, "pending");
+    assert.equal(profileRequests, 0, "late response must not trigger a profile request");
+    assert.equal(await service.getToken(), existingCredential);
+    assert.equal(await readFile(`${userData}/github-oauth.json`, "utf8"), storedFile);
+
+    service.cancelDeviceFlow();
+    assert.equal((await service.status()).deviceFlowState, "cancelled");
+    assert.equal(await service.getToken(), existingCredential);
+    assert.equal(await readFile(`${userData}/github-oauth.json`, "utf8"), storedFile);
+  } finally {
+    await service.signOut();
     await rm(userData, { recursive: true, force: true });
   }
 });

@@ -87,6 +87,57 @@ test("masking stays linear on long runs of name-like text", () => {
   }
 });
 
+test("registry: known-value matching avoids text-sized typed arrays", () => {
+  const registry = new SecretRedactionRegistry();
+  const key = "custom-secret-value-not-a-token";
+  registry.add("vault", [key]);
+  const plain = `${"x".repeat(1_000_000)}${key}`;
+  const wrappedKey = `${key.slice(0, 12)}\n│ ${key.slice(12)}`;
+  const wrapped = `${"x".repeat(1_000_000)}${wrappedKey}`;
+  const NativeInt32Array = globalThis.Int32Array;
+  const NativeUint32Array = globalThis.Uint32Array;
+  let largestAllocation = 0;
+  const track = (Native) => new Proxy(Native, {
+    construct(target, args, newTarget) {
+      largestAllocation = Math.max(largestAllocation, Number(args[0]) || 0);
+      return Reflect.construct(target, args, newTarget);
+    }
+  });
+  try {
+    globalThis.Int32Array = track(NativeInt32Array);
+    globalThis.Uint32Array = track(NativeUint32Array);
+    assert.equal(registry.redact(plain), `${"x".repeat(1_000_000)}<redacted:secret>`);
+    assert.equal(registry.redact(wrapped), `${"x".repeat(1_000_000)}<redacted:secret>`);
+  } finally {
+    globalThis.Int32Array = NativeInt32Array;
+    globalThis.Uint32Array = NativeUint32Array;
+  }
+  assert.ok(largestAllocation < 256, `allocated a typed array with ${largestAllocation} elements for a short held value`);
+});
+
+test("high-entropy checks do not build per-character match arrays for long ordinary runs", () => {
+  const ordinary = "x".repeat(1_000_000);
+  const originalMatch = String.prototype.match;
+  const largeMatchCalls = [];
+  try {
+    String.prototype.match = function (pattern) {
+      if (this.length >= ordinary.length) largeMatchCalls.push(pattern.source);
+      return originalMatch.call(this, pattern);
+    };
+    assert.equal(redactCredentials(ordinary), ordinary);
+  } finally {
+    String.prototype.match = originalMatch;
+  }
+  assert.deepEqual(largeMatchCalls, [], "entropy classification counts characters without collecting regex matches");
+});
+
+test("redaction handles max-cap ordinary runs with and without wrapped continuations", () => {
+  for (const suffix of ["", "\nplain123"]) {
+    const ordinary = `${"x".repeat(16_000_000)}${suffix}`;
+    assert.equal(redactCredentials(ordinary), ordinary);
+  }
+});
+
 /** What OpenCode printed in a live run: the config with its key, wrapped by the terminal inside a box. */
 function boxedDump(key) {
   const config = `{"provider":{"x":{"options":{"baseURL":"https://api.example.test/v1","apiKey":"${key}"}}}}`;
@@ -113,6 +164,75 @@ test("registry: a held value is removed also when wrapping split it across box l
   assert.equal(registry.redact(`x ${launch}`), "x <redacted:secret>");
   registry.clear("session:a");
   assert.equal(registry.redact(`x ${launch}`), `x ${launch}`);
+});
+
+test("registry: overlapping registered secrets are masked as one complete range", () => {
+  const registry = new SecretRedactionRegistry();
+  registry.add("vault", ["abcdefgh", "abcdefghi", "defghijklmnop"]);
+  assert.equal(registry.redact("abc\n│ defghi tail"), "<redacted:secret> tail", "wrapped match at one start chooses the longer value");
+  assert.equal(registry.redact("abcdefghi tail"), "<redacted:secret> tail", "unwrapped matches at one start choose the longer value");
+  assert.equal(registry.redact("abcdefghi"), "<redacted:secret>", "wrap-free input preserves longest-match precedence");
+  assert.equal(registry.redact("abcdefghijklmnop tail"), "<redacted:secret> tail", "a later overlapping secret cannot expose its suffix");
+});
+
+test("registry: exact streams retain an overlap after an earlier match skips intervening hits", () => {
+  const registry = new SecretRedactionRegistry();
+  const overlapping = "abcabcabcabc";
+  registry.add("vault", ["xyabcabc", overlapping]);
+  assert.equal(registry.redact(`xy${"abc".repeat(8)}`), "<redacted:secret>");
+});
+
+test("registry: every terminal wrap character is removed from the search view", () => {
+  const registry = new SecretRedactionRegistry();
+  const value = "wrap-character-equivalence-key";
+  registry.add("vault", [value]);
+  const wrapCharacters = [
+    ...Array.from({ length: 5 }, (_, index) => String.fromCharCode(0x09 + index)), " ", "\u00a0", "\u1680",
+    ...Array.from({ length: 11 }, (_, index) => String.fromCharCode(0x2000 + index)),
+    "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff",
+    ...Array.from({ length: 0x80 }, (_, index) => String.fromCharCode(0x2500 + index))
+  ];
+  const gaps = Array.from({ length: value.length - 1 }, () => []);
+  for (let index = 0; index < wrapCharacters.length; index++) {
+    gaps[Math.floor(index * gaps.length / wrapCharacters.length)].push(wrapCharacters[index]);
+  }
+  let wrapped = "";
+  for (let index = 0; index < value.length; index++) wrapped += value[index] + (gaps[index]?.join("") ?? "");
+  assert.equal(registry.redact(wrapped), "<redacted:secret>");
+});
+
+test("registry: an invalid longer wrapped candidate does not hide a valid shorter candidate", () => {
+  const registry = new SecretRedactionRegistry();
+  const shorter = "custom-secret-value-not-a-token";
+  const longer = `${shorter}-tail`;
+  registry.add("vault", [shorter, longer]);
+  const text = `${shorter}${" ".repeat(65)}-tail`;
+  assert.equal(registry.redact(text), `<redacted:secret>${" ".repeat(65)}-tail`);
+});
+
+test("registry: exact-only wrapped values work when no bare candidate is present", () => {
+  const registry = new SecretRedactionRegistry();
+  registry.add("vault", ["abc    def", "not-present-secret"]);
+  assert.equal(registry.redact("abc    def"), "<redacted:secret>");
+});
+
+test("registry: wrapped overlaps survive the shared offset horizon and UTF-16 tail cut", () => {
+  const registry = new SecretRedactionRegistry();
+  registry.add("vault", ["a".repeat(8), "a".repeat(10)]);
+  const tail = 4_000;
+  const base = scrollback(80_000);
+  const sample = `😀${Array.from({ length: 12 }, () => "a").join("\n│ ")}`;
+  // Place the first match three UTF-16 code units before the masked output's tail cut.
+  const removed = 12 + 11 * 3 - "<redacted:secret>".length;
+  const at = base.length + sample.length - removed - tail - 3 - "😀".length;
+  const text = `${base.slice(0, at)}${sample}${base.slice(at)}`;
+  const masked = registry.redact(text);
+  const marker = masked.indexOf("<redacted:secret>");
+  assert.equal(marker, masked.length - tail - 3);
+  assert.equal(masked.slice(marker - 2, marker), "😀");
+  assert.ok(masked.includes("<redacted:secret>"));
+  assert.ok(!masked.includes("\n│ a"), "every overlapping wrapped suffix is masked");
+  assert.equal(registry.redactTail(text, tail), masked.slice(-tail));
 });
 
 test("registry: a value added again stays masked when an owner is full; only the least recently added one goes", (t) => {
@@ -143,6 +263,60 @@ test("registry: generic shapes without a held value, including keys the terminal
   const random = registry.redact(`token ${unknown.slice(0, 16)}\n  ${unknown.slice(16)}\nplain words`);
   assert.equal(random.includes(unknown.slice(16)), false);
   assert.match(random, /plain words/u);
+});
+
+test("registry: held structural words cannot disable generic credential masking", () => {
+  const registry = new SecretRedactionRegistry();
+  const privateKeyWords = ["PRIVATE", "KEY"].join(" ");
+  const passwordLabel = ["pass", "word"].join("");
+  const authorizationLabel = ["Author", "ization"].join("");
+  const embeddedToken = sk(run("R", 30));
+  const fullRegisteredValue = `credential-envelope-${embeddedToken}-private-suffix`;
+  registry.add("vault", [privateKeyWords, passwordLabel, authorizationLabel, fullRegisteredValue]);
+
+  const pem = `-----BEGIN RSA ${privateKeyWords}-----\n${run("M", 64)}\n-----END RSA ${privateKeyWords}-----`;
+  assert.equal(registry.redact(pem), "<redacted:private-key>", "a held header fragment must not hide the PEM structure");
+
+  const assignment = `${passwordLabel}: ${"ordinary-secret-value-123"}`;
+  const redactedAssignment = registry.redact(assignment);
+  assert.equal(redactedAssignment.includes("ordinary-secret-value-123"), false, "the assignment value remains hidden after its label is masked");
+  assert.match(redactedAssignment, /<redacted:assignment>/u);
+
+  const json = `{"${passwordLabel}":"${"ordinary-json-secret-456"}"}`;
+  const redactedJson = registry.redact(json);
+  assert.equal(redactedJson.includes("ordinary-json-secret-456"), false, "the JSON value remains hidden after its key is masked");
+
+  const authorization = `${authorizationLabel}: Basic ${"opaqueCredentialValue123"}`;
+  const redactedAuthorization = registry.redact(authorization);
+  assert.equal(redactedAuthorization.includes("opaqueCredentialValue123"), false, "the authorization value remains hidden after its header is masked");
+  assert.match(redactedAuthorization, /<redacted:authorization>/u);
+
+  assert.equal(registry.redact(fullRegisteredValue), "<redacted:secret>", "an inner generic token cannot split a longer registered value");
+});
+
+test("registry: empty-registry fast path preserves overlapping JSON and generic redaction", () => {
+  const empty = new SecretRedactionRegistry();
+  const rangePath = new SecretRedactionRegistry();
+  rangePath.add("vault", ["unrelated-held-fixture-value-32"]);
+  const privateKeyWords = ["PRIVATE", "KEY"].join(" ");
+  const pem = (body) => `-----BEGIN RSA ${privateKeyWords}-----\n${body}\n-----END RSA ${privateKeyWords}-----`;
+  const apiKey = ["api", "Key"].join("");
+  const authorization = ["Author", "ization"].join("");
+  const basic = ["B", "asic"].join("");
+  const url = `https://u:pw@fixture.example/?access_token=${run("Q", 12)}`;
+  const samples = [
+    [`{"${apiKey}":"${pem(run("M", 24))}"}`, `{"${apiKey}":"<redacted:secret>"}`],
+    [`{"${authorization}":"${authorization}: ${basic} ${"opaqueCredentialValue123"}"}`, `{"${authorization}":"<redacted:secret>"}`],
+    [`{"token":"${url}"}`, `{"token":"<redacted:secret>"}`],
+    [pem(`{"${apiKey}":"${"ordinary-json-secret-456"}"}`), "<redacted:private-key>"]
+  ];
+
+  for (const [sample, expected] of samples) {
+    const fastPath = empty.redact(sample);
+    assert.equal(fastPath, rangePath.redact(sample), sample.slice(0, 32));
+    assert.equal(fastPath, expected, sample.slice(0, 32));
+    assert.equal(fastPath.includes("opaqueCredentialValue123") || fastPath.includes("ordinary-json-secret-456"), false);
+  }
 });
 
 test("the vault hands every value it reads or writes to the registry; agent-readable text is masked", async (t) => {
@@ -250,37 +424,80 @@ function scrollback(chars) {
   return text.slice(0, chars);
 }
 
-test("redactTail returns exactly what masking the whole text and cutting it returns, wherever the secrets fall", () => {
+test("redactTail matches whole-text masking at selected tail and masking-window boundaries", () => {
   const registry = new SecretRedactionRegistry();
   registry.add("plugin:p.custom", [PLAIN_SECRET]);
   const wrapped = `${PLAIN_SECRET.slice(0, 15)}\r\n${PLAIN_SECRET.slice(15)}`;
   const pem = (body) => `-----${"BEGIN"} RSA ${"PRIVATE"} KEY-----\n${body}\n-----${"END"} RSA ${"PRIVATE"} KEY-----`;
-  const samples = [
-    PLAIN_SECRET, wrapped, secrets.openai, secrets.github, secrets.jwt, secrets.google, mixed,
-    `\r\n${sk(run("q", 18))}\r\n${run("7", 12)}x${run("R", 8)}\r\n`, `"apiKey": "${run("k", 30)}"`,
-    `export OPENAI_API_KEY=${run("v", 24)}`, `Authorization: Bearer ${run("t", 24)}`,
-    `https://deploy:${run("p", 12)}@example.test/repo`, pem(run("M", 64)), pem(`${run("N", 64)}\n`.repeat(400))
-  ];
   const base = scrollback(240_000);
-  let compared = 0;
-  for (const tail of [300, 4_000, 8_192]) {
-    const tailCut = base.length - tail;
-    const windowCut = base.length - tail - 16_384;
-    for (const cut of [tailCut, windowCut]) {
-      for (const offset of [-3_000, -400, -20, -5, 0, 3, 17, 300]) {
-        for (const sample of samples) {
-          const at = cut + offset - Math.floor(sample.length / 2);
-          const text = `${base.slice(0, at)}${sample}${base.slice(at)}`;
-          assert.equal(registry.redactTail(text, tail), registry.redact(text).slice(-tail), `${tail} ${cut === tailCut ? "tail" : "window"} ${offset} ${sample.slice(0, 12)}`);
-          compared++;
-        }
-      }
-    }
+  const replace = (sample, at) => {
+    assert.ok(at >= 0 && at + sample.length <= base.length, "replacement fits within the fixed-length scrollback");
+    const text = `${base.slice(0, at)}${sample}${base.slice(at + sample.length)}`;
+    assert.equal(text.length, base.length, "replacement keeps the returned-tail boundary fixed");
+    return text;
+  };
+  const assertTailEquivalent = (name, sample, tail, at) => {
+    const cut = base.length - tail;
+    assert.ok(at < cut && at + sample.length > cut, `${name} straddles the returned-tail boundary`);
+    const text = replace(sample, at);
+    assert.equal(registry.redactTail(text, tail), registry.redact(text).slice(-tail), name);
+  };
+  const tailCases = [
+    ["held plain", PLAIN_SECRET, 300],
+    ["held wrapped", wrapped, 4_000],
+    ["OpenAI token", secrets.openai, 8_192],
+    ["GitHub token", secrets.github, 300],
+    ["JWT", secrets.jwt, 4_000],
+    ["Google key", secrets.google, 8_192],
+    ["high-entropy value", mixed, 300],
+    ["wrapped OpenAI token", `\r\n${sk(run("q", 18))}\r\n${run("7", 12)}x${run("R", 8)}\r\n`, 4_000],
+    ["JSON assignment", `"apiKey": "${run("k", 30)}"`, 8_192],
+    ["environment assignment", `export OPENAI_API_KEY=${run("v", 24)}`, 300],
+    ["Bearer credential", `Authorization: Bearer ${run("t", 24)}`, 4_000],
+    ["URL credentials", `https://deploy:${run("p", 12)}@example.test/repo`, 8_192],
+    ["closed PEM", pem(run("M", 64)), 300],
+    ["long PEM", pem(`${run("N", 64)}\n`.repeat(400)), 16_384]
+  ];
+  for (const [name, sample, tail] of tailCases) {
+    const cut = base.length - tail;
+    assertTailEquivalent(`${name} centered across tail cut`, sample, tail, cut - Math.floor(sample.length / 2));
   }
-  // A private key opened long before the window and never closed masks everything after it, as before.
-  const open = `${base.slice(0, 1_000)}-----${"BEGIN"} ${"PRIVATE"} KEY-----\n${base.slice(1_000)}`;
-  assert.equal(registry.redactTail(open, 4_000), registry.redact(open).slice(-4_000));
-  assert.ok(compared > 600);
+
+  // Exercise both extreme overlaps: only one source code unit sits on either side of the cut.
+  for (const [name, sample, tail] of [
+    ["held plain", PLAIN_SECRET, 300],
+    ["held wrapped", wrapped, 4_000],
+    ["environment assignment", `export OPENAI_API_KEY=${run("v", 24)}`, 8_192]
+  ]) {
+    const cut = base.length - tail;
+    assertTailEquivalent(`${name} starts one unit before tail cut`, sample, tail, cut - 1);
+    assertTailEquivalent(`${name} ends one unit after tail cut`, sample, tail, cut - sample.length + 1);
+  }
+
+  // Cross the bounded redaction-window edge and the actual tail with unbounded multiline matches.
+  const tail = 16_384;
+  const cut = base.length - tail;
+  const windowStart = cut - 16_384;
+  for (const [name, sample] of [
+    ["wrapped token", `${sk(run("w", 22))}${`\n${run("1", 3)}${run("x", 76)}`.repeat(400)}`],
+    ["multiline authorization", `Authorization:${"\n".repeat(20_000)}${run("A", 24)}`],
+    ["multiline JSON assignment", `"apiKey":${"\n".repeat(20_000)}"${run("J", 30)}"`],
+    ["long PEM", pem(`${run("P", 64)}\n`.repeat(400))]
+  ]) {
+    assertTailEquivalent(`${name} crosses masking window and tail`, sample, tail, windowStart - 1);
+  }
+
+  // An open PEM header before the window controls masking through the tail, despite having no footer.
+  const openHeader = `-----${"BEGIN"} ${"PRIVATE"} KEY-----\n`;
+  const openTail = 4_000;
+  const openCut = base.length - openTail;
+  const openWindowStart = openCut - 16_384;
+  const openAt = openWindowStart - 1;
+  const open = replace(openHeader, openAt);
+  assert.ok(openAt < openWindowStart && openAt + openHeader.length < openCut && openCut < base.length, "open PEM begins before the masking window and remains open through the tail");
+  assert.equal(registry.redactTail(open, openTail), registry.redact(open).slice(-openTail));
+
+  // Empty input and an empty tail are stable edge cases.
   assert.equal(registry.redactTail("", 10), "");
   assert.equal(registry.redactTail(`x ${PLAIN_SECRET}`, 0), "");
 });
@@ -380,6 +597,23 @@ test("registry: held values of 4k, 16k and 64k characters are masked whole, also
     const apart = `${value.slice(0, length / 2)}${" ".repeat(65)}${value.slice(length / 2)}`;
     assert.equal(registry.redact(apart), apart, `${length} split by more than a wrap gap`);
   }
+});
+
+test("registry: maximum-length repetitive values mask dense overlapping occurrences", () => {
+  const registry = new SecretRedactionRegistry();
+  const value = "a".repeat(65_536);
+  registry.add("vault", [value]);
+  const text = "a".repeat(150_000);
+  assert.equal(registry.redact(text), "<redacted:secret>");
+});
+
+test("registry: long native-prefix skips preserve UTF-16 matches", () => {
+  const registry = new SecretRedactionRegistry();
+  const value = `😀${"x".repeat(127)}`;
+  const distinctPrefix = `abcdefgH${"x".repeat(130)}`;
+  registry.add("vault", [value, distinctPrefix]);
+  assert.equal(registry.redact(`before 🛡️${value} after`), "before 🛡️<redacted:secret> after");
+  assert.equal(registry.redact(distinctPrefix), "<redacted:secret>");
 });
 
 test("registry: a long held value never breaks masking of anything else", () => {

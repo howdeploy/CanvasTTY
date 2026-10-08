@@ -1,12 +1,17 @@
 import { reportLifecycle } from "./runtime-client.mjs";
-import { CAPTURE_RESULT_ENV } from "./runtime-protocol.mjs";
+import { CAPTURE_RESULT_ENV, toolOutcomeFromOpenCode, normalizedActionHashFromHook } from "./runtime-protocol.mjs";
 import { finalAnswer } from "./opencode-final-answer.mjs";
-import { createOpenCodeDecisions } from "./opencode-decisions.mjs";
+import { createOpenCodeDecisions, guardedCall } from "./opencode-decisions.mjs";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { HOOK_TIMEOUT_MS, preparePluginHook } from "./plugin-hook-dispatch.mjs";
 
 let rootSessionId = null;
 let rootWorking = false;
+let rootTurnId = null;
+// Retain only correlation, never arguments/output. Calls omitted at the bound cannot produce an uncorrelated outcome.
+const toolCalls = new Map();
+const MAX_TRACKED_TOOL_CALLS = 256;
 const lifecycleEnabled = process.env.CANVASTTY_LIFECYCLE_HOOKS_ENABLED !== "0";
 const pluginHookRegistry = process.env.CANVASTTY_PLUGIN_HOOK_REGISTRY ?? "";
 const pluginHookRunnerCommand = process.env.CANVASTTY_PLUGIN_HOOK_RUNNER_COMMAND ?? "";
@@ -16,6 +21,7 @@ const pluginHooks = parsePluginHooks(process.env.CANVASTTY_PLUGIN_HOOK_SESSION);
 // Set only for a session whose orchestrator reads its final answer (a subagent): the last reply is then sent with
 // the turn's end, at most MAX_RESULT_CHARS.
 const captureResult = process.env[CAPTURE_RESULT_ENV] === "1";
+const trackTools = lifecycleEnabled || captureResult || pluginHooks.some(hook => hook.events.includes("after-tool"));
 
 // OpenCode (1.18+) runs EVERY exported function of a plugin module as a plugin and reads its hooks; a helper exported
 // here broke the whole OpenCode start ("plugin config hook failed", then "n.provider"). Export nothing but the plugin.
@@ -24,7 +30,22 @@ export const CanvasTTYLifecycle = async (input) => {
   // fails the tool call before OpenCode asks anyone.
   const decisions = createOpenCodeDecisions({ client: input && typeof input === "object" ? input.client : undefined });
   return {
-    ...(decisions.enabled ? { "tool.execute.before": (hookInput, output) => decisions.guard(hookInput, output) } : {}),
+    ...((decisions.enabled || trackTools) ? {
+      "tool.execute.before": async (hookInput, output) => {
+        const sessionId = rootSessionId, turnId = rootTurnId;
+        if (decisions.enabled) await decisions.guard(hookInput, output);
+        if (!trackTools || !rootWorking || !turnId || sessionId !== rootSessionId
+          || turnId !== rootTurnId || hookInput?.sessionID !== sessionId || typeof hookInput.callID !== "string"
+          || !hookInput.callID || hookInput.callID.length > 256 || typeof hookInput.tool !== "string"
+          || !hookInput.tool || hookInput.tool.length > 80) return;
+        if (toolCalls.size < MAX_TRACKED_TOOL_CALLS && !toolCalls.has(hookInput.callID)) {
+          toolCalls.set(hookInput.callID, { sessionId, turnId, tool: hookInput.tool });
+        }
+      }
+    } : {}),
+    ...(trackTools ? {
+      "tool.execute.after": (hookInput, output) => completeTool(hookInput, output, "tool.execute.after")
+    } : {}),
     event: async ({ event }) => lifecycleEvent(event, decisions, input && typeof input === "object" ? input.client : undefined)
   };
 };
@@ -45,8 +66,10 @@ async function lifecycleEvent(event, decisions, client) {
     if (session.parentID || session.parentId) return;
     rootSessionId = stringField(session.id, sessionId);
     rootWorking = false;
+    rootTurnId = null;
+    toolCalls.clear();
     if (!rootSessionId) return;
-    if (lifecycleEnabled) {
+    if (lifecycleEnabled || captureResult) {
       await reportLifecycle({ state: "idle", event: event.type, threadId: rootSessionId });
     }
     runPluginHooks("session-start", event.type, event);
@@ -63,47 +86,81 @@ async function lifecycleEvent(event, decisions, client) {
         ? statusValue.type
         : null;
     if (status === "busy" || status === "retry") {
-      if (lifecycleEnabled) {
-        await reportLifecycle({ state: "working", event: `session.status:${status}`, turnId: rootSessionId });
+      const startsTurn = status === "busy" && !rootWorking;
+      if (startsTurn || !rootTurnId) { rootTurnId = randomUUID(); toolCalls.clear(); }
+      rootWorking = true;
+      if (lifecycleEnabled || captureResult) {
+        await reportLifecycle({ state: "working", event: `session.status:${status}`, turnId: rootTurnId });
       }
-      if (status === "busy" && !rootWorking) {
+      if (startsTurn) {
         runPluginHooks("prompt-submit", `session.status:${status}`, event);
       }
-      rootWorking = true;
     } else if (status === "idle") {
       rootWorking = false;
-      if (lifecycleEnabled) await reportLifecycle({ state: "idle", event: "session.status:idle", turnId: rootSessionId });
+      toolCalls.clear();
+      // A result-capturing turn is not complete until its bounded session.idle SDK read settles. Publishing idle
+      // here lets an orchestrator review before the final answer has reached the host.
+      if (lifecycleEnabled && !captureResult) await reportLifecycle({ state: "idle", event: "session.status:idle", turnId: rootTurnId });
     }
     return;
   }
   if (event.type === "session.idle") {
     rootWorking = false;
-    const result = captureResult ? await finalAnswer(client, rootSessionId) : undefined;
-    if (lifecycleEnabled || result) {
-      await reportLifecycle({ state: "idle", event: event.type, turnId: rootSessionId, ...(result ? { result } : {}) });
+    toolCalls.clear();
+    const endingSessionId = rootSessionId, endingTurnId = rootTurnId;
+    const result = captureResult && endingTurnId ? await finalAnswer(client, endingSessionId) : undefined;
+    // SDK reads are asynchronous: the next turn may already have started while the old answer was being read.
+    if (endingSessionId !== rootSessionId || endingTurnId !== rootTurnId || rootWorking) return;
+    if (lifecycleEnabled || captureResult) {
+      await reportLifecycle({ state: "idle", event: event.type, turnId: rootTurnId, ...(result ? { result } : {}) });
     }
     runPluginHooks("stop", event.type, event);
   } else if (event.type === "permission.asked") {
-    if (lifecycleEnabled) await reportLifecycle({ state: "needs_approval", event: event.type, turnId: rootSessionId });
+    if (lifecycleEnabled || captureResult) await reportLifecycle({ state: "needs_approval", event: event.type, turnId: rootTurnId });
     runPluginHooks("permission-request", event.type, event);
   } else if (event.type === "permission.replied") {
-    if (lifecycleEnabled) await reportLifecycle({ state: "working", event: event.type, turnId: rootSessionId });
+    rootWorking = true;
+    if (lifecycleEnabled || captureResult) await reportLifecycle({ state: "working", event: event.type, turnId: rootTurnId });
     runPluginHooks("permission-result", event.type, event);
   } else if (event.type === "question.asked") {
-    if (lifecycleEnabled) await reportLifecycle({ state: "needs_approval", event: event.type, turnId: rootSessionId });
+    if (lifecycleEnabled || captureResult) await reportLifecycle({ state: "needs_approval", event: event.type, turnId: rootTurnId });
   } else if (event.type === "question.replied" || event.type === "question.rejected") {
-    if (lifecycleEnabled) await reportLifecycle({ state: "working", event: event.type, turnId: rootSessionId });
+    rootWorking = true;
+    if (lifecycleEnabled || captureResult) await reportLifecycle({ state: "working", event: event.type, turnId: rootTurnId });
   } else if (event.type === "session.error") {
     rootWorking = false;
-    if (lifecycleEnabled) await reportLifecycle({ state: "idle", event: event.type, turnId: rootSessionId });
+    toolCalls.clear();
+    if (lifecycleEnabled || captureResult) await reportLifecycle({ state: "idle", event: event.type, turnId: rootTurnId });
     runPluginHooks("stop", event.type, event);
   } else if (event.type === "session.deleted") {
     runPluginHooks("session-end", event.type, event);
     rootWorking = false;
     rootSessionId = null;
-  } else if (event.type === "tool.execute.after") {
-    runPluginHooks("after-tool", event.type, event);
+    rootTurnId = null;
+    toolCalls.clear();
+  } else if (event.type === "message.part.updated") {
+    const part = properties.part;
+    if (part?.type !== "tool" || !["completed", "error"].includes(part.state?.status)) return;
+    await completeTool({ sessionID: part.sessionID ?? sessionId, callID: part.callID, tool: part.tool,
+      args: part.state.input }, part.state, event.type, part.state.status, event);
   }
+}
+
+
+async function completeTool(input, output, event, status = "completed", hookPayload = { input, output }) {
+  const call = toolCalls.get(input?.callID);
+  if (!call || !rootWorking || call.sessionId !== rootSessionId || call.turnId !== rootTurnId
+    || input.sessionID !== call.sessionId || input.tool !== call.tool) return;
+  const toolOutcome = toolOutcomeFromOpenCode(call.tool, input.args, output, status);
+  if (!toolOutcome) return;
+  // The permission hook normalizes file/shell inputs before hashing; use the identical shape for equality.
+  const action = guardedCall(call.tool, input.args);
+  if (action) toolOutcome.normalizedActionHash = normalizedActionHashFromHook(action.toolName, action.toolInput);
+  // Delete before awaiting transport: the direct hook and PartUpdated may race for the same completion.
+  toolCalls.delete(input.callID);
+  if (lifecycleEnabled || captureResult) await reportLifecycle({ state: "working", event, turnId: call.turnId, toolOutcome });
+  // Explicitly trusted native hooks retain their provider payload contract. This is separate from service events.
+  runPluginHooks("after-tool", event, hookPayload);
 }
 
 

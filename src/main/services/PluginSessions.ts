@@ -12,6 +12,8 @@ import type {
   TerminalBufferSnapshot,
   TerminalDataEvent
 } from "../../shared/contracts.ts";
+import { createHmac, randomBytes } from "node:crypto";
+import { ASSISTANT_PLUGIN_ID, ASSISTANT_SERVICE_ID, isInstalledAssistant, type PluginInstallRecord } from "./AssistantLoopSignal.ts";
 import { IPC } from "../../shared/contracts.ts";
 import type { PersistedEnvironmentRef } from "./TerminalSessionStore.ts";
 
@@ -65,8 +67,16 @@ interface TerminalPort {
 
 export interface PluginSessionsDependencies {
   terminals: TerminalPort;
+  /** Live host install provenance; absent or untrusted records never receive activity. */
+  installRecord?(pluginId:string):PluginInstallRecord|null;
   /** Sends a notification to a running service; false when it is not running. */
-  notify(pluginId: string, serviceId: string, method: "canvastty.sessions.event", params: PluginSessionEvent): boolean;
+  notify(pluginId: string, serviceId: string, method: "canvastty.sessions.event" | "canvastty.activity", params: PluginSessionEvent | PluginActivity): boolean;
+}
+export interface PluginActivity {
+  type: string; sessionId: string; at: number; turnId?: string; turnEpoch?: number; evidenceId?: string; toolName?: string; normalizedAction?: string;
+  normalizedActionHash?: string; errorHash?: string; outputHash?: string; changedPathHashes?: string[];
+  resultClass?: string; provider?: string; accountId?: string; resetAt?: number;
+  task?: string; parentSessionId?: string; status?: "failed"|"accepted"|"rejected"|"rework";
 }
 
 interface Subscriber {
@@ -79,7 +89,21 @@ interface Subscriber {
 const MAX_OWNED_PER_PLUGIN = 16;
 const MAX_SEND_CHARS = 16_000;
 const MAX_SCREEN_CHARS = 4_000;
+const MAX_LOOP_EVIDENCE = 512;
+const LOOP_EVIDENCE_TTL_MS = 60_000;
 const PROFILES = new Set<LaunchProfileId>(["normal", "yolo", "auto", "acceptEdits", "plan"]);
+
+interface LoopEvidence { sessionId: string; turnEpoch: number; issuedAt: number }
+
+function boundedPluginText(value: string, limit: number): string {
+  const text = value.slice(0, limit);
+  return /[\uD800-\uDBFF]$/u.test(text) ? text.slice(0, -1) : text;
+}
+
+function validTurnId(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= 160
+    && /^[A-Za-z0-9._:-]+$/u.test(value) ? value : undefined;
+}
 
 /**
  * Session events and plugin-owned session control (EP-4). A service subscribes to card events (metadata only;
@@ -92,6 +116,8 @@ export class PluginSessions {
   private readonly deps: PluginSessionsDependencies;
   private readonly subscribers = new Map<string, Subscriber>();
   private readonly known = new Map<string, { status: SessionStatus; exited: boolean; summary: PluginSessionSummary; owner: string | null }>();
+  private readonly fingerprintKey = randomBytes(32);
+  private readonly loopEvidence = new Map<string, LoopEvidence>();
 
   constructor(deps: PluginSessionsDependencies) {
     this.deps = deps;
@@ -134,6 +160,109 @@ export class PluginSessions {
   serviceStopped(pluginId: string, serviceId: string): void {
     this.subscribers.delete(`${pluginId}:${serviceId}`);
   }
+  activity(event: PluginActivity): void {
+    try { if(!isInstalledAssistant(this.deps.installRecord?.(ASSISTANT_PLUGIN_ID) ?? null))return; }
+    catch { return; }
+    let safeEvent = event.type === "tool-outcome" ? this.safeToolOutcome(event)
+      : event.type === "activity" || event.type === "pretool" ? this.safePretool(event) : event;
+    if (!safeEvent) return;
+    const context=this.deps.terminals.pluginContext(safeEvent.sessionId);
+    if (!context) return;
+    if ((safeEvent.type === "activity" || safeEvent.type === "tool-outcome")
+      && Number.isSafeInteger(safeEvent.turnEpoch) && safeEvent.turnEpoch! > 0
+      && context.metadata.exitCode === null && context.metadata.status !== "done" && context.metadata.status !== "failed") {
+      const evidenceId = this.issueLoopEvidence(safeEvent.sessionId, safeEvent.turnEpoch!);
+      safeEvent = { ...safeEvent, evidenceId };
+    }
+    for (const subscriber of this.subscribers.values()) {
+      if(subscriber.pluginId!==ASSISTANT_PLUGIN_ID || subscriber.serviceId!==ASSISTANT_SERVICE_ID)continue;
+      if (subscriber.ownedOnly && context.owner !== subscriber.pluginId) continue;
+      this.deps.notify(subscriber.pluginId,subscriber.serviceId,"canvastty.activity",safeEvent);
+    }
+  }
+
+  /** Consume host evidence once, and only for the same still-live card and currently open turn. */
+  consumeLoopEvidence(sessionId: string, evidenceId: string, currentTurnEpoch: number | null): boolean {
+    const evidence = this.loopEvidence.get(evidenceId);
+    if (!evidence) return false;
+    this.loopEvidence.delete(evidenceId);
+    const age = Date.now() - evidence.issuedAt;
+    if (evidence.sessionId !== sessionId || evidence.turnEpoch !== currentTurnEpoch
+      || !Number.isFinite(age) || age < 0 || age > LOOP_EVIDENCE_TTL_MS) return false;
+    const context = this.deps.terminals.pluginContext(sessionId);
+    return Boolean(context && context.metadata.exitCode === null
+      && context.metadata.status !== "done" && context.metadata.status !== "failed");
+  }
+
+  private issueLoopEvidence(sessionId: string, turnEpoch: number): string {
+    const now = Date.now();
+    while (this.loopEvidence.size >= MAX_LOOP_EVIDENCE) this.loopEvidence.delete(this.loopEvidence.keys().next().value!);
+    const evidenceId = randomBytes(18).toString("base64url");
+    this.loopEvidence.set(evidenceId, { sessionId, turnEpoch, issuedAt: now });
+    return evidenceId;
+  }
+
+  /** Equality survives inside one host session, while plugins cannot test guessed commands against plain SHA. */
+  private fingerprint(sessionId:string,domain:string,hash:string):string {
+    return createHmac("sha256",this.fingerprintKey).update(JSON.stringify(["activity-v1",sessionId,domain,hash])).digest("hex");
+  }
+
+  private safeToolOutcome(event: PluginActivity): PluginActivity | null {
+    if (!Number.isFinite(event.at) || typeof event.sessionId !== "string" || !event.sessionId
+      || !["success", "error", "denied", "unknown"].includes(event.resultClass ?? "")) return null;
+    const changedPathHashes = Array.isArray(event.changedPathHashes)
+      ? [...new Set(event.changedPathHashes.filter((hash) => typeof hash === "string" && /^[a-f0-9]{64}$/u.test(hash)))].slice(0, 16)
+      : [];
+    const redactedName = typeof event.toolName === "string"
+      ? this.deps.terminals.redactSecrets(event.toolName.replace(/[\u0000-\u001f\u007f]/gu, ""))
+      : "unknown";
+    const safeName = boundedPluginText(redactedName, 80);
+    const actionHash = typeof event.normalizedActionHash === "string" && /^[a-f0-9]{64}$/u.test(event.normalizedActionHash)
+      ? event.normalizedActionHash : undefined;
+    const errorHash = event.resultClass === "error" && typeof event.errorHash === "string" && /^[a-f0-9]{64}$/u.test(event.errorHash)
+      ? event.errorHash : undefined;
+    const outputHash = event.resultClass !== "error" && typeof event.outputHash === "string" && /^[a-f0-9]{64}$/u.test(event.outputHash)
+      ? event.outputHash : undefined;
+    const turnId = validTurnId(event.turnId);
+    return {
+      type: "tool-outcome",
+      sessionId: event.sessionId,
+      at: event.at,
+      ...(turnId ? { turnId } : {}),
+      ...(Number.isSafeInteger(event.turnEpoch) && (event.turnEpoch as number) > 0 ? { turnEpoch: event.turnEpoch as number } : {}),
+      toolName: safeName || "unknown",
+      resultClass: event.resultClass,
+      ...(actionHash ? { normalizedActionHash: this.fingerprint(event.sessionId,"action",actionHash) } : {}),
+      ...(errorHash ? { errorHash:this.fingerprint(event.sessionId,"error",errorHash) } : {}),
+      ...(outputHash ? { outputHash:this.fingerprint(event.sessionId,"output",outputHash) } : {}),
+      changedPathHashes:changedPathHashes.map(hash=>this.fingerprint(event.sessionId,"path",hash))
+    };
+  }
+
+  /** Pre-tool summaries carry only hashes and bounded labels; tool input never reaches plugins. */
+  private safePretool(event: PluginActivity): PluginActivity | null {
+    if (!Number.isFinite(event.at) || typeof event.sessionId !== "string" || !event.sessionId) return null;
+    const action = typeof event.normalizedAction === "string" ? event.normalizedAction : event.normalizedActionHash;
+    if (typeof action !== "string" || !/^[a-f0-9]{64}$/u.test(action)) return null;
+    const redactedName = typeof event.toolName === "string"
+      ? this.deps.terminals.redactSecrets(event.toolName.replace(/[\u0000-\u001f\u007f]/gu, ""))
+      : "unknown";
+    const safeName = boundedPluginText(redactedName, 80);
+    const resultClass = ["deny", "ask", "allow"].includes(event.resultClass ?? "") ? event.resultClass : undefined;
+    const turnId = validTurnId(event.turnId);
+    return {
+      type: "activity",
+      sessionId: event.sessionId,
+      at: event.at,
+      toolName: safeName || "unknown",
+      normalizedAction: this.fingerprint(event.sessionId,"action",action),
+      ...(typeof event.normalizedActionHash==="string" && /^[a-f0-9]{64}$/u.test(event.normalizedActionHash)
+        ? {normalizedActionHash:this.fingerprint(event.sessionId,"action",event.normalizedActionHash)} : {}),
+      ...(Number.isSafeInteger(event.turnEpoch) && (event.turnEpoch as number) > 0 ? { turnEpoch: event.turnEpoch as number } : {}),
+      ...(resultClass ? { resultClass } : {}),
+      ...(turnId ? { turnId } : {})
+    };
+  }
 
   /** The EP-4 summary of one card, or null when it does not exist. */
   summary(sessionId: string): PluginSessionSummary | null {
@@ -162,6 +291,7 @@ export class PluginSessions {
     if (channel === IPC.terminalRemoved && "id" in payload && !("data" in payload)) {
       const last = this.known.get(payload.id);
       this.known.delete(payload.id);
+      for (const [evidenceId, evidence] of this.loopEvidence) if (evidence.sessionId === payload.id) this.loopEvidence.delete(evidenceId);
       if (last) this.dispatch("closed", last.summary, last.owner);
       return;
     }

@@ -27,6 +27,8 @@ export interface CompanionHost {
   providers?(): Record<ProviderId, boolean>;
   read(sessionId: string): Promise<CompanionView>;
   input(sessionId: string, data: string): boolean;
+  /** Called once after a successful structured text submission, never for keys or interrupts. */
+  inputSubmitted?(sessionId: string): void;
   close(sessionId: string): void;
   rename(sessionId: string, title: string): CompanionSession;
   create(provider: ProviderId): CompanionSession;
@@ -207,6 +209,7 @@ export class CompanionSessions {
         : `\x1b[200~${action.text}\x1b[201~\r`;
     if (!this.host.input(action.sessionId, data))
       throw new CompanionError("unavailable");
+    if (action.type === "session.input") this.host.inputSubmitted?.(action.sessionId);
     return { delivered: true, sessionId: action.sessionId };
   }
 }

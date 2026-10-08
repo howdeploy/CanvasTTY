@@ -206,3 +206,14 @@ test("every hotbar provider is created with scoped access; revoking creation blo
     await assert.rejects(f.service.dispatch("phone", f.request({ type: "session.create", provider })), { code: "not-permitted" });
   }
 });
+
+
+test("submission acknowledgments follow structured successful actions exactly once",async()=>{
+ const f=fixture(),acknowledged=[];f.host.inputSubmitted=id=>acknowledged.push(id);
+ for(const key of ['up','down','left','right','backspace','escape','ctrl-c','enter'])await f.service.dispatch('phone',f.request({type:'session.key',sessionId:'one',key}));
+ await f.service.dispatch('phone',f.request({type:'session.interrupt',sessionId:'one'}));assert.deepEqual(acknowledged,[]);
+ const request=f.request({type:'session.input',sessionId:'one',text:'answer'});
+ await f.service.dispatch('phone',request);await f.service.dispatch('phone',request);assert.deepEqual(acknowledged,['one']);
+ f.host.input=()=>false;await assert.rejects(f.service.dispatch('phone',f.request({type:'session.input',sessionId:'one',text:'not sent'})),{code:'unavailable'});
+ assert.deepEqual(acknowledged,['one']);
+});

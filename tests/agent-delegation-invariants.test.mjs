@@ -120,6 +120,46 @@ test("spawn_agent cancelled before or while the subagent starts leaves no card a
   assert.deepEqual(children(), [], "its card was closed");
 });
 
+test("concurrent environment resolutions cannot exceed the live subagent limit", async (t) => {
+  const { project } = await folders(t);
+  const { terminals } = managerWith(t);
+  const pending = [];
+  const control = new AgentControlService(terminals, {
+    limits: () => ({ maxDepth: 2, maxSubagents: 1 }),
+    resolveSubagentEnvironment: () => new Promise(resolve => pending.push(resolve))
+  });
+  const parent = terminals.create({ provider: "codex", profile: "normal", cwd: project, position: at, role: "orchestrator" });
+  const request = { parentSessionId: parent.id, provider: "codex", cwd: project };
+  const first = control.spawn(request);
+  const second = control.spawn(request);
+  const results = Promise.allSettled([first, second]);
+  assert.equal(pending.length, 2);
+  for (const resolve of pending) resolve(null);
+  const settled = await results;
+  assert.equal(settled.filter(result => result.status === "fulfilled").length, 1);
+  assert.match(settled.find(result => result.status === "rejected").reason.message, /already runs 1 live subagent/u);
+  assert.equal(control.children(parent.id).length, 1);
+});
+
+test("a budget reached while an environment resolves blocks the pending spawn", async (t) => {
+  const { project } = await folders(t);
+  const { terminals, calls } = managerWith(t);
+  let paused = false;
+  let resolveEnvironment;
+  const control = new AgentControlService(terminals, {
+    budget: { snapshot: () => ({ paused, reason: "Budget reached during environment selection" }) },
+    resolveSubagentEnvironment: () => new Promise(resolve => { resolveEnvironment = resolve; })
+  });
+  const parent = terminals.create({ provider: "codex", profile: "normal", cwd: project, position: at, role: "orchestrator" });
+  const launchCount = calls.length;
+  const pending = control.spawn({ parentSessionId: parent.id, provider: "codex", cwd: project });
+  paused = true;
+  resolveEnvironment(null);
+  await assert.rejects(pending, /Budget reached during environment selection/u);
+  assert.equal(control.children(parent.id).length, 0);
+  assert.equal(calls.length, launchCount);
+});
+
 test("YOLO is enforced in the main process: acknowledged by the person, never for a subagent", async (t) => {
   const { project } = await folders(t);
   const { terminals } = managerWith(t, { acknowledged: ["claude"] });
@@ -174,7 +214,7 @@ test("a restored subagent never comes back with more than its orchestrator allow
 test("no agent-facing tool changes CanvasTTY's settings, protection, profiles or isolation", async () => {
   // The orchestration tools an agent can call: agents only, no settings, no profile or trust changes.
   assert.deepEqual([...ORCHESTRATION_TOOL_NAMES].sort(),
-    ["cancel_agent", "get_agent_result", "list_agents", "list_providers", "observe_agent", "send_to_agent", "spawn_agent", "wait_for_agent"]);
+    ["apply_orchestration_template", "cancel_agent", "claim_task", "complete_task", "get_agent_result", "get_task_budget", "list_agents", "list_orchestration_templates", "list_providers", "list_tasks", "observe_agent", "request_secret", "retry_agent", "run_secret_request", "send_to_agent", "spawn_agent", "update_task", "wait_for_agent"]);
   // The control gateway writes only the pixel theme to settings, and only for the person's own connection.
   const gateway = await readFile(new URL("../src/main/services/agent-control/AgentControlGateway.ts", import.meta.url), "utf8");
   const updates = [...gateway.matchAll(/settings\.update\(\{\s*([a-zA-Z]+)/gu)].map((match) => match[1]);

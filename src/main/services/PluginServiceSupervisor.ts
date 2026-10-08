@@ -34,6 +34,7 @@ export interface PluginServiceHost {
   emit(pluginId: string, serviceId: string, event: string, data: unknown): void;
   /** Adds values to the redaction registry: they are masked in every text another agent reads. */
   registerSecrets?(pluginId: string, values: string[]): void;
+  maskSecrets?(text: string): string;
   /** One of the plugin's own secrets (already checked for `secrets`), or null when it is not set. */
   secretGet?(pluginId: string, key: string): Promise<string | null>;
   /**
@@ -610,6 +611,11 @@ export class PluginServiceSupervisor {
       }
       this.options.host.registerSecrets?.(spec.pluginId, values.values as string[]);
       return null;
+    }
+    if (method === "redaction.mask") {
+      if (typeof values.text !== "string" || values.text.length > 65_536) throw new Error("Redaction text must be at most 64 KiB.");
+      if (!this.options.host.maskSecrets) throw new Error("Redaction is unavailable.");
+      return {text: this.options.host.maskSecrets(values.text)};
     }
     if (method === "cards.setBadge" && this.options.host.setBadge) {
       if (!spec.permissions.includes("cards:decorate")) throw new Error("Plugin does not have the cards:decorate permission.");

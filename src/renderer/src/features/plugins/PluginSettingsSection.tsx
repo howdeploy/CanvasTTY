@@ -181,6 +181,15 @@ export function PluginSettingsSection({
   const [githubCode, setGithubCode] = useState<GithubDeviceFlowStart | null>(null);
   const [githubBusy, setGithubBusy] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
+  const githubFlowNoticeKey = githubStatus?.deviceFlowState === "denied"
+    ? "githubAuthDenied"
+    : githubStatus?.deviceFlowState === "expired"
+      ? "githubAuthExpired"
+      : githubStatus?.deviceFlowState === "failed"
+        ? "githubAuthFailed"
+        : githubStatus?.deviceFlowState === "cancelled"
+          ? "githubAuthCancelled"
+          : null;
   const [showcasePreviews, setShowcasePreviews] = useState<Record<string, PluginInstallPreview>>({});
   const [showcaseManifests, setShowcaseManifests] = useState<Record<string, PluginManifest>>({});
   const [selectedShowcase, setSelectedShowcase] = useState<string | null>(null);
@@ -197,18 +206,20 @@ export function PluginSettingsSection({
     // The main process owns the device flow; this only reads its status, so it pauses while Settings is
     // closed and picks up (sign-in finished or code expired) as soon as Settings opens again.
     const stop = pollWhileOpen(open, githubCode.interval * 1000, async () => {
-      if (Date.now() >= githubCode.expiresAt) {
-        if (!cancelled) {
-          setGithubCode(null);
-          setError(t(locale, "githubAuthExpired"));
-        }
-        return STOP_POLLING;
-      }
       // A transient status read failure is retried on the next tick.
       const status = await window.canvasTTY.githubAuth.status();
       if (cancelled) return STOP_POLLING;
       setGithubStatus(status);
       if (status.authorized) {
+        setGithubCode(null);
+        return STOP_POLLING;
+      }
+      if (status.deviceFlowState && status.deviceFlowState !== "idle" && status.deviceFlowState !== "pending") {
+        setGithubCode(null);
+        return STOP_POLLING;
+      }
+      if (Date.now() >= githubCode.expiresAt) {
+        setGithubStatus({ ...status, deviceFlowState: "expired" });
         setGithubCode(null);
         return STOP_POLLING;
       }
@@ -368,10 +379,29 @@ export function PluginSettingsSection({
     try {
       const flow = await window.canvasTTY.githubAuth.start();
       setGithubCode(flow);
-      setGithubStatus({ configured: true, authorized: false, login: null, tokenExpiresAt: null });
+      setGithubStatus({ configured: true, authorized: false, login: null, tokenExpiresAt: null, deviceFlowState: "pending" });
       await openGithubAuthorization(flow, target);
     } catch (reason) {
       setError(errorMessage(reason, t(locale, "githubAuthNotConfigured")));
+    } finally {
+      setGithubBusy(false);
+    }
+  };
+
+  const runGithubCancel = async (): Promise<void> => {
+    if (githubBusy || !githubCode) return;
+    setGithubBusy(true);
+    setError(null);
+    try {
+      await window.canvasTTY.githubAuth.cancel();
+      const status = await window.canvasTTY.githubAuth.status();
+      setGithubStatus(status);
+      if (status.authorized || (status.deviceFlowState && status.deviceFlowState !== "idle" && status.deviceFlowState !== "pending")) {
+        setGithubCode(null);
+        setCodeCopied(false);
+      }
+    } catch (reason) {
+      setError(errorMessage(reason, t(locale, "githubAuthCancelFailed")));
     } finally {
       setGithubBusy(false);
     }
@@ -387,7 +417,8 @@ export function PluginSettingsSection({
         configured: current?.configured ?? false,
         authorized: false,
         login: null,
-        tokenExpiresAt: null
+        tokenExpiresAt: null,
+        deviceFlowState: "idle"
       }));
       setGithubCode(null);
     } finally {
@@ -834,6 +865,9 @@ export function PluginSettingsSection({
           )}
         </h3>
         {!githubAuthorized && !githubCode && <p className="plugin-github-optional">{t(locale, "githubAuthOptional")}</p>}
+        {!githubAuthorized && !githubCode && githubFlowNoticeKey && (
+          <p className="plugin-github-flow-notice" role="status">{t(locale, githubFlowNoticeKey)}</p>
+        )}
         {githubStatus?.authorized ? (
           <div>
             <div className="plugin-github-row">
@@ -880,6 +914,9 @@ export function PluginSettingsSection({
               </button>
               <button type="button" disabled={githubBusy} onClick={() => void openGithubAuthorization(githubCode, "external")}>
                 {t(locale, "githubAuthOpenExternal")}
+              </button>
+              <button type="button" className="plugin-github-cancel" disabled={githubBusy} onClick={() => void runGithubCancel()}>
+                {t(locale, "githubAuthCancel")}
               </button>
             </div>
           </div>

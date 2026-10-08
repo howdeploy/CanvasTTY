@@ -1,3 +1,4 @@
+import type { AttentionEvent, NotificationChannel } from "../../../shared/backlog.ts";
 import {
   createServer,
   type Server,
@@ -11,7 +12,7 @@ import { join, resolve, extname } from "node:path";
 import { isPathInside } from "../../../agent-runtime/path-inside.mjs";
 import { hostname } from "node:os";
 import type { TerminalManager } from "../TerminalManager.ts";
-import type { LimitsSnapshot, ProviderId } from "../../../shared/contracts.ts";
+import type { LimitsSnapshot, ProviderId, SessionMetadata } from "../../../shared/contracts.ts";
 import { CANVAS_LAUNCHER_ITEMS } from "../../../shared/providerCatalog.ts";
 import {
   CompanionError,
@@ -160,8 +161,12 @@ export class EvenG2Controller {
   private pairingDiagnostics: string[] = [];
   private diagnosticsWrite = Promise.resolve();
   private limits: () => Promise<LimitsSnapshot>;
+  private readonly loopWarningActive:(id:string)=>boolean;
+  private readonly notifications:(channel:NotificationChannel,id:string)=>AttentionEvent[];
 
   constructor(options: {
+    loopWarningActive?: (sessionId:string)=>boolean;
+    notifications?: (channel:NotificationChannel,sessionId:string)=>AttentionEvent[];
     userDataPath: string;
     terminals: Terminals;
     webRoot: string;
@@ -194,6 +199,8 @@ export class EvenG2Controller {
         })
       : null;
     this.terminals = options.terminals;
+    this.notifications=options.notifications ?? (()=>[]);
+    this.loopWarningActive=options.loopWarningActive ?? (()=>false);
     this.mobileRoot = options.mobileRoot ?? null;
     this.webRoot = options.webRoot;
     this.port = options.port ?? 3481;
@@ -222,6 +229,7 @@ export class EvenG2Controller {
           if (written) this.presentation.pending(id);
           return written;
         },
+        inputSubmitted: (id) => this.presentation.submitted(id),
         close: (id) => this.terminals.dispose(id),
         rename: (id, title) => safeSession(this.terminals.rename(id, title)),
         create: (provider) => {
@@ -309,6 +317,20 @@ export class EvenG2Controller {
         this.error = "listener-unavailable";
       }
     }
+  }
+  /** History remains available; the glasses notice describes only a still-current condition. */
+  private currentAttention(session:SessionMetadata,selectionSent:boolean):AttentionEvent|null {
+    return [...this.notifications("glasses",session.id)].reverse().find(event=>{
+      if(event.sessionId!==session.id)return false;
+      switch(event.kind) {
+        case "approval": return session.status==="needs_approval" && !selectionSent;
+        case "response": return session.status==="idle" && !session.turnCompleted && this.presentation.canShowResponseAttention(session.id);
+        case "done": return session.status==="done" || session.status==="idle" && session.turnCompleted===true;
+        case "failed": return session.status==="failed";
+        case "budget": return session.taskBudget?.warning===true || session.taskBudget?.paused===true;
+        case "loop": return session.exitCode===null && this.loopWarningActive(session.id);
+      }
+    }) ?? null;
   }
   observe(channel: string, payload: unknown): void {
     if (this.config.enabled) this.presentation.observe(channel, payload);
@@ -1046,7 +1068,7 @@ export class EvenG2Controller {
       this.access.assertCurrent(grant);
       const session = this.terminals.listMetadata().find((s) => s.id === id);
       if (!session) return this.json(res, 404, { error: "not-found" });
-      return this.json(res, 200, { session: safeSession(session), ...view });
+      return this.json(res, 200, { session: {...safeSession(session),title:this.terminals.redactSecrets(session.title)}, ...view,attention:this.currentAttention(session,view.revision.startsWith("selected-")) });
     }
     if (req.method !== "POST")
       return this.json(res, 404, { error: "not-found" });
@@ -1197,7 +1219,7 @@ export class EvenG2Controller {
               )
             )
               throw new Error("terminal-closed");
-            this.presentation.pending(id);
+            this.presentation.submitted(id);
             return true;
           },
         ),

@@ -64,14 +64,16 @@ export function baseEnvironment(extra = {}) {
 }
 
 /** Runs one short-lived helper to its end: stdin written whole, stdout collected. */
-export function runOnce(command, { env, input = "" }) {
+export function runOnce(command, { env, input = "", shell = false }) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn(command[0], command.slice(1), { env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command[0], command.slice(1), { env, shell, stdio: ["pipe", "pipe", "pipe"] });
     const out = [];
     child.stdout.on("data", (chunk) => out.push(chunk));
-    child.stderr.on("data", () => undefined);
-    child.on("close", (code, signal) => resolve({ code, signal, stdout: Buffer.concat(out).toString("utf8"), ms: Date.now() - started }));
+    const err = [];
+    child.stderr.on("data", (chunk) => err.push(chunk));
+    child.on("error", (error) => err.push(Buffer.from(error.message)));
+    child.on("close", (code, signal) => resolve({ code, signal, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), ms: Date.now() - started }));
     child.stdin.on("error", () => undefined);
     child.stdin.end(input);
   });

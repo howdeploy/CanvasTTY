@@ -46,7 +46,15 @@ const DENY = [
   `strings ${q(join(userData, "provider-secrets.bin"))}`,
   `sqlite3 ${q(join(userData, "account-homes", "acct-1", "state.db"))} .dump`,
   `cat ${q(join(userData, "github-oauth.json"))}`,
+  `cat ${q(join(userData,"checkpoints.json"))}`,
+  `cat ${q(join(userData,"checkpoint-objects","project","pack-fixture.pack"))}`,
+  `cat ${q(join(userData,"flow-approvals.json"))}`,
+  `echo '[]' > ${q(join(userData,"flow-approvals.json"))}`,
+  `cat ${q(join(userData,"task-budgets.json"))}`,
+  `cat ${q(join(userData,"usage-prices.json"))}`,
+  `cat ${q(join(userData,"session-timeline","index.json"))}`,
   `cat ${q(join(userData, "lifecycle", "runtime", "connection.json"))}`,
+  `ls ${q(join(userData, "plugin-data"))}`,
   `ls ${q(control)}`,
   `cd ${q(control)} && cat token-0123abcd`,
   `cd ${q(userData)} && cat agent-control/token-0123abcd`,
@@ -62,7 +70,9 @@ const DENY = [
   // Interpreter one-liners and heredocs.
   `python3 -c "print(open('${token}').read())"`,
   "python3 -c \"import os;p=os.path.join(os.path.expanduser('~'),'Library','Application Support','canvastty','agent-control');print(os.listdir(p))\"",
+  "node -e \"const p=process.env.HOME+'/Library/Application Support/canvastty'+'/plugin-data';require('fs').readdirSync(p)\"",
   "node -e \"console.log(require('fs').readFileSync(process.env.HOME + '/Library/Application Support/canvastty/plugin-secrets/x', 'utf8'))\"",
+  "node -e \"console.log(require('fs').readFileSync(process.env.HOME + '/Library/Application Support/canvastty' + '/session-timeline/index.json', 'utf8'))\"",
   `python3 - <<'EOF'\nprint(open("${token}").read())\nEOF`,
   // The control and runtime sockets.
   `curl --unix-socket ${sock} http://localhost/`,
@@ -84,7 +94,7 @@ const ALLOW = [
   "grep -rn \"plugin-secrets\" src",
   "git commit -m \"fix agent-control token file mode\"",
   `cat ${q(join(userData, "settings.json"))}`,
-  `ls ${q(userData)}`,
+  `cat ${q(join(userData, "settings.json"))}`,
   "node \"$CANVASTTY_CONTROL_CLI\" list",
   `node /Applications/CanvasTTY.app/Contents/Resources/agent-control/canvastty-control.mjs --connection ${q(join(control, "connection.json"))} list`,
   "curl --unix-socket /var/run/docker.sock http://localhost/version",
@@ -104,6 +114,37 @@ test("CanvasTTY's own tokens, secret stores and sockets are refused for every re
 
 test("look-alikes in the project, the app's other files and other sockets stay allowed", () => {
   for (const command of ALLOW) assert.equal(rule(command), null, command);
+});
+
+test("choosing a parent folder as the project cannot grant its nested private app stores", () => {
+  for (const path of [join(userData,"flow-approvals.json"), join(userData,"checkpoint-objects","pack.pack"),token]) {
+    assert.equal(denyRule(analyzeAction(shell(`cat ${q(path)}`), home, {home,privateData})),"app-private",path);
+  }
+  assert.equal(denyRule(analyzeAction(shell(`cat ${q(join(home,"ordinary.txt"))}`), home, {home,privateData})),null);
+});
+
+test("project globs remain usable inside a granted plugin worktree but cannot enumerate its sibling", () => {
+  const worktrees = join(userData, "plugin-data", "canvastty-environments", "worktrees");
+  const actor = join(worktrees, "actor");
+  const sibling = join(worktrees, "sibling");
+  for (const root of [actor, sibling]) mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(actor, "src", "own.ts"), "export const own = true;\n");
+  writeFileSync(join(sibling, "src", "sibling.ts"), "export const sibling = true;\n");
+  const ownRule = command => denyRule(analyzeAction(shell(command), actor, { home, privateData }));
+  assert.equal(ownRule("cat src/*.ts"), null, "ordinary source globs within the exact granted worktree remain usable");
+  assert.equal(ownRule("rg own src/*.ts"), null, "recursive source search within the worktree remains usable");
+  assert.equal(ownRule("cat ../sibling/src/*.ts"), "app-private", "a glob rooted at a sibling worktree stays private");
+});
+
+test("a worktree glob cannot bypass a private path nested below the granted project", () => {
+  const actor = join(userData, "plugin-data", "canvastty-environments", "worktrees", "actor");
+  const privateFolder = join(actor, ".canvas-private");
+  mkdirSync(privateFolder, { recursive: true });
+  writeFileSync(join(privateFolder, "token-hidden"), "fixture\n");
+  const privateWithDescendant = { ...privateData, paths: [...privateData.paths, privateFolder] };
+  const ownRule = command => denyRule(analyzeAction(shell(command), actor, { home, privateData: privateWithDescendant }));
+  assert.equal(ownRule("cat src/*.ts"), null, "ordinary worktree globs stay usable");
+  assert.equal(ownRule("cat .canvas-private/token-*"), "app-private", "the private descendant still blocks matching globs");
 });
 
 test("file tools that name private data are refused; the agent's own account home is its own", () => {

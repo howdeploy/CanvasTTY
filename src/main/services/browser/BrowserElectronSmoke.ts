@@ -503,6 +503,7 @@ async function assertOwnerWheelFreezesCrossingBrowser(service: BrowserService): 
     });
     void 0;
   `);
+  let wheelPulse: ReturnType<typeof setInterval> | undefined;
   try {
     const initialViewport = {
       x: 500,
@@ -517,13 +518,17 @@ async function assertOwnerWheelFreezesCrossingBrowser(service: BrowserService): 
       "globalThis.__canvasttyFreezeEvents?.some((event) => event.dataUrlLength > 0) === true"
     ));
 
-    owner.webContents.sendInputEvent({
+    const sendWheel = (): void => owner.webContents.sendInputEvent({
       type: "mouseWheel",
       x: 400,
       y: 300,
       deltaX: 8,
       deltaY: 12
     });
+    // Renderer round trips can exceed the idle boundary. Keep a real wheel stream active while
+    // checking surface transitions, then stop it to test the normal idle end separately.
+    sendWheel();
+    wheelPulse = setInterval(sendWheel, Math.max(1, Math.floor(BROWSER_CANVAS_WHEEL_IDLE_MS / 5)));
     await new Promise((resolve) => setTimeout(resolve, 30));
     service.setViewport({ ...initialViewport, x: 403 });
     await waitUntil(async () => owner.webContents.executeJavaScript(
@@ -543,6 +548,8 @@ async function assertOwnerWheelFreezesCrossingBrowser(service: BrowserService): 
     if (endedDuringPlaceholder) {
       throw new Error("Native/placeholder transition ended the active canvas wheel sequence.");
     }
+    clearInterval(wheelPulse);
+    wheelPulse = undefined;
     await waitUntil(async () => owner.webContents.executeJavaScript(`
       (() => {
         const events = globalThis.__canvasttyFreezeEvents ?? [];
@@ -551,6 +558,7 @@ async function assertOwnerWheelFreezesCrossingBrowser(service: BrowserService): 
       })()
     `));
   } finally {
+    clearInterval(wheelPulse);
     service.setViewport({ x: 0, y: 0, width: 820, height: 620, surface: "native", canvasScale: 1 });
     await owner.webContents.executeJavaScript(`
       globalThis.__canvasttyFreezeOff?.();

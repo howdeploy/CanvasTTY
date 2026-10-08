@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as electron from "electron";
 import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
+import type { GithubDeviceFlowState } from "../../shared/contracts";
 
 /** GitHub OAuth Device Flow for the plugin showcase. */
 
@@ -10,6 +11,7 @@ export interface GithubAuthStatus {
   authorized: boolean;
   login: string | null;
   tokenExpiresAt: number | null;
+  deviceFlowState: GithubDeviceFlowState;
 }
 
 interface StoredTokens {
@@ -60,6 +62,7 @@ export class GithubAuthService {
   private readonly pollTimeoutMs: number;
   private generation = 0;
   private deviceFlow: { generation: number; controller: AbortController } | null = null;
+  private deviceFlowState: GithubDeviceFlowState = "idle";
   private storeWrite = Promise.resolve();
 
   constructor(userDataPath: string, clientId?: string, options: GithubAuthServiceOptions = {}) {
@@ -126,13 +129,20 @@ export class GithubAuthService {
 
   async status(): Promise<GithubAuthStatus> {
     if (!this.tokens) {
-      return { configured: this.clientConfigured, authorized: false, login: null, tokenExpiresAt: null };
+      return {
+        configured: this.clientConfigured,
+        authorized: false,
+        login: null,
+        tokenExpiresAt: null,
+        deviceFlowState: this.deviceFlowState
+      };
     }
     return {
       configured: this.clientConfigured,
       authorized: true,
       login: this.tokens.login,
-      tokenExpiresAt: this.tokens.expiresAt
+      tokenExpiresAt: this.tokens.expiresAt,
+      deviceFlowState: this.deviceFlowState
     };
   }
 
@@ -150,6 +160,7 @@ export class GithubAuthService {
     const generation = ++this.generation;
     const controller = new AbortController();
     this.deviceFlow = { generation, controller };
+    this.deviceFlowState = "pending";
 
     try {
       const body = new URLSearchParams({ client_id: this.clientId });
@@ -175,8 +186,11 @@ export class GithubAuthService {
       const flowLifetimeMs = Math.min(expiresIn * 1000, this.pollTimeoutMs);
 
       void this.pollDeviceCode(deviceCode, interval, flowLifetimeMs, generation, controller.signal)
-        .catch((error) => {
-          if (!isAbortError(error)) console.warn("CanvasTTY GitHub OAuth device poll failed.", error);
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            this.finishDeviceFlow(generation, "failed");
+            console.warn("CanvasTTY GitHub OAuth device poll failed.");
+          }
         })
         .finally(() => {
           if (this.deviceFlow?.generation === generation) this.deviceFlow = null;
@@ -184,24 +198,36 @@ export class GithubAuthService {
 
       return { userCode, verificationUri, interval, expiresAt: this.now() + flowLifetimeMs };
     } catch (error) {
-      if (this.deviceFlow?.generation === generation) this.deviceFlow = null;
+      if (this.deviceFlow?.generation === generation) {
+        this.deviceFlow = null;
+        this.deviceFlowState = "failed";
+      }
       throw error;
     }
   }
 
+  cancelDeviceFlow(): void {
+    const flow = this.deviceFlow;
+    if (!flow || this.deviceFlowState !== "pending") return;
+    // Invalidate the generation before aborting so a fetcher that ignores its
+    // AbortSignal cannot apply a late denial or token response to this flow.
+    this.generation += 1;
+    this.deviceFlow = null;
+    this.deviceFlowState = "cancelled";
+    flow.controller.abort();
+  }
+
   async signOut(): Promise<void> {
     this.generation += 1;
-    this.cancelDeviceFlow();
+    const flow = this.deviceFlow;
+    this.deviceFlow = null;
+    if (this.deviceFlowState === "pending") this.deviceFlowState = "cancelled";
+    flow?.controller.abort();
     this.tokens = null;
     this.refreshPromise = null;
     await this.enqueueStoreWrite(async () => {
       await rm(this.storePath, { force: true });
     });
-  }
-
-  private cancelDeviceFlow(): void {
-    this.deviceFlow?.controller.abort();
-    this.deviceFlow = null;
   }
 
   private isCurrentFlow(generation: number, signal: AbortSignal): boolean {
@@ -220,6 +246,10 @@ export class GithubAuthService {
     while (this.now() - started < lifetimeMs) {
       await this.wait(interval * 1000, signal);
       if (!this.isCurrentFlow(generation, signal)) return;
+      if (this.now() - started >= lifetimeMs) {
+        this.finishDeviceFlow(generation, "expired");
+        return;
+      }
 
       const body = new URLSearchParams({
         client_id: this.clientId,
@@ -246,9 +276,10 @@ export class GithubAuthService {
         interval = backedOff(interval);
         continue;
       }
+      if (!this.isCurrentFlow(generation, signal)) return;
       if (!isRecord(payload)) {
-        interval = backedOff(interval);
-        continue;
+        this.finishDeviceFlow(generation, "failed");
+        return;
       }
       if (payload.error === "authorization_pending" || payload.error === "slow_down") {
         if (payload.error === "slow_down") {
@@ -258,10 +289,21 @@ export class GithubAuthService {
         }
         continue;
       }
-      if (payload.error === "access_denied" || payload.error === "expired_token") return;
+      if (payload.error === "access_denied") {
+        this.finishDeviceFlow(generation, "denied");
+        return;
+      }
+      if (payload.error === "expired_token") {
+        this.finishDeviceFlow(generation, "expired");
+        return;
+      }
       if (typeof payload.access_token === "string") {
         const login = await this.fetchLogin(payload.access_token, signal);
-        if (!login || !this.isCurrentFlow(generation, signal)) return;
+        if (!this.isCurrentFlow(generation, signal)) return;
+        if (!login) {
+          this.finishDeviceFlow(generation, "failed");
+          return;
+        }
         const expiresIn = typeof payload.expires_in === "number" && payload.expires_in > 0
           ? payload.expires_in
           : null;
@@ -272,11 +314,19 @@ export class GithubAuthService {
           login
         };
         this.tokens = next;
+        this.deviceFlowState = "idle";
         await this.persist(next, generation);
         return;
       }
+      this.finishDeviceFlow(generation, "failed");
       return;
     }
+    this.finishDeviceFlow(generation, "expired");
+  }
+
+  private finishDeviceFlow(generation: number, state: GithubDeviceFlowState): void {
+    if (this.deviceFlow?.generation !== generation || this.deviceFlowState !== "pending") return;
+    this.deviceFlowState = state;
   }
 
   private async refreshAccessToken(expected: StoredTokens, generation: number): Promise<string | null> {

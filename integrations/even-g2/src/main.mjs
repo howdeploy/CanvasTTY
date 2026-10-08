@@ -1017,6 +1017,17 @@ async function event(e) {
     paint();
   }
 }
+let attentionNotice = "";
+let attentionId = "";
+function showAttention(data) {
+  if(data.attention && data.attention.id!==attentionId) {
+    attentionId=data.attention.id;
+    attentionNotice=`${data.attention.title}: ${data.attention.kind}`;
+    notice=attentionNotice;
+  } else if(!data.attention && notice===attentionNotice) {
+    notice="";attentionNotice="";attentionId="";
+  }
+}
 async function poll() {
   if (!alive) return;
   try {
@@ -1033,6 +1044,7 @@ async function poll() {
           "/g2/api/terminal?id=" + encodeURIComponent(selected),
         );
         model.terminal(data);
+        showAttention(data);
       }
       if (native) {
         const state = {

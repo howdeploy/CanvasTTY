@@ -137,10 +137,19 @@ async function scenarios(win) {
   const ids = [];
   for (let i = 0; i < terminals; i++) {
     const position = { x: 80 + (i % 4) * 760, y: 1400 + Math.floor(i / 4) * 520 };
-    const created = await js(`window.canvasTTY.terminal.create({ provider: "terminal", profile: "normal", cwd: ${JSON.stringify(env.BENCH_WORK)}, position: ${JSON.stringify(position)} }).then((s) => s.id)`);
+    const taskRelation = i === 1 && ids[0]
+      ? `, role: "subagent", parentSessionId: ${JSON.stringify(ids[0])}` : "";
+    const created = await js(`window.canvasTTY.terminal.create({ provider: "terminal", profile: "normal", cwd: ${JSON.stringify(env.BENCH_WORK)}, position: ${JSON.stringify(position)}${taskRelation} }).then((s) => s.id)`);
     ids.push(created);
   }
   await wait(panOnly ? 3000 : 8000);
+  const edgeDeadline = Date.now() + 15_000;
+  let taskEdgeCount = 0;
+  while (terminals >= 2 && taskEdgeCount === 0 && Date.now() < edgeDeadline) {
+    taskEdgeCount = Number(await js("document.querySelectorAll('.workspace__task-edge').length"));
+    if (taskEdgeCount === 0) await wait(50);
+  }
+  if (terminals >= 2 && taskEdgeCount === 0) throw new Error("the parent-child task edge did not render");
   if (!panOnly) {
     report.scenarios.terminals = await sample(10);
 
@@ -176,6 +185,9 @@ async function scenarios(win) {
     commits: countsAfter.commits - countsBefore.commits,
     componentRendersPerMove: Math.round((countsAfter.rendered - countsBefore.rendered) / PAN_MOVES * 10) / 10,
     terminalCardRendersPerMove: Math.round((countsAfter.terminalCards - countsBefore.terminalCards) / PAN_MOVES * 10) / 10,
+    taskEdgeCount,
+    taskEdgeHostUpdatesDuringPan: countsAfter.taskEdgeHosts - countsBefore.taskEdgeHosts,
+    taskEdgeHostUpdatesPerMove: Math.round((countsAfter.taskEdgeHosts - countsBefore.taskEdgeHosts) / PAN_MOVES * 100) / 100,
     rendererCpu: pan.cpu.renderer,
     // Renderer main-thread milliseconds per move: JavaScript, style, layout, all tasks.
     rendererMsPerMove: perMove(timesAfter, timesBefore, PAN_MOVES),

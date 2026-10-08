@@ -42,7 +42,8 @@ const request = (toolName, toolInput, extra = {}) => ({
 });
 const live = () => new AbortController().signal;
 
-function hooks({ protect = true, services = [], answers = {}, calls = [], timeoutMs = 200 } = {}) {
+function hooks({ protect = true, services = [], answers = {}, calls = [], timeoutMs = 200, provider = "claude",
+  humanApprovalEnabled, resolveHumanAsk } = {}) {
   return new DecisionHooks({
     baseProtection: () => protect,
     services: () => services,
@@ -51,7 +52,9 @@ function hooks({ protect = true, services = [], answers = {}, calls = [], timeou
       const reply = answers[pluginId];
       return typeof reply === "function" ? reply(params) : reply;
     },
-    session: (id) => id === "s1" ? { provider: "claude", role: "agent", cwd: project, configDirs: [], profile: "auto" }
+    humanApprovalEnabled,
+    resolveHumanAsk,
+    session: (id) => id === "s1" ? { provider, role: "agent", cwd: project, configDirs: [], profile: "auto" }
       : id === "codex" ? { provider: "codex", role: "subagent", cwd: project, configDirs: [], profile: "auto" } : null,
     home,
     timeoutMs
@@ -388,4 +391,90 @@ test("an ask for an agent that cannot ask is a deny with the reason; the service
   // A service that runs out of time is an ask too: for Codex that is a deny, never a run.
   const slow = hooks({ protect: false, services: [service("p.slow")], answers: { "p.slow": () => new Promise(() => {}) }, timeoutMs: 20 });
   assert.equal((await slow.decide("codex", request("Bash", { command: "ls" }), live())).behavior, "deny");
+});
+
+test("trusted human approval resolves asks only, with explicit answers and the provider fallback on failure", async () => {
+  const asking = [service("p.ask")];
+  const answers = { "p.ask": { verdict: "ask", reason: "review this command" } };
+  const humanCalls = [];
+  const enabled = () => true;
+  const allow = hooks({
+    protect: false, provider: "opencode", services: asking, answers, humanApprovalEnabled: enabled,
+    resolveHumanAsk: async (...args) => { humanCalls.push(args); return "allow"; }
+  });
+  const toolRequest = request("Bash", { command: "ls" });
+  assert.equal(allow.budgetMs("opencode"), 60_000, "the launch budget reserves the human wait");
+  assert.deepEqual(await allow.decide("s1", toolRequest, live()), { behavior: "allow", message: "Approved by the person." });
+  assert.equal(humanCalls.length, 1);
+  assert.equal(humanCalls[0][0], "s1");
+  assert.equal(humanCalls[0][1], toolRequest);
+  assert.equal(humanCalls[0][2].behavior, "ask");
+  assert.ok(humanCalls[0][3] instanceof AbortSignal);
+
+  const deny = hooks({
+    protect: false, provider: "qwen", services: asking, answers, humanApprovalEnabled: enabled,
+    resolveHumanAsk: async () => "deny"
+  });
+  assert.deepEqual(await deny.decide("s1", toolRequest, live()), { behavior: "deny", message: "Denied by the person." });
+
+  let shouldNotAsk = 0;
+  const pluginDeny = hooks({
+    protect: false, provider: "opencode", services: asking, answers: { "p.ask": { verdict: "deny" } },
+    humanApprovalEnabled: enabled, resolveHumanAsk: async () => { shouldNotAsk += 1; return "allow"; }
+  });
+  assert.equal((await pluginDeny.decide("s1", toolRequest, live())).behavior, "deny");
+  const protectedDeny = hooks({
+    services: asking, answers, humanApprovalEnabled: enabled,
+    resolveHumanAsk: async () => { shouldNotAsk += 1; return "allow"; }
+  });
+  assert.equal((await protectedDeny.decide("s1", request("Write", { file_path: join(home, "Downloads", "x") }), live())).behavior, "deny");
+  assert.equal(shouldNotAsk, 0, "plugin and base-protection denies remain final");
+
+  const disabled = hooks({
+    protect: false, provider: "opencode", services: asking, answers, humanApprovalEnabled: () => false,
+    resolveHumanAsk: async () => { shouldNotAsk += 1; return "allow"; }
+  });
+  assert.equal((await disabled.decide("s1", toolRequest, live())).behavior, "deny", "disabled host preserves unsupported-provider fallback");
+  assert.equal(disabled.budgetMs("opencode"), 3_000);
+  assert.equal(shouldNotAsk, 0);
+
+  for (const resolveHumanAsk of [async () => null, async () => { throw new Error("unavailable"); }]) {
+    const failed = hooks({
+      protect: false, provider: "opencode", services: asking, answers, humanApprovalEnabled: enabled, resolveHumanAsk
+    });
+    assert.equal((await failed.decide("s1", toolRequest, live())).behavior, "deny", "null and failure do not allow");
+  }
+  const claudeFallback = hooks({
+    protect: false, services: asking, answers, humanApprovalEnabled: enabled, resolveHumanAsk: async () => null
+  });
+  assert.equal((await claudeFallback.decide("s1", toolRequest, live())).behavior, "ask", "Claude retains its native prompt");
+
+  const controller = new AbortController();
+  let resolverStarted;
+  const started = new Promise((resolve) => { resolverStarted = resolve; });
+  const aborted = hooks({
+    protect: false, provider: "opencode", services: asking, answers, humanApprovalEnabled: enabled,
+    resolveHumanAsk: async (_id, _request, _decision, signal) => {
+      resolverStarted();
+      return new Promise((resolve) => signal.addEventListener("abort", () => resolve("allow"), { once: true }));
+    }
+  });
+  const pending = aborted.decide("s1", toolRequest, controller.signal);
+  await started;
+  controller.abort();
+  assert.equal((await pending).behavior, "deny", "an aborted resolver cannot approve; unsupported CLI fallback still blocks");
+});
+
+
+test("review context comes from the host for each plugin, never from agent tool input", async () => {
+  const calls=[];
+  const h=new DecisionHooks({baseProtection:()=>false,services:()=>[service("assistant"),service("other")],
+    session:()=>({provider:"opencode",role:"subagent",cwd:project,configDirs:[]}),
+    executionProtection:()=>({state:"unverified"}),
+    launchOptions:(_id,plugin)=>plugin==="assistant"?{task:"Write src/format.js",dataClass:"D3"}:{},
+    call:async(plugin,_service,_method,params)=>{calls.push({plugin,params});return null;}});
+  await h.decide("child",request("Write",{file_path:"src/format.js",content:"x",launchOptions:{task:"forged"},executionProtection:{state:"applied",layer:"seatbelt"}}),live());
+  assert.deepEqual(calls[0].params.executionProtection,{state:"unverified"});
+  assert.deepEqual(calls[0].params.launchOptions,{task:"Write src/format.js",dataClass:"D3"});
+  assert.deepEqual(calls[1].params.launchOptions,{});
 });

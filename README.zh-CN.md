@@ -33,6 +33,8 @@ https://github.com/user-attachments/assets/444612f7-cda1-4fd6-8514-2f4fac9cc520
 
 以 **Orchestrator** 角色启动的会话会获得 `canvastty_agents` 工具：`list_providers`（已安装的智能体、登录状态、模型、effort、profile）、带可选 `model`、`effort` 与 `profile` 的 `spawn_agent`、`wait_for_agent`（最长 600 秒），以及 `get_agent_result`——它以 `answer` 返回 Codex 或 OpenCode 子智能体的最终回复（最多 4,096 个字符，已脱敏）。详见[智能体编排与隔离](docs/agent-orchestration.md)（英文）和[防护层](docs/installing-and-security.zh-CN.md#智能体防护层)。
 
+除了单个子智能体，编排者还可以遵循内置流程或经用户批准的项目流程，与子智能体共享任务看板（`list_tasks`、`claim_task`、`update_task`、`complete_task`），请求审查者或独立的 git worktree，重试失败的子智能体（`retry_agent`），向用户提问（`ask_user`），并在用户批准后使用提供方密钥发送类型化 API 请求而看不到密钥本身（`request_secret`）。用户可为每个任务树设置时间、token 和费用预算，为每个项目设置网络策略；每张卡片的详情中有时间线、用量、报告和 git 检查点。
+
 ## Windows 终端与服务商 CLI
 
 在 Windows 上，Terminal 启动器会以干净的 `-NoLogo -NoProfile` 会话打开系统自带的 Windows PowerShell；如果不可用，则回退到 `pwsh` 或 `cmd.exe`。在交给 `node-pty`/ConPTY 之前，CanvasTTY 会先从用户 `PATH`、再从标准的用户级 CLI 目录中，为 Codex、Claude、Kimi、OpenCode、Hermes 与 Grok Build 解析出具体的 `.exe`、`.com`、`.cmd` 或 `.bat` 启动文件。

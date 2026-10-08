@@ -140,3 +140,32 @@ test("a shared Hermes or Kimi configuration is never handed to a launch with the
     bridge.setEnabled(true);
   }
 });
+
+test("strict network policies issue no host browser capability but may retain orchestration", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "canvastty-strict-network-browser-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const gateway = fakeGateway();
+  const bridge = new AgentBrowserBridge(gateway, {
+    ...HELPER_FORMS.native, providerClis, runtimeDirectory: join(root, "runtime")
+  });
+
+  for (const networkMode of ["allowed-domains", "offline"]) {
+    const launch = bridge.prepareLaunch({
+      terminalSessionId: `strict-${networkMode}`, provider: "codex", cwd: root,
+      networkMode, includeOrchestration: true, orchestrationTools: ["list_agents"]
+    });
+    assert.ok(launch, `${networkMode}: orchestration remains available`);
+    assert.deepEqual(await serversOf("codex", launch, { hermes: "", kimi: "" }), ["canvastty_agents"]);
+    assert.equal(gateway.registered.includes(`strict-${networkMode}`), false, `${networkMode}: no browser gateway grant`);
+    assert.equal(AGENT_BROWSER_ENV.address in launch.environment, false, `${networkMode}: no browser address`);
+    assert.equal(AGENT_BROWSER_ENV.capabilityToken in launch.environment, false, `${networkMode}: no browser token`);
+    assert.equal(JSON.stringify(launch).includes("browser-secret"), false, `${networkMode}: no browser secret`);
+    launch.cleanup();
+
+    assert.equal(bridge.prepareLaunch({
+      terminalSessionId: `strict-empty-${networkMode}`, provider: "codex", cwd: root, networkMode
+    }), null, `${networkMode}: no browser-only launch`);
+  }
+  assert.deepEqual(gateway.registered, []);
+  assert.deepEqual(gateway.revoked, []);
+});

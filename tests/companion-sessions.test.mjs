@@ -69,6 +69,16 @@ function fixture() {
   });
   return { access, writes, closed, host, service, request };
 }
+test("phone summaries never read terminal buffers and revocation still wins",async()=>{
+  const f=fixture();
+  f.host.output=()=>{throw new Error("private output must never be read");};
+  f.host.read=async()=>{throw new Error("private screen must never be read");};
+  const summary=await f.service.dispatch("phone",f.request({type:"session.read",sessionId:"one"}),{summaryOnly:true});
+  assert.match(summary.body,/Status: idle/);assert.doesNotMatch(summary.body,/PRIVATE BUFFER|private\/path/);
+  const output=await f.service.dispatch("phone",f.request({type:"session.output",sessionId:"one",cursor:null}),{summaryOnly:true});
+  assert.equal(output.hasMore,false);assert.match(output.data,/Status: idle/);
+  f.access.revoke("phone");await assert.rejects(f.service.dispatch("phone",f.request({type:"session.read",sessionId:"one"}),{summaryOnly:true}),/not-paired/);
+});
 
 test("only shared sessions and public metadata leave the host", async () => {
   const f = fixture();
@@ -205,4 +215,23 @@ test("every hotbar provider is created with scoped access; revoking creation blo
     f.access.share({ ...f.access.get("phone"), allowCreate: false });
     await assert.rejects(f.service.dispatch("phone", f.request({ type: "session.create", provider })), { code: "not-permitted" });
   }
+});
+
+
+test("submission acknowledgments follow structured successful actions exactly once",async()=>{
+ const f=fixture(),acknowledged=[];f.host.inputSubmitted=id=>acknowledged.push(id);
+ for(const key of ['up','down','left','right','backspace','escape','ctrl-c','enter'])await f.service.dispatch('phone',f.request({type:'session.key',sessionId:'one',key}));
+ await f.service.dispatch('phone',f.request({type:'session.interrupt',sessionId:'one'}));assert.deepEqual(acknowledged,[]);
+ const request=f.request({type:'session.input',sessionId:'one',text:'answer'});
+ await f.service.dispatch('phone',request);await f.service.dispatch('phone',request);assert.deepEqual(acknowledged,['one']);
+ f.host.input=()=>false;await assert.rejects(f.service.dispatch('phone',f.request({type:'session.input',sessionId:'one',text:'not sent'})),{code:'unavailable'});
+ assert.deepEqual(acknowledged,['one']);
+});
+test('phone overviews preserve only three safe attention records for granted sessions, including summary-only mode',async()=>{
+ const f=fixture();f.host.overview=()=>f.host.list().map(row=>({...row,startedAt:1,exitCode:null,revision:1,attention:row.id==='private'?[{id:'foreign',kind:'done',at:2}]:[
+  {id:'old',kind:'response',at:1},{id:'one',kind:'approval',at:2,body:'PRIVATE BODY',screen:'PRIVATE SCREEN'},
+  {id:'two',kind:'done',at:3,title:'PRIVATE TITLE'},{id:'three',kind:'budget',at:4,token:'PRIVATE TOKEN'}]}));
+ for(const summaryOnly of [false,true]){const result=await f.service.dispatch('phone',f.request({type:'sessions.overview'}),{summaryOnly});assert.deepEqual(result.sessions[0].attention,[{id:'one',kind:'approval',at:2},{id:'two',kind:'done',at:3},{id:'three',kind:'budget',at:4}]);assert.equal(result.sessions.length,1);assert.doesNotMatch(JSON.stringify(result),/PRIVATE|foreign|private\/path/);}
+ f.host.overview=()=>[{...f.host.list()[0],startedAt:1,exitCode:null,revision:1,attention:[{id:'bad\n',kind:'done',at:1},{id:'good',kind:'unknown',at:2},{id:'valid',kind:'done',at:NaN}]}];
+ assert.deepEqual((await f.service.dispatch('phone',f.request({type:'sessions.overview'}))).sessions[0].attention,[]);
 });

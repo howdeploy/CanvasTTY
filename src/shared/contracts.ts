@@ -396,6 +396,7 @@ export interface CameraState extends Point {
 }
 
 export interface AppSettings {
+  executionPolicy?: import("./executionPolicy.ts").ExecutionPolicy;
   locale: LocaleId;
   sessionRestoreMode: SessionRestoreMode;
   persistCanvasRegions: boolean;
@@ -411,6 +412,8 @@ export interface AppSettings {
   radialLauncherEnabled: boolean;
   radialLauncherItems: RadialLauncherItemId[];
   agentLifecycleHooksEnabled: boolean;
+  /** F06/F08/F28/F30 integrations: opt-in, not verified live. */
+  experimentalBacklogEnabled: boolean;
   /** Base protection: deny-only hard rules for agents' tool calls (writes outside the folder, sudo, …). */
   baseProtectionEnabled: boolean;
   uiScale: number;
@@ -508,9 +511,14 @@ export interface SessionIsolation {
   layer?: "seatbelt" | "bubblewrap";
   /** Why it is not on, or what changed because of that (e.g. auto ran as normal). */
   reason?: string;
+  /** Network access enforced for this agent's process tree. */
+  network?: { mode: "open" | "allowed-domains" | "offline"; domains: string[] };
 }
 
 export interface CreateSessionRequest {
+  executionTargetId?: string;
+  executionGoal?: import("./executionStrategy.ts").ExecutionGoal;
+  executionTask?: string;
   provider: ProviderId;
   cwd: string;
   profile: LaunchProfileId;
@@ -557,6 +565,19 @@ export type AgentChatHistoryResumeResult =
   | { error: { code: "invalid-id" | "cli-unavailable" | "conversation-missing" | "cwd-unknown" | "cwd-unavailable" | "resume-failed"; message: string } };
 
 export interface SessionMetadata {
+  executionGoal?: import("./executionStrategy.ts").ExecutionGoal;
+  executionTask?: string;
+  executionStrategy?: import("./executionStrategy.ts").ExecutionStrategy;
+  /** Observed provider counters; missing fields are unknown, never inferred from limits. */
+  usage?: import("./backlog.ts").UsageSummary;
+  reviewUsage?: import("./backlog.ts").UsageSummary;
+  sessionReport?: {readyAt:number};
+  /** Host-owned logical task identity, retained across an approved account handoff. */
+  taskScope?: {id:string;cwd:string;startedAt:number};
+  modelRoute?: {source:"explicit"|"router"|"default";candidateId?:string;reason:string;escalated?:boolean};
+  reviewRequested?: boolean;
+  /** `processesKeepRunning`: the pause blocks input and launches only, because the platform cannot suspend processes. */
+  taskBudget?: {tokens:number|null;costUsd:number|null;durationMs:number|null;paused:boolean;warning:boolean;processesKeepRunning?:boolean};
   id: string;
   revision: number;
   provider: ProviderId;
@@ -643,6 +664,14 @@ export interface TerminalDataEvent {
   audience?: TerminalDataAudience;
 }
 
+export interface TerminalOutputSearchResult {
+  matches:Array<{sessionId:string;line:number;text:string;offset:number}>;
+  prunedSessionIds:string[];
+}
+export interface TerminalOutputContext {
+  text:string;firstLine:number;targetLine:number;
+  historyTruncated:boolean;historyBaseOffset:number;
+}
 export interface TerminalBufferSnapshot {
   buffer: string;
   outputOffset: number;
@@ -672,6 +701,7 @@ export const PLUGIN_API_VERSION = 2;
 export type PluginApiVersion = 1 | typeof PLUGIN_API_VERSION;
 
 export type PluginPermission =
+  | "model:route"
   | "storage"
   | "secrets"
   | "sessions:read"
@@ -754,6 +784,8 @@ export interface PluginAgentHook {
  * separate supervised process after the user trusts the plugin's native code (apiVersion 2).
  */
 export interface PluginService {
+  /** Selects only an offered model/effort; never permissions or folders (`model:route`). */
+  modelRouter?: boolean;
   id: string;
   title: string;
   description?: string;
@@ -832,10 +864,45 @@ export interface PluginCardDecorations {
   actions: PluginCardActionEntry[];
 }
 
-/** What a card action answered, shown as a toast on the card. */
+export interface PluginReviewTextPage {
+  label?: string;
+  text: string;
+  startLine: number;
+  totalLines: number;
+  hasMore: boolean;
+}
+
+export interface PluginChangeReviewFile {
+  path: string;
+  status?: string;
+  diff: string;
+  page?: number;
+  hasMore?: boolean;
+  truncated?: boolean;
+  conflict?: { current: PluginReviewTextPage; agent: PluginReviewTextPage };
+}
+
+export interface PluginChangeReviewGroup {
+  sessionId: string;
+  title: string;
+  files: PluginChangeReviewFile[];
+  error?: string;
+}
+
+/** Plain-text review supplied by an existing plugin; actions still require a human click. */
+export interface PluginChangeReview {
+  title: string;
+  groups: PluginChangeReviewGroup[];
+  acceptActionId?: string;
+  rejectActionId?: string;
+  nextOffset?: number;
+}
+
+/** What a card action answered, shown as a toast or a structured review on the card. */
 export interface PluginCardActionResult {
   message?: string;
   tone: PluginCardTone;
+  review?: PluginChangeReview;
 }
 
 export type PluginDecisionEvent = "pre-tool";
@@ -851,6 +918,8 @@ export interface PluginServiceDecide {
 
 /** One place a session can run (a worktree, a container, a remote host), provided by a plugin service. */
 export interface PluginEnvironmentKind {
+  /** Trusted manifest declaration; omitted means unknown, not local. */
+  executionLocation?: "local" | "remote";
   kind: string;
   label: string;
   description?: string;
@@ -1027,7 +1096,11 @@ export interface GithubAuthStatus {
   authorized: boolean;
   login: string | null;
   tokenExpiresAt: number | null;
+  /** Optional for compatibility with older hosts that do not report device-flow outcomes. */
+  deviceFlowState?: GithubDeviceFlowState;
 }
+
+export type GithubDeviceFlowState = "idle" | "pending" | "denied" | "expired" | "failed" | "cancelled";
 
 export interface GithubDeviceFlowStart {
   userCode: string;
@@ -1665,6 +1738,7 @@ export interface DiagnosticRendererError {
 }
 
 export interface CanvasTTYApi {
+  backlog: import("./backlog.ts").BacklogApi;
   diagnostics: {
     configuration(): Promise<DiagnosticConfiguration>;
     send(description: string, attachment?: DiagnosticAttachment): Promise<DiagnosticReportReceipt>;
@@ -1766,8 +1840,9 @@ export interface CanvasTTYApi {
     onServiceEvent(listener: (event: PluginServiceEvent) => void): () => void;
     cardDecorations(): Promise<PluginCardDecorations>;
     onCardDecorations(listener: (decorations: PluginCardDecorations) => void): () => void;
-    invokeCardAction(pluginId: string, actionId: string, sessionId: string): Promise<PluginCardActionResult>;
+    invokeCardAction(pluginId: string, actionId: string, sessionId: string, input?: Record<string, unknown>): Promise<PluginCardActionResult>;
     /** The service-provided choices of a plugin's `optionsFrom: "service"` launch fields for this agent; empty on any failure. */
+    executionAccountRoutes(provider: ProviderId): Promise<Array<{accountId:string;model:string;endpoint:string;kind:string;state:string}>>;
     launchFieldOptions(pluginId: string, provider: ProviderId): Promise<PluginLaunchFieldOptions>;
     uninstall(pluginId: string): Promise<void>;
     openCanvas(pluginId: string, contributionId: string, sourceCanvasInstanceId?: string): Promise<void>;
@@ -1823,6 +1898,8 @@ export interface CanvasTTYApi {
   canvasNavigation: {
     armOwnerWheelSequence(clientX: number, clientY: number): void;
     setShortcutCaptureActive(active: boolean): void;
+    /** macOS: a terminal surface gained or lost keyboard focus (decides who handles Command+C/V/A). */
+    setTerminalEditFocus(active: boolean): void;
     setPointerBindingState(input: CanvasNavigationPointerBindingInput): void;
     setPointerGestureActive(active: boolean): void;
     onOverrideState(listener: (event: CanvasNavigationOverrideStateEvent) => void): () => void;
@@ -1830,10 +1907,16 @@ export interface CanvasTTYApi {
   githubAuth: {
     status(): Promise<GithubAuthStatus>;
     start(): Promise<GithubDeviceFlowStart>;
+    cancel(): Promise<void>;
     signOut(): Promise<void>;
     openUrl(url: string): Promise<void>;
   };
   terminal: {
+    paste(id: string, text: string): Promise<void>;
+    describeFileDrop(files: File[], sessionId: string): Promise<{text:string;paths:string[];outsideProject:string[]}>;
+    searchOutput(query: string, sessionIds?: string[]): Promise<TerminalOutputSearchResult>;
+    readOutputContext(id: string, offset: number): Promise<TerminalOutputContext>;
+    onFocusRequested(listener: (id: string) => void): () => void;
     openFile(id: string, reference: string): Promise<void>;
     fileDropText(files: File[]): string;
     list(): Promise<SessionSnapshot[]>;
@@ -1842,6 +1925,7 @@ export interface CanvasTTYApi {
     /** `resume` continues the card's own conversation instead of starting a new one. */
     restart(id: string, options?: { resume?: boolean }): Promise<SessionSnapshot>;
     input(id: string, data: string): void;
+    pasteClipboard(id: string, text: string, startedAt: number): Promise<void>;
     resize(id: string, cols: number, rows: number): void;
     setBounds(id: string, bounds: SessionBounds): void;
     rename(id: string, title: string): Promise<SessionMetadata>;
@@ -1932,6 +2016,7 @@ export const IPC = {
   pluginsCardDecorations: "plugins:card-decorations",
   pluginsCardDecorationsChanged: "plugins:card-decorations-changed",
   pluginsInvokeCardAction: "plugins:invoke-card-action",
+  executionAccountRoutes: "execution:account-routes",
   pluginsLaunchFieldOptions: "plugins:launch-field-options",
   pluginsUninstall: "plugins:uninstall",
   pluginsOpenCanvas: "plugins:open-canvas",
@@ -1992,6 +2077,7 @@ export const IPC = {
   browserCanvasPointer: "browser:canvas-pointer",
   browserCanvasNavigationPointer: "browser:canvas-navigation-pointer",
   canvasNavigationShortcutCapture: "canvas-navigation:shortcut-capture",
+  canvasNavigationTerminalEditFocus: "canvas-navigation:terminal-edit-focus",
   canvasNavigationPointerBinding: "canvas-navigation:pointer-binding",
   canvasNavigationOwnerWheel: "canvas-navigation:owner-wheel",
   canvasNavigationPointerGesture: "canvas-navigation:pointer-gesture",
@@ -2005,6 +2091,7 @@ export const IPC = {
   windowOpenUpdates: "window:open-updates",
   githubAuthStatus: "github-auth:status",
   githubAuthStart: "github-auth:start",
+  githubAuthCancel: "github-auth:cancel",
   githubAuthSignOut: "github-auth:sign-out",
   githubAuthOpenUrl: "github-auth:open-url",
   terminalList: "terminal:list",
@@ -2018,6 +2105,7 @@ export const IPC = {
   agentChatHistoryResume: "agent-chat-history:resume",
   terminalRestart: "terminal:restart",
   terminalInput: "terminal:input",
+  terminalPasteClipboard: "terminal:paste-clipboard",
   terminalResize: "terminal:resize",
   terminalBounds: "terminal:bounds",
   terminalRename: "terminal:rename",

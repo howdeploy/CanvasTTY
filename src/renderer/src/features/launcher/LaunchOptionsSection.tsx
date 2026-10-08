@@ -90,7 +90,8 @@ function FieldInputs({ fields, values, onChange }: {
  * plugin environment), then one block per launch plugin, off until the person chooses it. Only chosen
  * plugins' values are returned, and only those plugins prepare the launch.
  */
-export function LaunchOptionsSection({ provider, locale, onChange, onEnvironmentChange }: {
+export function LaunchOptionsSection({ provider, locale, onChange, onEnvironmentChange, accountsOnly = false }: {
+  accountsOnly?: boolean;
   provider: ProviderId;
   locale: LocaleId;
   onChange(options: Record<string, PluginLaunchValues>): void;
@@ -115,7 +116,7 @@ export function LaunchOptionsSection({ provider, locale, onChange, onEnvironment
     setOffered({});
     void window.canvasTTY.plugins.list().then((installed) => {
       if (!active) return;
-      const available = launchOptionPlugins(installed, provider);
+      const available = launchOptionPlugins(installed, provider).filter(p=>!accountsOnly||p.pluginId==="canvastty-accounts").map(p=>accountsOnly?{...p,fields:p.fields.filter(f=>f.key==="account")}:p);
       setLoaded({ provider, plugins: available, environments: environmentOptions(installed, provider) });
       // Selects filled by the plugin's service (its accounts, say): asked once per launcher, never blocking it.
       for (const plugin of available.filter((entry) => entry.fields.some((field) => field.optionsFrom === "service"))) {
@@ -125,7 +126,7 @@ export function LaunchOptionsSection({ provider, locale, onChange, onEnvironment
       }
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [provider]);
+  }, [provider, accountsOnly]);
 
   useEffect(() => onChange(chosen), [chosen, onChange]);
   useEffect(() => onEnvironmentChange(where), [where, onEnvironmentChange]);

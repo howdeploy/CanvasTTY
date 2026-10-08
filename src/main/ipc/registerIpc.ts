@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { app, BrowserWindow, clipboard, dialog, shell } from "electron";
-import type { IpcMainEvent, IpcMainInvokeEvent, OpenDialogOptions } from "electron";
+import type { IpcMainEvent, IpcMainInvokeEvent, OpenDialogOptions, WebContents } from "electron";
 import type {
   AppSettings,
   AgentChatHistoryProviderId,
@@ -71,10 +71,12 @@ interface Dependencies {
   browser: BrowserService;
   githubAuth: GithubAuthService;
   hermesHud: HermesHudService;
+  executionAccountRoutes?(provider:ProviderId):Promise<Array<{accountId:string;model:string;endpoint:string;kind:string;state:string}>>;
   launchFieldOptions(pluginId: string, provider: ProviderId): Promise<PluginLaunchFieldOptions>;
   getMainWindow(): BrowserWindow | null;
   applyBrowserSettings(settings: AppSettings): Promise<void> | void;
   setCanvasNavigationShortcutCapture(active: boolean): void;
+  setCanvasNavigationTerminalEditFocus(contents: WebContents, active: boolean): void;
   setCanvasNavigationPointerBinding(input: CanvasNavigationPointerBindingInput): void;
   openPluginWindow(pluginId: string, contributionId: string): Promise<void>;
   closePluginWindows(pluginId: string): void;
@@ -208,9 +210,11 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   githubAuth,
   hermesHud,
   launchFieldOptions,
+  executionAccountRoutes,
   getMainWindow,
   applyBrowserSettings,
   setCanvasNavigationShortcutCapture,
+  setCanvasNavigationTerminalEditFocus,
   setCanvasNavigationPointerBinding,
   openPluginWindow,
   closePluginWindows,
@@ -260,6 +264,11 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     assertMainRenderer(event, getMainWindow);
     if (typeof active !== "boolean") return;
     setCanvasNavigationShortcutCapture(active);
+  });
+  ipcMain.on(IPC.canvasNavigationTerminalEditFocus, (event, active: boolean) => {
+    assertMainRenderer(event, getMainWindow);
+    if (typeof active !== "boolean") return;
+    setCanvasNavigationTerminalEditFocus(event.sender, active);
   });
   ipcMain.on(IPC.canvasNavigationPointerBinding, (event, input: unknown) => {
     assertMainRenderer(event, getMainWindow);
@@ -432,14 +441,15 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     assertMainRenderer(event, getMainWindow);
     return pluginCards.decorations();
   });
-  ipcMain.handle(IPC.pluginsInvokeCardAction, (event, pluginId: unknown, actionId: unknown, sessionId: unknown) => {
+  ipcMain.handle(IPC.pluginsInvokeCardAction, (event, pluginId: unknown, actionId: unknown, sessionId: unknown, input?: unknown) => {
     // Only the app window's own card menu invokes actions; plugin surfaces cannot reach this channel.
     assertMainRenderer(event, getMainWindow);
     if (typeof pluginId !== "string" || typeof actionId !== "string" || typeof sessionId !== "string") {
       throw new Error("Card action request is invalid.");
     }
-    return pluginCards.invoke(pluginId, actionId, sessionId);
+    return pluginCards.invoke(pluginId, actionId, sessionId, input);
   });
+  ipcMain.handle(IPC.executionAccountRoutes,(event,provider:unknown)=>{assertMainRenderer(event,getMainWindow);if(typeof provider!=="string")throw new Error("Invalid provider.");return executionAccountRoutes?.(provider as ProviderId)??[];});
   ipcMain.handle(IPC.pluginsLaunchFieldOptions, (event, pluginId: unknown, provider: unknown) => {
     // Only the app's own launcher asks; plugin surfaces cannot reach this channel.
     assertMainRenderer(event, getMainWindow);
@@ -815,6 +825,10 @@ export function registerIpc(ipcMain: IpcRegistrar, {
       expiresAt: flow.expiresAt
     };
   });
+  ipcMain.handle(IPC.githubAuthCancel, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    return githubAuth.cancelDeviceFlow();
+  });
   ipcMain.handle(IPC.githubAuthSignOut, (event) => {
     assertMainRenderer(event, getMainWindow);
     return githubAuth.signOut();
@@ -843,11 +857,16 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   });
   ipcMain.handle(IPC.terminalCreate, (event, request: CreateSessionRequest) => {
     assertMainRenderer(event, getMainWindow);
+    if (request?.executionGoal !== undefined && !settings.get().experimentalBacklogEnabled) throw new Error("Experimental execution strategies are disabled.");
     return terminals.create(request);
   });
   ipcMain.handle(IPC.terminalRestart, (event, id: string, options?: { resume?: unknown }) => {
     assertMainRenderer(event, getMainWindow);
     return terminals.restart(id, { resume: options?.resume === true });
+  });
+  ipcMain.handle(IPC.terminalPasteClipboard, (event, id: string, text: string, startedAt: number) => {
+    assertMainRenderer(event, getMainWindow);
+    return terminals.pasteClipboard(id, text, startedAt);
   });
   ipcMain.on(IPC.terminalInput, (event, id: string, data: string) => {
     // Fire-and-forget: a foreign sender is dropped instead of throwing into the IPC layer.

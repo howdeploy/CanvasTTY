@@ -27,7 +27,7 @@ const waitFor = async (predicate, timeoutMs = 5_000) => {
 function setup(t, keeps, project) {
   const registry = new EnvironmentRegistry({
     providers: () => [{ pluginId: PLUGIN, pluginName: "Env", serviceId: "env", secrets: false,
-      kinds: [{ kind: "box", label: "Box", ...(keeps ? { keeps } : {}) }] }],
+      kinds: [{ kind: "box", label: "Box", executionLocation: "local", ...(keeps ? { keeps } : {}) }] }],
     call: async (_pluginId, _serviceId, method, params) => {
       const step = method.replace("canvastty.environment.", "");
       if (step === "prepare") return { ref: { box: "b-1" }, label: "box b-1" };
@@ -54,7 +54,7 @@ function setup(t, keeps, project) {
 test("environments declare what they keep: keeps is validated in the manifest", () => {
   const manifest = (keeps) => validatePluginManifest({
     apiVersion: 2, id: "com.example.k", name: "K", version: "1.0.0", description: "d", author: "a", permissions: ["environment:provide"],
-    services: [{ id: "s", title: "S", description: "d", entry: "s.mjs", environments: [{ kind: "box", label: "Box", keeps }] }], contributions: []
+    services: [{ id: "s", title: "S", description: "d", entry: "s.mjs", environments: [{ kind: "box", label: "Box", executionLocation: "local", keeps }] }], contributions: []
   });
   assert.deepEqual(manifest({ launch: true, isolated: true }).services[0].environments[0].keeps, { launch: true, isolated: true });
   assert.throws(() => manifest({ hooks: true }), /keeps/u);

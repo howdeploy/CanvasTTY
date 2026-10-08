@@ -2,6 +2,25 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+Agent teams, task budgets and per-card history. The accounts, assistant, context and environments plugins ship their parts separately.
+
+- **Flows.** Four built-in orchestration flows (split and synthesize, executor and reviewer, three options and a judge, find and verify bugs) and project flows in `.canvastty/flows/*.yaml`. A project flow is used only after the person approves its current instructions. The launcher offers flows and can save a running task tree as one.
+- **Task trees on the canvas.** Parent and subagent cards are linked, the orchestrator card summarizes its subagents, **Gather task** brings them together, and the canvas can be arranged by tree, status, project or grid, with undo.
+- **Task board.** `list_tasks`, `claim_task` (atomic, dependencies first), `update_task` and `complete_task` for agents; the person adds, assigns and closes tasks in the card's details.
+- **Review, worktrees and retry.** `spawn_agent` takes `review: true` (a separate reviewer in Plan whose verdict is added to the result) and `isolate: "worktree"`. `retry_agent` restarts a failed or quiet subagent with its original request and a masked failure tail, at most twice.
+- **Budgets.** Time, token and cost limits per task tree with a warning at 80 %. At the limit the tree gets no new input or subagents and its processes are paused until the person changes the limit. Usage a CLI does not report is shown as no data.
+- **Model routing.** A trusted plugin with `model:route` can choose the model and effort of a subagent started without an explicit model, only among those `list_providers` lists; the card shows the choice and its reason.
+- **Card details.** A masked timeline of hook events with filters and a Markdown report; usage by model, account and task with periods, CSV export and manual prices; git checkpoints before each turn with a diff preview and confirmed restore; notifications on macOS, the phone and the glasses with a quiet mode.
+- **Secrets on request.** `request_secret` asks the person for one configured provider key for 10 minutes, one turn or the session; `run_secret_request` then sends typed HTTPS API requests with it, so the key itself never reaches the agent. Grants can be revoked.
+- **Network policy.** Per project: open, allowed domains or offline, applied when an agent starts. macOS uses its sandbox profile; Linux uses bubblewrap with a local proxy and, for strict modes, Landlock (ABI 9 or newer). A host that cannot enforce a strict mode refuses the launch.
+- **Workspace.** Command palette with output search, an explicit broadcast mode for typing into several agents, a preview before dropped files, links or text reach an agent (paths outside the project need consent), and versioned workspace snapshots and presets without secrets; importing a Bypass card needs confirmation.
+- **Questions.** `ask_user` shows an agent's bounded question; eligible questions also reach the paired phone.
+- **Faster first frame.** Terminal code loads right after the first frame. Keys typed meanwhile reach the shell in order, and a failed load affects only terminal cards, which offer **Retry**.
+
+What automated checks do not cover is listed in [verification](docs/post-1.7-verification.md#not-covered-by-automated-checks).
+
 ## 1.7.1
 
 - Added built-in stable-release updates with explicit download and installation, active-session shutdown confirmation, and signed Sparkle updates on macOS. Install this first updater-enabled release manually; later compatible releases can be installed from the app.

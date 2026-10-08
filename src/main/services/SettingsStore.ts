@@ -1,3 +1,4 @@
+import { normalizeExecutionPolicy, defaultExecutionPolicy } from "../../shared/executionPolicy.ts";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -173,6 +174,7 @@ export class SettingsStore {
         || !("canvasLauncherItems" in source)
         || !("radialLauncherItems" in source)
         || !("radialLauncherEnabled" in source)
+        || !("experimentalBacklogEnabled" in source)
         || !("agentLifecycleHooksEnabled" in source)
         || !("baseProtectionEnabled" in source)
         || !("uiScale" in source)
@@ -254,6 +256,11 @@ export class SettingsStore {
 
   get(): AppSettings {
     return structuredClone(this.value);
+  }
+
+  /** A narrow copy for the per-input authorization check, excluding unrelated canvas/settings state. */
+  executionPolicy(): AppSettings["executionPolicy"] {
+    return structuredClone(this.value.executionPolicy);
   }
 
   async setAvailableProviders(availability: AgentCliAvailability): Promise<AppSettings> {
@@ -371,6 +378,8 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS],
     radialLauncherEnabled: false,
     agentLifecycleHooksEnabled: true,
+    experimentalBacklogEnabled: false,
+    executionPolicy: defaultExecutionPolicy(),
     baseProtectionEnabled: true,
     uiScale: DEFAULT_UI_SCALE,
     canvasColor: "sage",
@@ -604,6 +613,8 @@ export function normalizeSettings(
     radialLauncherEnabled: typeof source.radialLauncherEnabled === "boolean"
       ? source.radialLauncherEnabled
       : fallback.radialLauncherEnabled ?? false,
+    experimentalBacklogEnabled: source.experimentalBacklogEnabled === true,
+    executionPolicy: normalizeExecutionPolicy(source.executionPolicy),
     agentLifecycleHooksEnabled: typeof source.agentLifecycleHooksEnabled === "boolean"
       ? source.agentLifecycleHooksEnabled
       : fallback.agentLifecycleHooksEnabled,
@@ -994,7 +1005,7 @@ function normalizePluginCanvas(candidate: unknown, fallback: readonly PluginCanv
   return instances;
 }
 
-function normalizeCanvasRegions(
+export function normalizeCanvasRegions(
   candidate: unknown,
   fallback: readonly CanvasRegion[] = []
 ): CanvasRegion[] {
@@ -1053,7 +1064,7 @@ export function normalizeStickyNotes(
   return notes;
 }
 
-function normalizeBrowserCanvas(candidate: unknown, fallback: BrowserCanvasState | null): BrowserCanvasState | null {
+export function normalizeBrowserCanvas(candidate: unknown, fallback: BrowserCanvasState | null): BrowserCanvasState | null {
   if (candidate === null) return null;
   if (!candidate || typeof candidate !== "object") return fallback ? structuredClone(fallback) : null;
   const source = candidate as Partial<BrowserCanvasState>;

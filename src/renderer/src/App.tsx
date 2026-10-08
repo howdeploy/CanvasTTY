@@ -1,3 +1,4 @@
+import type { ExecutionGoal } from "../../shared/executionStrategy";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   GitRiskReport,
@@ -55,6 +56,7 @@ import { TitleBar } from "./components/TitleBar";
 import { Toast } from "./components/Toast";
 import { environmentOptions } from "./features/launcher/LaunchOptionsSection";
 import { UpdateNotice } from "./components/UpdateNotice";
+import { ModelDiscoveryNotice } from "./components/ModelDiscoveryNotice";
 import { resolveAppearanceSettings } from "./features/settings/appearanceSettings";
 import { persistSettingsUpdate } from "./features/settings/persistSettings";
 import { PluginBrowserOpenQueue } from "./features/plugins/PluginBrowserOpenQueue";
@@ -81,7 +83,8 @@ import {
   isShortcutCaptureTarget,
   matchesPointerShortcut,
   matchesShortcut,
-  shouldKeepNativeKeyboardInput
+  shouldKeepNativeKeyboardInput,
+  trackTerminalEditFocus
 } from "./lib/shortcuts";
 import { homeGridPixelSize, homeLayoutFitsGrid, placeHomeWidget } from "./features/home/homeLayout";
 import { boundsInsideRegion, translateBounds } from "./features/workspace/canvasRegions";
@@ -128,6 +131,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS],
   radialLauncherEnabled: false,
   agentLifecycleHooksEnabled: true,
+  experimentalBacklogEnabled: false,
   baseProtectionEnabled: true,
   uiScale: DEFAULT_UI_SCALE,
   canvasColor: "sage",
@@ -597,7 +601,8 @@ export function App(): React.JSX.Element {
     requestedCenter?: Point,
     role: LaunchRole = "agent",
     launchOptions?: Record<string, PluginLaunchValues>,
-    environment?: SessionEnvironmentChoice
+    environment?: SessionEnvironmentChoice,
+    execution?: { goal: ExecutionGoal; task?: string }
   ): Promise<SessionSnapshot> => {
     const currentSettings = settingsRef.current;
     const pixelSkin = isPixelSkinThemeId(currentSettings.terminalBorderSkin)
@@ -626,6 +631,7 @@ export function App(): React.JSX.Element {
     try {
       const session = await window.canvasTTY.terminal.create({
         provider, profile, cwd, position, role, ...(launchOptions ? { launchOptions } : {}),
+        ...(execution && currentSettings.experimentalBacklogEnabled ? { executionGoal: execution.goal, executionTask: execution.task } : {}),
         ...(environment ? { environment } : {})
       });
       const sizedSession = pixelSkin ? { ...session, size: { ...cardSize } } : session;
@@ -681,9 +687,12 @@ export function App(): React.JSX.Element {
     cwd: string,
     role: LaunchRole,
     launchOptions?: Record<string, PluginLaunchValues>,
-    environment?: SessionEnvironmentChoice
+    environment?: SessionEnvironmentChoice,
+    initialPrompt?: string,
+    execution?: { goal: ExecutionGoal; task?: string }
   ): Promise<void> => {
-    await createSession(provider, profile, cwd, launchPosition ?? undefined, role, launchOptions, environment);
+    const session=await createSession(provider, profile, cwd, launchPosition ?? undefined, role, launchOptions, environment, execution);
+    if(initialPrompt)await window.canvasTTY.backlog.sendInstructions(session.id,initialPrompt);
     setLaunchPosition(null);
     showToast(provider === "terminal" ? t(settings.locale, "terminalStarted") : `${t(settings.locale, "sessionStarted")}: ${provider}`);
   }, [createSession, launchPosition, settings.locale, showToast]);
@@ -1114,6 +1123,10 @@ export function App(): React.JSX.Element {
     setCamera(focusCamera(session.position, session.size));
   }, []);
 
+  useEffect(()=>window.canvasTTY.terminal.onFocusRequested(id=>{
+    const session=sessionsRef.current.find(row=>row.id===id);if(session)focusSession(session);
+  }),[focusSession]);
+
   const resumeHistory = useCallback(async (item: AgentChatHistoryItem, center: Point): Promise<SessionSnapshot> => {
     const current = settingsRef.current;
     const pixelSkin = isPixelSkinThemeId(current.terminalBorderSkin) || isPixelSkinPackId(current.terminalBorderSkin);
@@ -1482,9 +1495,13 @@ export function App(): React.JSX.Element {
 
     window.addEventListener("keydown", handleShortcut, true);
     window.addEventListener("pointerdown", handlePointerShortcut, true);
+    const stopTerminalFocus = window.canvasTTY.window.isMacOS
+      ? trackTerminalEditFocus(document, (focused) => window.canvasTTY.canvasNavigation.setTerminalEditFocus(focused))
+      : () => undefined;
     return () => {
       window.removeEventListener("keydown", handleShortcut, true);
       window.removeEventListener("pointerdown", handlePointerShortcut, true);
+      stopTerminalFocus();
     };
   }, [activeSessionId, fullscreenSessionId, goHome, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, shortcutReferenceOpen, showToast, toggleSessionFullscreen]);
 
@@ -1529,6 +1546,7 @@ export function App(): React.JSX.Element {
         {!ready && <div className="loading-screen"><span>{t(settings.locale, "loading")}</span></div>}
         {ready && <WorkspaceCanvas
           surfacesMounted={surfacesMounted}
+          onPersistSettings={persistSettings}
           settings={workspaceSettings}
           mediaData={mediaData}
           sessions={sessions}
@@ -1676,6 +1694,8 @@ export function App(): React.JSX.Element {
           ))}
         </div>
       )}
+      <ModelDiscoveryNotice plugins={plugins} enabled={settings.experimentalBacklogEnabled}
+        locale={settings.locale} onReview={openPluginCanvasContribution} onError={showToast} />
       <UpdateNotice
         status={settingsOpen ? null : updateNoticeForStatus(updateStatus, dismissedUpdateNotice)}
         locale={settings.locale}

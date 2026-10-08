@@ -61,15 +61,16 @@ const provider = (extra = {}) => ({
   pluginId: PLUGIN,
   pluginName: "Env",
   serviceId: "env",
-  kinds: [{ kind: "box", label: "Box", fields: [{ key: "name", label: "Name", kind: "text", default: "one" }] }],
+  kinds: [{ kind: "box", label: "Box", executionLocation: "local", fields: [{ key: "name", label: "Name", kind: "text", default: "one" }] }],
   secrets: false,
   ...extra
 });
 
 /** A registry over scripted answers: `answers[step]` is a value or (params) => value/promise. */
-function registryFixture({ providers = () => [provider()], answers = {}, secrets = {}, timeouts } = {}) {
+function registryFixture({ providers = () => [provider()], answers = {}, secrets = {}, timeouts, experimentalEnabled } = {}) {
   const requests = [];
   const registry = new EnvironmentRegistry({
+    experimentalEnabled,
     providers,
     call: async (pluginId, serviceId, method, params, budget) => {
       const step = method.replace("canvastty.environment.", "");
@@ -144,11 +145,12 @@ test("manifests declare environments (kinds unique across the plugin's services)
   // Kinds may be split over services (one per module); each kind is answered by the service that lists it.
   const split = validatePluginManifest({
     ...exampleManifest,
-    services: [exampleManifest.services[0], { ...exampleManifest.services[0], id: "second", environments: [{ kind: "remote", label: "Remote" }] }]
+    services: [exampleManifest.services[0], { ...exampleManifest.services[0], id: "second", environments: [{ kind: "remote", label: "Remote", executionLocation: "remote" }] }]
   });
   assert.deepEqual(split.services.map((service) => service.environments[0].kind), ["worktree", "remote"]);
   const { registry, requests } = registryFixture({
-    providers: () => [provider(), provider({ serviceId: "remote-svc", kinds: [{ kind: "remote", label: "Remote" }] })],
+    experimentalEnabled: () => true,
+    providers: () => [provider(), provider({ serviceId: "remote-svc", kinds: [{ kind: "remote", label: "Remote", executionLocation: "remote" }] })],
     answers: { prepare: { ref: {}, label: "x" } }
   });
   await registry.prepare({ sessionId: "s1", provider: "terminal", cwd, choice: { pluginId: PLUGIN, kind: "remote" } });
@@ -158,8 +160,8 @@ test("manifests declare environments (kinds unique across the plugin's services)
 
 test("launcher choices are checked against the kinds and fields, with defaults", () => {
   const { registry } = registryFixture({ providers: () => [provider({ kinds: [
-    { kind: "box", label: "Box", fields: [{ key: "name", label: "Name", kind: "text", default: "one", maxLength: 8 }] },
-    { kind: "agents-only", label: "Agents only", appliesTo: ["claude"] }
+    { kind: "box", label: "Box", executionLocation: "local", fields: [{ key: "name", label: "Name", kind: "text", default: "one", maxLength: 8 }] },
+    { kind: "agents-only", label: "Agents only", executionLocation: "local", appliesTo: ["claude"] }
   ] })] });
   assert.equal(registry.normalizeChoice("terminal", undefined), undefined);
   assert.deepEqual(registry.normalizeChoice("terminal", choice), { ...choice, options: { name: "one" } });
@@ -279,7 +281,7 @@ test("lifecycle: prepare, wrap, describe, saved ref; the environment never sees 
   assert.equal(calls.length, 0, "the card waits for the environment");
   await waitFor(() => calls.length === 1);
   assert.deepEqual(requests.slice(0, 2).map((request) => request.step), ["prepare", "wrap"]);
-  assert.deepEqual(requests[0].params, { sessionId: created.id, kind: "box", provider: "terminal", cwd, options: { name: "two" } });
+  assert.deepEqual(requests[0].params, { sessionId: created.id, kind: "box", provider: "terminal", cwd, projectRoot:cwd, options: { name: "two" } });
   const wrapParams = requests[1].params;
   assert.deepEqual(wrapParams.ref, { box: "b-1" });
   assert.equal(Object.keys(wrapParams.env).some((key) => /^(CANVASTTY_|PATH$|TERM$)/u.test(key)), false);

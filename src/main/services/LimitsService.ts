@@ -78,11 +78,15 @@ export class LimitsService {
   private disposed = false;
 
   private readonly codexIdleMs: number;
+  private readonly onSnapshot: ((snapshot: LimitsSnapshot) => void) | undefined;
+  private readonly claudeUsageOptions: ClaudeUsageReadOptions | undefined;
 
-  constructor(providerClis: ProviderCliRegistry, clientVersion = "unknown", options: { codexIdleMs?: number } = {}) {
+  constructor(providerClis: ProviderCliRegistry, clientVersion = "unknown", options: { codexIdleMs?: number; onSnapshot?: (snapshot: LimitsSnapshot) => void; claudeUsageOptions?: ClaudeUsageReadOptions } = {}) {
     this.providerClis = providerClis;
     this.clientVersion = clientVersion;
     this.codexIdleMs = options.codexIdleMs ?? CODEX_IDLE_MS;
+    this.onSnapshot=options.onSnapshot;
+    this.claudeUsageOptions = options.claudeUsageOptions;
     this.codex = new CodexAppServerClient(availableCli(providerClis, "codex"), clientVersion, this.codexIdleMs);
     this.kimi = new KimiWebUsageClient(availableCli(providerClis, "kimi"));
   }
@@ -148,6 +152,7 @@ export class LimitsService {
     };
 
     this.cache = { cachedAt: Date.now(), value };
+    try { this.onSnapshot?.(structuredClone(value)); } catch { /* A UI observer cannot invalidate a successful provider read. */ }
     return value;
   }
 
@@ -192,7 +197,7 @@ export class LimitsService {
       return unavailable("claude", "claude-usage-api", "cli-not-found", checkedAt);
     }
     try {
-      const raw = await readClaudeUsage(this.clientVersion);
+      const raw = await readClaudeUsage(this.clientVersion, this.claudeUsageOptions);
       const windows = normalizeClaudeLimits(raw);
       if (windows.length === 0) throw new LimitsAdapterError("protocol-error");
 

@@ -162,13 +162,13 @@ async function harness(t, { providers } = {}) {
   t.after(() => engines.dispose());
   let request = 0;
   const run = (actor, type, args = {}) => core.execute(actor, { type, requestId: `r${++request}`, ...args });
-  const ready = async (tabId) => {
+  const ready = async (tabId, { revisionAfter = null } = {}) => {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const tab = host.getTab(tabId);
-      if (tab?.status === "ready") return tab;
+      if (tab?.status === "ready" && (revisionAfter === null || tab.documentRevision > revisionAfter)) return tab;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    throw new Error("tab never became ready");
+    throw new Error(`tab never became ready after revision ${revisionAfter}`);
   };
   // A person's first tab is active in Chromium, as when the Browser card is open.
   await newChromiumTab("https://person.example.test/");
@@ -233,8 +233,8 @@ test("engines without layout: observe skips the fake geometry and clicks go thro
   const methods = cdpMethods(h.engine);
   assert.equal(methods.includes("Input.dispatchMouseEvent"), false, "no coordinate clicks");
   assert.equal(methods.includes("DOM.getBoxModel"), false, "no box models asked for");
-  await h.ready(opened.tabId);
-  assert.ok(h.host.getTab(opened.tabId).documentRevision > before, "the click navigated: a new revision");
+  const navigated = await h.ready(opened.tabId, { revisionAfter: before });
+  assert.ok(navigated.documentRevision > before, "the click navigated: a new revision");
   const hovered = await h.run(agent(), "browser_observe", { tabId: opened.tabId });
   assert.equal(hovered.ok, true);
 });

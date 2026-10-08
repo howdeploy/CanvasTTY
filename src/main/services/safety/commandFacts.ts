@@ -589,6 +589,9 @@ function componentMatches(pattern: string, name: string): boolean {
  */
 function privatePath(abs: string, glob: boolean, recursive: boolean, ctx: PathContext): boolean {
   if (!glob) {
+    // A broad project (for example HOME) cannot reopen a more specific host-private subtree below it.
+    // A validated worktree below plugin-data still owns its exact project files, not private siblings.
+    if (ctx.privatePaths.some(path => isPathInside(ctx.rootReal, path) && isPathInside(path, abs))) return true;
     // The project, and the agent's own config folder (an account home it was launched with), are its own.
     if (isPathInside(ctx.rootReal, abs) || ctx.agentRoots.some(dir => isPathInside(dir, abs))) return false;
     if (ctx.privatePaths.some(path => isPathInside(path, abs))) return true;
@@ -599,6 +602,10 @@ function privatePath(abs: string, glob: boolean, recursive: boolean, ctx: PathCo
   const all = parts(abs);
   const first = all.findIndex(part => GLOB_CHAR.test(part));
   const prefix = realish((abs.startsWith('/') ? '/' : '') + all.slice(0, first).join('/'));
+  // A sandbox may deliberately hand the agent one project root inside CanvasTTY's private plugin-data parent. A glob
+  // fixed below that exact project must not be treated as a match for the private ancestor, or ordinary project
+  // searches would be denied. Skip only those ancestor paths; keep checking every private path inside the project.
+  const scopedProjectGlob = !all.slice(first).includes('..') && isPathInside(ctx.rootReal, prefix);
   const pattern = [...parts(prefix), ...all.slice(first)];
   const matchesFrom = (target: string[]): number => {
     let i = 0;
@@ -606,6 +613,7 @@ function privatePath(abs: string, glob: boolean, recursive: boolean, ctx: PathCo
     return i;
   };
   for (const path of ctx.privatePaths) {
+    if (scopedProjectGlob && path !== ctx.rootReal && isPathInside(path, ctx.rootReal)) continue;
     const target = parts(path);
     const matched = matchesFrom(target);
     if (matched >= target.length) return true;

@@ -10,6 +10,7 @@ export interface CompanionSession {
   status: SessionStatus;
 }
 export interface CompanionOverviewSession extends CompanionSession {
+  attention?: {id:string;kind:string;at:number}[];
   startedAt: number;
   exitCode: number | null;
   revision: number;
@@ -18,7 +19,14 @@ export interface CompanionOverviewSession extends CompanionSession {
 export interface CompanionOverview {
   sessions: CompanionOverviewSession[];
   providers: Record<ProviderId, boolean>;
-  permissions: { allowInput: boolean; allowCreate: boolean; allowClose: boolean };
+  permissions: {
+    allowInput: boolean;
+    allowCreate: boolean;
+    allowClose: boolean;
+    allowInterrupt?: boolean;
+    allowRename?: boolean;
+    allowReply?: boolean;
+  };
 }
 
 export interface CompanionOutput {
@@ -28,6 +36,14 @@ export interface CompanionOutput {
   hasMore: boolean;
   cols: number;
   rows: number;
+}
+
+/** A host-owned pending question; no terminal buffer or executable input. */
+export interface CompanionQuestion {
+  id: string;
+  question: string;
+  options: readonly string[];
+  expiresAt: number;
 }
 
 
@@ -47,6 +63,7 @@ export type CompanionAction =
   | { type: "session.output"; sessionId: string; cursor: number | null }
   | { type: "session.key"; sessionId: string; key: CompanionKey }
   | { type: "session.read"; sessionId: string }
+  | { type: "session.reply"; sessionId: string; requestId: string; answer: string | number }
   | { type: "session.input"; sessionId: string; text: string }
   | { type: "session.interrupt"; sessionId: string }
   | { type: "session.close"; sessionId: string }
@@ -88,6 +105,7 @@ export class CompanionError extends Error {
 
 const SESSION_ACTIONS = new Set([
   "session.read",
+  "session.reply",
   "session.output",
   "session.key",
   "session.input",
@@ -159,6 +177,14 @@ export function parseCompanionRequest(value: unknown): CompanionRequest {
     if (type === "session.key") {
       keys.push("key");
       if (!["ctrl-c", "enter", "up", "down", "left", "right", "tab", "backspace", "escape"].includes(action.key as string))
+        throw new CompanionError("invalid-request");
+    }
+    if (type === "session.reply") {
+      keys.push("requestId", "answer");
+      if (typeof action.requestId !== "string" || !/^[a-f0-9]{32}$/.test(action.requestId) ||
+          !(typeof action.answer === "string"
+            ? action.answer.trim().length > 0 && action.answer.length <= 2_000
+            : Number.isInteger(action.answer) && Number(action.answer) >= 0 && Number(action.answer) < 8))
         throw new CompanionError("invalid-request");
     }
   } else if (type === "session.create") {

@@ -18,6 +18,7 @@ import { LaunchRefusal } from "../launchRefusal.ts";
 import { MAX_PIXEL_SKIN_ARCHIVE_BYTES, type PixelSkinPackRegistry } from "../PixelSkinPackRegistry.ts";
 import type { SettingsStore } from "../SettingsStore.ts";
 import { listProviderDirectory, type ProviderDirectory } from "../providerDirectory.ts";
+import type { ExecutionTarget } from "../../../shared/executionPolicy.ts";
 import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from "../../../shared/launchModel.ts";
 
 // Headless terminals are created on demand; the module loads with the first one.
@@ -66,6 +67,7 @@ type ControlScope = { kind: "person" } | { kind: "session"; sessionId: string };
 
 /** What an orchestrator's control CLI asks for when it creates a worker: a subagent of that orchestrator. */
 export interface SubagentSpawn {
+  executionTargetId?: string;
   parentSessionId: string;
   provider: AgentProviderId;
   cwd: string;
@@ -82,7 +84,7 @@ interface ControlRequest {
   instanceId: string;
   token: string;
   controller: string;
-  method: "create" | "list" | "providers" | "status" | "screen" | "send" | "result" | "interrupt" | "choose" | "dismiss"
+  method: "create" | "list" | "providers" | "execution-targets" | "status" | "screen" | "send" | "result" | "interrupt" | "choose" | "dismiss"
     | "skin-list" | "skin-install" | "skin-select";
   params: Record<string, unknown>;
 }
@@ -131,6 +133,8 @@ export interface AgentControlGatewayOptions {
    * person's limits). Without it an orchestrator's connection cannot create workers.
    */
   spawnSubagent?(request: SubagentSpawn): Promise<SessionMetadata>;
+  /** Read-only destinations permitted for the grant's task; null means policy is disabled. */
+  executionTargets?(sessionId: string): ExecutionTarget[] | null;
 }
 
 class ControlError extends Error {
@@ -460,7 +464,7 @@ export class AgentControlGateway {
       || value.v !== 1 || typeof value.id !== "string" || !ID.test(value.id)
       || value.instanceId !== this.instanceId || typeof value.token !== "string" || !SECRET.test(value.token)
       || typeof value.controller !== "string" || !SECRET.test(value.controller)
-      || !["create", "list", "providers", "status", "screen", "send", "result", "interrupt", "choose", "dismiss",
+      || !["create", "list", "providers", "execution-targets", "status", "screen", "send", "result", "interrupt", "choose", "dismiss",
         "skin-list", "skin-install", "skin-select"].includes(String(value.method))
       || !record(value.params)) throw new Error("Invalid envelope");
     let scope: ControlScope | null = tokenMatches(value.token, this.tokenHash) ? { kind: "person" } : null;
@@ -567,6 +571,13 @@ export class AgentControlGateway {
       const { buffer: _buffer, ...metadata } = session;
       return { session: metadata, capabilities };
     }
+    if (request.method === "execution-targets") {
+      fields(params, []);
+      if (!agent) throw new ControlError("NOT_ALLOWED", "Execution target discovery requires an orchestrator's scoped connection.");
+      if (!this.options.executionTargets) throw new ControlError("NOT_SUPPORTED", "Execution target discovery is unavailable.");
+      const targets = this.options.executionTargets(agent);
+      return { enabled: targets !== null, targets: targets ?? [] };
+    }
     if (request.method === "providers") {
       fields(params, []);
       return this.options.providers?.() ?? listProviderDirectory({ cli: () => null, limits: () => null });
@@ -666,7 +677,11 @@ export class AgentControlGateway {
 
   /** `create` on an orchestrator's own connection: a subagent of that orchestrator, under every delegation rule. */
   private async createSubagent(owner: string, parentSessionId: string, params: Record<string, unknown>): Promise<unknown> {
-    fields(params, ["provider", "cwd", "title", "profile", "model", "effort"]);
+    fields(params, ["provider", "cwd", "title", "profile", "model", "effort", "executionTargetId"]);
+    if (params.executionTargetId !== undefined && (typeof params.executionTargetId !== "string"
+      || !/^[a-zA-Z0-9_-]{1,80}$/u.test(params.executionTargetId))) {
+      throw new ControlError("INVALID_PARAMS", "Invalid executionTargetId; choose an id from execution-targets.");
+    }
     if (!isControlProvider(params.provider)) throw new ControlError("INVALID_PARAMS", `Unknown agent provider. Run the providers command to see which agents CanvasTTY can launch; provider must be one of: ${CONTROL_PROVIDERS.join(", ")}.`);
     if (params.profile === "yolo") throw new ControlError("REFUSED", "YOLO (bypass) is never given to a subagent. Omit --profile to get this session's profile, or pass auto, normal, acceptEdits or plan.");
     if (!this.options.spawnSubagent) throw new ControlError("NOT_SUPPORTED", "This CanvasTTY cannot create subagents through the control endpoint; use the canvastty_agents spawn_agent tool.");
@@ -683,6 +698,7 @@ export class AgentControlGateway {
     this.startingSubagents += 1;
     try {
       session = await this.options.spawnSubagent({ parentSessionId, provider, cwd,
+        ...(params.executionTargetId !== undefined ? { executionTargetId: params.executionTargetId as string } : {}),
         ...(title !== undefined ? { title } : {}),
         ...(params.profile !== undefined ? { profile: params.profile } : {}),
         ...(params.model !== undefined ? { model: params.model as string } : {}),

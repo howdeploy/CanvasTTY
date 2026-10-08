@@ -279,7 +279,7 @@ test("permission gate: the real RuntimeGateway accepts both implementations' req
         input
       });
       // Compared as text: the deep-nesting case is deeper than a structural comparison recurses.
-      outputs.push(JSON.stringify({ stdout: result.stdout, requests: seen.map(({ requestId: _ignored, ...rest }) => rest) }));
+      outputs.push(JSON.stringify({ stdout: result.stdout, requests: seen.map(({ requestId: _ignored, turnEpoch: _hostEpoch, ...rest }) => rest) }));
     }
     assert.equal(outputs[1], outputs[0], label);
     if (label === "plain command") assert.match(outputs[0], /saw Bash/u);
@@ -295,6 +295,28 @@ const HOOK_CASES = [
   { label: "working with an OpenCode session", provider: "opencode", state: "working", event: "UserPromptSubmit", input: { thread_id: "ses_abcXYZ09", prompt_id: "p".repeat(160) } },
   { label: "an OpenCode id of the wrong shape", provider: "opencode", state: "working", event: "UserPromptSubmit", input: { thread_id: "ses_a-b", turn_id: "t".repeat(161) } },
   { label: "needs approval", state: "needs_approval", event: "PermissionRequest", input: { conversation_id: "not-a-uuid" } },
+  { label: "completed Claude file write has hashes only", state: "working", event: "PostToolUse", input: {
+    turn_id: "tool-turn", tool_name: "Write", tool_input: { file_path: "/private/work/secret.txt", content: "secret file contents" },
+    tool_response: { filePath: "/private/work/secret.txt", type: "create" }
+  } },
+  { label: "failed Claude tool has a hash-only error", state: "working", event: "PostToolUseFailure", input: {
+    turn_id: "tool-turn", tool_name: "Bash", tool_input: { command: "npm test -- secret" }, error: "Exit code 1\nsecret output", is_interrupt: false
+  } },
+  { label: "interrupted Claude tool is not called an error", state: "working", event: "PostToolUseFailure", input: {
+    tool_name: "Bash", tool_input: { command: "npm test" }, error: "secret cancellation message", is_interrupt: true
+  } },
+  { label: "Codex structured nonzero output is an error", provider: "codex", state: "working", event: "PostToolUse", input: {
+    tool_name: "Bash", tool_input: { command: "npm test" }, tool_response: { exit_code: 2, stderr: "secret test output" }
+  } },
+  { label: "an explicit tool denial is not an error", provider: "codex", state: "working", event: "PostToolUse", input: {
+    tool_name: "Bash", tool_input: { command: "restricted action" }, tool_response: { status: "denied", error: "secret denial text" }
+  } },
+  { label: "Codex permission request has no outcome summary", provider: "codex", state: "needs_approval", event: "PermissionRequest", input: {
+    tool_name: "Bash", tool_input: { command: "sudo something" }
+  } },
+  { label: "Codex unstructured output remains unknown", provider: "codex", state: "working", event: "PostToolUse", input: {
+    tool_name: "Bash", tool_input: { command: "echo secret" }, tool_response: { stdout: "secret output" }
+  } },
   { label: "event of 80 characters", state: "idle", event: "E".repeat(80), input: {} },
   { label: "event of 81 characters", state: "idle", event: "E".repeat(81), input: {} },
   { label: "an unknown state", state: "sleeping", event: "Stop", input: {} },
@@ -360,7 +382,10 @@ test("lifecycle hook: the real RuntimeGateway turns both implementations' report
       }),
       input: JSON.stringify({ session_id: "0F8FAD5B-D9CB-469F-A165-70867728950E", turn_id: "turn-9", last_assistant_message: LONG_ANSWER })
     });
-    collected.push(structuredClone(signals));
+    collected.push(signals.map(({ id, signal }) => {
+      const { turnEpoch: _hostEpoch, ...implementationSignal } = signal;
+      return { id, signal: implementationSignal };
+    }));
   }
   assert.equal(collected[0].length, 1);
   assert.equal(collected[0][0].signal.threadId, "0f8fad5b-d9cb-469f-a165-70867728950e");

@@ -1,19 +1,16 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Terminal } from "@xterm/xterm";
-import "@xterm/xterm/css/xterm.css";
 import { CANVAS_LAUNCHER_ITEMS, PROVIDER_LABELS, type ProviderId } from "../../../src/shared/providerCatalog.ts";
 import {
   CompanionClient, forgetPairing, loadSaved, markApproved, startPairing,
-  type Action, type Output, type Overview, type Session,
+  type Action, type Overview, type Session,
 } from "./client.ts";
 import "./style.css";
+import type { CompanionQuestion } from "../../../src/shared/companion.ts";
 
 const statusNames: Record<Session["status"], string> = {
   idle: "Ready", working: "Working", needs_approval: "Needs attention",
   unavailable: "Activity unknown", done: "Done", failed: "Failed",
 };
-const keys = ["ctrl-c", "enter", "up", "down", "left", "right", "tab", "backspace", "escape"] as const;
-const keyLabels = ["Ctrl C", "Enter", "↑", "↓", "←", "→", "Tab", "⌫", "Esc"];
 const PIN_KEY = "canvastty.mobile.pins.v1";
 function savedPins(): string[] {
   try {
@@ -26,29 +23,6 @@ function message(error: unknown): string {
 }
 function shortDate(value: number): string {
   return Number.isFinite(value) && value > 0 ? new Date(value).toLocaleString() : "Unknown start";
-}
-
-function RawTerminal({ frame, sessionId }: { frame: Output | null; sessionId: string }) {
-  const element = useRef<HTMLDivElement>(null);
-  const terminal = useRef<Terminal | null>(null);
-  useEffect(() => {
-    if (!element.current) return;
-    const view = new Terminal({ convertEol: false, disableStdin: true, scrollback: 1200,
-      fontFamily: "\"JetBrains Mono\", \"Cascadia Code\", monospace", fontSize: 12,
-      theme: { background: "#292a35", foreground: "#f8f7f1" } });
-    view.open(element.current);
-    terminal.current = view;
-    return () => { terminal.current = null; view.dispose(); };
-  }, [sessionId]);
-  useEffect(() => {
-    const view = terminal.current;
-    if (!view || !frame) return;
-    if (frame.cols > 0 && frame.rows > 0 && (view.cols !== frame.cols || view.rows !== frame.rows))
-      view.resize(frame.cols, frame.rows);
-    if (frame.gap) view.reset();
-    if (frame.data) view.write(frame.data);
-  }, [frame]);
-  return <div className="terminal-scroll"><div className="terminal" ref={element} aria-label="Raw terminal output" /></div>;
 }
 
 export default function App() {
@@ -65,31 +39,22 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(true);
   const [filter, setFilter] = useState<ProviderId | "all">("all");
   const [pins, setPins] = useState(savedPins);
-  const [mode, setMode] = useState<"readable" | "raw">("readable");
-  const [readable, setReadable] = useState<{ sessionId: string; body: string } | null>(null);
-  const [frame, setFrame] = useState<{ sessionId: string; output: Output } | null>(null);
-  const [gapFor, setGapFor] = useState("");
-  const [draft, setDraft] = useState("");
+  const [readable, setReadable] = useState<{ sessionId: string; body: string; question?: CompanionQuestion | null } | null>(null);
+  const [replyDraft, setReplyDraft] = useState({ requestId: "", text: "" });
   const [rename, setRename] = useState<string | null>(null);
-  const [launch, setLaunch] = useState<ProviderId>("terminal");
   const [mutation, setMutation] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const pairController = useRef<AbortController | null>(null);
   const mutationInFlight = useRef(false);
   const viewRevision = useRef(0);
-  const outputCursor = useRef<{ sessionId: string; cursor: number | null }>({ sessionId: "", cursor: null });
 
   // Reset synchronously before the polling effect starts for a new selection.
   function selectSession(id: string, closeMenu = true) {
     if (closeMenu) setMenuOpen(false);
     if (id === selected) return;
     viewRevision.current += 1;
-    outputCursor.current = { sessionId: id, cursor: null };
-    setFrame(null);
-    setGapFor("");
     setReadable(null);
     setRename(null);
-    setDraft("");
     setSelected(id);
   }
 
@@ -176,30 +141,8 @@ export default function App() {
         }
         const sessionId = selected;
         if (sessionId && next.sessions.some(session => session.id === sessionId)) {
-          if (mode === "raw") {
-            let cursor = outputCursor.current.sessionId === sessionId ? outputCursor.current.cursor : null;
-            const chunks: string[] = [];
-            let gapSeen = false;
-            let last: Output | null = null;
-            // Consume bounded pages in order, then render once (React batches updates).
-            for (let page = 0; page < 4; page++) {
-              const result = await client.action<Output>({ type: "session.output", sessionId, cursor }, signal);
-              if (signal.aborted) return;
-              if (result.gap) { chunks.length = 0; gapSeen = true; }
-              chunks.push(result.data);
-              cursor = result.offset; // Absolute END offset, not start of this chunk.
-              last = result;
-              if (!result.hasMore) break;
-            }
-            if (last) {
-              outputCursor.current = { sessionId, cursor };
-              if (gapSeen) setGapFor(sessionId);
-              if (chunks.some(Boolean) || gapSeen) setFrame({ sessionId, output: { ...last, data: chunks.join(""), gap: gapSeen } });
-            }
-          } else {
-            const view = await client.action<{ body: string; revision: string }>({ type: "session.read", sessionId }, signal);
-            if (!signal.aborted) setReadable({ sessionId, body: view.body });
-          }
+          const view = await client.action<{ body: string; revision: string; question?: CompanionQuestion | null }>({ type: "session.read", sessionId }, signal);
+          if (!signal.aborted) setReadable({ sessionId, body: view.body, question: view.question });
         }
         delay = 2500;
       } catch (failure) {
@@ -227,7 +170,7 @@ export default function App() {
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", visibility);
     };
-  }, [client, selected, mode, refresh]);
+  }, [client, selected, refresh]);
 
   async function pair(event: FormEvent) {
     event.preventDefault();
@@ -261,6 +204,7 @@ export default function App() {
   }
   async function act<T>(action: Action, onSuccess?: (value: T) => void) {
     if (!client || mutationInFlight.current || !connected) return;
+    if (action.type === "session.interrupt" && !window.confirm("Stop this agent's current turn?")) return;
     const revision = viewRevision.current;
     mutationInFlight.current = true;
     setMutation(true);
@@ -280,6 +224,14 @@ export default function App() {
   }
   const sessions = overview?.sessions || [];
   const current = sessions.find(session => session.id === selected);
+  const question = readable?.sessionId === selected ? readable.question : null;
+  function reply(answer: string | number) {
+    if (!current || !question || !window.confirm(`Send this answer to ${current.title}?`)) return;
+    void act({ type: "session.reply", sessionId: current.id, requestId: question.id, answer }, () => {
+      setReadable(view => view ? { ...view, question: null } : view);
+      setReplyDraft({ requestId: "", text: "" });
+    });
+  }
   const sorted = sessions.filter(session => filter === "all" || session.provider === filter)
     .sort((a, b) => Number(pins.includes(b.id)) - Number(pins.includes(a.id)) || b.startedAt - a.startedAt);
   const groups = [
@@ -287,9 +239,6 @@ export default function App() {
     { label: "Working", items: sorted.filter(session => session.status === "working") },
     { label: "Other sessions · recent first", items: sorted.filter(session => !["needs_approval", "failed", "working"].includes(session.status)) },
   ];
-  const available = CANVAS_LAUNCHER_ITEMS.filter(provider => overview?.providers?.[provider]);
-  const launchProvider = available.includes(launch) ? launch : available[0];
-  const canInput = connected && overview?.permissions.allowInput && !mutation && current?.exitCode === null;
 
   return <main className="shell">
     <header className="topbar">
@@ -298,12 +247,12 @@ export default function App() {
         {client?.state === "approved" && <button className="menu-toggle" type="button" aria-expanded={menuOpen} aria-controls="session-menu" onClick={() => setMenuOpen(value => !value)}>{menuOpen ? "Close menu" : "Sessions"}</button>}
       </div>
     </header>
-    {!globalThis.isSecureContext && <p className="alert">Open this companion through Tailscale Serve HTTPS or USB reverse loopback; Web Crypto requires a secure context.</p>}
+    {!globalThis.isSecureContext && <p className="alert">Open this companion through trusted private-network HTTPS, Tailscale Serve HTTPS, or USB reverse loopback; Web Crypto requires a secure context.</p>}
     {error && <p className="alert" role="alert">{error}</p>}
     {!client ? <section className="pair-card">
       <h2>Pair this browser</h2><p>On the desktop, enable the companion, choose shared sessions and open a six-digit pairing code. Approval is required on the desktop.</p>
       <form onSubmit={pair}>
-        <p>Host: <code>{location.origin}</code>. To pair a different desktop, open its own Tailscale HTTPS or USB loopback /mobile/ address first.</p>
+        <p>Host: <code>{location.origin}</code>. To pair a different desktop, open its own trusted private-network HTTPS, Tailscale HTTPS, or USB loopback /mobile/ address first.</p>
         <label>Six-digit code<input type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={pin} onChange={event => setPin(event.target.value.replace(/\D/g, "").slice(0, 6))} autoComplete="one-time-code" required /></label>
         <button className="primary" disabled={pairBusy || !globalThis.isSecureContext}>{pairBusy ? "Pairing…" : "Request pairing"}</button>
       </form>
@@ -316,23 +265,35 @@ export default function App() {
         <div className="section-head"><div><span className="eyebrow">DESKTOP / SHARED</span><h2>Shared sessions</h2></div><button className="subtle" onClick={() => setRefresh(value => value + 1)}>Refresh</button></div>
         <label className="compact">Provider<select value={filter} onChange={event => setFilter(event.target.value as ProviderId | "all")}><option value="all">All providers</option>{CANVAS_LAUNCHER_ITEMS.map(provider => <option key={provider} value={provider}>{PROVIDER_LABELS[provider]}</option>)}</select></label>
         {groups.map(group => group.items.length > 0 && <section key={group.label} className="session-group"><h3>{group.label}</h3>{group.items.map(session => <div key={session.id} className={`session-item ${selected === session.id ? "active" : ""}`}>
-          <button className="session-select" aria-current={selected === session.id ? "true" : undefined} onClick={() => selectSession(session.id)}><span className="session-title">{session.title}</span><span className="session-meta">{PROVIDER_LABELS[session.provider]} · {statusNames[session.status]}</span><span className="session-meta">{shortDate(session.startedAt)}</span></button>
+          <button className="session-select" aria-current={selected === session.id ? "true" : undefined} onClick={() => selectSession(session.id)}><span className="session-title">{session.title}</span><span className="session-meta">{PROVIDER_LABELS[session.provider]} · {statusNames[session.status]}</span><span className="session-meta">{shortDate(session.startedAt)}</span>{session.attention?.length ? <span className="session-meta" role="status">Attention: {session.attention.at(-1)?.kind}</span> : null}</button>
           <button aria-label={pins.includes(session.id) ? `Unpin ${session.title}` : `Pin ${session.title}`} aria-pressed={pins.includes(session.id)} className="pin" onClick={() => togglePin(session.id)}>{pins.includes(session.id) ? "★" : "☆"}</button>
         </div>)}</section>)}
         {!sorted.length && <p className="muted">{sessions.length ? "No sessions for this provider." : "No sessions shared yet. Select sessions on the desktop."}</p>}
-        {overview?.permissions.allowCreate && <form className="create" onSubmit={event => { event.preventDefault(); if (launchProvider) void act<{ id: string }>({ type: "session.create", provider: launchProvider }, session => selectSession(session.id)); }}><label className="compact">New session in the desktop’s shared workspace<select value={launchProvider || ""} onChange={event => setLaunch(event.target.value as ProviderId)}>{available.map(provider => <option key={provider} value={provider}>{PROVIDER_LABELS[provider]}</option>)}</select></label><button type="submit" disabled={!connected || mutation || !launchProvider}>Create session</button></form>}
         <button className="subtle forget" onClick={disconnect}>Forget connection on this browser</button>
       </aside>
       <section className="detail" aria-label="Session detail">
-        {!current ? <p className="muted">Choose a shared session from the menu to inspect its output.</p> : <>
+        {!current ? <p className="muted">Choose a shared session to view its status and questions.</p> : <>
           <div className="detail-head"><div><span className="eyebrow">{PROVIDER_LABELS[current.provider]} · {statusNames[current.status]}</span><h2>{current.title}</h2><small>Started {shortDate(current.startedAt)}{current.exitCode !== null ? ` · Exit ${current.exitCode}` : ""}</small></div><div className="detail-actions">
-            {overview?.permissions.allowInput && <button onClick={() => setRename(current.title)}>Rename</button>}
+            {overview?.permissions.allowRename && <button onClick={() => setRename(current.title)}>Rename</button>}
             {overview?.permissions.allowClose && <button className="danger" disabled={!connected || mutation} onClick={() => { if (window.confirm(`Close ${current.title} on the desktop?`)) void act({ type: "session.close", sessionId: current.id }, () => selectSession("")); }}>Close</button>}
+            {overview?.permissions.allowInterrupt && current.exitCode === null && <button disabled={!connected || mutation} onClick={() => void act({ type: "session.interrupt", sessionId: current.id })}>Stop turn</button>}
           </div></div>
           {rename !== null && <form className="rename" onSubmit={event => { event.preventDefault(); const title = rename.trim(); if (title) void act({ type: "session.rename", sessionId: current.id, title }, () => setRename(null)); }}><input aria-label="New session title" maxLength={80} value={rename} onChange={event => setRename(event.target.value)} /><button disabled={!connected || mutation || !rename.trim()}>Save name</button><button type="button" onClick={() => setRename(null)}>Cancel</button></form>}
-          <div className="tabs"><button aria-pressed={mode === "readable"} onClick={() => { if (mode !== "readable") { setFrame(null); setMode("readable"); } }}>Readable</button><button aria-pressed={mode === "raw"} onClick={() => { if (mode !== "raw") { outputCursor.current = { sessionId: current.id, cursor: null }; setFrame(null); setGapFor(""); setMode("raw"); } }}>Raw terminal</button></div>
-          {mode === "raw" ? <>{gapFor === current.id && <p className="notice" role="status">Earlier terminal output is no longer buffered; showing the available tail.</p>}<RawTerminal key={current.id} sessionId={current.id} frame={frame?.sessionId === current.id ? frame.output : null} /></> : <pre className="readable">{(readable?.sessionId === current.id && readable.body) || "Waiting for session output…"}</pre>}
-          {overview?.permissions.allowInput && <><form className="compose" onSubmit={event => { event.preventDefault(); if (draft.trim()) void act({ type: "session.input", sessionId: current.id, text: draft }, () => setDraft("")); }}><label htmlFor="message">Send text to terminal</label><textarea id="message" value={draft} onChange={event => setDraft(event.target.value)} maxLength={8000} rows={3} placeholder="Type a message…" disabled={!canInput} /><button className="primary" disabled={!canInput || !draft.trim()}>Send ↵</button></form><div className="keybar" aria-label="Terminal keys">{keys.map((key, index) => <button key={key} type="button" disabled={!canInput} aria-label={key} onClick={() => void act({ type: "session.key", sessionId: current.id, key })}>{keyLabels[index]}</button>)}</div></>}
+          <p className="notice">This phone receives status, task summaries and questions. Terminal output and files stay on the desktop.</p>
+          <pre className="readable">{(readable?.sessionId === current.id && readable.body) || `${current.title}\nStatus: ${statusNames[current.status]}`}</pre>
+          {question && <section aria-label="Agent question" className="pair-card">
+            <h3>Agent question</h3><pre>{question.question}</pre>
+            {!overview?.permissions.allowReply ? <p className="notice">Reply access is disabled on the desktop.</p>
+              : question.options.length ? question.options.map((option, index) => <button key={index}
+                disabled={!connected || mutation || Date.now() >= question.expiresAt}
+                onClick={() => reply(index)}>{option}</button>)
+              : <form onSubmit={event => { event.preventDefault(); reply(replyDraft.requestId === question.id ? replyDraft.text : ""); }}>
+                <textarea aria-label="Answer" maxLength={2000} value={replyDraft.requestId === question.id ? replyDraft.text : ""}
+                  onChange={event => setReplyDraft({ requestId: question.id, text: event.target.value })} />
+                <button disabled={!connected || mutation || Date.now() >= question.expiresAt ||
+                  replyDraft.requestId !== question.id || !replyDraft.text.trim()}>Send answer</button>
+              </form>}
+          </section>}
         </>}
       </section>
     </div>}

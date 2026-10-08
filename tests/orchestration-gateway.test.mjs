@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { SecretGrantService } from "../src/main/services/SecretGrantService.ts";
 import { AgentControlService } from "../src/main/services/AgentControlService.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { OrchestrationGateway } from "../src/main/services/agent-browser/OrchestrationGateway.ts";
@@ -65,7 +66,7 @@ class TestClient {
 
 }
 
-async function fixture(t) {
+async function fixture(t, integrations = {}) {
   const directory = await mkdtemp(join(tmpdir(), "canvastty-orchestration-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const calls = [];
@@ -73,7 +74,7 @@ async function fixture(t) {
   const control = new AgentControlService(terminals);
   const gateway = new OrchestrationGateway({
     runtimeDirectory: join(directory, "runtime"),
-    handler: new ScopedOrchestrationHandler(control),
+    handler: new ScopedOrchestrationHandler(control, null, undefined, integrations),
     windowsHostPath: WINDOWS_PIPE_HOST
   });
   await gateway.start();
@@ -364,10 +365,49 @@ test("cancel reaches the running command and the answer is CANCELED, not the lat
   assert.equal(response.error?.code, "CANCELED");
 });
 
+test("secret worker receives orchestration cancellation and connection-close aborts", { timeout: 10_000 }, async t => {
+  for (const mode of ["cancel", "disconnect"]) {
+    const integrations = {}, { terminals, gateway } = await fixture(t, integrations);
+    const row = terminals.create({ provider: "codex", cwd: process.cwd(), profile: "normal", position: { x: 0, y: 0 }, role: "orchestrator" });
+    let started, aborted, finish, workerSignal;
+    const startedPromise = new Promise(resolve => { started = resolve; });
+    const abortedPromise = new Promise(resolve => { aborted = resolve; });
+    const grants = new SecretGrantService({
+      getSession: id => id === row.id ? { provider: "codex", cwd: process.cwd(), profile: "normal", active: true } : null,
+      getSecret: async () => "fake-gateway-secret",
+      execute: request => {
+        workerSignal = request.signal;
+        request.signal.addEventListener("abort", aborted, { once: true }); started();
+        return new Promise(resolve => { finish = resolve; }); // Deliberately ignores abort when producing its result.
+      }
+    });
+    integrations.secretGrants = grants;
+    t.after(() => { grants.sessionEnded(row.id); terminals.disposeAll(); });
+    grants.approve(grants.requestSecret(row.id, "OPENAI_API_KEY", "Cancelable gateway request.").id, "session");
+    const { client } = await authenticatedClient(gateway, gateway.registerOrchestrator({ terminalSessionId: row.id }));
+    t.after(() => client.socket.destroy());
+    const command = { v: ORCHESTRATION_BRIDGE_PROTOCOL_VERSION, type: "request", id: `secret-${mode}`, tool: "run_secret_request",
+      arguments: { secretId: "OPENAI_API_KEY", method: "POST", path: "responses", body: { input: "fake" } } };
+    const response = mode === "cancel" ? line(client, command) : (client.send(command), null);
+    await startedPromise;
+    if (mode === "cancel") client.send({ v: ORCHESTRATION_BRIDGE_PROTOCOL_VERSION, type: "cancel", id: command.id });
+    else client.socket.destroy();
+    await abortedPromise;
+    assert.equal(workerSignal.aborted, true, mode);
+    if (response) { const answer = await response; assert.equal(answer.error?.code, "CANCELED"); assert.equal(answer.result, undefined); }
+    finish({ status: 200, body: "late secret output", truncated: false });
+    assert.equal(grants.listGrants().length, 1, "request cancellation does not revoke human approval");
+  }
+});
+
 test("a spawn_agent canceled while it was starting closes the agent it created", async () => {
   const controller = new AbortController();
   const canceled = [];
   const control = {
+    executionTargets: () => null,
+    isReadOnlyReviewer: () => false,
+    assertInputAllowed: () => undefined,
+    taskBudget: () => null,
     status: () => ({ role: "orchestrator", provider: "codex" }),
     profileFor: () => ({ profile: "normal", inherited: true }),
     spawn: async () => {
@@ -691,6 +731,8 @@ test("a send_to_agent canceled while its text waited delivers nothing and answer
   const controller = new AbortController();
   let received = null;
   const control = {
+    isReadOnlyReviewer: () => false,
+    assertInputAllowed: () => undefined,
     status: (id) => id === "orchestrator-1" ? { role: "orchestrator", provider: "codex" } : { id, parentSessionId: "orchestrator-1", provider: "codex" },
     send: async (_id, _text, _submit, signal) => {
       received = signal;

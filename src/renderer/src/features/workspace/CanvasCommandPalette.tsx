@@ -16,6 +16,9 @@ import {
   CanvasMenuRow,
   CanvasMenuSub
 } from "../../components/CanvasMenuPrimitives";
+import { backlogTerminalApi } from "./backlogRendererApi";
+import { backlogText } from "./workspaceBacklogText";
+import { useDialogFocus } from "./useDialogFocus";
 
 interface CanvasCommandPaletteProps {
   locale: LocaleId;
@@ -30,18 +33,21 @@ interface CanvasCommandPaletteProps {
   onFitCanvas(): void;
   onOpenBrowser(): void;
   onOpenSettings(): void;
+  onOpenGroupPrompt(): void;
+  onSearchResult(result: { sessionId: string; line: number; text: string; offset: number }, query: string): void;
   onClose(): void;
 }
 
 type CommandItem = {
   id: string;
-  group: "sessions" | "actions";
-  kind: "session" | "provider" | "action";
+  group: "sessions" | "actions" | "outputs";
+  kind: "session" | "provider" | "action" | "output";
   label: string;
   searchDetail: string;
   icon?: UiIconName;
   provider?: ProviderId;
   shortcut?: string;
+  output?: { sessionId: string; line: number; text: string; offset: number };
   run(): void;
 };
 
@@ -58,12 +64,29 @@ export function CanvasCommandPalette({
   onFitCanvas,
   onOpenBrowser,
   onOpenSettings,
+  onOpenGroupPrompt,
+  onSearchResult,
   onClose
 }: CanvasCommandPaletteProps): React.JSX.Element {
   const input = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
-  const commands = useMemo<CommandItem[]>(() => [
+  const [outputResults, setOutputResults] = useState<Array<{ sessionId: string; line: number; text: string; offset: number }>>([]);
+  const [prunedOutputSessions, setPrunedOutputSessions] = useState<string[]>([]);
+  const [outputError, setOutputError] = useState("");
+  const outputRequest = useRef(0);
+  const restoreFocusOnClose = useRef(true);
+  const close = (restoreFocus = true): void => {
+    restoreFocusOnClose.current = restoreFocus;
+    onClose();
+  };
+  useDialogFocus(dialogRef, {
+    onEscape: () => close(),
+    initialFocus: () => input.current,
+    restoreFocus: () => restoreFocusOnClose.current
+  });
+  const baseCommands = useMemo<CommandItem[]>(() => [
     ...sessions.map((session) => ({
       id: `session:${session.id}`,
       group: "sessions" as const,
@@ -147,9 +170,59 @@ export function CanvasCommandPalette({
       icon: "settings",
       shortcut: window.canvasTTY.window.isMacOS ? "⌘," : "Ctrl+,",
       run: onOpenSettings
+    },
+    {
+      id: "prompt:selected-group",
+      group: "actions",
+      kind: "action",
+      label: backlogText(locale, "sendGroupPrompt"),
+      searchDetail: t(locale, "canvasMenuActions"),
+      icon: "blocks",
+      run: onOpenGroupPrompt
     }
-  ], [launcherItems, locale, onAddFiles, onCreateNote, onCreateRegion, onFitCanvas, onFocusSession, onLaunch, onOpenBrowser,
-    onOpenSettings, onPasteFiles, sessions]);
+  ], [launcherItems, locale, onAddFiles, onPasteFiles, onCreateNote, onCreateRegion, onFitCanvas, onFocusSession, onLaunch, onOpenBrowser, onOpenGroupPrompt, onOpenSettings, sessions]);
+  useEffect(() => {
+    const search = query.trim();
+    const version = ++outputRequest.current;
+    setOutputError("");
+    setPrunedOutputSessions([]);
+    if (!search) {
+      setOutputResults([]);
+      setPrunedOutputSessions([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void backlogTerminalApi().searchOutput(search, sessions.map((session) => session.id)).then((result) => {
+        if (version !== outputRequest.current) return;
+        setOutputResults(result.matches.slice(0, 80));
+        setPrunedOutputSessions(result.prunedSessionIds);
+      }).catch((reason: unknown) => {
+        if (version !== outputRequest.current) return;
+        setOutputResults([]);
+        setPrunedOutputSessions([]);
+        setOutputError(reason instanceof Error ? reason.message : String(reason));
+      });
+    }, 90);
+    return () => {
+      window.clearTimeout(timer);
+      if (outputRequest.current === version) outputRequest.current += 1;
+    };
+  }, [query, sessions]);
+  const commands = useMemo<CommandItem[]>(() => [
+    ...baseCommands,
+    ...outputResults.map((output, index) => {
+      const session = sessions.find((candidate) => candidate.id === output.sessionId);
+      return {
+        id: `output:${output.sessionId}:${output.offset}:${index}`,
+        group: "outputs" as const,
+        kind: "output" as const,
+        label: `${session?.title ?? output.sessionId} · ${backlogText(locale, "outputLine")} ${output.line}`,
+        searchDetail: output.text,
+        output,
+        run: () => onSearchResult(output, query.trim())
+      };
+    })
+  ], [baseCommands, locale, onSearchResult, outputResults, query, sessions]);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase(locale);
     if (!normalized) return commands;
@@ -160,14 +233,15 @@ export function CanvasCommandPalette({
   const selectedIndex = Math.min(selected, Math.max(0, filtered.length - 1));
   const sessionCommands = filtered.filter((command) => command.group === "sessions");
   const actionCommands = filtered.filter((command) => command.group === "actions");
+  const outputCommands = filtered.filter((command) => command.group === "outputs");
+  const hasOutputSection = outputCommands.length > 0 || prunedOutputSessions.length > 0;
 
-  useEffect(() => input.current?.focus({ preventScroll: true }), []);
   useEffect(() => setSelected(0), [query]);
 
   const run = (command: CommandItem | undefined): void => {
     if (!command) return;
     command.run();
-    onClose();
+    close(false);
   };
 
   const renderCommand = (command: CommandItem): React.JSX.Element => {
@@ -216,6 +290,17 @@ export function CanvasCommandPalette({
       );
     }
 
+    if (command.kind === "output" && command.output) {
+      return (
+        <CanvasMenuRow {...sharedProps} indent
+          right={<CanvasMenuSub>{command.label.split(" · ").slice(1).join(" · ")}</CanvasMenuSub>} key={command.id}>
+          <span className="canvas-command-palette__output-result">
+            <strong>{command.label.split(" · ")[0]}</strong><code>{command.output.text}</code>
+          </span>
+        </CanvasMenuRow>
+      );
+    }
+
     return (
       <CanvasMenuRow
         {...sharedProps}
@@ -232,19 +317,18 @@ export function CanvasCommandPalette({
       className="canvas-command-palette__backdrop"
       data-interactive="true"
       onPointerDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) close();
       }}
     >
       <section
+        ref={dialogRef}
         className="canvas-menu canvas-command-palette"
         role="dialog"
         aria-modal="true"
         aria-label={t(locale, "commandPalette")}
+        tabIndex={-1}
         onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            onClose();
-          } else if (event.key === "ArrowDown") {
+          if (event.key === "ArrowDown") {
             event.preventDefault();
             setSelected((current) => filtered.length === 0 ? 0 : (current + 1) % filtered.length);
           } else if (event.key === "ArrowUp") {
@@ -269,7 +353,7 @@ export function CanvasCommandPalette({
         </label>
         <div className="canvas-command-palette__results" role="listbox">
           {filtered.length === 0 && (
-            <p className="canvas-command-palette__empty">{t(locale, "commandPaletteEmpty")}</p>
+            <p className="canvas-command-palette__empty">{outputError || t(locale, "commandPaletteEmpty")}</p>
           )}
           {sessionCommands.length > 0 && (
             <>
@@ -277,9 +361,17 @@ export function CanvasCommandPalette({
               {sessionCommands.map(renderCommand)}
             </>
           )}
-          {sessionCommands.length > 0 && actionCommands.length > 0 && <CanvasMenuDivider />}
+          {hasOutputSection && (
+            <>
+              {sessionCommands.length > 0 && <CanvasMenuDivider />}
+              <CanvasMenuLabel>{backlogText(locale, "searchOutput")}</CanvasMenuLabel>
+              {prunedOutputSessions.length > 0 && <p className="canvas-command-palette__history-warning" role="status">{backlogText(locale, "outputHistoryPruned")}</p>}
+              {outputCommands.map(renderCommand)}
+            </>
+          )}
           {actionCommands.length > 0 && (
             <>
+              {(sessionCommands.length > 0 || hasOutputSection) && <CanvasMenuDivider />}
               <CanvasMenuLabel>{t(locale, "canvasMenuActions")}</CanvasMenuLabel>
               {actionCommands.map(renderCommand)}
             </>

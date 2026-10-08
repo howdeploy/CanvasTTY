@@ -32,59 +32,41 @@ test("unavailable paths and control characters reject the complete drop", () => 
   }
 });
 
-test("native file drops use the preload bridge and xterm paste without submitting", async () => {
+test("native file drops go through a preview before paste", async () => {
   const preload = await readFile(new URL("../src/preload/index.ts", import.meta.url), "utf8");
   const card = await readFile(new URL("../src/renderer/src/features/terminal/TerminalCard.tsx", import.meta.url), "utf8");
+  const preview = await readFile(new URL("../src/renderer/src/features/workspace/WorkspaceContextPreview.tsx", import.meta.url), "utf8");
   assert.match(preload, /webUtils\.getPathForFile\(file\)/);
   assert.match(card, /onDragOver=\{[\s\S]*?event\.preventDefault\(\)/);
-  assert.match(card, /onDrop=\{[\s\S]*?sessionExited\.current \|\| renaming[\s\S]*?fileDropText\(Array\.from\(event\.dataTransfer\.files\)\)[\s\S]*?terminal\.paste\(text\)/);
+  assert.match(card, /onDropContext\(session\.id/);
+  assert.match(preview, /outsideProject/);
+  assert.match(preview, /onConfirm\(text\)/);
 });
 
-test("drop handler consumes native file drops once and leaves other drag payloads alone", async () => {
+test("drop handler previews supported payloads once, never pastes, and ignores closed cards", async () => {
   const card = await readFile(new URL("../src/renderer/src/features/terminal/TerminalCard.tsx", import.meta.url), "utf8");
   const handler = card.match(/onDrop=\{([\s\S]*?)\n      \}\}/)?.[1];
   assert.ok(handler);
-  const pasted = [];
-  const errors = [];
-  const selected = [];
+  const previews = [], pasted = [];
   const sessionExited = { current: false };
-  let prevented = 0;
-  let stopped = 0;
-  let focused = 0;
+  let prevented = 0, stopped = 0;
   const file = { name: "video.mp4" };
   const onDrop = runInNewContext(`(${handler}\n})`, {
-    window: { canvasTTY: { terminal: { fileDropText: (files) => {
-      assert.equal(files[0], file);
-      return terminalFileDropText(["/videos/my video.mp4"], "linux");
-    } } } },
-    terminalRef: { current: {
-      focus: () => focused++,
-      paste: (text) => pasted.push(text),
-      write: (text) => errors.push(text)
-    } },
-    sessionExited,
-    renaming: false,
-    session: { id: "drop-target" },
-    onSelect: (id) => selected.push(id),
-    locale: "en",
-    t: () => "Drop failed"
+    terminalRef: { current: { paste: text => pasted.push(text) } },
+    onDropContext: (id,payload,point) => previews.push({id,payload,point}),
+    sessionExited, renaming:false, session:{id:"drop-target"}
   });
   const event = {
-    dataTransfer: { types: ["Files"], files: [file] },
-    preventDefault: () => prevented++,
-    stopPropagation: () => stopped++
+    dataTransfer:{types:["Files"],files:[file],getData:()=>""},clientX:1,clientY:2,
+    preventDefault:()=>prevented++,stopPropagation:()=>stopped++
   };
   onDrop(event);
-  assert.deepEqual(pasted, ["'/videos/my video.mp4' "]);
-  assert.deepEqual(selected, ["drop-target"]);
-  assert.equal(focused, 1);
-  assert.deepEqual(errors, []);
-  sessionExited.current = true;
-  onDrop(event);
-  assert.equal(pasted.length, 1);
-  assert.equal(prevented, 2);
-  assert.equal(stopped, 2);
-  onDrop({ ...event, dataTransfer: { types: ["text/plain"], files: [] } });
-  assert.equal(prevented, 2);
-  assert.equal(stopped, 2);
+  assert.equal(previews.length,1);assert.equal(previews[0].id,"drop-target");
+  assert.equal(previews[0].payload.files[0],file);assert.equal(pasted.length,0);
+  sessionExited.current=true;onDrop(event);assert.equal(previews.length,1);
+  onDrop({...event,dataTransfer:{types:["application/x-unsupported"],files:[],getData:()=>""}});
+  assert.equal(prevented,2);assert.equal(stopped,2);
+  sessionExited.current=false;
+  onDrop({...event,dataTransfer:{types:["text/plain"],files:[],getData:type=>type==="text/plain" ? "context" : ""}});
+  assert.equal(previews[1].payload.text,"context");assert.equal(pasted.length,0);
 });

@@ -1,3 +1,4 @@
+import { publicEndpoint } from "../../shared/executionPolicy.ts";
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -13,6 +14,8 @@ import { claudeCoreSettingsKey, coreOwnedLaunchArgument, parseInlineSettings } f
 import { MAX_PLUGIN_SLOT_BYTES } from "./TerminalSessionStore.ts";
 import { LaunchRefusal } from "./launchRefusal.ts";
 import { MAX_INSPECTED_CONFIG_BYTES, parseJsonc, readInspectedFile } from "./inspectedConfig.ts";
+import { selectedAccountHome, selectedAccountId, ACCOUNTS_PLUGIN_ID } from "./accountHomeIsolation.ts";
+import { accountContributionDomains } from "./isolation/configuredApiDomains.ts";
 
 /** A trusted plugin service that declared launch options (PluginManager.launchContributors). */
 export interface LaunchContributor {
@@ -20,6 +23,8 @@ export interface LaunchContributor {
   pluginName: string;
   serviceId: string;
   launch: PluginServiceLaunch;
+  /** Host-computed private data directory. Never sent to the plugin or accepted from its RPC response. */
+  dataDir?: string;
   /** The plugin holds the `secrets` permission, so `secretEnv` may name its secrets. */
   secrets: boolean;
 }
@@ -41,6 +46,8 @@ export interface LaunchContext {
   profile: LaunchProfileId;
   role: SessionRole;
   cwd: string;
+  /** Original person-selected task project, retained when an environment relocates cwd. Host-owned. */
+  projectRoot?: string;
   parentSessionId?: string;
   /** True when the app is bringing back a saved session. */
   restoring: boolean;
@@ -58,9 +65,17 @@ export interface LaunchContext {
    * it trusted there for this run's agent; absent otherwise.
    */
   trustedFolder?: string;
+  /** Host capability: request public route evidence from the selected Accounts producer. */
+  accountRouteEvidence?: true;
 }
 
 export type LaunchSessionContext = Omit<LaunchContext, "options" | "chosen"> & { options: Record<string, PluginLaunchValues> };
+
+export interface AccountRouteEvidence {
+  model: string;
+  endpoint: string;
+  kind: "ollama" | "ollama-cloud" | "api-key";
+}
 
 export type PreparedLaunch =
   | {
@@ -73,6 +88,12 @@ export type PreparedLaunch =
     envSources: Record<string, string>;
     /** A contributor runs the agent on another model than its vendor's: "auto" becomes accept-edits. */
     thirdPartyModel: boolean;
+    /** Host-derived selected Accounts CLI home, passed transiently to AgentIsolation for exact-path validation. */
+    accountHome?: string;
+    accountId?:string;
+    accountRoute?: AccountRouteEvidence;
+    /** Model API hosts of the selected model account (allowed-domains mode keeps them reachable). */
+    apiDomains?: string[];
     cleanup(): Promise<void>;
   }
   | { ok: false; reason: string };
@@ -113,6 +134,11 @@ export class LaunchPipeline {
     this.timeoutMs = dependencies.timeoutMs ?? LAUNCH_PREPARE_TIMEOUT_MS;
   }
 
+  /** Whether this plugin declared its launch options safe for an orchestrator to choose (`launch.delegable`). */
+  delegable(pluginId: string): boolean {
+    return this.dependencies.contributors().some((candidate) => candidate.pluginId === pluginId && candidate.launch.delegable === true);
+  }
+
   /** Removes file folders left by a previous run of the app. */
   clearRuns(): Promise<void> {
     return rm(this.dependencies.runsRoot, { recursive: true, force: true });
@@ -145,7 +171,8 @@ export class LaunchPipeline {
    * Checks launcher values against each plugin's declared fields and fills defaults.
    * Throws with a person-readable reason; returns undefined when nothing was chosen.
    */
-  normalizeOptions(provider: ProviderId, candidate: unknown, context?: { delegated?: boolean }): Record<string, PluginLaunchValues> | undefined {
+  normalizeOptions(provider: ProviderId, candidate: unknown,
+    context?: { delegated?: boolean; inherited?: Readonly<Record<string, Readonly<Record<string, boolean | string>>>> }): Record<string, PluginLaunchValues> | undefined {
     if (candidate === undefined) return undefined;
     if (!isRecord(candidate) || Object.keys(candidate).length > MAX_OPTION_PLUGINS) throw new Error("Launch options are invalid.");
     if (Object.keys(candidate).length === 0) return undefined;
@@ -156,7 +183,7 @@ export class LaunchPipeline {
       const contributor = contributors.get(pluginId);
       if (!contributor) throw new Error(unavailableReason(pluginId));
       // An orchestrator picks options for its subagents only where the plugin said that is safe.
-      if (context?.delegated && contributor.launch.delegable !== true) {
+      if (context?.delegated && contributor.launch.delegable !== true && !sameAsInherited(raw, context.inherited?.[pluginId])) {
         throw new LaunchRefusal(`${contributor.pluginName} has not declared its launch options safe for an orchestrator to choose; only the person chooses them, in the launcher.`);
       }
       const { appliesTo, fields } = contributor.launch;
@@ -267,12 +294,28 @@ export class LaunchPipeline {
     const args: string[] = [];
     const secrets: string[] = [];
     let thirdPartyModel = false;
+    let accountHome: string | undefined;
+    let accountId:string|undefined;
+    let accountRoute: AccountRouteEvidence | undefined;
+    const apiDomains = new Set<string>();
     for (const answer of answers) {
       if ("refuse" in answer) return refuse(answer.refuse);
     }
     for (const answer of answers as Array<{ contributor: LaunchContributor; contribution: Contribution }>) {
       const { contributor, contribution } = answer;
       const name = contributor.pluginName;
+      if (contribution.accountRoute !== undefined) {
+        if (contributor.pluginId !== ACCOUNTS_PLUGIN_ID || !context.accountRouteEvidence || !contribution.accountId) {
+          return refuse(`${name} cannot supply account route evidence for this launch.`);
+        }
+        accountRoute = { ...contribution.accountRoute };
+      }
+      if(contribution.accountId!==undefined) {
+        if(contributor.pluginId!==ACCOUNTS_PLUGIN_ID)return refuse(`${name} cannot attribute the selected model account.`);
+        if(contribution.accountId!==selectedAccountId(context.options))return refuse(`${name} returned an account attribution that differs from the selected account.`);
+        accountId=contribution.accountId;
+      }
+      if (contributor.pluginId === ACCOUNTS_PLUGIN_ID) for (const host of accountContributionDomains(contribution)) apiDomains.add(host);
       if (context.provider === "terminal" && contribution.args.length > 0) {
         return refuse(`${name} added arguments to a plain terminal, which takes none.`);
       }
@@ -312,7 +355,12 @@ export class LaunchPipeline {
       for (const [key, value] of Object.entries(contribution.env)) {
         const conflict = claim(key);
         if (conflict) return refuse(conflict);
-        env[key] = expand(value);
+        const expanded = expand(value);
+        env[key] = expanded;
+        // Only the host's Accounts service may reopen its selected provider home below plugin-data. This value is
+        // derived from the trusted contributor record, not a plugin-returned grant or an inherited environment.
+        accountHome = selectedAccountHome(context.provider, contributor.pluginId, contributor.dataDir,
+          context.options[contributor.pluginId]?.account, { [key]: expanded }) ?? accountHome;
       }
       for (const [key, secretKey] of Object.entries(contribution.secretEnv)) {
         const conflict = claim(key);
@@ -327,7 +375,8 @@ export class LaunchPipeline {
       args.push(...contributedArgs.map(expand));
       thirdPartyModel ||= contribution.thirdPartyModel === true;
     }
-    return { ok: true, env, args, secrets, envSources, thirdPartyModel, cleanup };
+    return { ok: true, env, args, secrets, envSources, thirdPartyModel, ...(accountHome ? { accountHome } : {}), ...(accountId ? {accountId} : {}),
+      ...(accountRoute ? { accountRoute } : {}), ...(apiDomains.size ? { apiDomains: [...apiDomains] } : {}), cleanup };
   }
 
   private async ask(
@@ -337,6 +386,7 @@ export class LaunchPipeline {
   ): Promise<{ contributor: LaunchContributor; contribution: Contribution } | { refuse: string }> {
     const name = contributor.pluginName;
     const params: LaunchContext = { ...context, options: chosen ? context.options[contributor.pluginId]! : {}, chosen };
+    if (contributor.pluginId !== ACCOUNTS_PLUGIN_ID || !chosen) delete params.accountRouteEvidence;
     let timer: NodeJS.Timeout | undefined;
     try {
       const answer = await Promise.race([
@@ -370,6 +420,8 @@ interface Contribution {
   files: Array<{ relPath: string; content: string }>;
   /** Only ever restricts (auto → accept-edits), so a launch policy may set it too. */
   thirdPartyModel?: boolean;
+  accountId?:string;
+  accountRoute?: AccountRouteEvidence;
   refuse?: string;
 }
 
@@ -377,7 +429,7 @@ interface Contribution {
 function validContribution(value: unknown): Contribution | string {
   if (value === null) return { env: {}, secretEnv: {}, args: [], files: [] };
   if (!isRecord(value)) return "not an object";
-  const unknown = Object.keys(value).find((key) => !["env", "secretEnv", "args", "files", "thirdPartyModel", "refuse"].includes(key));
+  const unknown = Object.keys(value).find((key) => !["env", "secretEnv", "args", "files", "thirdPartyModel", "refuse", "accountId", "accountRoute"].includes(key));
   if (unknown) return `unknown key ${unknown.slice(0, 40)}`;
   if (value.refuse !== undefined) {
     const reason = isRecord(value.refuse) ? value.refuse.reason : undefined;
@@ -385,6 +437,17 @@ function validContribution(value: unknown): Contribution | string {
     return { env: {}, secretEnv: {}, args: [], files: [], refuse: reason.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, MAX_REASON) };
   }
   if (value.thirdPartyModel !== undefined && typeof value.thirdPartyModel !== "boolean") return "thirdPartyModel must be true or false";
+  if(value.accountId!==undefined && (typeof value.accountId!=="string" || !/^[\w-]{1,80}$/.test(value.accountId)))return "accountId must be a bounded account identifier";
+  let accountRoute: AccountRouteEvidence | undefined;
+  if (value.accountRoute !== undefined) {
+    const route = value.accountRoute;
+    if (!isRecord(route) || Object.keys(route).sort().join(",") !== "endpoint,kind,model"
+      || typeof route.model !== "string" || !route.model || route.model.length > 200 || /[\x00-\x1f\x7f]/u.test(route.model)
+      || !publicEndpoint(route.endpoint) || !["ollama", "ollama-cloud", "api-key"].includes(route.kind as string)) {
+      return "accountRoute needs a bounded model, public host:port and account kind";
+    }
+    accountRoute = { model: route.model, endpoint: publicEndpoint(route.endpoint)!, kind: route.kind as AccountRouteEvidence["kind"] };
+  }
   const env = stringMap(value.env, MAX_ENV, "env");
   if (typeof env === "string") return env;
   for (const [key, entry] of Object.entries(env)) {
@@ -419,7 +482,7 @@ function validContribution(value: unknown): Contribution | string {
     if (bytes > MAX_FILES_BYTES) return "files exceed 256 KB";
     files.push({ relPath: file.relPath, content: file.content });
   }
-  return { env, secretEnv, args: args as string[], files, ...(value.thirdPartyModel === true ? { thirdPartyModel: true } : {}) };
+  return { env, secretEnv, args: args as string[], files, ...(accountRoute ? { accountRoute } : {}), ...(value.thirdPartyModel === true ? { thirdPartyModel: true } : {}),...(typeof value.accountId==="string" ? {accountId:value.accountId} : {}) };
 }
 
 /**
@@ -574,4 +637,11 @@ export function errorText(error: unknown): string {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+/** The orchestrator's own choice repeated for its subagent: only values it inherited, each one the same. */
+function sameAsInherited(raw: unknown, inherited: Readonly<Record<string, boolean | string>> | undefined): boolean {
+  if (!inherited || !isRecord(raw)) return false;
+  const keys = Object.keys(raw);
+  return keys.length > 0 && keys.every((key) => Object.hasOwn(inherited, key) && inherited[key] === raw[key]);
 }

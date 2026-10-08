@@ -37,7 +37,7 @@
       "type": "array",
       "maxItems": 12,
       "uniqueItems": true,
-      "items": { "enum": ["storage", "secrets", "sessions:read", "limits:read", "launcher:open", "external:open", "browser:open", "media:library", "playlists:read", "playlists:write", "hermes:hud", "network", "launch:contribute", "environment:provide", "decision:provide", "tools:agents", "sessions:events", "sessions:read-screen", "sessions:launch", "sessions:control", "cards:decorate", "browser:engine"] }
+      "items": { "enum": ["storage", "secrets", "sessions:read", "limits:read", "launcher:open", "external:open", "browser:open", "media:library", "playlists:read", "playlists:write", "hermes:hud", "network", "launch:contribute", "environment:provide", "decision:provide", "tools:agents", "sessions:events", "sessions:read-screen", "sessions:launch", "sessions:control", "cards:decorate", "model:route", "browser:engine"] }
     },
     "contributions": {
       "type": "array",
@@ -83,7 +83,7 @@
           "type": "array",
           "maxItems": 12,
           "uniqueItems": true,
-          "items": { "enum": ["storage", "secrets", "sessions:read", "limits:read", "launcher:open", "external:open", "browser:open", "media:library", "playlists:read", "playlists:write", "hermes:hud", "network", "launch:contribute", "environment:provide", "decision:provide", "tools:agents", "sessions:events", "sessions:read-screen", "sessions:launch", "sessions:control", "cards:decorate", "browser:engine"] }
+          "items": { "enum": ["storage", "secrets", "sessions:read", "limits:read", "launcher:open", "external:open", "browser:open", "media:library", "playlists:read", "playlists:write", "hermes:hud", "network", "launch:contribute", "environment:provide", "decision:provide", "tools:agents", "sessions:events", "sessions:read-screen", "sessions:launch", "sessions:control", "cards:decorate", "model:route", "browser:engine"] }
         },
         "files": { "type": "array", "minItems": 1, "maxItems": 500, "items": { "$ref": "#/$defs/moduleAsset" } }
       }
@@ -122,6 +122,7 @@
         "description": { "type": "string", "minLength": 1, "maxLength": 240 },
         "entry": { "type": "string", "minLength": 1, "maxLength": 180, "pattern": "^(?!/)(?!.*\\\\)(?!\\.\\.?/)(?!.*(?:/\\.\\.?/|/\\.\\.?$|//)).+\\.(?:js|mjs|cjs)$" },
         "module": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$" },
+        "modelRouter": { "type": "boolean", "description": "Offers canvastty.model.route; requires model:route. Core validates only an offered model and effort within two seconds." },
         "launch": { "$ref": "#/$defs/serviceLaunch" },
         "environments": {
           "description": "Session environments (needs environment:provide; at most 8 kinds per plugin, unique across its services): kinds offered under Where in the launcher; the host calls canvastty.environment.prepare/wrap/resume/release/describe.",
@@ -149,7 +150,7 @@
         },
         "cardActions": {
           "description": "Card actions (needs cards:decorate): items in the options menu of matching cards; the host calls canvastty.cards.invoke and shows the answer's message as a toast.",
-          "type": "array", "minItems": 1, "maxItems": 8,
+          "type": "array", "minItems": 1, "maxItems": 16,
           "items": { "$ref": "#/$defs/cardAction" }
         },
         "browserEngine": { "$ref": "#/$defs/browserEngine" }

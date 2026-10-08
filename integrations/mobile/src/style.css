@@ -111,6 +111,7 @@ small, .muted { color: var(--muted); }
 }
 .pair-card h2 { margin-bottom: 12px; }
 .pair-card p { color: var(--muted); }
+.pair-card pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .pair-card code { color: var(--text); overflow-wrap: anywhere; }
 .pair-card form { display: grid; gap: 16px; }
 .pair-card label, .compact { display: grid; gap: 7px; color: var(--muted); font-size: .8rem; font-weight: 700; }
@@ -142,15 +143,8 @@ small, .muted { color: var(--muted); }
 .rename { display: flex; align-items: center; gap: 7px; margin: 16px 0; }
 .tabs { display: flex; gap: 6px; margin: 20px 0 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(255, 255, 255, .18); }
 .tabs button[aria-pressed=true] { color: #30313d; border-color: var(--primary); background: var(--primary); font-weight: 800; }
-.readable, .terminal-scroll { min-width: 0; border: 1px solid rgba(255, 255, 255, .1); border-radius: 9px; background: #292a35; }
+.readable { min-width: 0; border: 1px solid rgba(255, 255, 255, .1); border-radius: 9px; background: #292a35; }
 .readable { min-height: 200px; max-height: 54vh; margin: 0; padding: 16px; overflow: auto; color: var(--text); font: 13px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.terminal-scroll { min-height: 250px; max-width: 100%; max-height: 56vh; padding: 12px; overflow: auto; }
-.terminal { min-width: max-content; }
-.compose { display: grid; gap: 8px; margin-top: 20px; }
-.compose label { font-size: .82rem; font-weight: 800; }
-.compose button { justify-self: end; }
-.keybar { display: flex; gap: 6px; overflow-x: auto; padding: 16px 0 3px; }
-.keybar button { min-width: 48px; white-space: nowrap; }
 .muted { line-height: 1.5; }
 .menu-backdrop { display: none; }
 @media (max-width: 760px) {
@@ -168,9 +162,7 @@ small, .muted { color: var(--muted); }
   .detail-head { flex-wrap: wrap; }
   .detail-actions { justify-content: flex-start; }
   .readable { max-height: 48vh; }
-  .terminal-scroll { max-height: 48vh; }
   .pair-card { margin: 18px auto; padding: 20px; }
-  .keybar { margin-right: -16px; padding-right: 16px; }
 }
 @media (max-width: 380px) {
   .brand { gap: 7px; }

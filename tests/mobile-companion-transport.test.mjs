@@ -6,10 +6,11 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { EvenG2Controller } from "../src/main/services/companion/EvenG2Controller.ts";
+import { HumanQuestionService } from "../src/main/services/HumanQuestionService.ts";
 import { sealLocal, unsealLocal, localOrigin, validateLocalConnection } from "../src/shared/localLink.ts";
 import { connectionFromCode, localFetcher } from "../integrations/even-g2/src/local-fetch.mjs";
 
-async function fixture(t) {
+async function fixture(t, { lan = false, httpsOrigin = "", questions: withQuestions = false, experimentalEnabled = () => true, notifications = () => [] } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "canvastty-mobile-test-"));
   const webRoot = join(directory, "g2"), mobileRoot = join(directory, "mobile");
   await mkdir(webRoot);
@@ -25,7 +26,12 @@ async function fixture(t) {
   }
   const writes = [];
   const sessions = [{ id: "one", title: "One", provider: "terminal", status: "idle", startedAt: 100, exitCode: null, revision: 2 }];
+  const questions = withQuestions ? new HumanQuestionService({
+    getSession: id => { const row = sessions.find(row => row.id === id); return row ? { ...row, turnEpoch: 1 } : null; },
+    redact: value => value,
+  }) : undefined;
   const terminals = {
+    redactSecrets: value => value,
     listMetadata: () => sessions.map((s) => ({ ...s, cwd: "/private/workspace" })),
     geometry: () => ({ cols: 80, rows: 24 }),
     readBuffer: () => ({ buffer: "hello", outputOffset: 5 }),
@@ -35,21 +41,27 @@ async function fixture(t) {
     create: ({ provider }) => { const s = { id: "new", title: "New", provider, status: "idle", startedAt: 200, exitCode: null, revision: 1 }; sessions.push(s); return s; },
   };
   const controller = new EvenG2Controller({
+    experimentalEnabled,
+    notifications,
+    humanQuestions: questions,
     userDataPath: directory, webRoot, mobileRoot, terminals, speechWorker: join(directory, "missing.py"),
-    port: 0, addresses: () => [], localDiscovery: false,
+    port: 0, addresses: () => [{ id: "test:127.0.0.1", name: "test", address: "127.0.0.1" }], localDiscovery: false,
     providerAvailability: () => ({}),
     limits: async () => ({ fetchedAt: Date.now(), providers: [] }),
     openBrowser: async () => ({ title: "", url: "" }),
   });
   await controller.load();
-  t.after(async () => { await controller.close(); await rm(directory, { recursive: true, force: true }); });
-  const origin = "https://computer.tailnet.ts.net";
+  t.after(async () => { questions?.close(); await controller.close(); await rm(directory, { recursive: true, force: true }); });
+  const tailnetOrigin = "https://computer.tailnet.ts.net";
+  const configuredOrigin = lan ? "" : httpsOrigin || tailnetOrigin;
   await controller.command({ type: "configure", config: {
-    ...controller.state().config, enabled: true, workspace: directory, publicOrigin: origin,
+    ...controller.state().config, enabled: true, workspace: directory,
+    interfaceName: "test", publicOrigin: configuredOrigin,
     sessionIds: ["one"], allowClose: true, allowCreate: true, allowBrowser: true,
   } });
+  const origin = lan ? controller.state().transport.origin : configuredOrigin;
   const base = `http://127.0.0.1:${controller.state().port}`;
-  const direct = (path, body, token, host = origin.slice(8)) => new Promise((resolve, reject) => {
+  const direct = (path, body, token, host = new URL(origin).host) => new Promise((resolve, reject) => {
     const payload = body === undefined ? undefined : JSON.stringify(body);
     const req = httpRequest(base + path, {
       method: payload === undefined ? "GET" : "POST",
@@ -68,20 +80,20 @@ async function fixture(t) {
   });
   const fetcher = (url, options = {}) => fetch(base + new URL(url).pathname + new URL(url).search, {
     ...options,
-    headers: { ...Object.fromEntries(new Headers(options.headers)), Host: origin.slice(8) },
+    headers: { ...Object.fromEntries(new Headers(options.headers)), Host: new URL(origin).host },
   });
   const pair = async () => {
-    await controller.command({ type: "begin-pairing" });
+    await controller.command({ type: "begin-pairing", target: "phone" });
     const code = controller.state().pairing.code;
-    assert.equal((await direct("/g2/api/pair", { code })).status, 403);
-    const bootstrap = await connectionFromCode(code, { origins: [origin], fetcher });
-    const send = localFetcher(bootstrap.connection, { fetcher });
+    if (configuredOrigin === tailnetOrigin) assert.equal((await direct("/g2/api/pair", { code })).status, 403);
+    const bootstrap = await connectionFromCode(code, { origins: [origin], fetcher, allowLoopback: origin.startsWith("http:") });
+    const send = localFetcher(bootstrap.connection, { fetcher, allowLoopback: origin.startsWith("http:") });
     const response = await send(origin + "/g2/api/pair", {
-      method: "POST", body: JSON.stringify({ code: bootstrap.code, name: "Web test" }),
+      method: "POST", body: JSON.stringify({ code: bootstrap.code, name: "Even App", clientType: "even-g2", target: "even-g2", summaryOnly: false }),
     });
     assert.equal(response.status, 202);
     const body = await response.json();
-    const connection = validateLocalConnection(send.connection());
+    const connection = validateLocalConnection(send.connection(), origin.startsWith("http:"));
     assert.equal(connection.deviceId, body.id);
     return { ...body, connection };
   };
@@ -93,15 +105,24 @@ async function fixture(t) {
     assert.equal(response.status, 200);
     return unsealLocal(connection, response.body, "response");
   };
-  return { controller, direct, pair, encrypted, writes, directory, origin, base, symlinkAvailable };
+  const encryptedPath = async ({ connection, token }, path, method = "GET", body) => {
+    const packet = await sealLocal(connection, {
+      path, method, token, ...(body === undefined ? {} : { body }), sentAt: Date.now(),
+    }, "request");
+    const response = await direct("/g2/link", packet);
+    assert.equal(response.status, 200);
+    return unsealLocal(connection, response.body, "response");
+  };
+  return { controller, direct, pair, encrypted, encryptedPath, writes, sessions, questions, directory, origin, base, symlinkAvailable };
 }
 
 test("HTTPS origin pairs over proxied routes, encrypted mobile forwards; plaintext bearer cannot act", async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { notifications: (channel, id) => channel === "phone" && id === "one"
+    ? [{ id: "notice-1", kind: "done", at: 200, message: "/private notification body" }] : [] });
   const discover = await f.direct("/g2/discover");
   assert.equal(discover.status, 200);
   const pending = await f.pair();
-  const action = { type: "session.key", sessionId: "one", key: "enter" };
+  const action = { type: "session.interrupt", sessionId: "one" };
   assert.equal((await f.encrypted(pending, action)).status, 401);
   assert.equal(f.writes.length, 0);
   await f.controller.command({ type: "approve", id: pending.id });
@@ -115,15 +136,87 @@ test("HTTPS origin pairs over proxied routes, encrypted mobile forwards; plainte
   const repeated = await f.encrypted(pending, action, "a".repeat(32));
   assert.equal(first.status, 200);
   assert.equal(repeated.status, 200);
-  assert.deepEqual(f.writes, [{ id: "one", data: "\r" }]);
-  assert.deepEqual(overview.body.sessions, [{ id: "one", title: "One", provider: "terminal", status: "idle", startedAt: 100, exitCode: null, revision: 2 }]);
-  assert.equal(overview.body.providers.terminal, true);
+  assert.deepEqual(f.writes, [{ id: "one", data: "\x03" }]);
+  assert.deepEqual(overview.body.sessions, [{ id: "one", title: "One", provider: "terminal", status: "idle", startedAt: 100, exitCode: null, revision: 2, attention: [{ id: "notice-1", kind: "done", at: 200 }] }]);
+  assert.equal(overview.body.providers.terminal, false);
+  assert.deepEqual(overview.body.permissions, {
+    allowInput: false, allowCreate: false, allowClose: true, allowInterrupt: true, allowRename: true,
+  });
   assert.equal(JSON.stringify(overview).includes("/private"), false);
   assert.equal((await f.encrypted(pending, { type: "browser.open", sessionId: "one" })).status, 400);
   assert.equal((await f.encrypted(pending, { type: "session.key", sessionId: "one", key: "bad" })).status, 400);
   await f.controller.command({ type: "revoke", id: pending.id });
   await assert.rejects(f.encrypted(pending, action));
   assert.equal(f.writes.length, 1);
+});
+
+test("phone grants cannot be escalated into terminal input, key presses, or new sessions", async (t) => {
+  const f = await fixture(t, { questions: true });
+  f.sessions[0].provider = "codex";
+  assert.equal(f.controller.canReply("one"), false);
+  const pending = await f.pair();
+  await f.controller.command({ type: "approve", id: pending.id });
+  assert.equal(f.controller.canReply("one"), true);
+  assert.equal(f.controller.canReply("private"), false);
+  const answer = f.questions.request("one", { question: "Approve this request?", options: ["Approve once", "Deny"] });
+  const view = await f.encrypted(pending, { type: "session.read", sessionId: "one" });
+  const reply = { type: "session.reply", sessionId: "one", requestId: view.body.question.id, answer: 0 };
+  assert.equal(view.body.question.question, "Approve this request?");
+  assert.equal((await f.encrypted(pending, reply)).status, 200);
+  assert.deepEqual(await answer, { answer: "Approve once", selectedIndex: 0 });
+  assert.equal((await f.encrypted(pending, reply)).body.error, "stale-request", "a new receipt cannot answer a consumed question");
+
+  const saved = JSON.parse(await readFile(join(f.directory, "even-g2.json"), "utf8"));
+  assert.equal(saved.peers[0].clientType, "phone", "the host stores the phone capability independently of transport");
+  for (const action of [
+    { type: "session.input", sessionId: "one", text: "whoami" },
+    { type: "session.key", sessionId: "one", key: "enter" },
+    { type: "session.create", provider: "terminal" },
+  ]) {
+    assert.ok((await f.encrypted(pending, action)).status >= 400, action.type);
+  }
+  assert.equal(f.writes.length, 0);
+  for (const { path, body } of [
+    { path: "/g2/api/home" },
+    { path: "/g2/api/terminal?id=one" },
+    { path: "/g2/api/control", body: { sessionId: "one", action: "text", text: "whoami" } },
+    { path: "/g2/api/create", body: { provider: "terminal" } },
+    { path: "/g2/api/browser", body: { sessionId: "one" } },
+  ]) {
+    assert.equal((await f.direct(path, body, pending.token)).status, 403, `phone cannot use ${path}`);
+  }
+});
+
+test("a desktop-selected phone client uses encrypted summary routes over LAN", async (t) => {
+  const f = await fixture(t, { lan: true });
+  assert.match(f.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
+  const phone = await f.pair();
+  await f.controller.command({ type: "approve", id: phone.id });
+
+  assert.equal((await f.direct("/g2/api/home", undefined, phone.token)).status, 403);
+  assert.equal((await f.direct("/g2/api/mobile", { version: 1, id: "a".repeat(32), sentAt: Date.now(), action: { type: "sessions.overview" } }, phone.token)).status, 403);
+  const overview = await f.encrypted(phone, { type: "sessions.overview" });
+  assert.equal(overview.status, 200);
+  assert.deepEqual(overview.body.permissions, {
+    allowInput: false, allowCreate: false, allowClose: true, allowInterrupt: true, allowRename: true,
+  });
+
+  const legacyRoute = await f.encryptedPath(phone, "/g2/api/home");
+  assert.equal(legacyRoute.status, 403);
+  const legacyTerminal = await f.encryptedPath(phone, "/g2/api/terminal?id=one");
+  assert.equal(legacyTerminal.status, 403);
+  assert.equal(f.writes.length, 0);
+});
+
+test("a desktop-selected phone client keeps summary-only routes behind a private HTTPS origin", async (t) => {
+  const f = await fixture(t, { httpsOrigin: "https://192.168.1.55:8443" });
+  const phone = await f.pair();
+  await f.controller.command({ type: "approve", id: phone.id });
+
+  const overview = await f.encrypted(phone, { type: "sessions.overview" });
+  assert.equal(overview.status, 200);
+  assert.equal((await f.encryptedPath(phone, "/g2/api/home")).status, 403);
+  assert.equal(f.writes.length, 0);
 });
 
 test("Tailnet peer cannot access legacy G2 API through bearer or encrypted link", async (t) => {
@@ -135,7 +228,8 @@ test("Tailnet peer cannot access legacy G2 API through bearer or encrypted link"
   const pendingResponse = await f.direct("/g2/link", pendingPacket);
   assert.deepEqual((await unsealLocal(peer.connection, pendingResponse.body, "response")).body, { state: "pending" });
   await f.controller.command({ type: "approve", id: peer.id });
-  assert.equal(f.controller.state().peers[0].grant.allowBrowser, true);
+  assert.equal(f.controller.state().peers[0].grant.allowBrowser, false, "a web transport never grants the project browser");
+  assert.equal(f.controller.state().config.allowBrowser, true, "the person's LAN choice is kept for a later switch back");
 
   const legacy = [
     { path: "/g2/api/home", method: "GET" },
@@ -158,22 +252,25 @@ test("Tailnet peer cannot access legacy G2 API through bearer or encrypted link"
   assert.equal((await f.direct("/g2/api/pair-status", undefined, peer.token)).status, 403);
 });
 
-test("encrypted mutations stay scoped and idempotent, and created grants persist", async (t) => {
+test("phone control actions stay scoped and idempotent, while creation is denied", async (t) => {
   const f = await fixture(t);
   const paired = await f.pair();
   await f.controller.command({ type: "approve", id: paired.id });
-  const action = { type: "session.create", provider: "terminal" };
+  const action = { type: "session.interrupt", sessionId: "one" };
   const created = await f.encrypted(paired, action, "c".repeat(32));
   const repeated = await f.encrypted(paired, action, "c".repeat(32));
   assert.equal(created.status, 200);
   assert.deepEqual(repeated, created);
-  assert.equal(created.body.id, "new");
-  assert.deepEqual((await f.encrypted(paired, { type: "sessions.overview" })).body.sessions.map((s) => s.id), ["one", "new"]);
+  assert.deepEqual(f.writes, [{ id: "one", data: "\x03" }]);
+  const overview = await f.encrypted(paired, { type: "sessions.overview" });
+  assert.deepEqual(overview.body.sessions.map((s) => s.id), ["one"]);
+  assert.equal(overview.body.providers.terminal, false);
   const stored = JSON.parse(await readFile(join(f.directory, "even-g2.json"), "utf8"));
-  assert.deepEqual(stored.peers[0].grant.sessionIds, ["one", "new"]);
+  assert.deepEqual(stored.peers[0].grant.sessionIds, ["one"]);
+  assert.equal((await f.encrypted(paired, { type: "session.create", provider: "terminal" })).status, 400);
   await f.controller.command({ type: "configure", config: { ...f.controller.state().config, allowInput: false } });
-  assert.equal((await f.encrypted(paired, { type: "session.key", sessionId: "one", key: "enter" })).status, 403);
-  assert.equal(f.writes.length, 0);
+  assert.ok((await f.encrypted(paired, { type: "session.rename", sessionId: "one", title: "x" })).status >= 400);
+  assert.equal(f.writes.length, 1);
 });
 
 test("USB loopback mode keeps mobile pairing read-only and blocks legacy routes", async (t) => {
@@ -197,7 +294,7 @@ test("USB loopback mode keeps mobile pairing read-only and blocks legacy routes"
     allowCreate: false, allowClose: false, allowBrowser: true,
   } });
   assert.equal(f.controller.state().transport.kind, "usb");
-  assert.equal(f.controller.state().config.allowBrowser, false);
+  assert.equal(f.controller.state().config.allowBrowser, true, "the stored LAN choice is kept; the USB grant withholds it");
   assert.equal((await f.direct("/mobile/", undefined, undefined, "localhost:" + f.controller.state().port)).status, 403);
   assert.equal((await f.direct("/mobile/", undefined, undefined, new URL(origin).host)).status, 200);
   await f.controller.command({ type: "begin-pairing" });
@@ -233,7 +330,7 @@ test("USB loopback mode keeps mobile pairing read-only and blocks legacy routes"
   assert.equal((await encryptedRequest("/g2/api/mobile", "POST", {
     version: 1, id: randomBytes(16).toString("hex"), sentAt: Date.now(),
     action: { type: "session.key", sessionId: "one", key: "enter" },
-  })).status, 403);
+  })).status >= 400, true);
   assert.equal((await encryptedRequest("/g2/api/home")).status, 403);
   assert.equal((await f.direct("/g2/api/home", undefined, token, new URL(origin).host)).status, 403);
   assert.equal(f.writes.length, 0);
@@ -258,4 +355,29 @@ test("Tailscale connection allows only exact HTTPS origin; mobile static stays w
     assert.equal(escaped.status, 404);
   }
   assert.equal((await f.direct("/mobile/", undefined, undefined, "evil.test")).status, 403);
+});
+
+test("phone opt-out blocks pairing, saved peers, mobile files and human replies at runtime", async t => {
+  let enabled = true;
+  const f = await fixture(t, { lan: true, questions: true, experimentalEnabled: () => enabled });
+  const phone = await f.pair();
+  await f.controller.command({ type: "approve", id: phone.id });
+  assert.equal((await f.encrypted(phone, { type: "sessions.overview" })).status, 200);
+  enabled = false;
+  assert.equal(f.controller.canReply("one"), false);
+  await assert.rejects(f.controller.command({ type: "begin-pairing", target: "phone" }), /disabled/);
+  assert.equal((await f.direct("/mobile/")).status, 403);
+  assert.equal((await f.direct("/g2/api/pair-status", undefined, phone.token)).status, 403);
+  assert.equal((await f.direct("/g2/api/mobile", {}, phone.token)).status, 403);
+  // Device access is rejected before decrypting/forwarding an existing saved phone's packet.
+  await assert.rejects(f.encrypted(phone, { type: "session.interrupt", sessionId: "one" }));
+  assert.equal(f.writes.length, 0);
+  enabled = true;
+  assert.equal((await f.encrypted(phone, { type: "sessions.overview" })).status, 200);
+});
+
+test("phone companion fails closed without an injected opt-in", async t => {
+  const f = await fixture(t, { experimentalEnabled: null });
+  await assert.rejects(f.pair(), /disabled/);
+  assert.equal((await f.direct("/mobile/")).status, 403);
 });

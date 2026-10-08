@@ -96,6 +96,8 @@ export interface ProviderRuntimeLaunchOptions {
 }
 
 export interface PreparedProviderRuntimeLaunch {
+  /** This prepared configuration installs a per-turn completion event (not merely session end). */
+  turnCompletion?: boolean;
   args: string[];
   environment: Record<string, string>;
   releaseConfiguration(): void;
@@ -182,7 +184,8 @@ export class ProviderRuntimeLaunchAdapters {
     coreHooksEnabled = true,
     decisions = false,
     decisionBudgetMs?: number,
-    claudeHttpHookBase?: string
+    claudeHttpHookBase?: string,
+    captureResult = false
   ): PreparedProviderRuntimeLaunch {
     const pluginRegistrations = this.options.pluginHooks?.list(provider) ?? [];
     const gate = decisions && this.decisionsSupported(provider);
@@ -193,8 +196,9 @@ export class ProviderRuntimeLaunchAdapters {
     const openCodeDecisions = gate && provider === "opencode";
     // Only providers with a hook adapter get lifecycle configuration. Cursor,
     // MiniMax, Devin and Antigravity must never reach Grok's shared hook overlay.
+    const resultHooks = captureResult && (provider === "codex" || provider === "opencode");
     const hasHooks = HOOK_PROVIDERS.has(provider)
-      && (coreHooksEnabled || pluginCommands.length > 0 || (provider === "opencode" && (pluginRegistrations.length > 0 || openCodeDecisions)));
+      && (coreHooksEnabled || resultHooks || pluginCommands.length > 0 || (provider === "opencode" && (pluginRegistrations.length > 0 || openCodeDecisions)));
     const environment = hasHooks
       ? {
         ...(pluginRegistrations.length > 0 ? {
@@ -207,10 +211,10 @@ export class ProviderRuntimeLaunchAdapters {
       return prepared([], environment);
     }
     if (provider === "claude") {
-      return prepared(claudeHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands, claudeHttpHookBase), environment);
+      return prepared(claudeHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands, claudeHttpHookBase), environment, undefined, coreHooksEnabled);
     }
     if (provider === "codex") {
-      return prepared(codexHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands), environment);
+      return prepared(codexHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands, resultHooks), environment, undefined, coreHooksEnabled);
     }
     if (provider === "qwen") {
       const path = createQwenHookSettings({
@@ -222,7 +226,7 @@ export class ProviderRuntimeLaunchAdapters {
         coreHooksEnabled,
         pluginCommands
       });
-      return prepared([], { ...environment, [QWEN_SYSTEM_SETTINGS]: path }, () => unlinkIfExists(path));
+      return prepared([], { ...environment, [QWEN_SYSTEM_SETTINGS]: path }, () => unlinkIfExists(path), coreHooksEnabled);
     }
     if (provider === "opencode") {
       const pluginEnvironment = this.openCodePluginEnvironment(
@@ -237,20 +241,20 @@ export class ProviderRuntimeLaunchAdapters {
           this.environment[OPENCODE_CONFIG_CONTENT],
           this.options.openCodePluginPath
         )
-      });
+      }, undefined, coreHooksEnabled);
     }
     if (provider === "omp" || provider === "pi") {
       return prepared(coreHooksEnabled
         ? ["--extension", join(dirname(this.options.openCodePluginPath), "omp-extension.mjs")]
-        : [], environment);
+        : [], environment, undefined, coreHooksEnabled);
     }
     if (provider === "kimi") {
-      return prepared([], environment, this.acquireKimi(coreHooksEnabled, pluginCommands));
+      return prepared([], environment, this.acquireKimi(coreHooksEnabled, pluginCommands), coreHooksEnabled);
     }
     if (provider === "hermes") {
       return prepared([], environment, this.acquireHermes(coreHooksEnabled, pluginCommands));
     }
-    if (provider === "grok") return prepared([], environment, this.acquireGrok(coreHooksEnabled, pluginCommands));
+    if (provider === "grok") return prepared([], environment, this.acquireGrok(coreHooksEnabled, pluginCommands), coreHooksEnabled);
     return prepared([], environment);
   }
 
@@ -406,6 +410,7 @@ const CLAUDE_HOOKS: readonly HookMapping[] = [
   { event: "UserPromptSubmit", state: "working" },
   { event: "PermissionRequest", state: "needs_approval" },
   { event: "PostToolUse", state: "working" },
+  { event: "PostToolUseFailure", state: "working" },
   { event: "Stop", state: "idle" },
   { event: "StopFailure", state: "idle" },
   { event: "SessionEnd", state: "idle" },
@@ -438,6 +443,8 @@ const KIMI_HOOKS: readonly HookMapping[] = [
   { event: "TurnStarted", state: "working" },
   { event: "PermissionRequest", state: "needs_approval" },
   { event: "PermissionResult", state: "working" },
+  { event: "PostToolUse", state: "working" },
+  { event: "PostToolUseFailure", state: "working" },
   { event: "Stop", state: "idle" },
   { event: "StopFailure", state: "idle" },
   { event: "Interrupt", state: "idle" },
@@ -449,6 +456,7 @@ const HERMES_HOOKS: readonly HookMapping[] = [
   { event: "pre_llm_call", state: "working" },
   { event: "pre_approval_request", state: "needs_approval" },
   { event: "post_approval_response", state: "working" },
+  { event: "post_tool_call", state: "working" },
   { event: "on_session_end", state: "idle" }
 ];
 
@@ -641,11 +649,14 @@ function codexHookArgs(
   helper: RuntimeHookHelperLaunch,
   platform: NodeJS.Platform,
   coreHooksEnabled: boolean,
-  pluginCommands: readonly ProviderHookCommand[]
+  pluginCommands: readonly ProviderHookCommand[],
+  captureResult = false
 ): string[] {
   validateHelper(helper);
+  const hooks = coreHooksEnabled ? CODEX_HOOKS
+    : captureResult ? CODEX_HOOKS.filter(({ event }) => ["SessionStart", "UserPromptSubmit", "PermissionRequest", "PostToolUse", "Stop"].includes(event)) : [];
   const grouped = groupProviderHookMappings([
-    ...(coreHooksEnabled ? lifecycleCommands(CODEX_HOOKS, helper, platform) : []),
+    ...lifecycleCommands(hooks, helper, platform),
     ...pluginCommands
   ]);
   const events = Object.entries(grouped).flatMap(([event, mappings]) => {
@@ -1172,9 +1183,10 @@ function tomlString(value: string): string {
 function prepared(
   args: string[],
   environment: Record<string, string>,
-  cleanup: () => void = () => undefined
+  cleanup: () => void = () => undefined,
+  turnCompletion = false
 ): PreparedProviderRuntimeLaunch {
-  return { args, environment, releaseConfiguration: once(cleanup) };
+  return { args, environment, ...(turnCompletion ? { turnCompletion: true } : {}), releaseConfiguration: once(cleanup) };
 }
 
 function once(action: () => void): () => void {

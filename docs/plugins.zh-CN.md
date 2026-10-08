@@ -345,7 +345,7 @@ interface PluginSessionEvent {
 
 ### 卡片标记与动作（`cards:decorate`）
 
-具有 `cards:decorate` 的服务可以在任意卡片上设置标记，并声明最多 8 个 `cardActions`：
+具有 `cards:decorate` 的服务可以在任意卡片上设置标记，并声明最多 16 个 `cardActions`：
 
 ```json
 "permissions": ["cards:decorate"],
@@ -360,6 +360,10 @@ interface PluginSessionEvent {
 - 任何地方都没有 HTML：标记、标题和消息都按文本渲染。
 
 完整示例见 [`examples/plugins/collect-demo`](../examples/plugins/collect-demo)：在 `worktree` 环境（来自 `env-worktree`）的卡片上，动作 **Show changes** 显示 worktree 的 `git diff --stat` 并设置“N changed”标记；工具 `collect-demo__diffstat` 为编排器提供同样的信息，针对它自己的文件夹或某个子 agent 的文件夹（插件通过会话事件得知子 agent）。
+
+### 模型路由（`model:route`）
+
+具有 `model:route` 并设置 `"modelRouter": true` 的服务，可以为编排者未指定 `model` 而启动的子智能体选择模型和推理强度。宿主调用 `canvastty.model.route`，传入经过遮蔽的任务文本（最多 8,000 个字符）、提供方、配置档、文件夹、请求的推理强度、任务预算，以及根据 `list_providers` 构建的 `candidates` 列表（`id`、`model`、`reasoningEffort`、`default`）。服务须在两秒内返回 `{ candidateId, reason }`。宿主只接受列表中且保留显式请求的推理强度的候选；若回答无效、出错或超时，则使用提供方默认模型，卡片会显示原因。显式指定的 `model` 不会被路由。
 
 ### 浏览器引擎（`browser:engine`）
 
@@ -403,6 +407,7 @@ host.onStorageChange(listener) 会把 host.storage.set 的写入通知给同一�
 | `sessions:launch` | `sessions.create` | 通过常规启动流程启动可见的 agent 卡片 |
 | `sessions:control` | `sessions.send`、`sessions.stop` | 只能向本插件启动的卡片输入文本并关闭它们 |
 | `cards:decorate` | `cards.setBadge`、服务的 `cardActions`、`canvastty.cards.invoke` | 卡片上的纯文本标记及其菜单中的动作 |
+| `model:route` | 服务的 `modelRouter` 与 `canvastty.model.route` | 接收未指定模型的子智能体的遮蔽任务文本和预算；只能从提供的候选中选择一个 |
 | `browser:engine` | 服务的 `browserEngine` 和 `canvastty.browserEngine.*` | 接收 agent 后台标签页的 URL 并用自己的引擎打开；没有 cookie、配置文件或凭据 |
 | `limits:read` | `limits.get` | 与 HOME 使用的同一个脱敏 `LimitsSnapshot` |
 | `launcher:open` | `launcher.open` | 打开内置服务商的 Focus Card 或终端动作；不会绕过用户的启动选择 |
@@ -503,6 +508,8 @@ if (library) {
 当前安装器会刻意拒绝私有仓库、GitHub `/tree/branch/subdirectory` 链接以及需要构建步骤的仓库。请把可直接运行的静态包发布到仓库根目录。
 
 无需账号即可通过 GitHub 公共搜索 API 浏览和搜索展示页。登录是可选的，只会提高 GitHub 搜索限额；达到匿名限额时，CanvasTTY 会显示何时可以重试。可选的展示页登录使用 GitHub OAuth Device Flow。构建维护者可以[注册 OAuth App 并启用 Device Flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app)，再将公开的 client ID 保存到 GitHub Actions 仓库变量 `CANVASTTY_GITHUB_CLIENT_ID`。正式构建会在该变量已配置时嵌入其值；本地构建可使用 `GITHUB_OAUTH_CLIENT_ID` 或 `CANVASTTY_GITHUB_CLIENT_ID`，运行时也可以用任一变量覆盖内置值。应用不包含也不需要 client secret。默认情况下，登录会在 CanvasTTY 内置浏览器中打开 GitHub，同时明确提供系统浏览器作为备用选项。未配置 client ID 时，界面会明确显示 OAuth 不可用，但仍可通过仓库链接检查和安装插件。退出登录只删除本机的加密会话；需要时请另行在 [GitHub 应用设置](https://github.com/settings/applications)中撤销授权。
+
+登录进行中时可以取消。拒绝授权、验证码过期、提供方错误或取消操作都会清除旧验证码，显示结果，并允许重新登录。取消等待中的登录流程会保留已有的本地账号；如果授权先完成，则保留已完成的登录。
 
 ## 作者检查清单
 

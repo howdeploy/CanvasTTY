@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import {readFile,stat} from "node:fs/promises";
+import {join} from "node:path";
 import type { AgentProviderId } from "../../shared/contracts.ts";
 import { providerChildProcessLaunch, type ProviderChildProcessLaunch, type ProviderCliRegistry } from "./providerCliRegistry.ts";
 
@@ -30,16 +32,24 @@ export class ProviderModelCatalog {
   private readonly now: () => number;
   private readonly listings = new Map<AgentProviderId, ProviderModelListing>();
   private readonly running = new Map<AgentProviderId, Promise<void>>();
+  private readonly codexHome:string|undefined;
 
-  constructor(registry: Pick<ProviderCliRegistry, "get">, options: { run?: ModelListingRunner; now?: () => number } = {}) {
+  constructor(registry: Pick<ProviderCliRegistry, "get">, options: { run?: ModelListingRunner; now?: () => number;codexHome?:string } = {}) {
     this.registry = registry;
     this.run = options.run ?? runListing;
     this.now = options.now ?? Date.now;
+    this.codexHome=options.codexHome;
   }
 
   /** Whether this provider's models can be listed at all. */
   lists(provider: AgentProviderId): boolean {
-    return LISTING_COMMANDS[provider] !== undefined;
+    return LISTING_COMMANDS[provider] !== undefined || provider==="codex" && this.codexHome!==undefined;
+  }
+
+  /** Read existing metadata only; discovery must never start a listing command. */
+  cached(provider: AgentProviderId): ProviderModelListing | null {
+    const listing = this.listings.get(provider);
+    return listing ? { models: [...listing.models], checkedAt: listing.checkedAt } : null;
   }
 
   /** The last listing, however old; refreshes it in the background when it is missing or old. */
@@ -55,13 +65,14 @@ export class ProviderModelCatalog {
    * `fresh` waits for a listing (at most the listing timeout) when none is cached yet.
    */
   async unknownModel(provider: AgentProviderId, model: string, options: { fresh?: boolean } = {}): Promise<string | null> {
-    if (!this.lists(provider)) return null;
+    if (provider!=="opencode") return null;
     if (options.fresh && !this.listings.has(provider)) await this.refresh(provider);
     return this.unknownModelCached(provider, model);
   }
 
   /** unknownModel from the cached listing only (never waits; a missing listing allows the model). */
   unknownModelCached(provider: AgentProviderId, model: string): string | null {
+    if(provider!=="opencode")return null;
     const listing = this.peek(provider);
     if (!listing || listing.models.includes(model)) return null;
     const closest = closestModels(model, listing.models);
@@ -72,6 +83,18 @@ export class ProviderModelCatalog {
 
   /** Lists once at a time per provider; resolves when the listing ended (tests and a warm-up may await it). */
   refresh(provider: AgentProviderId): Promise<void> {
+    if(provider==="codex" && this.codexHome){
+      const pending=this.running.get(provider);if(pending)return pending;
+      const operation=(async()=>{
+        try{
+          const file=join(this.codexHome!,"models_cache.json");if((await stat(file)).size>MAX_LISTING_BYTES)return;
+          const value=JSON.parse(await readFile(file,"utf8"));
+          if(!Array.isArray(value.models))return;
+          const models=[...new Set<string>(value.models.filter((row:unknown)=>row && typeof row==="object" && "slug" in row && typeof row.slug==="string" && /^[\w.-]{1,160}$/.test(row.slug) && (!("visibility" in row) || row.visibility!=="hide")).map((row:{slug:string})=>row.slug))].slice(0,MAX_MODELS);
+          if(models.length)this.listings.set(provider,{models,checkedAt:this.now()});
+        }catch{ /* Missing CLI cache is unknown, not a guessed model list. */ }
+      })().finally(()=>this.running.delete(provider));this.running.set(provider,operation);return operation;
+    }
     const args = LISTING_COMMANDS[provider];
     if (!args) return Promise.resolve();
     const current = this.running.get(provider);

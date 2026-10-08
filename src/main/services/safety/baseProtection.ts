@@ -87,11 +87,13 @@ export function actionFromHook(toolName: string, toolInput: unknown, preview: st
  */
 export function canvasTtyPrivateData(userDataPath: string): PrivateData {
   const names = ['agent-control', join('browser', 'runtime'), join('lifecycle', 'runtime'), join('orchestration', 'runtime'),
-    'provider-secrets.bin', 'plugin-secrets', 'account-homes', 'github-oauth.json', 'launch-runs'];
+    'provider-secrets.bin', 'plugin-secrets', 'account-homes', 'github-oauth.json', 'launch-runs', 'plugin-data',
+    'checkpoints.json', 'checkpoint-objects', 'flow-approvals.json', 'task-budgets.json', 'usage-prices.json', 'session-timeline'];
   return {
     appRoots: [userDataPath],
     paths: names.map(name => join(userDataPath, name)),
-    markers: ['agent-control', 'provider-secrets', 'plugin-secrets', 'account-homes', 'github-oauth']
+    markers: ['agent-control', 'provider-secrets', 'plugin-secrets', 'account-homes', 'github-oauth', 'plugin-data',
+      'checkpoints', 'checkpoint-objects', 'flow-approvals', 'task-budgets', 'usage-prices', 'session-timeline']
   };
 }
 

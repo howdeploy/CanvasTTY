@@ -12,8 +12,25 @@ import "./evenG2Controls.css";
 
 const USB_ORIGIN = "http://127.0.0.1:3481";
 const isUsbOrigin = (origin: string): boolean => origin === USB_ORIGIN;
+const isTailscaleOrigin = (origin: string): boolean =>
+  /^https:\/\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.ts\.net$/.test(origin);
+const isPrivateHttpsOrigin = (origin: string): boolean => {
+  try {
+    const url = new URL(origin);
+    const host = url.hostname.toLowerCase();
+    const parts = host.split(".");
+    const privateIpv4 = parts.length === 4 &&
+      parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255) &&
+      (Number(parts[0]) === 10 ||
+        (Number(parts[0]) === 192 && Number(parts[1]) === 168) ||
+        (Number(parts[0]) === 172 && Number(parts[1]) >= 16 && Number(parts[1]) <= 31));
+    const privateIpv6 = /^\[f[cd][0-9a-f:]+\]$/.test(host);
+    return origin === url.origin && url.protocol === "https:" && !url.username && !url.password &&
+      url.pathname === "/" && !url.search && !url.hash && (privateIpv4 || privateIpv6);
+  } catch { return false; }
+};
 const isWebOrigin = (origin: string): boolean =>
-  isUsbOrigin(origin) || /^https:\/\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.ts\.net$/.test(origin);
+  isUsbOrigin(origin) || isTailscaleOrigin(origin) || isPrivateHttpsOrigin(origin);
 type Stage = "overview" | "transport" | "web" | "scope" | "pair";
 export function EvenG2Controls({
   locale,
@@ -29,6 +46,7 @@ export function EvenG2Controls({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [revoke, setRevoke] = useState<string | null>(null);
+  const [pairTarget, setPairTarget] = useState<"phone" | "even-g2">("even-g2");
   const panelRef = useRef<HTMLElement>(null);
   const initialized = useRef(false);
   const pairRequested = useRef(false);
@@ -85,7 +103,10 @@ export function EvenG2Controls({
       !busy
     ) {
       pairRequested.current = true;
-      void command({ type: "begin-pairing" });
+      void command({
+        type: "begin-pairing",
+        target: isWebOrigin(state.config.publicOrigin) ? "phone" : pairTarget,
+      });
     }
   }, [stage, state, busy]);
   async function command(value: EvenG2Command): Promise<EvenG2State | null> {
@@ -123,7 +144,8 @@ export function EvenG2Controls({
     if (!draft) return;
     const next = await command({
       type: "configure",
-      config: { ...draft, enabled: true, allowBrowser: isWebOrigin(draft.publicOrigin) ? false : draft.allowBrowser },
+      // The host withholds the browser on web transports and keeps this LAN choice for a later switch back.
+      config: { ...draft, enabled: true },
     });
     if (next) {
       setDraft(next.config);
@@ -162,12 +184,16 @@ export function EvenG2Controls({
   ];
   const showingWebSetup = stage === "web" || (stage !== "overview" && webEnabled);
   const headingMatchesMode = showingWebSetup === isWebOrigin(state.config.publicOrigin);
+  const activePairTarget = state.pairing?.target ?? (webEnabled ? "phone" : pairTarget);
+  const phoneOrigin = webEnabled ? state.config.publicOrigin : state.transport.origin;
+  const phoneUrl = phoneOrigin ? `${phoneOrigin}/mobile/` : "";
   const connectionControls = <>
     {state.peers.map((peer) => (
       <div className="g2-peer" key={peer.id}>
         <div className="g2-peer__top">
           <div>
             <strong>{peer.name}</strong>
+            <p>{t(locale, peer.clientType === "phone" ? "evenG2PhoneClient" : "evenG2GlassesClient")}</p>
             <p>
               {webEnabled
                 ? Date.now() - peer.lastSeen < 12000 ? t(locale, "webCompanionBrowserConnected") : t(locale, "webCompanionBrowserDisconnected")
@@ -212,6 +238,19 @@ export function EvenG2Controls({
           </details>
         )}
         {!webEnabled && <p className="g2-muted">{t(locale, "evenG2InEvenAppOpenSettings")}</p>}
+        {peer.needsReclassification && (
+          <div className="g2-approval">
+            <p>{t(locale, "evenG2LegacyDeviceTypeHint")}</p>
+            <div className="g2-actions">
+              <button disabled={busy} onClick={() => void command({
+                type: "set-peer-type", id: peer.id, clientType: "phone",
+              })}>{t(locale, "evenG2ClassifyAsPhone")}</button>
+              <button className="g2-primary" disabled={busy} onClick={() => void command({
+                type: "set-peer-type", id: peer.id, clientType: "even-g2",
+              })}>{t(locale, "evenG2ClassifyAsEvenG2")}</button>
+            </div>
+          </div>
+        )}
         {revoke === peer.id ? (
           <div className="g2-actions">
             <span>{t(locale, "evenG2RevokeThisDeviceSAccess")}</span>
@@ -358,7 +397,7 @@ export function EvenG2Controls({
           </nav>}
           {stage === "web" && (
             <div className="g2-settings__body">
-              <h4>{t(locale, isUsbOrigin(draft.publicOrigin) ? "webCompanionUsbTitle" : "webCompanionSetupTitle")}</h4>
+              <h4>{t(locale, isUsbOrigin(draft.publicOrigin) ? "webCompanionUsbTitle" : isTailscaleOrigin(draft.publicOrigin) ? "webCompanionSetupTitle" : "webCompanionPrivateHttpsTitle")}</h4>
               {isUsbOrigin(draft.publicOrigin) ? (
                 <>
                   <p>{t(locale, "webCompanionUsbWarning")}</p>
@@ -366,15 +405,21 @@ export function EvenG2Controls({
                   <p>{t(locale, "webCompanionUsbRemove")} <code>adb reverse --remove tcp:3481</code>.</p>
                   <button type="button" onClick={() => patch({ publicOrigin: "" })}>{t(locale, "webCompanionUseTailscale")}</button>
                 </>
-              ) : (
+              ) : isTailscaleOrigin(draft.publicOrigin) ? (
                 <>
                   <p>{t(locale, "webCompanionServeWarning")}</p>
                   <p>{t(locale, "webCompanionRunOnHost")} <code>tailscale serve --bg 3481</code> {t(locale, "webCompanionCheckStatus")} <code>tailscale serve status</code>. {t(locale, "webCompanionEnterOrigin")}</p>
                   <button type="button" onClick={() => patch({ publicOrigin: USB_ORIGIN })}>{t(locale, "webCompanionUseUsb")}</button>
                 </>
+              ) : (
+                <>
+                  <p>{t(locale, "webCompanionPrivateHttpsWarning")}</p>
+                  <p>{t(locale, "webCompanionPrivateHttpsEnter")}</p>
+                  <button type="button" onClick={() => patch({ publicOrigin: USB_ORIGIN })}>{t(locale, "webCompanionUseUsb")}</button>
+                </>
               )}
               <label>
-                {t(locale, isUsbOrigin(draft.publicOrigin) ? "webCompanionUsbOriginLabel" : "webCompanionOriginLabel")}
+                {t(locale, isUsbOrigin(draft.publicOrigin) ? "webCompanionUsbOriginLabel" : isTailscaleOrigin(draft.publicOrigin) ? "webCompanionOriginLabel" : "webCompanionPrivateHttpsOriginLabel")}
                 <input
                   type="url"
                   placeholder="https://device.tailnet.ts.net"
@@ -387,7 +432,7 @@ export function EvenG2Controls({
               <div className="g2-actions">
                 <button onClick={() => setStage("overview")}>{t(locale, "evenG2Cancel")}</button>
                 <button className="g2-primary" disabled={busy || !isWebOrigin(draft.publicOrigin)} onClick={() => {
-                  patch({ interfaceName: "", allowBrowser: false });
+                  patch({ interfaceName: "" });
                   setStage("scope");
                 }}>{t(locale, "evenG2ChooseAccess")} <UiIcon name="arrow" /></button>
               </div>
@@ -649,11 +694,43 @@ export function EvenG2Controls({
           )}
           {stage === "pair" && (
             <div className="g2-settings__body">
+              {!webEnabled && (
+                <div className="g2-pair-target">
+                  <p className="g2-muted">{t(locale, "evenG2PairTargetDescription")}</p>
+                  <div className="g2-actions">
+                    <button type="button" disabled={busy || !state.transport.ready}
+                      aria-pressed={activePairTarget === "even-g2"}
+                      onClick={() => {
+                        setPairTarget("even-g2");
+                        if (state.pairing?.target !== "even-g2")
+                          void command({ type: "begin-pairing", target: "even-g2" });
+                      }}>{t(locale, "evenG2GlassesClient")}</button>
+                    <button type="button" disabled={busy || !state.transport.ready}
+                      aria-pressed={activePairTarget === "phone"}
+                      onClick={() => {
+                        setPairTarget("phone");
+                        if (state.pairing?.target !== "phone")
+                          void command({ type: "begin-pairing", target: "phone" });
+                      }}>{t(locale, "evenG2PhoneClient")}</button>
+                  </div>
+                </div>
+              )}
               <h4>
-                {webEnabled ? t(locale, "webCompanionPairTitle") : t(locale, "evenG2OpenCanvasTTYInEvenApp")}
+                {activePairTarget === "phone" ? t(locale, "webCompanionPairTitle") : t(locale, "evenG2OpenCanvasTTYInEvenApp")}
               </h4>
-              {webEnabled ? (
-                <p>{t(locale, isUsbOrigin(state.config.publicOrigin) ? "webCompanionUsbPairOpen" : "webCompanionPairOpen")} <a href={`${state.config.publicOrigin}/mobile/`} target="_blank" rel="noreferrer">{state.config.publicOrigin}/mobile/</a>{t(locale, "webCompanionPairInstructions")}</p>
+              {activePairTarget === "phone" ? (
+                <>
+                  <p>{t(locale, webEnabled
+                    ? isUsbOrigin(state.config.publicOrigin)
+                      ? "webCompanionUsbPairOpen"
+                      : isPrivateHttpsOrigin(state.config.publicOrigin)
+                        ? "webCompanionPrivateHttpsPairOpen"
+                        : "webCompanionPairOpen"
+                    : "webCompanionLanPairOpen")} <a href={phoneUrl} target="_blank" rel="noreferrer">{phoneUrl}</a>{t(locale, "webCompanionPairInstructions")}</p>
+                  {!webEnabled && phoneOrigin.startsWith("http:") && (
+                    <p className="g2-muted">{t(locale, "webCompanionLanSecureOriginHint")}</p>
+                  )}
+                </>
               ) : (
                 <p>{t(locale, "evenG2EnterTheseSixDigitsIn")}</p>
               )}
@@ -732,7 +809,7 @@ export function EvenG2Controls({
                 <button
                   className="g2-primary"
                   disabled={busy || !state.transport.ready}
-                  onClick={() => void command({ type: "begin-pairing" })}
+                  onClick={() => void command({ type: "begin-pairing", target: activePairTarget })}
                 >
                   {t(locale, "evenG2CreatePairingCode")}
                 </button>
@@ -744,7 +821,7 @@ export function EvenG2Controls({
                 {state.pairing && (
                   <button
                     disabled={busy}
-                    onClick={() => void command({ type: "begin-pairing" })}
+                    onClick={() => void command({ type: "begin-pairing", target: activePairTarget })}
                   >
                     {t(locale, "evenG2NewCode")}
                   </button>

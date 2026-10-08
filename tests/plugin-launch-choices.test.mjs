@@ -155,6 +155,7 @@ test("spawn_agent takes plugin launch options and hands them to the launch", () 
   const created = [];
   const parent = { id: "orch", provider: "claude", role: "orchestrator", profile: "normal", cwd: process.cwd(), position: { x: 0, y: 0 }, exitCode: null };
   const terminals = {
+    allowedExecutionTargets: () => null,
     get: (id) => (id === "orch" ? parent : undefined),
     getMetadata: (id) => (id === "orch" ? parent : null),
     listMetadata: () => [parent],

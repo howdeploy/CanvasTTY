@@ -56,6 +56,7 @@ import type { AgentToolProvider } from "./PluginAgentTools.ts";
 import type { CardActionProvider } from "./PluginCards.ts";
 import type { BrowserEngineProvider } from "./browser/BrowserEngineTabs.ts";
 import { AGENT_PROVIDERS } from "../../shared/contracts.ts";
+import { ACCOUNTS_PLUGIN_ID } from "./accountHomeIsolation.ts";
 
 const MANIFEST_FILE = "canvastty.plugin.json";
 /** Plugins keep their metadata (manifest, icon, etc.) in the metadata/ folder. */
@@ -126,6 +127,7 @@ export function injectPluginInputBridge(html: string): string {
 }
 
 const PLUGIN_PERMISSIONS = new Set<PluginPermission>([
+  "model:route",
   "storage",
   "secrets",
   "sessions:read",
@@ -221,15 +223,13 @@ export class PluginManager {
   private readonly downloadRepository: DownloadRepository;
   private readonly downloadFullRepository: DownloadRepository;
   private readonly downloadModuleFiles: DownloadModuleFiles;
-  private tokenProvider: () => Promise<string | null>;
   private registryWrite = Promise.resolve();
   private versionsWrite = Promise.resolve();
 
   constructor(
     userDataPath: string,
     downloadRepository?: DownloadRepository,
-    downloadModuleFiles: DownloadModuleFiles = downloadGithubModuleFiles,
-    tokenProvider?: () => Promise<string | null>
+    downloadModuleFiles: DownloadModuleFiles = downloadGithubModuleFiles
   ) {
     this.pluginRoot = join(userDataPath, "plugins");
     this.stagingRoot = join(userDataPath, "plugin-staging");
@@ -241,23 +241,10 @@ export class PluginManager {
     this.downloadRepository = downloadRepository ?? downloadGithubManifest;
     this.downloadFullRepository = downloadRepository ?? downloadGithubRepository;
     this.downloadModuleFiles = downloadModuleFiles;
-    this.tokenProvider = tokenProvider ?? (async () => null);
-  }
-
-  /** Resolves the GitHub token from env, then the OAuth session (if any). */
-  private async githubToken(): Promise<string | null> {
-    const envToken = process.env.GITHUB_TOKEN ?? process.env.CANVASTTY_GITHUB_TOKEN;
-    if (envToken) return envToken;
-    try {
-      return await this.tokenProvider();
-    } catch {
-      return null;
-    }
   }
 
   /** Registers the OAuth-backed token provider used by module-level helpers. */
   registerTokenProvider(provider: () => Promise<string | null>): void {
-    this.tokenProvider = provider;
     registerGithubTokenProvider(provider);
   }
 
@@ -324,6 +311,12 @@ export class PluginManager {
 
     await this.persistRegistry();
     return this.list();
+  }
+
+  /** The host's install record for one plugin: where it was installed from and what the person trusted. */
+  installRecord(pluginId: string): { sourceUrl: string; enabled: boolean; nativeCodeTrusted: boolean } | null {
+    const plugin = this.plugins.get(pluginId);
+    return plugin ? { sourceUrl: plugin.sourceUrl, enabled: plugin.enabled, nativeCodeTrusted: plugin.nativeCodeTrusted } : null;
   }
 
   list(): InstalledPlugin[] {
@@ -597,6 +590,7 @@ export class PluginManager {
         pluginName: manifest.name,
         serviceId: service.id,
         launch: structuredClone(service.launch),
+        ...(plugin.manifest.id === ACCOUNTS_PLUGIN_ID ? { dataDir: join(this.dataRoot, plugin.manifest.id) } : {}),
         secrets: manifest.permissions.includes("secrets")
       });
     }
@@ -606,7 +600,8 @@ export class PluginManager {
   /** Services that may place sessions now: enabled, native code trusted, `environment:provide` granted. */
   environmentProviders(): EnvironmentProvider[] {
     return this.trustedServicesWith("environment:provide", (service) => service.environments).map(({ plugin, service, name, secrets }) => ({
-      pluginId: plugin, pluginName: name, serviceId: service.id, kinds: structuredClone(service.environments!), secrets
+      pluginId: plugin, pluginName: name, serviceId: service.id, kinds: structuredClone(service.environments!), secrets,
+      sourceUrl: this.installRecord(plugin)?.sourceUrl
     }));
   }
 
@@ -637,6 +632,10 @@ export class PluginManager {
     return this.trustedServicesWith("tools:agents", (service) => service.tools).map(({ plugin, service, name }) => ({
       pluginId: plugin, pluginName: name, serviceId: service.id, tools: structuredClone(service.tools!)
     }));
+  }
+  modelRouterProviders(): Array<{pluginId:string;serviceId:string;pluginName:string}> {
+    return this.trustedServicesWith("model:route", (service) => service.modelRouter === true)
+      .map(({plugin,service,name}) => ({pluginId:plugin,serviceId:service.id,pluginName:name}));
   }
 
   /** Services whose card actions are shown now: enabled, native code trusted, `cards:decorate` granted. */
@@ -1510,6 +1509,9 @@ export function validatePluginManifest(candidate: unknown): PluginManifest {
     const granted = service.module
       ? modules.find((module) => module.id === service.module)?.permissions
       : undefined;
+    if (service.modelRouter && !permissions.includes("model:route") && !granted?.includes("model:route")) {
+      throw new Error(`Plugin service ${service.id} routes models and needs the model:route permission.`);
+    }
     if (service.launch && !permissions.includes("launch:contribute") && !granted?.includes("launch:contribute")) {
       throw new Error(`Plugin service ${service.id} contributes to launches and needs the launch:contribute permission.`);
     }
@@ -1659,7 +1661,7 @@ function validateServices(value: unknown, moduleIds: ReadonlySet<string>): Plugi
   const services = value.map((candidate): PluginService => {
     if (!isRecord(candidate)) throw new Error("Every plugin service must be an object.");
     assertOnlyKeys(candidate, [
-      "id", "title", "description", "entry", "module", "launch", "environments", "decide", "tools", "cardActions", "browserEngine"
+      "id", "title", "description", "entry", "module", "launch", "environments", "decide", "tools", "cardActions", "modelRouter", "browserEngine"
     ], "Plugin service");
     const id = requiredString(candidate.id, "service id", 64);
     if (!isContributionId(id) || ids.has(id)) throw new Error(`Plugin service id is invalid or duplicated: ${id}.`);
@@ -1679,6 +1681,7 @@ function validateServices(value: unknown, moduleIds: ReadonlySet<string>): Plugi
     const decide = candidate.decide === undefined ? undefined : validateServiceDecide(candidate.decide);
     const tools = candidate.tools === undefined ? undefined : validateServiceTools(candidate.tools);
     const cardActions = candidate.cardActions === undefined ? undefined : validateCardActions(candidate.cardActions);
+    if (candidate.modelRouter !== undefined && typeof candidate.modelRouter !== "boolean") throw new Error("modelRouter must be boolean.");
     const browserEngine = candidate.browserEngine === undefined ? undefined : validateBrowserEngine(candidate.browserEngine);
     return {
       id, title, ...(description ? { description } : {}), entry, ...(module ? { module } : {}),
@@ -1687,6 +1690,7 @@ function validateServices(value: unknown, moduleIds: ReadonlySet<string>): Plugi
       ...(decide ? { decide } : {}),
       ...(tools ? { tools } : {}),
       ...(cardActions ? { cardActions } : {}),
+      ...(candidate.modelRouter === true ? {modelRouter:true} : {}),
       ...(browserEngine ? { browserEngine } : {})
     };
   });
@@ -1801,7 +1805,7 @@ function validateBrowserEngine(value: unknown): PluginBrowserEngine {
   return { id, title, ...(description ? { description } : {}), layout: value.layout === true };
 }
 
-const MAX_CARD_ACTIONS = 8;
+const MAX_CARD_ACTIONS = 16;
 
 function validateCardActions(value: unknown): PluginCardAction[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_CARD_ACTIONS) {
@@ -1846,7 +1850,10 @@ function validateServiceEnvironments(value: unknown): PluginEnvironmentKind[] {
   const kinds = new Set<string>();
   return value.map((candidate): PluginEnvironmentKind => {
     if (!isRecord(candidate)) throw new Error("Every plugin environment must be an object.");
-    assertOnlyKeys(candidate, ["kind", "label", "description", "appliesTo", "fields", "keeps"], "Plugin environment");
+    assertOnlyKeys(candidate, ["kind", "label", "description", "appliesTo", "fields", "keeps", "executionLocation"], "Plugin environment");
+    if (candidate.executionLocation !== undefined && candidate.executionLocation !== "local" && candidate.executionLocation !== "remote") {
+      throw new Error("Plugin environment executionLocation must be local or remote.");
+    }
     const kind = requiredString(candidate.kind, "environment kind", 32);
     // Same shape the session store accepts for a saved environment's kind.
     if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(kind) || kinds.has(kind)) {
@@ -1877,7 +1884,8 @@ function validateServiceEnvironments(value: unknown): PluginEnvironmentKind[] {
       }
     }
     return {
-      kind, label, ...(description ? { description } : {}), ...(appliesTo ? { appliesTo } : {}),
+      kind, label, ...(candidate.executionLocation ? { executionLocation: candidate.executionLocation } : {}),
+      ...(description ? { description } : {}), ...(appliesTo ? { appliesTo } : {}),
       ...(fields?.length ? { fields } : {}), ...(keeps ? { keeps } : {})
     };
   });
@@ -2528,13 +2536,6 @@ async function fetchRemoteManifestVersions(sourceUrls: readonly string[]): Promi
     }
   }
   return versions;
-}
-
-async function fetchRemoteManifestVersion(sourceUrl: string): Promise<string> {
-  const versions = await fetchRemoteManifestVersions([sourceUrl]);
-  const version = versions.get(sourceUrl);
-  if (version === undefined) throw new Error("GitHub manifest could not be fetched.");
-  return version;
 }
 
 async function downloadGithubModuleFiles(

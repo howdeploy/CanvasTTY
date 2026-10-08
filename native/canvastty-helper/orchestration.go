@@ -18,7 +18,7 @@ const maxOrchestrationPayloadBytes = 128 * 1024
 const (
 	orchestrationConnectAttempts = 3
 	orchestrationConnectRetry    = 250 * time.Millisecond
-	// A call the gateway never answers fails instead of waiting forever: wait_for_agent after its own timeout and a
+	// A call the gateway never answers fails instead of waiting forever: bounded waits after their own timeout and a
 	// margin, every other call after three minutes.
 	orchestrationCallTimeout = 180 * time.Second
 	orchestrationWaitMargin  = 30 * time.Second
@@ -368,7 +368,7 @@ func (c *orchestrationClient) timeoutFor(tool string, args any) time.Duration {
 	if c.callTimeout > 0 {
 		return c.callTimeout
 	}
-	if tool != "wait_for_agent" {
+	if tool != "wait_for_agent" && tool != "ask_user" {
 		return orchestrationCallTimeout
 	}
 	seconds := float64(catalogInt("orchestration", "defaultAgentWaitSeconds"))

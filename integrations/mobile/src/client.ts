@@ -1,11 +1,10 @@
 import { connectionFromCode, localFetcher, readLocalConnection } from "../../even-g2/src/local-fetch.mjs";
 import { localOrigin, randomLocalHex, type LocalConnection } from "../../../src/shared/localLink.ts";
-import type { CompanionAction, CompanionOverview, CompanionOverviewSession, CompanionOutput } from "../../../src/shared/companion.ts";
+import type { CompanionAction, CompanionOverview, CompanionOverviewSession } from "../../../src/shared/companion.ts";
 
 export type Session = CompanionOverviewSession;
 export type Overview = CompanionOverview;
-export type Output = CompanionOutput;
-export type Action = Exclude<CompanionAction, { type: "sessions.list" | "browser.open" | "limits.read" }>;
+export type Action = Extract<CompanionAction, { type: "sessions.overview" | "session.read" | "session.reply" | "session.interrupt" | "session.rename" | "session.close" }>;
 type Stored = { state: "pending" | "approved"; token: string; connection: LocalConnection };
 type EncryptedTransport = ((input: string, options?: RequestInit) => Promise<Response>) & {
   connection(): LocalConnection;
@@ -15,13 +14,25 @@ const STORAGE_KEY = "canvastty.mobile.pairing.v1";
 // The web companion may only talk to the host that served this secure page.
 export function exactOrigin(value: string): string {
   if (!globalThis.isSecureContext || !globalThis.crypto?.subtle)
-    throw new Error("A secure browser context with Web Crypto is required for pairing.");
+    throw new Error("This browser requires a secure origin and Web Crypto. Use trusted private-network HTTPS, Tailscale Serve HTTPS, or USB reverse loopback.");
   const origin = localOrigin(value.trim(), true);
   const url = new URL(origin);
+  const host = url.hostname.toLowerCase();
+  const octets = host.split(".");
+  const privateIpv4 = octets.length === 4 &&
+    octets.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255) &&
+    (Number(octets[0]) === 10 ||
+      (Number(octets[0]) === 192 && Number(octets[1]) === 168) ||
+      (Number(octets[0]) === 172 && Number(octets[1]) >= 16 && Number(octets[1]) <= 31));
+  const localHttp = url.protocol === "http:" && !!url.port &&
+    (["127.0.0.1", "[::1]"].includes(host) || privateIpv4 || /^\[f[cd][0-9a-f:]+\]$/.test(host));
+  const tailscaleHttps = url.protocol === "https:" &&
+    /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.ts\.net$/.test(host);
+  const privateHttps = url.protocol === "https:" &&
+    (privateIpv4 || /^\[f[cd][0-9a-f:]+\]$/.test(host));
   if (value.trim() !== origin || origin !== location.origin ||
-    !(url.protocol === "https:" && url.hostname.endsWith(".ts.net") ||
-      url.protocol === "http:" && url.hostname === "127.0.0.1" && !!url.port))
-    throw new Error("Enter this page's exact Tailscale HTTPS or USB loopback address.");
+    !(tailscaleHttps || privateHttps || localHttp))
+    throw new Error("Use this page's exact Tailscale HTTPS, trusted private-network HTTPS, or USB loopback origin.");
   return origin;
 }
 
@@ -95,14 +106,14 @@ export async function startPairing(originInput: string, code: string, signal: Ab
     ({ connection } = await connectionFromCode(code, { origins: [origin], signal, allowLoopback: origin.startsWith("http:") }));
   } catch (error) {
     if (signal.aborted) throw error;
-    throw new Error("Cannot reach CanvasTTY to pair. Check the desktop pairing code and Tailscale Serve or USB reverse setup.");
+    throw new Error("Cannot reach CanvasTTY to pair. Check the desktop pairing code and confirm this trusted HTTPS, Tailscale Serve, or USB address is reachable.");
   }
   if (!connection.origins.includes(origin)) throw new Error("Pairing host changed.");
   const send = localFetcher({ ...connection, origins: [origin] }, { allowLoopback: origin.startsWith("http:") });
   const response = await send("/g2/api/pair", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, name: "CanvasTTY Web Companion" }),
+    body: JSON.stringify({ code }),
     signal,
   });
   if (response.status !== 202) throw new Error("Pairing was not accepted. Request a new code on the desktop.");

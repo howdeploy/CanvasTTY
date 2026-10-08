@@ -29,6 +29,9 @@ export interface EvenG2Telemetry {
 export interface EvenG2Peer {
   id: string;
   name: string;
+  clientType: "phone" | "even-g2";
+  /** Old peers that were only marked summary-only need a host-selected role. */
+  needsReclassification?: boolean;
   grant: CompanionGrant;
   lastSeen: number;
   telemetry: EvenG2Telemetry | null;
@@ -40,6 +43,7 @@ export interface EvenG2State {
   pairing: {
     code: string;
     expiresAt: number;
+    target: "phone" | "even-g2";
     pending: { id: string; name: string } | null;
   } | null;
   transport: {
@@ -58,11 +62,12 @@ export interface EvenG2State {
 export type EvenG2Command =
   | { type: "configure"; config: EvenG2Config }
   | { type: "refresh" }
-  | { type: "begin-pairing" }
+  | { type: "begin-pairing"; target?: "phone" | "even-g2" }
   | { type: "cancel-pairing" }
   | { type: "approve"; id: string }
   | { type: "reject" }
   | { type: "revoke"; id: string }
+  | { type: "set-peer-type"; id: string; clientType: "phone" | "even-g2" }
   | { type: "prepare-speech" }
   | { type: "cancel-speech-setup" };
 export interface EvenG2Api {

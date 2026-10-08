@@ -37,42 +37,88 @@ test("initializeServices awaits the four independent persistence loads together,
   }
 });
 
-test("before/after: awaiting the same four real loads together instead of serially cuts the wall time roughly to the slowest one", async (t) => {
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+test("the startup group starts all four real persistence loads before awaiting any of them", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "canvastty-startup-overlap-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
-  // A small, deliberate delay stands in for real disk latency (a cold SSD, an antivirus scanner, a
-  // network home directory): enough to measure, small enough this test stays fast.
-  const DELAY_MS = 40;
-  const slowly = async (fn) => {
-    await new Promise((resolve) => setTimeout(resolve, DELAY_MS));
-    return fn();
-  };
-
   const registries = [];
-  const loaders = () => {
-    const settings = new SettingsStore(directory, "en");
-    const terminalBorderSkins = new SkinRegistry(directory);
-    const pixelSkinPacks = new PixelSkinPackRegistry(directory);
-    const pluginManager = new PluginManager(directory);
-    registries.push(terminalBorderSkins); // installs a directory watcher; disposed in t.after below
-    return [
-      () => slowly(() => settings.load()),
-      () => slowly(() => terminalBorderSkins.initialize()),
-      () => slowly(() => pixelSkinPacks.initialize()),
-      () => slowly(() => pluginManager.load())
-    ];
+  t.after(async () => {
+    for (const registry of registries) registry.dispose();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const source = await readFile(mainPath, "utf8");
+  const start = source.indexOf("async function initializeServices");
+  const end = source.indexOf("// Secrets this app knows are masked", start);
+  const combined = source.slice(start, end).match(/Promise\.all\(\s*\[([^\]]*)\]\s*\)/su);
+  assert.ok(combined, "the actual startup group must still exist");
+  // Execute the production group with real stores, delaying entry with explicit gates. This
+  // verifies parallel startup without assuming a CI runner's disk and scheduler have stable speed.
+  const startGroup = new Function("settings", "terminalBorderSkins", "pixelSkinPacks", "pluginManager",
+    `return ${combined[0]};`);
+
+  const createLoads = (name) => {
+    const root = join(directory, name);
+    const settings = new SettingsStore(root, "en");
+    const skin = new SkinRegistry(root);
+    registries.push(skin);
+    const pixels = new PixelSkinPackRegistry(root);
+    const plugins = new PluginManager(root);
+    const realLoads = [() => settings.load(), () => skin.initialize(), () => pixels.initialize(), () => plugins.load()];
+    const gates = realLoads.map(() => deferred());
+    const entered = realLoads.map(() => deferred());
+    const finished = realLoads.map(() => deferred());
+    const starts = [], completions = [];
+    let active = 0, peak = 0;
+    const loads = realLoads.map((load, index) => async () => {
+      starts.push(index);
+      active += 1;
+      peak = Math.max(peak, active);
+      entered[index].resolve();
+      try {
+        await gates[index].promise;
+        await load();
+        completions.push(index);
+      } finally {
+        active -= 1;
+        finished[index].resolve();
+      }
+    });
+    return { loads, gates, entered, finished, starts, completions, peak: () => peak, settings };
   };
-  t.after(() => { for (const registry of registries) registry.dispose(); });
 
-  const serialStart = Date.now();
-  for (const load of loaders()) await load();
-  const serialMs = Date.now() - serialStart;
+  const serial = createLoads("serial");
+  const serialWork = (async () => { for (const load of serial.loads) await load(); })();
+  for (let index = 0; index < 4; index += 1) {
+    await serial.entered[index].promise;
+    assert.deepEqual(serial.starts, Array.from({ length: index + 1 }, (_, i) => i), "serial control cannot start the next load early");
+    serial.gates[index].resolve();
+    await serial.finished[index].promise;
+  }
+  await serialWork;
+  assert.equal(serial.peak(), 1);
+  assert.deepEqual(serial.completions, [0, 1, 2, 3]);
 
-  const parallelStart = Date.now();
-  await Promise.all(loaders().map((load) => load()));
-  const parallelMs = Date.now() - parallelStart;
-
-  assert.ok(serialMs >= DELAY_MS * 4 * 0.8, `serial loads should take on the order of ${DELAY_MS * 4}ms, took ${serialMs}ms`);
-  assert.ok(parallelMs < serialMs * 0.6, `overlapped loads (${parallelMs}ms) should be well under serial loads (${serialMs}ms)`);
+  const parallel = createLoads("parallel");
+  let settled = false;
+  const parallelWork = startGroup({ load: parallel.loads[0] }, { initialize: parallel.loads[1] },
+    { initialize: parallel.loads[2] }, { load: parallel.loads[3] }).then(() => { settled = true; });
+  assert.deepEqual(parallel.starts, [0, 1, 2, 3], "all four must start before any gate is released");
+  assert.equal(parallel.peak(), 4);
+  assert.deepEqual(parallel.completions, []);
+  // Finish out of order: Promise.all must await the final real load, not merely the first.
+  for (const index of [2, 0, 3]) {
+    parallel.gates[index].resolve();
+    await parallel.finished[index].promise;
+    assert.equal(settled, false);
+  }
+  parallel.gates[1].resolve();
+  await parallelWork;
+  assert.deepEqual(parallel.completions, [2, 0, 3, 1]);
+  assert.equal(settled, true);
+  assert.equal(parallel.settings.get().locale, serial.settings.get().locale, "both paths initialized the real settings store");
 });

@@ -14,6 +14,8 @@ import { MAX_PLUGIN_SLOT_BYTES, type PersistedEnvironmentRef } from "./TerminalS
 export interface EnvironmentProvider {
   pluginId: string;
   pluginName: string;
+  /** Canonical host install-record provenance, never supplied by a launcher choice. */
+  sourceUrl?: string;
   serviceId: string;
   kinds: PluginEnvironmentKind[];
   /** The plugin holds the `secrets` permission, so `wrap` may name its secrets in `secretEnv`. */
@@ -25,11 +27,13 @@ export type EnvironmentMethod = `canvastty.environment.${EnvironmentStep}`;
 
 export interface EnvironmentRegistryDependencies {
   providers(): EnvironmentProvider[];
+  experimentalEnabled?: () => boolean;
   call(pluginId: string, serviceId: string, method: EnvironmentMethod, params: unknown, timeoutMs: number): Promise<unknown>;
   /** Reads one of the plugin's own secrets in this process; the value never reaches plugin code or UI. */
   secret(pluginId: string, key: string): Promise<string | null>;
   timeouts?: Partial<Record<EnvironmentStep, number>>;
   platform?: NodeJS.Platform;
+  onRetained?(sessionId:string,environment:PersistedEnvironmentRef,reason:string):void;
 }
 
 /** The core never waits longer and never falls back to a local launch when a step runs out. */
@@ -94,6 +98,7 @@ export class EnvironmentRegistry {
   }
 
   unavailableReason(environment: Pick<PersistedEnvironmentRef, "pluginId" | "kind" | "label">): string {
+    if (this.lookup(environment.pluginId, environment.kind, true) && this.remoteDisabled(environment.pluginId, environment.kind)) return "Experimental remote or unclassified environments are disabled; not available without opt-in. It was not started locally.";
     return `Needs plugin ${environment.pluginId} (${environment.label}); it is disabled, removed, or its native code is not trusted. It was not started locally.`;
   }
 
@@ -106,6 +111,7 @@ export class EnvironmentRegistry {
     if (!isRecord(candidate) || typeof candidate.pluginId !== "string" || typeof candidate.kind !== "string") {
       throw new Error("Environment choice is invalid.");
     }
+    if (this.remoteDisabled(candidate.pluginId, candidate.kind)) throw new Error("Experimental remote or unclassified environments are disabled; not available without opt-in.");
     const found = this.lookup(candidate.pluginId, candidate.kind);
     if (!found) throw new Error(`Environment ${candidate.kind.slice(0, 32)} from plugin ${candidate.pluginId.slice(0, 80)} is not available.`);
     const { provider: owner, kind } = found;
@@ -137,7 +143,9 @@ export class EnvironmentRegistry {
     provider: ProviderId;
     cwd: string;
     choice: SessionEnvironmentChoice;
+    projectRoot?:string;
   }): Promise<PreparedEnvironment> {
+    if (this.remoteDisabled(request.choice.pluginId, request.choice.kind)) return { ok: false, reason: "Experimental remote or unclassified environments are disabled; not available without opt-in." };
     const found = this.lookup(request.choice.pluginId, request.choice.kind);
     if (!found) return { ok: false, reason: `Environment ${request.choice.kind} from plugin ${request.choice.pluginId} is not available.` };
     const answer = await this.ask(found.provider, "prepare", {
@@ -145,6 +153,7 @@ export class EnvironmentRegistry {
       kind: request.choice.kind,
       provider: request.provider,
       cwd: request.cwd,
+      ...(request.projectRoot ? {projectRoot:request.projectRoot} : {}),
       options: request.choice.options ?? {}
     }, undefined, {
       budgetMs: LATE_ANSWER_BUDGET_MS,
@@ -169,6 +178,10 @@ export class EnvironmentRegistry {
     if (!label) return { ok: false, reason: `${name} answered with an invalid environment: label is required` };
     if (value.cwd !== undefined && !isDirectory(value.cwd)) {
       return { ok: false, reason: `${name} answered with an invalid environment: cwd must be an existing absolute folder` };
+    }
+    if (this.remoteDisabled(request.choice.pluginId, request.choice.kind)) {
+      await this.release({ pluginId: found.provider.pluginId, kind: request.choice.kind, ref: structuredClone(value.ref), label }, request.sessionId, { keepData: true, reason: "closed" });
+      return { ok: false, reason: "Experimental remote or unclassified environments are disabled; not available without opt-in." };
     }
     return {
       ok: true,
@@ -197,6 +210,10 @@ export class EnvironmentRegistry {
     if (!answer.ok) return answer;
     const value = answer.value;
     const name = found.provider.pluginName;
+    if (this.remoteDisabled(environment.pluginId, environment.kind)) {
+      if (isRecord(value) && value.ok === true) await this.release(environment, sessionId, { keepData: true, reason: "closed" });
+      return { ok: false, reason: this.unavailableReason(environment) };
+    }
     if (isRecord(value) && value.ok === true && Object.keys(value).length === 1) return { ok: true };
     if (isRecord(value) && value.stopped !== undefined) return { ok: false, reason: `${name}: ${refusal(value.stopped)}` };
     return { ok: false, reason: `${name} answered resume with neither ok nor stopped.` };
@@ -231,6 +248,10 @@ export class EnvironmentRegistry {
       cwd: request.launch.cwd
     });
     if (!answer.ok) return answer;
+    if (this.remoteDisabled(environment.pluginId, environment.kind)) {
+      await this.release(environment, request.sessionId, { keepData: true, reason: "closed" });
+      return { ok: false, reason: this.unavailableReason(environment) };
+    }
     const invalid = (problem: string): WrappedLaunch => ({ ok: false, reason: `${name} answered with an invalid launch: ${problem}` });
     const value = answer.value;
     if (isRecord(value) && value.refuse !== undefined) return { ok: false, reason: `${name}: ${refusal(value.refuse)}` };
@@ -277,6 +298,10 @@ export class EnvironmentRegistry {
       merged[key] = secret;
       secrets.push(secret);
     }
+    if (this.remoteDisabled(environment.pluginId, environment.kind)) {
+      await this.release(environment, request.sessionId, { keepData: true, reason: "closed" });
+      return { ok: false, reason: this.unavailableReason(environment) };
+    }
     return {
       ok: true,
       command,
@@ -289,7 +314,8 @@ export class EnvironmentRegistry {
 
   /** `canvastty.environment.release`: the card was closed (or the app quit with saving off). Never throws. */
   async release(environment: PersistedEnvironmentRef, sessionId: string, options: { keepData: boolean; reason: "closed" | "quit"; timeoutMs?: number }): Promise<void> {
-    const found = this.lookup(environment.pluginId, environment.kind);
+    // Cleanup remains possible after the opt-in is switched off.
+    const found = this.lookup(environment.pluginId, environment.kind, true);
     if (!found) return;
     const answer = await this.ask(found.provider, "release", {
       ...refParams(environment, sessionId),
@@ -297,6 +323,11 @@ export class EnvironmentRegistry {
       reason: options.reason
     }, options.timeoutMs);
     if (!answer.ok) console.warn(`CanvasTTY environment ${environment.label} could not be released: ${answer.reason}`);
+    else if(isRecord(answer.value) && answer.value.released===false) {
+      const reason=plainText(answer.value.reason,500) ?? "Unreviewed work was kept.";
+      console.warn(`CanvasTTY environment ${environment.label} retained: ${reason}`);
+      this.dependencies.onRetained?.(sessionId,environment,reason);
+    }
   }
 
   /** `canvastty.environment.describe`: the card badge text; null when the plugin gave none. */
@@ -311,7 +342,20 @@ export class EnvironmentRegistry {
     return { label, ...(detail ? { detail } : {}) };
   }
 
-  private lookup(pluginId: string, kindId: string): { provider: EnvironmentProvider; kind: PluginEnvironmentKind } | null {
+  private remoteDisabled(pluginId: string, kindId: string): boolean {
+    if (this.dependencies.experimentalEnabled?.() === true) return false;
+    const found = this.lookup(pluginId, kindId, true);
+    if (!found) return true;
+    if (found.kind.executionLocation !== undefined) return found.kind.executionLocation !== "local";
+    // Only these audited legacy services run locally. IDs alone are self-declared and confer no provenance.
+    return !(found.provider.sourceUrl?.toLowerCase() === "https://github.com/biackfiame/canvastty-plugin-environments.git"
+      && pluginId === "canvastty-environments"
+      && ((found.provider.serviceId === "worktree" && kindId === "worktree")
+        || (found.provider.serviceId === "container" && kindId === "container")));
+  }
+
+  private lookup(pluginId: string, kindId: string, cleanup = false): { provider: EnvironmentProvider; kind: PluginEnvironmentKind } | null {
+    if (!cleanup && this.remoteDisabled(pluginId, kindId)) return null;
     // Kinds are unique within a plugin, whichever of its services lists them.
     const provider = this.dependencies.providers()
       .find((candidate) => candidate.pluginId === pluginId && candidate.kinds.some((kind) => kind.kind === kindId));

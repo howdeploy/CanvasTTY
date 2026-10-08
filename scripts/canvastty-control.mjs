@@ -122,7 +122,7 @@ export async function controlRequest({ connectionPath, clientPath, method, param
 export function parseArguments(argv) {
   const options = {};
   const positional = [];
-  const flags = new Set(["--connection", "--client-file", "--request-id", "--cwd", "--title", "--provider", "--profile", "--model", "--effort", "--prompt-file", "--text", "--after", "--choice", "--revision", "--archive", "--name", "--apertures", "--detail"]);
+  const flags = new Set(["--connection", "--client-file", "--request-id", "--cwd", "--title", "--provider", "--profile", "--model", "--effort", "--execution-target", "--prompt-file", "--text", "--after", "--choice", "--revision", "--archive", "--name", "--apertures", "--detail"]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--json") continue;
@@ -148,13 +148,18 @@ providers
   The agents CanvasTTY can create workers for: id (the --provider value), name,
   installed/available, signIn (ok, signed_out, expired or unknown). Run it first;
   do not search the filesystem for agent CLIs or their configuration.
+execution-targets
+  The approved destinations permitted for this orchestrator's task. Read-only;
+  requires a scoped connection. With policy enabled, choose a returned id for create.
 create --cwd <directory> [--provider <id>] [--title <name>] [--yolo | --profile auto|normal|acceptEdits|plan]
-       [--model <id>] [--effort <level>]
+       [--model <id>] [--effort <level>] [--execution-target <id>]
   provider: an id from providers; codex (default), claude, qwen, kimi, opencode,
   hermes, grok, omp, pi, cursor, minimax, devin, antigravity.
   --model: the CLI's own --model for this worker (OpenCode: provider/model); if
   the person names a model, pass it. --effort: codex, claude and grok only.
   providers shows each provider's model format and effort levels.
+  --execution-target: an explicit id from execution-targets for scoped creates;
+  required when execution policy is enabled. No target is selected implicitly.
   Only Codex workers report a captured result and expose startup/approval menus
   to choose/dismiss; the create response lists each worker's capabilities.
 list
@@ -187,16 +192,16 @@ export async function runCli(argv) {
   const { options, positional } = parseArguments(argv);
   if (options.help) return { help: HELP };
   const [method, sessionId] = positional;
-  if (!["create", "list", "providers", "status", "screen", "send", "result", "interrupt", "choose", "dismiss", "skin-list", "skin-install", "skin-select"].includes(method)) throw new Error("Unknown command; see --help.");
-  if (positional.length !== (["create", "list", "providers", "skin-list", "skin-install"].includes(method) ? 1 : 2)) throw new Error("Unexpected or missing positional argument.");
+  if (!["create", "list", "providers", "execution-targets", "status", "screen", "send", "result", "interrupt", "choose", "dismiss", "skin-list", "skin-install", "skin-select"].includes(method)) throw new Error("Unknown command; see --help.");
+  if (positional.length !== (["create", "list", "providers", "execution-targets", "skin-list", "skin-install"].includes(method) ? 1 : 2)) throw new Error("Unexpected or missing positional argument.");
   const allowed = new Set(["connection", "client-file", "request-id",
-    ...(method === "create" ? ["cwd", "title", "provider", "profile", "yolo", "model", "effort"] : []),
+    ...(method === "create" ? ["cwd", "title", "provider", "profile", "yolo", "model", "effort", "execution-target"] : []),
     ...(method === "send" ? ["prompt-file", "text"] : []), ...(method === "result" ? ["after"] : []),
     ...(method === "choose" ? ["choice", "revision"] : []), ...(method === "dismiss" ? ["revision"] : [])]);
   if (method === "skin-install") ["archive", "name", "apertures", "activate", "detail"].forEach((key) => allowed.add(key));
   if (method === "skin-select") allowed.add("detail");
   if (Object.keys(options).some((key) => !allowed.has(key))) throw new Error("Option does not apply to this command.");
-  let params = ["list", "providers", "skin-list", "skin-install"].includes(method) ? {} : { sessionId };
+  let params = ["list", "providers", "execution-targets", "skin-list", "skin-install"].includes(method) ? {} : { sessionId };
   if (method === "create") {
     if (!options.cwd) throw new Error("create requires --cwd.");
     if (options.yolo && options.profile && options.profile !== "yolo") throw new Error("Conflicting launch profiles.");
@@ -207,6 +212,7 @@ export async function runCli(argv) {
       ...(agentScope ? {} : { profile: options.yolo ? "yolo" : options.profile || "yolo" }),
       ...(options.title === undefined ? {} : { title: options.title }),
       ...(options.model === undefined ? {} : { model: options.model }),
+      ...(options["execution-target"] === undefined ? {} : { executionTargetId: options["execution-target"] }),
       ...(options.effort === undefined ? {} : { effort: options.effort }) };
   }
   if (method === "send") {

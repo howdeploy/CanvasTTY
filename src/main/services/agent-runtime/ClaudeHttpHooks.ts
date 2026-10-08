@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, posix, win32 } from "node:path";
 import { CLAUDE_HTTP_HOOK } from "../../../agent-runtime/runtime-protocol.mjs";
+import type { AgentNetworkMode } from "../isolation/networkPolicy.ts";
 
 /**
  * When Claude Code's lifecycle hooks may go over HTTP to the gateway's loopback listener instead of through the
@@ -14,6 +15,7 @@ import { CLAUDE_HTTP_HOOK } from "../../../agent-runtime/runtime-protocol.mjs";
  * - `HTTP_PROXY` and friends route them through that proxy;
  * - `allowedHttpHookUrls` blocks them, and `httpHookAllowedEnvVars` empties the headers that carry the capability;
  * - a plugin environment (container, remote host) has another 127.0.0.1 and none of CanvasTTY's variables;
+ * - Linux strict-network isolation cannot reach the host's loopback HTTP listener (the helper's Unix socket still works);
  * - Windows keeps its current-user named pipe; older Claude versions are untested.
  *
  * Otherwise the command helper runs exactly as before.
@@ -29,6 +31,8 @@ export interface ClaudeHttpLaunchFacts {
   /** Claude's arguments (inline `--settings` values are read). */
   args: readonly string[];
   cwd: string;
+  /** Strict network modes may isolate loopback from the host gateway on Linux. */
+  networkMode?: AgentNetworkMode;
 }
 
 export type ClaudeHttpVerdict = { ok: true } | { ok: false; reason: string };
@@ -68,6 +72,9 @@ export class ClaudeHttpHookPolicy {
 
   verdict(facts: ClaudeHttpLaunchFacts): ClaudeHttpVerdict {
     if (this.platform === "win32") return { ok: false, reason: "Windows keeps the named-pipe helper" };
+    if (this.platform === "linux" && facts.networkMode !== undefined && facts.networkMode !== "open") {
+      return { ok: false, reason: "Linux strict network isolation cannot reach the loopback HTTP hook listener" };
+    }
     if (facts.environmentWrapped) return { ok: false, reason: "a plugin environment runs the agent" };
     if (facts.profile === "auto") return { ok: false, reason: "Claude's sandbox (auto profile) proxies HTTP hooks" };
     const version = this.version(facts.executable);

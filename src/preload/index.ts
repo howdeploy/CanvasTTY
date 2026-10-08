@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { BACKLOG_IPC, BACKLOG_TERMINAL_IPC, BACKLOG_EVENTS, type BacklogApi } from "../shared/backlog";
 import type {
   AppSettings,
   BrowserActivityStateEvent,
@@ -182,9 +183,10 @@ const api: CanvasTTYApi = {
     onCardDecorations: (listener: (decorations: PluginCardDecorations) => void) => (
       subscribe(IPC.pluginsCardDecorationsChanged, listener)
     ),
-    invokeCardAction: (pluginId: string, actionId: string, sessionId: string) => (
-      ipcRenderer.invoke(IPC.pluginsInvokeCardAction, pluginId, actionId, sessionId)
+    invokeCardAction: (pluginId: string, actionId: string, sessionId: string, input?: Record<string, unknown>) => (
+      ipcRenderer.invoke(IPC.pluginsInvokeCardAction, pluginId, actionId, sessionId, input)
     ),
+    executionAccountRoutes: (provider: ProviderId) => ipcRenderer.invoke(IPC.executionAccountRoutes,provider),
     launchFieldOptions: (pluginId: string, provider: ProviderId) => (
       ipcRenderer.invoke(IPC.pluginsLaunchFieldOptions, pluginId, provider)
     ),
@@ -223,6 +225,7 @@ const api: CanvasTTYApi = {
   githubAuth: {
     status: () => ipcRenderer.invoke(IPC.githubAuthStatus),
     start: () => ipcRenderer.invoke(IPC.githubAuthStart),
+    cancel: () => ipcRenderer.invoke(IPC.githubAuthCancel),
     signOut: () => ipcRenderer.invoke(IPC.githubAuthSignOut),
     openUrl: (url: string) => ipcRenderer.invoke(IPC.githubAuthOpenUrl, url)
   },
@@ -262,6 +265,7 @@ const api: CanvasTTYApi = {
       ipcRenderer.sendSync(IPC.canvasNavigationOwnerWheel, { clientX, clientY });
     },
     setShortcutCaptureActive: (active: boolean) => ipcRenderer.send(IPC.canvasNavigationShortcutCapture, active),
+    setTerminalEditFocus: (active: boolean) => ipcRenderer.send(IPC.canvasNavigationTerminalEditFocus, active),
     setPointerBindingState: (input: CanvasNavigationPointerBindingInput) => (
       ipcRenderer.send(IPC.canvasNavigationPointerBinding, input)
     ),
@@ -271,6 +275,11 @@ const api: CanvasTTYApi = {
     )
   },
   terminal: {
+    paste: (id, text) => ipcRenderer.invoke(BACKLOG_TERMINAL_IPC.paste, id, text),
+    describeFileDrop: (files, sessionId) => ipcRenderer.invoke(BACKLOG_TERMINAL_IPC.describeFileDrop, files.map((file) => webUtils.getPathForFile(file)), sessionId),
+    searchOutput: (query, sessionIds) => ipcRenderer.invoke(BACKLOG_TERMINAL_IPC.searchOutput, query, sessionIds),
+    readOutputContext: (id, offset) => ipcRenderer.invoke(BACKLOG_TERMINAL_IPC.readOutputContext,id,offset),
+    onFocusRequested: (listener) => subscribe(BACKLOG_TERMINAL_IPC.focusRequested, listener),
     openFile: (id: string, reference: string) => ipcRenderer.invoke(IPC.terminalOpenFile, id, reference),
     fileDropText: (files: File[]) => terminalFileDropText(
       files.map((file) => webUtils.getPathForFile(file)),
@@ -281,6 +290,7 @@ const api: CanvasTTYApi = {
     create: (request: CreateSessionRequest) => ipcRenderer.invoke(IPC.terminalCreate, request),
     restart: (id: string, options?: { resume?: boolean }) => ipcRenderer.invoke(IPC.terminalRestart, id, options),
     input: (id: string, data: string) => ipcRenderer.send(IPC.terminalInput, id, data),
+    pasteClipboard: (id, text, startedAt) => ipcRenderer.invoke(IPC.terminalPasteClipboard, id, text, startedAt),
     resize: (id: string, cols: number, rows: number) => ipcRenderer.send(IPC.terminalResize, id, cols, rows),
     setBounds: (id: string, bounds: SessionBounds) => ipcRenderer.send(IPC.terminalBounds, id, bounds),
     rename: (id: string, title: string) => ipcRenderer.invoke(IPC.terminalRename, id, title),
@@ -293,6 +303,10 @@ const api: CanvasTTYApi = {
     resolveGitRisk: (reportId: string, action: "neutralize" | "keep") => ipcRenderer.invoke(IPC.terminalResolveGitRisk, reportId, action),
     onGitRisk: (listener: (report: GitRiskReport) => void) => subscribe(IPC.terminalGitRisk, listener)
   },
+  backlog: {
+    ...Object.fromEntries(Object.entries(BACKLOG_IPC).map(([name, channel]) => [name, (...args: unknown[]) => ipcRenderer.invoke(channel, ...args)])),
+    onTaskBoardChanged:(listener)=>subscribe(BACKLOG_EVENTS.taskBoardChanged,listener)
+  } as BacklogApi,
   window: {
     isMacOS: process.platform === "darwin",
     platform: process.platform,

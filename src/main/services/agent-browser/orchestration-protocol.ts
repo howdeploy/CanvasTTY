@@ -25,6 +25,7 @@ export const ORCHESTRATION_ENV = Object.freeze({
 });
 
 export type OrchestrationToolName =
+  | "ask_user"
   | "spawn_agent"
   | "send_to_agent"
   | "observe_agent"

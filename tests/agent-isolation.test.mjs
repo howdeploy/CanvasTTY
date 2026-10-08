@@ -6,18 +6,22 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
-import { AgentIsolation, ISOLATION_FOLDER_PREFIX, probeBubblewrap } from "../src/main/services/isolation/AgentIsolation.ts";
+import { AgentIsolation, ISOLATION_FOLDER_PREFIX, probeBubblewrap, probeNetworkIsolation } from "../src/main/services/isolation/AgentIsolation.ts";
 import { isolationPaths } from "../src/main/services/isolation/isolationPaths.ts";
 import { seatbeltProfile } from "../src/main/services/isolation/seatbelt.ts";
 import { bubblewrapArguments } from "../src/main/services/isolation/bubblewrap.ts";
+import { worktreeGitAccess } from "../src/main/services/isolation/worktreeGitAccess.ts";
 import { AgentControlService } from "../src/main/services/AgentControlService.ts";
 import { codexInsideIsolation } from "../src/main/services/terminalLaunch.ts";
+import { TerminalSessionStore, persistedTerminalSession } from "../src/main/services/TerminalSessionStore.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 
 const at = { x: 0, y: 0 };
 const mac = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
 const onMac = { skip: mac ? false : "macOS seatbelt (sandbox-exec) only" };
+// Fixture repositories only: Windows has Git on PATH (Git for Windows), not at /usr/bin/git.
+const GIT = process.platform === "win32" ? "git" : "/usr/bin/git";
 
 /** A fake HOME with the files an escape would go for, a CanvasTTY userData folder and a project in NFD. */
 async function world(t) {
@@ -42,6 +46,11 @@ async function world(t) {
   await writeFile(join(userData, "agent-control", "token-app"), "APP-TOKEN");
   await writeFile(join(userData, "agent-control", "sessions", "own", "connection.json"), "{}");
   await writeFile(join(userData, "provider-secrets.bin"), "SECRETS");
+  await writeFile(join(userData,"checkpoints.json"),"IMMUTABLE-CHECKPOINT-REGISTRY");
+  await mkdir(join(userData,"checkpoint-objects","fixture"),{recursive:true});
+  await writeFile(join(userData,"checkpoint-objects","fixture","pack.pack"),"HOST-SNAPSHOT-OBJECTS");
+  await writeFile(join(userData,"flow-approvals.json"),"HOST-FLOW-APPROVALS");
+  await writeFile(join(userData,"task-budgets.json"),"HOST-BUDGET-POLICY");
   const env = { HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "en_US.UTF-8" };
   return { base, home, userData, project, temp, env };
 }
@@ -51,15 +60,47 @@ function isolation(w, options = {}) {
 }
 
 /** Runs `sh -c script` under the generated profile; returns stdout lines. */
-function run(w, script, { provider = "codex", env = {}, granted } = {}) {
-  const wrapped = isolation(w).wrap({ sessionId: "s1", provider, cwd: w.project.normalize("NFC"), command: "/bin/sh", args: ["-c", script],
-    env: { ...w.env, ...env }, ...(granted ? { grantedPrivate: granted } : {}) });
+function run(w, script, { provider = "codex", env = {}, granted, cwd = w.project, networkProjectRoot } = {}) {
+  const wrapped = isolation(w).wrap({ sessionId: "s1", provider, cwd: cwd.normalize("NFC"), command: "/bin/sh", args: ["-c", script],
+    env: { ...w.env, ...env }, ...(granted ? { grantedPrivate: granted } : {}), ...(networkProjectRoot ? { networkProjectRoot } : {}) });
   try {
-    const result = spawnSync(wrapped.command, wrapped.args, { cwd: w.project, env: wrapped.env, encoding: "utf8", timeout: 20_000 });
+    const result = spawnSync(wrapped.command, wrapped.args, { cwd, env: wrapped.env, encoding: "utf8", timeout: 20_000 });
     return { lines: result.stdout.split("\n").filter(Boolean), stderr: result.stderr, env: wrapped.env };
   } finally {
     wrapped.cleanup();
   }
+}
+
+async function linkedWorktree(w) {
+  const main = join(w.base, "main-repository");
+  const worktrees = join(w.userData, "plugin-data", "canvastty-environments", "worktrees");
+  const actor = join(worktrees, "actor");
+  const sibling = join(worktrees, "sibling");
+  await Promise.all([mkdir(main, { recursive: true }), mkdir(worktrees, { recursive: true })]);
+  const git = (cwd, args) => {
+    const result = spawnSync(GIT, args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);
+  };
+  git(main, ["init", "-q"]);
+  git(main, ["config", "user.email", "fixture@example.invalid"]);
+  git(main, ["config", "user.name", "CanvasTTY fixture"]);
+  await writeFile(join(main, "tracked.txt"), "base\n");
+  git(main, ["add", "tracked.txt"]);
+  git(main, ["commit", "-q", "-m", "base"]);
+  git(main, ["worktree", "add", "-q", "-b", "actor-branch", actor, "HEAD"]);
+  git(main, ["worktree", "add", "-q", "-b", "sibling-branch", sibling, "HEAD"]);
+  await writeFile(join(worktrees, "parent-marker"), "PARENT-SECRET\n");
+  await writeFile(join(sibling, "sibling-marker"), "SIBLING-SECRET\n");
+  return { main, worktrees, actor, sibling, common: join(main, ".git") };
+}
+
+function addPrimaryBranchDuplicate(fixture) {
+  const branch = spawnSync(GIT, ["-C", fixture.main, "branch", "--show-current"], { encoding: "utf8" }).stdout.trim();
+  assert.ok(branch, "fixture primary checkout has a branch");
+  const duplicate = join(fixture.worktrees, "primary-duplicate");
+  const result = spawnSync(GIT, ["-C", fixture.main, "worktree", "add", "--force", "-q", duplicate, branch], { encoding: "utf8" });
+  assert.equal(result.status, 0, `git worktree add --force ${branch}: ${result.stderr}`);
+  return duplicate;
 }
 
 test("the isolation decision: delegated and non-manual launches, the person's setting, missing layers and environments", () => {
@@ -136,6 +177,10 @@ test("the bubblewrap check reports what bubblewrap said, and a missing binary", 
   await writeFile(ok, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   assert.equal(probeBubblewrap(ok), null);
   assert.match(probeBubblewrap(join(dir, "missing")), /ENOENT/u);
+  await writeFile(ok, "#!/bin/sh\n[ \"$1\" = network-bridge ] && [ \"$2\" = --probe ] && [ \"$#\" = 2 ]\n", { mode: 0o755 });
+  assert.equal(probeNetworkIsolation(ok), null, "the guard probe executes the native helper's exact capability check");
+  assert.match(probeNetworkIsolation(fake), /Permission denied/u);
+  assert.match(probeNetworkIsolation(join(dir, "missing")), /ENOENT/u);
 });
 
 test("the paths: the project and the CLI's own folders writable; other CLIs' credentials, keys and CanvasTTY's tokens unreadable", async (t) => {
@@ -146,7 +191,7 @@ test("the paths: the project and the CLI's own folders writable; other CLIs' cre
   assert.ok(paths.writable.includes(join(w.home, ".codex")));
   assert.ok(!paths.writable.includes(join(w.home, ".claude")));
   for (const secret of [join(w.home, ".ssh"), join(w.home, ".aws"), join(w.home, ".claude"), join(w.home, ".local", "share", "opencode"),
-    join(w.home, ".grok"), join(w.userData, "agent-control"), join(w.userData, "provider-secrets.bin"), join(w.userData, "account-homes")]) {
+    join(w.home, ".grok"), join(w.userData, "agent-control"), join(w.userData, "provider-secrets.bin"), join(w.userData, "account-homes"),join(w.userData,"checkpoints.json"),join(w.userData,"task-budgets.json")]) {
     assert.ok(paths.unreadable.includes(secret), secret);
   }
   assert.ok(!paths.unreadable.includes(join(w.home, ".codex")), "its own folder stays readable");
@@ -178,6 +223,130 @@ test("bubblewrap: read-only root, writable project, tmpfs over what may not be r
   assert.ok(text.includes(`--ro-bind /dev/null ${join(w.userData, "provider-secrets.bin")}`));
   assert.ok(text.includes("--tmpfs /run/user/1000"));
   assert.deepEqual(args.slice(-5), ["--chdir", w.project, "--", "/usr/bin/claude", "--x"]);
+});
+
+test("linked worktree Git metadata stays read-only on every OS layer while project files remain editable", async (t) => {
+  const w = await world(t);
+  const fixture = await linkedWorktree(w);
+  const access = worktreeGitAccess(fixture.actor, fixture.main, w.userData);
+  assert.ok(access, "the host recognizes the plugin worktree against its task root");
+  const subfolder = join(fixture.actor, "src", "nested");
+  await mkdir(subfolder, { recursive: true });
+  const nestedAccess = worktreeGitAccess(subfolder, fixture.main, w.userData);
+  assert.ok(nestedAccess, "a delegated launch inside a registered worktree subfolder keeps its Git boundary");
+  assert.equal(nestedAccess.cwd, fixture.actor, "isolation reopens the registered worker tree, not its private parent");
+  assert.equal(nestedAccess.commonDir, access.commonDir);
+  assert.equal(nestedAccess.adminDir, access.adminDir);
+  const common = isolationPaths({ provider: "codex", cwd: fixture.actor, sessionTemp: join(w.temp, "s"), env: w.env,
+    userDataPath: w.userData, sessionId: "s", worktreeGitAccess: access });
+  assert.ok(common.unreadable.includes(join(w.userData, "plugin-data")), "plugin data is hidden as a whole");
+  assert.ok(common.readableAgain.includes(fixture.actor), "only this worker tree is reopened");
+  for (const path of [access.adminDir, access.commonDir]) {
+    assert.ok(common.protectedDirectories.includes(path), `${path} is explicitly write-protected even if a CLI home is moved there`);
+  }
+  assert.ok(!common.writableFiles.some(path => path.startsWith(access.adminDir) || path.startsWith(access.commonDir)));
+
+  const plan = isolationPaths({ provider: "codex", cwd: fixture.actor, sessionTemp: join(w.temp, "s"), env: w.env,
+    userDataPath: w.userData, sessionId: "s-plan", worktreeGitAccess: access, readOnlyProject: true });
+  assert.ok(plan.protectedDirectories.includes(access.adminDir) && plan.protectedDirectories.includes(access.commonDir));
+
+  const linux = isolationPaths({ provider: "codex", cwd: fixture.actor, sessionTemp: join(w.temp, "s-linux"), env: w.env,
+    userDataPath: w.userData, sessionId: "s-linux", worktreeGitAccess: access });
+  assert.ok(linux.protectedDirectories.includes(access.adminDir) && linux.protectedDirectories.includes(access.commonDir));
+  assert.ok(linux.writable.includes(fixture.actor), "Linux still permits project file edits");
+  const bound = new Map([[fixture.actor, "directory"], [access.adminDir, "directory"], [access.commonDir, "directory"],
+    [join(fixture.actor, ".git"), "file"], [join(access.adminDir, "index"), "file"]]);
+  const args = bubblewrapArguments(linux, { command: "/usr/bin/codex", args: [], cwd: fixture.actor }, (path) => bound.get(path) ?? null);
+  for (const path of [access.adminDir, access.commonDir, join(access.adminDir, "index")]) {
+    assert.ok(!args.some((arg, index) => arg === "--bind" && args[index + 1] === path), `${path} is not mounted writable`);
+  }
+  assert.ok(args.some((arg, index) => arg === "--ro-bind" && args[index + 1] === access.adminDir), "the required index remains visible read-only");
+  assert.ok(args.some((arg, index) => arg === "--ro-bind" && args[index + 1] === access.commonDir), "shared objects and refs are remounted read-only");
+});
+
+test("host validation refuses a linked worktree sharing the primary checkout branch", async (t) => {
+  const w = await world(t);
+  const fixture = await linkedWorktree(w);
+  const duplicate = addPrimaryBranchDuplicate(fixture);
+  assert.equal(worktreeGitAccess(duplicate, fixture.main, w.userData), null);
+  const linux = isolation(w, { platform: "linux", bubblewrapPath: "/usr/bin/bwrap", bubblewrapProbe: () => null, exists: () => true });
+  assert.throws(() => linux.wrap({ sessionId: "shared", provider: "codex", cwd: duplicate, networkProjectRoot: fixture.main,
+    command: "/usr/bin/codex", args: [], env: w.env }), /could not be verified against the task's original Git repository/u);
+  const outsideAlias = join(fixture.worktrees, "outside-alias");
+  await symlink(fixture.main, outsideAlias, "dir");
+  assert.throws(() => linux.wrap({ sessionId: "alias", provider: "codex", cwd: outsideAlias, networkProjectRoot: fixture.main,
+    command: "/usr/bin/codex", args: [], env: w.env }), /could not be verified against the task's original Git repository/u,
+  "a lexical plugin-data path that resolves outside is still rejected");
+});
+
+test("host validation checks the common primary HEAD when the task root is itself a linked worktree", async (t) => {
+  const w = await world(t);
+  const fixture = await linkedWorktree(w);
+  const taskRoot = join(w.base, "task-root-worktree");
+  const taskRootResult = spawnSync(GIT, ["-C", fixture.main, "worktree", "add", "-q", "-b", "task-root-branch", taskRoot, "HEAD"], { encoding: "utf8" });
+  assert.equal(taskRootResult.status, 0, `git worktree add task root: ${taskRootResult.stderr}`);
+  const duplicate = addPrimaryBranchDuplicate(fixture);
+  assert.equal(worktreeGitAccess(duplicate, taskRoot, w.userData), null,
+    "the common repository HEAD is checked even though taskRoot's own admin HEAD has a different branch");
+});
+
+test("a verified plugin worktree can host a nested worktree without reopening its private parent or siblings", async (t) => {
+  const w = await world(t);
+  const fixture = await linkedWorktree(w);
+  const nested = join(fixture.worktrees, "nested");
+  const nestedResult = spawnSync(GIT, ["-C", fixture.actor, "worktree", "add", "-q", "-b", "nested-branch", nested, "HEAD"], { encoding: "utf8" });
+  assert.equal(nestedResult.status, 0, nestedResult.stderr);
+  const access = worktreeGitAccess(nested, fixture.actor, w.userData);
+  assert.ok(access, "a host-validated linked worktree may be the task root for a nested worker");
+  const paths = isolationPaths({ provider: "codex", cwd: nested, sessionTemp: join(w.temp, "s-nested"), env: w.env,
+    userDataPath: w.userData, sessionId: "nested", worktreeGitAccess: access });
+  assert.ok(paths.unreadable.includes(join(w.userData, "plugin-data")), "the private parent remains hidden");
+  assert.ok(paths.readableAgain.includes(nested), "only the nested worker worktree is reopened");
+  assert.ok(!paths.readableAgain.includes(fixture.actor) && !paths.readableAgain.includes(fixture.sibling),
+    "the orchestrator worktree and its sibling receive no individual reopen");
+});
+
+test("host validation accepts a packed worktree branch even when loose refs and reflog directories are absent", async (t) => {
+  const w = await world(t);
+  const fixture = await linkedWorktree(w);
+  const packed = spawnSync(GIT, ["-C", fixture.main, "pack-refs", "--all", "--prune"], { encoding: "utf8" });
+  assert.equal(packed.status, 0, packed.stderr);
+  await rm(join(fixture.common, "logs"), { recursive: true, force: true });
+  await rm(join(fixture.common, "refs"), { recursive: true, force: true });
+  assert.equal(existsSync(join(fixture.common, "refs", "heads", "actor-branch")), false, "the branch is stored only in packed-refs");
+  assert.ok(worktreeGitAccess(fixture.actor, fixture.main, w.userData), "read-only isolation does not depend on loose refs or reflogs");
+});
+
+test("Plan refuses provider state inside or above the read-only project", async (t) => {
+  const w = await world(t);
+  const fixture = await linkedWorktree(w);
+  for (const home of [fixture.actor, fixture.worktrees, join(fixture.actor, "src")]) {
+    assert.throws(() => isolationPaths({ provider: "codex", cwd: fixture.actor, sessionTemp: join(w.temp, "plan-state"),
+      env: { ...w.env, CODEX_HOME: home }, userDataPath: w.userData, sessionId: "plan", readOnlyProject: true,
+      worktreeGitAccess: worktreeGitAccess(fixture.actor, fixture.main, w.userData) }), /overlaps the read-only project/u, home);
+  }
+});
+
+test("a moved CLI home cannot make shared worktree Git metadata writable", async (t) => {
+  const w = await world(t);
+  const fixture = await linkedWorktree(w);
+  const access = worktreeGitAccess(fixture.actor, fixture.main, w.userData);
+  assert.ok(access);
+  const paths = isolationPaths({ provider: "codex", cwd: fixture.actor, sessionTemp: join(w.temp, "git-home"), env: { ...w.env, CODEX_HOME: access.commonDir },
+    userDataPath: w.userData, sessionId: "git-home", worktreeGitAccess: access });
+  assert.ok(paths.writable.includes(access.commonDir), "the moved CLI state is nominally writable before the Git protection layer");
+  assert.ok(paths.protectedDirectories.includes(access.commonDir), "the full shared Git directory is an explicit final deny/remount");
+});
+
+test("seatbelt, for real: Plan refuses a provider home that overlaps its read-only worktree", onMac, async (t) => {
+  const w = await world(t);
+  const fixture = await linkedWorktree(w);
+  const original = await readFile(join(fixture.actor, "tracked.txt"), "utf8");
+  const layer = isolation(w);
+  assert.throws(() => layer.wrap({ sessionId: "plan-overlap", provider: "codex", cwd: fixture.actor, networkProjectRoot: fixture.main,
+    command: "/bin/sh", args: ["-c", "echo should-not-run >> tracked.txt"], profile: "plan", env: { ...w.env, CODEX_HOME: fixture.actor } }),
+  /overlaps the read-only project/u, "fail closed before the command could be launched with a writable project root");
+  assert.equal(await readFile(join(fixture.actor, "tracked.txt"), "utf8"), original);
 });
 
 test("the paths: another CLI's home moved by its own variable is unreadable, never this CLI's own", async (t) => {
@@ -256,6 +425,7 @@ test("bubblewrap: the empty .git a throwaway hooks mount leaves behind is remove
   const layer = isolation(w, { platform: "linux", bubblewrapPath: "/usr/bin/bwrap", bubblewrapProbe: () => null, exists: () => true });
   const launch = { sessionId: "s", provider: "codex", cwd: w.project, command: "/usr/bin/codex", args: [], env: w.env };
   let wrapped = layer.wrap(launch);
+  assert.deepEqual(wrapped.executionProtection,{state:"applied",location:"local",layer:"bubblewrap",filesystem:"project-and-runtime",network:"open"});
   // What bwrap does for the mount point.
   await mkdir(join(w.project, ".git", "hooks"), { recursive: true });
   wrapped.cleanup();
@@ -280,17 +450,28 @@ test("the launch: wrapped when the layer applies, refused (never unwrapped) when
     decide: (input) => new AgentIsolation({ userDataPath: w.userData, enabled: () => true, platform: "darwin", exists: () => true }).decide(input),
     wrap: (launch) => {
       if (failing) throw new Error("agent isolation could not be set up: disk full. The agent was not started without it.");
-      return { command: "/usr/bin/sandbox-exec", args: ["-f", "/p.sb", launch.command, ...launch.args], env: { ...launch.env, TMPDIR: "/s/" }, cleanup: () => cleaned.push(launch.sessionId) };
+      return { command: "/usr/bin/sandbox-exec", args: ["-f", "/p.sb", launch.command, ...launch.args], env: { ...launch.env, TMPDIR: "/s/" },
+        executionProtection: Object.freeze({state:"applied",location:"local",layer:"seatbelt",filesystem:"project-and-runtime",network:"open"}),
+        isolationReason: "linked worktree Git is read-only", cleanup: () => cleaned.push(launch.sessionId) };
     }
   });
   const auto = terminals.create({ provider: "claude", profile: "auto", cwd: w.project, position: at });
   assert.equal(calls.at(-1).command, "/usr/bin/sandbox-exec");
   assert.deepEqual(calls.at(-1).args.slice(0, 3), ["-f", "/p.sb", "/resolved/claude"]);
   assert.ok(!calls.at(-1).args.some((arg) => arg.includes("\"sandbox\"")), "no Claude sandbox inside the layer");
-  assert.deepEqual(auto.isolation, { state: "on", layer: "seatbelt" });
+  assert.deepEqual(auto.isolation, { state: "on", layer: "seatbelt", reason: "linked worktree Git is read-only" }, "the first wrapped launch carries the host reason into its card");
+  assert.deepEqual(terminals.decisionExecutionProtection(auto.id), {state:"applied",location:"local",layer:"seatbelt",filesystem:"project-and-runtime",network:"open"});
+  assert.ok(Object.isFrozen(terminals.decisionExecutionProtection(auto.id)));
+  calls[0].process.emitExit(1);
+  assert.deepEqual(terminals.decisionExecutionProtection(auto.id), {state:"unverified"});
+  assert.equal(terminals.getMetadata(auto.id).exitCode, 1);
+  terminals.restart(auto.id);
+  assert.equal(calls.at(-1).command, "/usr/bin/sandbox-exec", "relaunch remains wrapped");
+  assert.equal(terminals.getMetadata(auto.id).isolation.reason, "linked worktree Git is read-only", "the relaunch refreshes the host reason on the card");
   const manual = terminals.create({ provider: "claude", profile: "normal", cwd: w.project, position: at });
   assert.equal(calls.at(-1).command, "/resolved/claude", "a manual launch by the person is not wrapped");
   assert.equal(manual.isolation, undefined);
+  assert.deepEqual(terminals.decisionExecutionProtection(manual.id), {state:"unverified"});
   // A contained auto (no auto of its own) exists only inside the layer.
   terminals.create({ provider: "qwen", profile: "auto", cwd: w.project, position: at });
   assert.ok(calls.at(-1).args.includes("--yolo"));
@@ -299,9 +480,11 @@ test("the launch: wrapped when the layer applies, refused (never unwrapped) when
   const refused = terminals.create({ provider: "codex", profile: "auto", cwd: w.project, position: at });
   assert.equal(calls.length, count, "nothing started");
   assert.equal(refused.status, "failed");
+  assert.deepEqual(terminals.decisionExecutionProtection(refused.id), {state:"unverified"});
   assert.match(refused.failureDetails, /^Launch refused: agent isolation could not be set up: disk full\. The agent was not started without it\./u);
   terminals.dispose(auto.id);
-  assert.deepEqual(cleaned, [auto.id], "its folder goes with the card");
+  assert.deepEqual(terminals.decisionExecutionProtection(auto.id), {state:"unverified"});
+  assert.equal(cleaned.filter((id) => id === auto.id).length, 2, "each first/restarted isolation folder goes with the card/process");
 });
 
 test("without a layer a subagent runs in normal (it asks) and the card says why", async (t) => {
@@ -336,6 +519,11 @@ test("seatbelt, for real: writes stay in the project, secrets stay unread, nothi
     'cat "$HOME/.claude/.credentials.json" 2>/dev/null || echo R-other-cli-denied',
     `cat "${join(w.userData, "agent-control", "token-app")}" 2>/dev/null || echo R-app-token-denied`,
     `cat "${join(w.userData, "provider-secrets.bin")}" 2>/dev/null || echo R-secret-store-denied`,
+    `cat "${join(w.userData,"checkpoints.json")}" 2>/dev/null || echo R-checkpoints-denied`,
+    `cat "${join(w.userData,"checkpoint-objects","fixture","pack.pack")}" 2>/dev/null || echo R-checkpoint-pack-denied`,
+    `cat "${join(w.userData,"flow-approvals.json")}" 2>/dev/null || echo R-flow-approvals-denied`,
+    `echo forged > "${join(w.userData,"flow-approvals.json")}" 2>/dev/null || echo W-flow-approvals-denied`,
+    `echo forged > "${join(w.userData,"task-budgets.json")}" 2>/dev/null || echo W-budget-policy-denied`,
     `cat "${join(own, "connection.json")}" >/dev/null && echo R-own-grant-ok`,
     'echo t > "$TMPDIR/t" && echo W-session-tmp-ok',
     'echo c > "$HOME/.codex/state" && echo W-own-cli-ok',
@@ -348,7 +536,7 @@ test("seatbelt, for real: writes stay in the project, secrets stay unread, nothi
     'launchctl submit -l ctty.isolation.probe -- /usr/bin/true 2>/dev/null || echo LAUNCHD-denied'
   ].join("; "), { granted: [own] });
   assert.deepEqual(lines, ["W-project-ok", "W-subfolder-ok", "W-home-denied", "W-tmp-denied", "W-usr-local-denied", "RM-home-denied", "R-ssh-denied",
-    "R-aws-denied", "R-other-cli-denied", "R-app-token-denied", "R-secret-store-denied", "R-own-grant-ok", "W-session-tmp-ok", "W-own-cli-ok",
+    "R-aws-denied", "R-other-cli-denied", "R-app-token-denied", "R-secret-store-denied", "R-checkpoints-denied", "R-checkpoint-pack-denied", "R-flow-approvals-denied", "W-flow-approvals-denied", "W-budget-policy-denied", "R-own-grant-ok", "W-session-tmp-ok", "W-own-cli-ok",
     "W-own-cli-config-denied", "GIT-ok", "W-git-hook-denied", "SIGNAL-denied", "PREFS-denied", "APPLE-EVENTS-denied", "LAUNCHD-denied"]);
   assert.equal(await readFile(join(w.home, "victim", "deep", "file"), "utf8"), "keep me");
   assert.equal(existsSync(join(w.home, "outside")), false);
@@ -356,6 +544,61 @@ test("seatbelt, for real: writes stay in the project, secrets stay unread, nothi
   assert.deepEqual((await readdir(w.temp)).filter((name) => name.startsWith(ISOLATION_FOLDER_PREFIX)), [], "cleaned up");
   // Nothing was written to the person's preferences on the agent's behalf.
   assert.notEqual(spawnSync("defaults", ["read", "ctty.isolation.probe"]).status, 0);
+});
+
+test("seatbelt, for real: a plugin worktree stays editable while Git metadata and shared objects stay read-only", onMac, async (t) => {
+  const w = await world(t);
+  const fixture = await linkedWorktree(w);
+  const actorGit = spawnSync(GIT, ["rev-parse", "--absolute-git-dir"], { cwd: fixture.actor, encoding: "utf8" }).stdout.trim();
+  const objectOid = spawnSync(GIT, ["-C", fixture.actor, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  const existingObject = join(fixture.common, "objects", objectOid.slice(0, 2), objectOid.slice(2));
+  assert.ok(existsSync(existingObject), "the test uses a real loose object shared with the primary repository");
+  await writeFile(join(fixture.main, "tracked.txt"), "base\nprimary-dirty\n");
+  const primaryStatusBeforeCollection = spawnSync(GIT, ["-C", fixture.main, "status", "--short"], { encoding: "utf8" }).stdout;
+  const { lines, stderr } = run(w, [
+    `cat "${join(fixture.worktrees, "parent-marker")}" 2>/dev/null || echo PARENT-READ-denied`,
+    `cat "${join(fixture.sibling, "sibling-marker")}" 2>/dev/null || echo SIBLING-READ-denied`,
+    `cat "${join(fixture.main, "tracked.txt")}" >/dev/null 2>&1 && echo PRIMARY-SOURCE-READ-ok || echo PRIMARY-SOURCE-READ-denied`,
+    `echo escape > "${join(fixture.main, "tracked.txt")}" 2>/dev/null && echo PRIMARY-SOURCE-WRITE-ok || echo PRIMARY-SOURCE-WRITE-denied`,
+    `echo escape > "${join(fixture.worktrees, "parent-write")}" 2>/dev/null && echo PARENT-WRITE-ok || echo PARENT-WRITE-denied`,
+    `echo escape > "${join(fixture.sibling, "sibling-write")}" 2>/dev/null && echo SIBLING-WRITE-ok || echo SIBLING-WRITE-denied`,
+    'echo change >> tracked.txt',
+    'git status --short >/dev/null && echo GIT-STATUS-ok || echo GIT-STATUS-denied',
+    'git add tracked.txt >/dev/null 2>&1 && echo GIT-ADD-ok || echo GIT-ADD-denied',
+    'git -c user.email=fixture@example.invalid -c user.name=CanvasTTY commit --all -q -m isolated >/dev/null 2>&1 && echo GIT-COMMIT-ok || echo GIT-COMMIT-denied',
+    `echo corrupt > "${existingObject}" 2>/dev/null && echo OBJECT-TRUNCATE-ok || echo OBJECT-TRUNCATE-denied`,
+    `rm "${existingObject}" 2>/dev/null && echo OBJECT-DELETE-ok || echo OBJECT-DELETE-denied`,
+    `ln "${existingObject}" object-alias 2>/dev/null && echo OBJECT-HARDLINK-ok || echo OBJECT-HARDLINK-denied`,
+    '[ -e object-alias ] && (echo corrupt > object-alias 2>/dev/null && echo OBJECT-ALIAS-WRITE-ok || echo OBJECT-ALIAS-WRITE-denied) || echo OBJECT-ALIAS-ABSENT',
+    `echo changed >> "${join(fixture.common, "config")}" 2>/dev/null && echo COMMON-CONFIG-WRITE-ok || echo COMMON-CONFIG-WRITE-denied`,
+    `echo evil > "${join(fixture.common, "hooks", "pre-commit")}" 2>/dev/null && echo COMMON-HOOK-WRITE-ok || echo COMMON-HOOK-WRITE-denied`,
+    `echo changed > "${join(fixture.common, "refs", "heads", "sibling-branch")}" 2>/dev/null && echo OTHER-REF-WRITE-ok || echo OTHER-REF-WRITE-denied`,
+    `echo changed > "${join(fixture.common, "refs", "heads", "actor-branch.evil")}" 2>/dev/null && echo SIBLING-REF-CREATE-ok || echo SIBLING-REF-CREATE-denied`,
+    `echo changed > "${join(fixture.common, "index")}" 2>/dev/null && echo COMMON-INDEX-WRITE-ok || echo COMMON-INDEX-WRITE-denied`,
+    `echo changed > "${join(actorGit, "HEAD")}" 2>/dev/null && echo WORKTREE-HEAD-WRITE-ok || echo WORKTREE-HEAD-WRITE-denied`
+  ].join("; "), { cwd: fixture.actor, networkProjectRoot: fixture.main,
+    env: { CODEX_HOME: fixture.common, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } });
+  assert.deepEqual(lines, ["PARENT-READ-denied", "SIBLING-READ-denied", "PRIMARY-SOURCE-READ-ok", "PRIMARY-SOURCE-WRITE-denied", "PARENT-WRITE-denied", "SIBLING-WRITE-denied",
+    "GIT-STATUS-ok", "GIT-ADD-denied", "GIT-COMMIT-denied", "OBJECT-TRUNCATE-denied", "OBJECT-DELETE-denied", "OBJECT-HARDLINK-denied",
+    "OBJECT-ALIAS-ABSENT", "COMMON-CONFIG-WRITE-denied", "COMMON-HOOK-WRITE-denied", "OTHER-REF-WRITE-denied",
+    "SIBLING-REF-CREATE-denied", "COMMON-INDEX-WRITE-denied", "WORKTREE-HEAD-WRITE-denied"]);
+  assert.ok(stderr.split("\n").filter(Boolean).every((line) => line.includes("Operation not permitted")),
+    "only filesystem operations expected to be denied by seatbelt report errors");
+  assert.equal(await readFile(join(fixture.actor, "tracked.txt"), "utf8"), "base\nchange\n", "only the worker's editable copy changes");
+  assert.equal(await readFile(join(fixture.main, "tracked.txt"), "utf8"), "base\nprimary-dirty\n", "the primary checkout's dirty state is preserved");
+  assert.equal(spawnSync(GIT, ["-C", fixture.actor, "cat-file", "-e", objectOid], { encoding: "utf8" }).status, 0,
+    "Git can still read its shared loose objects outside the sandbox");
+  const hostStage = spawnSync(GIT, ["add", "tracked.txt"], { cwd: fixture.actor, encoding: "utf8" });
+  assert.equal(hostStage.status, 0, hostStage.stderr);
+  const hostCommit = spawnSync(GIT, ["-c", "user.email=fixture@example.invalid", "-c", "user.name=CanvasTTY", "commit", "-q", "-m", "host collected"],
+    { cwd: fixture.actor, encoding: "utf8" });
+  assert.equal(hostCommit.status, 0, hostCommit.stderr, "the trusted host can collect and commit the actor's edits");
+  assert.equal(spawnSync(GIT, ["-C", fixture.main, "status", "--short"], { encoding: "utf8" }).stdout, primaryStatusBeforeCollection,
+    "host collection preserves the primary checkout's pre-existing dirty state");
+  assert.equal(await readFile(join(fixture.common, "refs", "heads", "sibling-branch"), "utf8").then((value) => value.trim()),
+    spawnSync(GIT, ["-C", fixture.sibling, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(), "the sibling branch stays unchanged");
+  assert.equal(existsSync(join(fixture.worktrees, "parent-write")), false);
+  assert.equal(existsSync(join(fixture.sibling, "sibling-write")), false);
 });
 
 test("seatbelt, for real: the launch writes the account home it was handed, not its permission settings, and no other home", onMac, async (t) => {
@@ -568,4 +811,41 @@ test("deep nonexistent descendants cannot conceal a credential symlink alias", {
     env: { HOME: join(alias, ...Array.from({ length: 130 }, () => "x")) },
     hostEnvironment: w.env
   }), /protected host credentials/u);
+});
+
+test("wrapper evidence reports applied layer, Plan writes and actual network independently of mutable policy", { skip: process.platform === "win32" ? "Seatbelt profile fixture requires POSIX filesystem paths" : false }, async (t) => {
+  const w=await world(t);
+  let mode="offline";
+  const iso=isolation(w,{platform:"darwin",exists:()=>true,networkPolicy:{prepareLaunch:()=>({mode,cleanup(){}})}});
+  const wrapped=iso.wrap({sessionId:"evidence",provider:"claude",cwd:w.project,command:"/bin/true",args:[],env:w.env,profile:"plan"});
+  t.after(()=>wrapped.cleanup());
+  mode="open";
+  assert.deepEqual(wrapped.executionProtection,{state:"applied",location:"local",layer:"seatbelt",filesystem:"read-only-project",network:"offline"});
+  assert.ok(Object.isFrozen(wrapped.executionProtection));
+});
+
+test("saved isolation badges and isolated remote environments never establish live host wrapper evidence", async (t) => {
+  const w=await world(t);const calls=[];
+  const tm=new TerminalManager(()=>{},availableRegistry(),undefined,undefined,true,fakeSpawner(calls));
+  t.after(()=>tm.disposeAll());
+  const card=tm.create({provider:"claude",profile:"normal",cwd:w.project,position:at});
+  const store=new TerminalSessionStore(w.userData);
+  const row=persistedTerminalSession({...card,exitCode:0,isolation:{state:"on",layer:"seatbelt"}});
+  tm.disposeAll();await store.replace([row]);tm.configureSessionPersistence(store,"continue");await tm.restorePersistedSessions();
+  assert.deepEqual(tm.decisionExecutionProtection(card.id),{state:"unverified"});
+  tm.configureIsolation({containment:()=>true,decide:({profile})=>({apply:false,profile,isolation:{state:"environment",reason:"Remote SSH"}}),wrap(){throw Error("must not wrap remote")}});
+  const remote=tm.create({provider:"claude",profile:"auto",cwd:w.project,position:at});
+  assert.equal(remote.isolation.state,"environment");
+  assert.deepEqual(tm.decisionExecutionProtection(remote.id),{state:"unverified"});
+});
+
+test("a PTY spawn failure clears evidence after a successful wrapper construction", async (t) => {
+  const w=await world(t);let cleaned=0;let wrappedId;
+  const tm=new TerminalManager(()=>{},availableRegistry(),undefined,undefined,true,()=>{throw Error("fixture spawn failure")});
+  t.after(()=>tm.disposeAll());
+  tm.configureIsolation({containment:()=>true,decide:({profile})=>({apply:true,profile,isolation:{state:"on",layer:"seatbelt"}}),
+    wrap:l=>{wrappedId=l.sessionId;return {command:l.command,args:[...l.args],env:l.env,executionProtection:{state:"applied",location:"local",layer:"seatbelt",filesystem:"project-and-runtime",network:"open"},cleanup(){cleaned++}};}});
+  assert.throws(()=>tm.create({provider:"claude",profile:"auto",cwd:w.project,position:at}),/fixture spawn failure/);
+  assert.equal(cleaned,1);assert.ok(wrappedId);
+  assert.deepEqual(tm.decisionExecutionProtection(wrappedId),{state:"unverified"});
 });

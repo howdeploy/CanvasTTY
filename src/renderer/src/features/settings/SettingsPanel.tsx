@@ -1,3 +1,4 @@
+import { ExecutionTargetSettings } from "./ExecutionTargetSettings";
 import { EvenG2Controls } from "./EvenG2Controls";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
@@ -870,6 +871,7 @@ export function SettingsPanel({
 
           {section === "agents" && (
             <>
+              <ExecutionTargetSettings settings={settings} locale={locale} onChange={onChange}/>
               <SettingGroup layout="stacked" label={t(locale, "agentCliDetection")} description={t(locale, "agentCliDetectionDescription")}>
                 <div className="agent-cli-recheck">
                   <button className="setting-inline-action" type="button" disabled={checkingAgentClis} onClick={() => void recheckAgentClis()}>
@@ -972,6 +974,16 @@ export function SettingsPanel({
                 onSetNativeCodeTrusted={onSetPluginNativeCodeTrusted}
                 onSetDecisionsMayAllow={onSetPluginDecisionsMayAllow}
               />
+              <SettingGroup
+                label={t(locale, "experimentalBacklogEnabled")}
+                description={t(locale, "experimentalBacklogEnabledDescription")}
+              >
+                <Segmented
+                  value={settings.experimentalBacklogEnabled ? "on" : "off"}
+                  options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
+                  onChange={(value) => void onChange({ experimentalBacklogEnabled: value === "on" })}
+                />
+              </SettingGroup>
               <SettingGroup
                 label={t(locale, "agentControlEnabled")}
                 description={t(locale, "agentControlEnabledDescription")}

@@ -244,7 +244,7 @@ An environment is where a card runs: a git worktree, a container, a remote host.
 "services": [{
   "id": "worktree", "title": "Git worktree", "entry": "services/worktree.mjs",
   "environments": [{
-    "kind": "worktree", "label": "Git worktree",
+    "kind": "worktree", "label": "Git worktree", "executionLocation": "local",
     "description": "A branch in its own folder",
     "appliesTo": ["terminal", "claude"],
     "fields": [{ "key": "branch", "label": "Branch", "kind": "text", "default": "", "maxLength": 80 }],
@@ -253,7 +253,13 @@ An environment is where a card runs: a git worktree, a container, a remote host.
 }]
 ```
 
+`executionLocation` declares `local` or `remote` in the trusted service manifest. Remote and undeclared locations require the experimental opt-in; launcher choices cannot override this declaration. `keeps.isolated` does not determine location (a container may be local). For older manifests, only `canvastty-environments` installed from `https://github.com/BIackFIame/canvastty-plugin-environments.git`, with service/kind `worktree`/`worktree` or `container`/`container`, is recognized as local. An explicit declaration takes precedence. Cleanup remains available after opt-out.
+
 `keeps` declares what of CanvasTTY's protection reaches the agent there: `launch` (the launch's arguments and environment reach the agent unchanged, so CanvasTTY's hooks and the profile's per-run settings work), `isolated` (the agent does not run on this computer's files: a container or a remote host) and `confines` (the environment itself confines the agent to the project). Undeclared means no: any profile but normal is refused without `launch`, and the card says that base protection does not reach the agent there. An `isolated` environment is not wrapped in CanvasTTY's agent isolation again (the card names the environment's own boundary); any other runs inside it, with the environment's folder as the project.
+
+Checkpoint restoration also refuses repositories when the current index or saved checkpoint contains submodules: parent-repository snapshots do not preserve dirty or untracked data inside nested repositories. Safeguard and restore that state with Git separately; CanvasTTY does not recursively delete or reset submodules.
+
+Checkpoint restoration cannot suspend an isolated agent by pausing its local SSH/container wrapper. CanvasTTY refuses restoration for related isolated launches, including after the wrapper exits; that exit does not establish remote workload termination. The host remembers the isolation declaration and project scope used by successful launches in the saved host-only card record, independently of later plugin changes or app restarts. Legacy placed cards without this evidence, and malformed evidence, are treated as unknown isolation scope and refuse restoration. These guards cover tracked host sessions, not untracked external workloads.
 
 CanvasTTY keeps the card, the PTY, the saved record and the restore order; the service answers five host-only requests (surfaces cannot send them):
 
@@ -338,6 +344,12 @@ A service may offer up to 16 `tools` to agents. They appear in the `canvastty_ag
 
 ### Session events and plugin-owned cards (`sessions:*`)
 
+`canvastty.activity` is a separate host-only integration for the enabled, native-code-trusted Assistant service installed from a canonical Assistant repository. `sessions:events` does not grant activity access. Tool equality fingerprints sent to that service are host-secret HMAC values scoped to the card and fingerprint kind; they are not plain hashes of tool input or output. Install provenance is checked on each delivery. With the experimental opt-in, only `limit.exhausted` and `route.outcome` may also reach the enabled, native-code-trusted `canvastty-accounts` / `accounts` service installed from `https://github.com/BIackFIame/canvastty-plugin-accounts.git`; it receives no tool activity or fingerprints and needs no Assistant installation.
+OpenCode tool outcomes use its direct `tool.execute.after` hook and terminal `message.part.updated` tool states, correlated with a root-turn `tool.execute.before` call. Duplicate, child-session and obsolete completions are ignored. Shell nonzero exit codes are errors; missing exit status remains unknown. Separately trusted native `after-tool` hooks keep their provider-payload permission: the direct callback supplies `{ input, output }`, and a tool-part completion supplies its provider event. This does not grant `sessions:events` subscribers access to those payloads.
+Kimi core hooks report `PostToolUse` and `PostToolUseFailure`; Hermes reports `post_tool_call`, independently of native plugin hooks. Kimi's `tool_output` is an opaque `str(ret)` that can also represent a tool error: its class stays `unknown`, while an explicit failure event reports `error`. It supplies no verified changed-path evidence. Hermes shell-hook `extra` carries the result, explicit outcome status and stable turn ID; result text is never interpreted as a status.
+
+
+
 A service with `sessions:events` calls `sessions.subscribe` `{ ownedOnly? }` (again after every start). The answer lists the open cards; after that the host sends `canvastty.sessions.event` notifications:
 
 ```ts
@@ -369,7 +381,7 @@ A foreign or unknown id gets the same error, so a plugin cannot probe other card
 
 ### Card badges and actions (`cards:decorate`)
 
-A service with `cards:decorate` can put a badge on any card and declare up to 8 `cardActions`:
+A service with `cards:decorate` can put a badge on any card and declare up to 16 `cardActions`:
 
 ```json
 "permissions": ["cards:decorate"],
@@ -384,6 +396,10 @@ A service with `cards:decorate` can put a badge on any card and declare up to 8 
 - No HTML anywhere: badges, titles and messages are rendered as text.
 
 The full example is [`examples/plugins/collect-demo`](../examples/plugins/collect-demo): the card action **Show changes** on cards in the `worktree` environment (from `env-worktree`) shows `git diff --stat` of the worktree and sets a "N changed" badge, and the tool `collect-demo__diffstat` gives orchestrators the same for their own folder or a subagent's, which it learns about from session events.
+
+### Model routing (`model:route`)
+
+A service with `model:route` and `"modelRouter": true` can choose the model and effort for a subagent that an orchestrator starts without `model`. The host calls `canvastty.model.route` with the masked task (up to 8,000 characters), provider, profile, folder, any requested effort, the task budget and a list of `candidates` (`id`, `model`, `reasoningEffort`, `default`) built from what `list_providers` reports. The service answers `{ candidateId, reason }` within two seconds. The host accepts only a listed candidate that keeps an explicitly requested effort; an invalid answer, an error or no answer in time leaves the provider default, and the card shows why. An explicit `model` is never routed.
 
 ### Browser engines (`browser:engine`)
 
@@ -427,6 +443,7 @@ host.onStorageChange(listener) notifies every live contribution of the same plug
 | `sessions:launch` | `sessions.create` | Starts visible agent cards through the normal launch |
 | `sessions:control` | `sessions.send`, `sessions.stop` | Types into and closes only the cards the plugin started |
 | `cards:decorate` | `cards.setBadge`, a service's `cardActions`, `canvastty.cards.invoke` | Plain-text badges on cards and actions in their menu |
+| `model:route` | A service's `modelRouter` and `canvastty.model.route` | Receives the masked task text and budget of subagents started without a model; can only pick one of the offered candidates |
 | `browser:engine` | A service's `browserEngine` and `canvastty.browserEngine.*` | Receives the URLs of agents' background tabs and serves them from its own engine; no cookies, profile or credentials |
 | `limits:read` | `limits.get` | The same sanitized `LimitsSnapshot` used by HOME |
 | `launcher:open` | `launcher.open` | Opens the built-in provider Focus Card or terminal action; it does not bypass user launch choices |
@@ -541,6 +558,8 @@ Context updates include the active CanvasTTY locale and palette. Plugins own the
 The current installer intentionally rejects private repositories, GitHub `/tree/branch/subdirectory` links, and repositories that require a build step. Publish a ready-to-run static package at the repository root.
 
 Browsing and searching the showcase work without an account through GitHub's public search API. Signing in is optional and only raises GitHub's search limits; when the anonymous limit is reached, CanvasTTY shows when to try again. The optional showcase sign-in uses GitHub's OAuth device flow. Build maintainers can [register an OAuth App and enable Device Flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app), then store its public client ID in the `CANVASTTY_GITHUB_CLIENT_ID` GitHub Actions repository variable. Official builds bake in that value when configured; local builds can use `GITHUB_OAUTH_CLIENT_ID` or `CANVASTTY_GITHUB_CLIENT_ID`, and either variable can also override the bundled value at runtime. No client secret is shipped or required. Sign-in opens GitHub in CanvasTTY's built-in Browser by default and offers the system browser as an explicit fallback. Without a client ID the UI reports that OAuth is unavailable, while direct repository inspection and installation continue to work. Signing out removes the encrypted local session; revoke the OAuth grant separately under [GitHub application settings](https://github.com/settings/applications) when needed.
+
+An active sign-in has a Cancel action. Denial, expiry, provider failure, and cancellation clear the old code, show the outcome, and offer sign-in again. Cancelling a pending flow preserves an existing local account; if authorization finishes first, the completed sign-in is retained.
 
 ## Author checklist
 

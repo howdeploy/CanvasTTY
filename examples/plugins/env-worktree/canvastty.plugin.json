@@ -15,6 +15,7 @@
       "environments": [
         {
           "kind": "worktree",
+          "executionLocation": "local",
           "label": "Git worktree",
           "description": "A branch in its own folder; the project folder stays untouched.",
           "fields": [

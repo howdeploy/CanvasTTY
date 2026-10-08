@@ -99,6 +99,49 @@ async function managerFixture(t, pipeline, { mode = "continue", directory } = {}
 
 const card = (manager, id) => manager.list().find((session) => session.id === id);
 
+test("only the trusted Accounts contributor attributes usage to the selected account",async(t)=>{
+  const context={sessionId:"attributed",provider:"codex",profile:"normal",role:"agent",cwd,restoring:false,resume:false,options:{"canvastty-accounts":{account:"alternate"}}};
+  const {pipeline}=await pipelineFixture(t,{contributors:[contributor("canvastty-accounts")],answers:{"canvastty-accounts":{accountId:"alternate"}}});
+  const accepted=await pipeline.prepare(context);
+  assert.equal(accepted.ok,true);assert.equal(accepted.accountId,"alternate");await accepted.cleanup();
+  const mismatched=await pipeline.prepare({...context,options:{"canvastty-accounts":{account:"none"}}});
+  assert.equal(mismatched.ok,false);assert.match(mismatched.reason,/differs from the selected account/u);
+  const {pipeline:untrusted}=await pipelineFixture(t,{contributors:[contributor("other")],answers:{other:{accountId:"alternate"}}});
+  const refused=await untrusted.prepare({...context,options:{other:{}}});
+  assert.equal(refused.ok,false);assert.match(refused.reason,/cannot attribute/u);
+});
+
+test("Accounts attribution treats an empty selection as the default account", async (t) => {
+  const { pipeline } = await pipelineFixture(t, {
+    contributors: [contributor("canvastty-accounts")],
+    answers: { "canvastty-accounts": { accountId: "default" } }
+  });
+  for (const account of ["", "none", undefined]) {
+    const prepared = await pipeline.prepare({
+      sessionId: "default-attribution", provider: "codex", profile: "normal", role: "agent", cwd,
+      restoring: false, resume: false, options: { "canvastty-accounts": { account } }
+    });
+    assert.equal(prepared.ok, true, `default attribution must accept ${JSON.stringify(account)}`);
+    assert.equal(prepared.accountId, "default");
+    await prepared.cleanup();
+  }
+});
+
+test("an empty Accounts selection without attribution is billed to the provider's default sign-in", async (t) => {
+  const { pipeline } = await pipelineFixture(t, {
+    contributors: [contributor("canvastty-accounts", { launch: { fields: [{ key: "account", label: "Account", kind: "text", default: "" }] } })],
+    answers: { "canvastty-accounts": {} }
+  });
+  const { manager, calls } = await managerFixture(t, pipeline);
+  for (const account of ["", "none"]) {
+    const started = manager.create({ provider: "codex", profile: "normal", cwd, position: at,
+      launchOptions: { "canvastty-accounts": { account } } });
+    await waitFor(() => calls.length > 0 && card(manager, started.id).status !== "starting");
+    assert.equal(manager.usageAccount(started.id).id, "default", `selection ${JSON.stringify(account)}`);
+    calls.length = 0;
+  }
+});
+
 test("manifests declare launch options on one service and need launch:contribute", () => {
   const manifest = validatePluginManifest(exampleManifest);
   assert.deepEqual(manifest.services[0].launch.appliesTo, ["claude"]);
@@ -311,8 +354,13 @@ test("secret env comes from the plugin's own secrets, reaches the child, and is 
 
   const control = new AgentControlService(manager);
   const observed = control.observe(created.id).output;
-  assert.match(observed, /PROVIDER_API_KEY=<redacted:secret> PLAIN=visible/u);
+  // The combined source-range mask can also consume a high-entropy assignment label. Its kind and label retention
+  // are presentation details; the secret, its fragments, and unrelated public output are the integration contract.
+  assert.match(observed, /<redacted:(?:secret|assignment|high-entropy)> PLAIN=visible/u);
   assert.doesNotMatch(observed, new RegExp(SECRET, "u"));
+  for (const fragment of [SECRET.slice(0, 13), SECRET.slice(-12)]) {
+    assert.equal(observed.includes(fragment), false, "partial secret fragments must also remain masked");
+  }
   calls[0].exit(1);
   assert.doesNotMatch(control.result(created.id).output, new RegExp(SECRET, "u"));
   assert.doesNotMatch(card(manager, created.id).failureDetails ?? "", new RegExp(SECRET, "u"));
@@ -429,4 +477,23 @@ test("end to end: the example service prepares a launch over JSON-RPC", async (t
   assert.deepEqual(off.ok && [off.env, off.args], [{}, []]);
   const empty = await pipeline.prepare(context({ greeting: "" }));
   assert.match(empty.reason, /Launch Env: Value is empty/u);
+});
+
+test('only requested selected Accounts evidence survives the strict launch pipeline', async t => {
+  const route = { model: 'approved', endpoint: 'api.fixture.invalid:8443', kind: 'api-key' };
+  const context = { sessionId: 'proof', provider: 'codex', profile: 'normal', role: 'agent', cwd,
+    restoring: false, resume: false, accountRouteEvidence: true, options: { 'canvastty-accounts': { account: 'fixture' } } };
+  const { pipeline, requests } = await pipelineFixture(t, { contributors: [contributor('canvastty-accounts')],
+    answers: { 'canvastty-accounts': { accountId: 'fixture', accountRoute: route } } });
+  const good = await pipeline.prepare(context);
+  assert.equal(good.ok, true); assert.deepEqual(good.accountRoute, route); assert.equal(requests[0].params.accountRouteEvidence, true); await good.cleanup();
+  const unsolicited = await pipeline.prepare({ ...context, accountRouteEvidence: undefined });
+  assert.equal(unsolicited.ok, false);
+  for (const bad of [{ ...route, model: '' }, { ...route, endpoint: 'user@host' }, { ...route, kind: 'anything' }, { ...route, secret: 'forbidden' }]) {
+    const { pipeline: malformed } = await pipelineFixture(t, { contributors: [contributor('canvastty-accounts')], answers: { 'canvastty-accounts': { accountId: 'fixture', accountRoute: bad } } });
+    assert.equal((await malformed.prepare(context)).ok, false);
+  }
+  const { pipeline: forged, requests: foreignRequests } = await pipelineFixture(t, { contributors: [contributor('other')], answers: { other: { accountId: 'fixture', accountRoute: route } } });
+  assert.equal((await forged.prepare({ ...context, options: { other: {} } })).ok, false);
+  assert.equal(foreignRequests[0].params.accountRouteEvidence, undefined);
 });

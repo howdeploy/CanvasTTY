@@ -20,6 +20,9 @@ const IGNORED_ENTRY_NAMES = new Set([
 // objects, which is build-environment noise rather than publishable content.
 // `build/` itself is not ignored: it also holds tracked icons and resources.
 const IGNORED_RELATIVE_PATHS = new Set([
+  // Private local context is source-side only. An accidental out/.context copy
+  // remains subject to the artifact audit.
+  ".context",
   "build/windows-agent-pipe-host",
   "native/windows-agent-pipe-host/build"
 ]);

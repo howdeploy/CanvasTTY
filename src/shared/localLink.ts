@@ -51,8 +51,9 @@ export function localOrigin(value: unknown, allowLoopback = false): string {
     allowLoopback && ["127.0.0.1", "localhost", "[::1]"].includes(host);
   const tailscale = url.protocol === "https:" &&
     /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.ts\.net$/.test(host);
+  const privateHttps = url.protocol === "https:" && (ipv4 || ipv6);
   if (
-    (url.protocol !== "http:" && !tailscale) ||
+    (url.protocol !== "http:" && !tailscale && !privateHttps) ||
     url.username ||
     url.password ||
     url.pathname !== "/" ||

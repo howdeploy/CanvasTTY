@@ -214,7 +214,7 @@ test("the card suspends its frame while HOME editing, zoomed to a summary, off-s
   let camera = { x: 0, y: 0, zoom: 1 };
   const cameraStore = { get: () => camera, set() {}, subscribe: () => () => undefined };
   const contribution = { id: "probe", kind: "canvas-app", title: "Probe", entry: "apps/probe.html", defaultSize: { width: 680, height: 440 } };
-  const plugin = { manifest: { id: "com.example.probe", name: "Probe", permissions: [], contributions: [contribution] }, selectedModules: [], enabled: true };
+  const plugin = { manifest: { id: "com.example.probe", name: "Probe", permissions: [], contributions: [contribution] }, sourceUrl: "https://github.com/example/probe", selectedModules: [], enabled: true };
   const props = (overrides = {}) => ({
     instance: { id: "p1", pluginId: plugin.manifest.id, contributionId: "probe", title: "Probe", position: { x: 100, y: 100 }, size: { width: 680, height: 440 } },
     plugin, contribution, locale: "en", palette: "default", camera: cameraStore, stackIndex: 1, snapEnabled: false,
@@ -237,6 +237,8 @@ test("the card suspends its frame while HOME editing, zoomed to a summary, off-s
 
   camera = { x: 0, y: 0, zoom: 0.3 };
   assert.deepEqual(render(), { suspended: true, lifecycle: "suspended" }, "summary zoom");
+  assert.deepEqual(render({ plugin: { ...plugin, sourceUrl: "mascot:fixture-project" } }),
+    { suspended: false, lifecycle: "visible" }, "a mascot remains visible at summary zoom");
 
   camera = { x: -5000, y: 0, zoom: 1 };
   assert.deepEqual(render(), { suspended: false, lifecycle: "visible" }, "a pan across is not a suspension yet");

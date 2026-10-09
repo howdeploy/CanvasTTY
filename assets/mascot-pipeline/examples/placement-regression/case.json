@@ -1,0 +1,295 @@
+{
+  "provenance": "Approved aligned atlas; unaligned reconstruction from the exact same unchanged source drawings. Not an archived rejected build.",
+  "accepted_source_build": "210ae17bf35d0195",
+  "aligned_sha256": "ab5818c4546aeefc69e1dde121687f6ec2022fc5fde57ef59205216f2f03ec71",
+  "unaligned_sha256": "0ca0c886bb19c53468af4908c10b372ff85a3b200934502eff95c0ee4d8c2b53",
+  "source_canvas": [
+    1024,
+    1536
+  ],
+  "scale": 2,
+  "floor_y": 1446,
+  "cols": 5,
+  "cell": [
+    512,
+    780
+  ],
+  "alpha_threshold": 128,
+  "aligned_max_range_px": 1,
+  "unaligned_min_range_px": 25,
+  "regions": [
+    {
+      "index": 0,
+      "source_support_y": 1457,
+      "shift_y": -11,
+      "unaligned_region": [
+        0,
+        710,
+        512,
+        734
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 1,
+      "source_support_y": 1459,
+      "shift_y": -13,
+      "unaligned_region": [
+        0,
+        711,
+        512,
+        735
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 2,
+      "source_support_y": 1460,
+      "shift_y": -14,
+      "unaligned_region": [
+        0,
+        712,
+        512,
+        736
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 3,
+      "source_support_y": 1457,
+      "shift_y": -11,
+      "unaligned_region": [
+        0,
+        710,
+        512,
+        734
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 4,
+      "source_support_y": 1407,
+      "shift_y": 39,
+      "unaligned_region": [
+        0,
+        685,
+        512,
+        709
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 5,
+      "source_support_y": 1408,
+      "shift_y": 38,
+      "unaligned_region": [
+        0,
+        686,
+        512,
+        710
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 6,
+      "source_support_y": 1453,
+      "shift_y": -7,
+      "unaligned_region": [
+        0,
+        708,
+        512,
+        732
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 7,
+      "source_support_y": 1454,
+      "shift_y": -8,
+      "unaligned_region": [
+        0,
+        709,
+        512,
+        733
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 8,
+      "source_support_y": 1436,
+      "shift_y": 10,
+      "unaligned_region": [
+        0,
+        700,
+        512,
+        724
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 9,
+      "source_support_y": 1439,
+      "shift_y": 7,
+      "unaligned_region": [
+        0,
+        701,
+        512,
+        725
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 10,
+      "source_support_y": 1441,
+      "shift_y": 5,
+      "unaligned_region": [
+        0,
+        702,
+        512,
+        726
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 11,
+      "source_support_y": 1443,
+      "shift_y": 3,
+      "unaligned_region": [
+        0,
+        703,
+        512,
+        727
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 12,
+      "source_support_y": 1467,
+      "shift_y": -21,
+      "unaligned_region": [
+        0,
+        715,
+        512,
+        739
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 13,
+      "source_support_y": 1466,
+      "shift_y": -20,
+      "unaligned_region": [
+        0,
+        715,
+        512,
+        739
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 14,
+      "source_support_y": 1467,
+      "shift_y": -21,
+      "unaligned_region": [
+        0,
+        715,
+        512,
+        739
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    },
+    {
+      "index": 15,
+      "source_support_y": 1466,
+      "shift_y": -20,
+      "unaligned_region": [
+        0,
+        715,
+        512,
+        739
+      ],
+      "aligned_region": [
+        0,
+        705,
+        512,
+        729
+      ]
+    }
+  ],
+  "limits_note": "Footwear-region diagnostic values for this example only; no alpha is removed. Stable support does not prove body/prop scale, anatomy or facial performance."
+}

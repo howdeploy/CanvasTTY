@@ -13,7 +13,9 @@ const IGNORED_ENTRY_NAMES = new Set([
   "out",
   "dist",
   "release",
-  "artifacts"
+  "artifacts",
+  "__pycache__",
+  ".mascot-venv"
 ]);
 // Generated native build output, gitignored exactly like out/ and dist/. node-gyp
 // writes the builder's absolute home path into the generated project files and

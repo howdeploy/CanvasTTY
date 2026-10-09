@@ -32,6 +32,7 @@ import type { TerminalManager } from "../services/TerminalManager";
 import type { AgentChatHistoryService } from "../services/AgentChatHistoryService";
 import type { LimitsService } from "../services/LimitsService";
 import type { PluginManager } from "../services/PluginManager";
+import type { MascotManager } from "../services/MascotManager";
 import type { PluginServiceSupervisor } from "../services/PluginServiceSupervisor";
 import type { PluginCards } from "../services/PluginCards";
 import type { PluginMediaService } from "../services/PluginMediaService";
@@ -57,6 +58,7 @@ interface CriticalDependencies {
 }
 
 interface Dependencies {
+  mascots: MascotManager;
   settings: SettingsStore;
   recheckProviderClis(): Promise<{ availability: AgentCliAvailability; settings: AppSettings }>;
   terminals: TerminalManager;
@@ -193,6 +195,7 @@ export function registerCriticalIpc(ipcMain: IpcRegistrar, {
 }
 
 export function registerIpc(ipcMain: IpcRegistrar, {
+  mascots,
   settings,
   recheckProviderClis,
   terminals,
@@ -218,7 +221,33 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   requestPluginCanvas,
   broadcastPluginStorageChange
 }: Dependencies): void {
+  ipcMain.handle(IPC.mascotsList, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    return mascots.list();
+  });
+  ipcMain.handle(IPC.mascotsStart, (event, image: Uint8Array) => {
+    assertMainRenderer(event, getMainWindow);
+    return mascots.start(image);
+  });
+  ipcMain.handle(IPC.mascotsLink, (event, projectId: string, sessionId: string) => {
+    assertMainRenderer(event, getMainWindow);
+    return mascots.link(projectId, sessionId);
+  });
+  ipcMain.handle(IPC.mascotsFail, (event, projectId: string, message: string) => {
+    assertMainRenderer(event, getMainWindow);
+    if (typeof message !== "string") throw new Error("Mascot error is invalid.");
+    return mascots.fail(projectId, message);
+  });
   const pluginBrowserOpenBroker = new PluginBrowserOpenBroker(getMainWindow);
+  ipcMain.handle(IPC.mascotsRetry, (event, projectId: string) => {
+    assertMainRenderer(event, getMainWindow);
+    return mascots.retry(projectId);
+  });
+  ipcMain.handle(IPC.mascotsOpenLog, async (event, projectId: string) => {
+    assertMainRenderer(event, getMainWindow);
+    const error = await shell.openPath(await mascots.errorLog(projectId));
+    if (error) throw new Error(error);
+  });
   // A surface reaches only its own plugin's services: the caller's plugin id is bound by the
   // renderer frame host or by the identity-checked plugin window, never taken from plugin code.
   const requestPluginService = (pluginId: string, values: Record<string, unknown>): Promise<unknown> => {

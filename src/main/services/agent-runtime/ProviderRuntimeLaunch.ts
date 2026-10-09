@@ -562,7 +562,8 @@ function decisionHookCommands(
     command: commandWithEnvironment(
       [gate.command, ...gate.args, "pretool"],
       { ...(gate.env ?? {}), ...budgetEnvironment(decisionBudgetMs), [DECISION_FAIL_CLOSED_ENV]: "1" },
-      platform
+      platform,
+      provider === "codex" ? "powershell" : "cmd"
     ),
     // Qwen hook timeouts are milliseconds; Claude's and Codex's are seconds.
     timeout: provider === "qwen" ? hookSeconds * 1_000 : hookSeconds
@@ -645,7 +646,7 @@ function codexHookArgs(
 ): string[] {
   validateHelper(helper);
   const grouped = groupProviderHookMappings([
-    ...(coreHooksEnabled ? lifecycleCommands(CODEX_HOOKS, helper, platform) : []),
+    ...(coreHooksEnabled ? lifecycleCommands(CODEX_HOOKS, helper, platform, HOOK_TIMEOUT_SECONDS, "powershell") : []),
     ...pluginCommands
   ]);
   const events = Object.entries(grouped).flatMap(([event, mappings]) => {
@@ -1057,12 +1058,13 @@ function lifecycleCommands(
   mappings: readonly HookMapping[],
   helper: RuntimeHookHelperLaunch,
   platform: NodeJS.Platform,
-  timeout = HOOK_TIMEOUT_SECONDS
+  timeout = HOOK_TIMEOUT_SECONDS,
+  windowsShell: "cmd" | "powershell" = "cmd"
 ): ProviderHookCommand[] {
   return mappings.map((mapping) => ({
     event: mapping.event,
     ...(mapping.matcher ? { matcher: mapping.matcher } : {}),
-    command: hookCommand(helper, mapping, platform),
+    command: hookCommand(helper, mapping, platform, windowsShell),
     timeout
   }));
 }
@@ -1113,10 +1115,11 @@ function overlaySignature(
 function hookCommand(
   helper: RuntimeHookHelperLaunch,
   mapping: HookMapping,
-  platform: NodeJS.Platform
+  platform: NodeJS.Platform,
+  windowsShell: "cmd" | "powershell" = "cmd"
 ): string {
   const args = [helper.command, ...helper.args, mapping.state, mapping.event];
-  return commandWithEnvironment(args, helper.env ?? {}, platform);
+  return commandWithEnvironment(args, helper.env ?? {}, platform, windowsShell);
 }
 
 function pluginHookCommand(
@@ -1137,16 +1140,22 @@ function pluginHookCommand(
     event,
     providerEvent
   ];
-  return commandWithEnvironment(args, runner.env ?? {}, platform);
+  return commandWithEnvironment(args, runner.env ?? {}, platform, provider === "codex" ? "powershell" : "cmd");
 }
 
 function commandWithEnvironment(
   args: string[],
   environment: Readonly<Record<string, string>>,
-  platform: NodeJS.Platform
+  platform: NodeJS.Platform,
+  windowsShell: "cmd" | "powershell" = "cmd"
 ): string {
   const entries = Object.entries(environment);
   if (platform === "win32") {
+    if (windowsShell === "powershell") {
+      const prefix = entries.map(([key, value]) => `$env:${key}=${powershellQuote(value)}`).join("; ");
+      const command = `& ${args.map(powershellQuote).join(" ")}; exit $LASTEXITCODE`;
+      return `${prefix ? `${prefix}; ` : ""}${command}`;
+    }
     const prefix = entries.map(([key, value]) => (
       `set "${key}=${value.replaceAll("%", "%%").replaceAll('"', '\\"')}"`
     )).join(" && ");
@@ -1159,6 +1168,10 @@ function commandWithEnvironment(
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function powershellQuote(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function windowsCommand(args: string[]): string {

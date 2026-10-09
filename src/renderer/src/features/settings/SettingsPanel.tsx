@@ -24,6 +24,7 @@ import type {
   HomeAccentPresetId,
   InstalledPlugin,
   LimitProviderId,
+  MascotProjectSummary,
   LocaleId,
   KeyboardPreset,
   MaterialStorageUsage,
@@ -118,8 +119,9 @@ import {
   isolationAvailable,
   resolveDefaultLaunchProfile
 } from "../../../../shared/autoMode";
+import { MascotsSettings } from "./MascotsSettings";
 
-type SettingsSection = "general" | "keyboardShortcuts" | "appearance" | "agents" | "controls" | "externalIntegrations" | "browser" | "plugins" | "updates" | "about";
+type SettingsSection = "general" | "keyboardShortcuts" | "appearance" | "agents" | "controls" | "externalIntegrations" | "browser" | "plugins" | "mascots" | "updates" | "about";
 
 const SHORTCUT_LABELS = {
   home: "homeShortcut", renameWindow: "renameWindow", toggleFullscreen: "toggleFullscreen",
@@ -143,6 +145,7 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
   { id: "externalIntegrations", icon: "blocks" },
   { id: "browser", icon: "browser" },
   { id: "plugins", icon: "blocks" },
+  { id: "mascots", icon: "image-plus" },
   { id: "updates", icon: "download" },
   { id: "about", icon: "info" }
 ];
@@ -195,6 +198,11 @@ interface SettingsPanelProps {
   onToggleHomeWidget(widgetId: string, size: PluginGridSize): Promise<void>;
   onEditHome(): void;
   onOpenBrowser(url?: string): Promise<void>;
+  onCreateMascot(file: File): Promise<void>;
+  mascotProjects: MascotProjectSummary[];
+  onOpenMascot(project: MascotProjectSummary): Promise<void>;
+  onRetryMascot(projectId: string): Promise<void>;
+  onOpenMascotLog(projectId: string): Promise<void>;
 }
 
 export function SettingsPanel({
@@ -226,6 +234,11 @@ export function SettingsPanel({
   onToggleHomeWidget,
   onEditHome,
   onOpenBrowser,
+  onCreateMascot,
+  mascotProjects,
+  onOpenMascot,
+  onRetryMascot,
+  onOpenMascotLog,
 }: SettingsPanelProps): React.JSX.Element {
   const locale = settings.locale;
   const appearance = resolveAppearanceSettings(settings);
@@ -1356,6 +1369,10 @@ export function SettingsPanel({
               onUninstallPlugin={onUninstallPlugin}
               onOpenPluginContribution={onOpenPluginContribution}
             />
+          )}
+
+          {section === "mascots" && (
+            <MascotsSettings locale={locale} projects={mascotProjects} onCreate={onCreateMascot} onOpen={onOpenMascot} onRetry={onRetryMascot} onOpenLog={onOpenMascotLog} />
           )}
 
             {section === "updates" && (

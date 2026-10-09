@@ -15,7 +15,7 @@ import type {
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 import { snapMove, snapResize, type ResizeDirection } from "../workspace/snap";
-import { constrainPluginResize } from "./pluginBounds";
+import { constrainMascotResize, constrainPluginResize, fitMascotBounds } from "./pluginBounds";
 import { PluginFrame } from "./PluginFrame";
 import type { PluginCanvasWheelInput } from "./pluginInputBridge";
 import { pluginCanvasWidgetId } from "../workspace/canvasWidgetFocus";
@@ -89,37 +89,36 @@ export function PluginCanvasCard({
   hidden = false
 }: PluginCanvasCardProps): React.JSX.Element {
   const dragState = useRef<DragState | null>(null);
+  const mascotDragState = useRef<DragState | null>(null);
   const resizeState = useRef<ResizeState | null>(null);
-  const initialBounds = constrainPluginResize(
-    { position: instance.position, size: instance.size },
-    "se",
-    contribution.minSize
-  );
+  const isMascot = plugin.sourceUrl.startsWith("mascot:");
+  const mascotAspectRatio = contribution.defaultSize.width / contribution.defaultSize.height;
+  const initialBounds = isMascot
+    ? fitMascotBounds({ position: instance.position, size: instance.size }, mascotAspectRatio)
+    : constrainPluginResize({ position: instance.position, size: instance.size }, "se", contribution.minSize);
   const [position, setPosition] = useState(initialBounds.position);
   const [size, setSize] = useState(initialBounds.size);
   const liveBounds = useRef<SessionBounds>(initialBounds);
   // Renders when the summary scale changes, not on every camera move.
   const summaryScale = useCameraSelector(camera, (current) => summaryScaleForZoom(current.zoom));
-  const summaryMode = summaryScale > 1;
+  const summaryMode = !isMascot && summaryScale > 1;
   // The plugin document is suspended whenever nobody can see it: its timers drop to one wake-up a second
   // and its animation frames wait, but the document (and all its state) stays loaded.
   const offscreen = useSurfaceOffscreen(camera, { position, size });
   const windowHidden = useWindowHidden();
   const lifecycle = surfaceLifecycle({ summary: summaryMode, hidden, offscreen, windowHidden });
-
   useEffect(() => {
-    const bounds = constrainPluginResize(
-      { position: instance.position, size: instance.size },
-      "se",
-      contribution.minSize
-    );
+    const bounds = isMascot
+      ? fitMascotBounds({ position: instance.position, size: instance.size }, mascotAspectRatio)
+      : constrainPluginResize({ position: instance.position, size: instance.size }, "se", contribution.minSize);
     liveBounds.current = bounds;
     setPosition(bounds.position);
     setSize(bounds.size);
-    if (bounds.size.width !== instance.size.width || bounds.size.height !== instance.size.height) {
+    if (bounds.size.width !== instance.size.width || bounds.size.height !== instance.size.height
+      || bounds.position.x !== instance.position.x || bounds.position.y !== instance.position.y) {
       onBoundsChange(instance.id, bounds);
     }
-  }, [contribution.minSize, instance.id, instance.position, instance.size, onBoundsChange]);
+  }, [contribution.minSize, instance.id, instance.position, instance.size, isMascot, mascotAspectRatio, onBoundsChange]);
 
   const startDrag = (event: React.PointerEvent<HTMLElement>): void => {
     if ((event.target as HTMLElement).closest("button")) return;
@@ -199,8 +198,17 @@ export function PluginCanvasCard({
           - (state.direction.includes("n") ? deltaY : 0)
       }
     };
-    const constrained = constrainPluginResize(raw, state.direction, contribution.minSize);
-    applyBounds(snapEnabled ? snapResize(constrained, state.direction, state.snapTargets) : constrained);
+    const constrained = isMascot
+      ? constrainMascotResize(raw, state.direction, state.startBounds.size, mascotAspectRatio)
+      : constrainPluginResize(raw, state.direction, contribution.minSize);
+    const snapped = snapEnabled
+      ? snapResize(constrained, state.direction, state.snapTargets, isMascot
+        ? { min: { width: 128, height: 140 }, max: { width: 1_600, height: 1_100 } }
+        : undefined)
+      : constrained;
+    applyBounds(isMascot
+      ? constrainMascotResize(snapped, state.direction, constrained.size, mascotAspectRatio)
+      : snapped);
   };
 
   const endResize = (event: React.PointerEvent<HTMLDivElement>): void => {
@@ -217,9 +225,37 @@ export function PluginCanvasCard({
     setSize(bounds.size);
   };
 
+  const dragMascot = (event: { phase: "start" | "move" | "end"; x: number; y: number; pointerId: number }): void => {
+    if (event.phase === "start") {
+      onWidgetFocus();
+      mascotDragState.current = {
+        pointerId: event.pointerId,
+        startClient: { x: event.x, y: event.y },
+        startBounds: liveBounds.current,
+        snapTargets: snapEnabled ? getSnapTargets() : []
+      };
+      return;
+    }
+    const state = mascotDragState.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    if (event.phase === "end") {
+      mascotDragState.current = null;
+      onBoundsChange(instance.id, liveBounds.current);
+      return;
+    }
+    const rawPosition = {
+      x: state.startBounds.position.x + (event.x - state.startClient.x) / camera.get().zoom,
+      y: state.startBounds.position.y + (event.y - state.startClient.y) / camera.get().zoom
+    };
+    applyBounds({
+      position: snapEnabled ? snapMove(rawPosition, state.startBounds.size, state.snapTargets) : rawPosition,
+      size: state.startBounds.size
+    });
+  };
+
   return (
     <article
-      className={`plugin-canvas-card ${summaryMode ? "plugin-canvas-card--summary" : ""} ${groupSelected ? "plugin-canvas-card--selected" : ""}`}
+      className={`plugin-canvas-card ${isMascot ? "plugin-canvas-card--mascot" : ""} ${summaryMode ? "plugin-canvas-card--summary" : ""} ${groupSelected ? "plugin-canvas-card--selected" : ""}`}
       data-interactive="true"
       data-canvas-layer-id={`plugin:${instance.id}`}
       data-canvas-widget-id={pluginCanvasWidgetId(instance.id)}
@@ -263,6 +299,7 @@ export function PluginCanvasCard({
         canvasInstanceId={instance.id}
         onOpenLauncher={onOpenLauncher}
         onError={onError}
+        onMascotDrag={isMascot ? dragMascot : undefined}
         suspended={!surfaceIsLive(lifecycle)}
       />
       <button

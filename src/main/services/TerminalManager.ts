@@ -253,6 +253,7 @@ export class TerminalManager {
   private baseProtectionOn: () => boolean = () => false;
   // The model and effort of a card whose first launch runs before the card is registered (create, restore).
   private readonly startingModels = new Map<string, LaunchModelChoice>();
+  private readonly initialCodexInputs = new Map<string, { prompt: string; imagePath: string }>();
   private quitting = false;
   private readonly quitReleases: Promise<void>[] = [];
   // Every PTY started here whose exit has not been reported yet, closed cards included, with that exit.
@@ -634,6 +635,18 @@ export class TerminalManager {
       throw new Error("Result capture requires a Codex or OpenCode session.");
     }
     assertDirectory(request.cwd);
+    if (request.initialPrompt !== undefined || request.initialImagePath !== undefined) {
+      if (request.provider !== "codex" || request.resumeThreadId !== undefined
+        || typeof request.initialPrompt !== "string" || !request.initialPrompt.trim()
+        || request.initialPrompt.length > 20_000 || typeof request.initialImagePath !== "string") {
+        throw new Error("A new Codex chat needs one initial prompt and image.");
+      }
+      const imagePath = realpathSync(request.initialImagePath);
+      if (!isPathInside(realpathSync(request.cwd), imagePath) || !statSync(imagePath).isFile()) {
+        throw new Error("Initial Codex image must be a file in the project folder.");
+      }
+      request = { ...request, initialImagePath: imagePath };
+    }
 
     const role = request.role ?? "agent";
     if (request.parentSessionId !== undefined && !this.sessions.has(request.parentSessionId)) {
@@ -678,6 +691,9 @@ export class TerminalManager {
     // With launch options, an environment or a launch policy the plugins answer first; the card waits and launches when they do.
     const contributed = (Boolean(launchOptions) || Boolean(environmentChoice) || this.policyApplies(request.provider)) && !awaitMeasuredGrid;
     this.startingModels.set(id, modelChoice);
+    if (request.initialPrompt && request.initialImagePath) {
+      this.initialCodexInputs.set(id, { prompt: request.initialPrompt, imagePath: request.initialImagePath });
+    }
     if (control.ownerPluginId !== undefined) this.startingOwners.set(id, control.ownerPluginId);
     let launched: ReturnType<TerminalManager["spawnProcess"]> | { process: null; agentBrowser: null; agentRuntime: null; agentOrchestration: null; failure: null };
     try {
@@ -1143,6 +1159,7 @@ export class TerminalManager {
     }
     this.hiddenSinceOffset.delete(id);
     this.launchContexts.delete(id);
+    this.initialCodexInputs.delete(id);
     this.redaction.clear(`session:${id}`);
     this.releaseIsolation(id);
     session.launchToken += 1;
@@ -1750,8 +1767,13 @@ export class TerminalManager {
         ...(agentRuntime?.decisions === true && this.baseProtectionOn() && !environmentWrapped ? { shellGuarded: true } : {}),
         ...(isolated ? { isolated: true } : {}),
         cwd,
+        ...(this.initialCodexInputs.get(id) ? {
+          initialPrompt: this.initialCodexInputs.get(id)!.prompt,
+          initialImagePath: this.initialCodexInputs.get(id)!.imagePath
+        } : {}),
         ...this.launchModelOf(id)
       });
+      this.initialCodexInputs.delete(id);
       const session = this.sessions.get(id);
       if (session) setAutoDowngraded(session.metadata, profile === "auto" && contribution?.thirdPartyModel === true);
       // A plugin may add to the person's environment, never replace what the core sets for this launch.

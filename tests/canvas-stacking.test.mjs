@@ -142,6 +142,8 @@ test("snap targets are built only when a card's drag starts, from the layout of 
   assert.doesNotMatch(source, /allWindowBounds\.filter\(/u, "no per-card filter in render");
   for (const card of ["terminal/TerminalCard", "plugins/PluginCanvasCard", "browser/BrowserCard", "notes/StickyNoteCard"]) {
     const text = await readFile(new URL(`../src/renderer/src/features/${card}.tsx`, import.meta.url), "utf8");
-    assert.equal((text.match(/snapTargets: snapEnabled \? getSnapTargets\(\) : \[\]/gu) ?? []).length, 2, `${card} takes its targets at drag and resize start`);
+    const starts = card === "plugins/PluginCanvasCard" ? 3 : 2;
+    assert.equal((text.match(/snapTargets: snapEnabled \? getSnapTargets\(\) : \[\]/gu) ?? []).length, starts,
+      `${card} takes its targets only when header/mascot drag or resize starts`);
   }
 });

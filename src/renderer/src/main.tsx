@@ -10,6 +10,7 @@ import "./styles/terminalSkins.css";
 import "./styles/ornateTerminalSkins.css";
 import "./styles/pixelTerminalSkins.css";
 import "./styles/pixelSkinPackCreator.css";
+import "./styles/mascots.css";
 import "./styles/appSkins.css";
 import "./styles/patterns.css";
 

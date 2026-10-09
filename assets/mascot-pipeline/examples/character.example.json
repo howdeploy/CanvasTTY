@@ -1,0 +1,21 @@
+{
+  "id": "new-mascot",
+  "name": "New Mascot",
+  "description": "An animated mascot for CanvasTTY.",
+  "frames_dir": "frames",
+  "plugin_dir": "plugin",
+  "floor_frame": "idle-01",
+  "airborne": [],
+  "scale": 1,
+  "cols": 6,
+  "rows_per_sheet": 5,
+  "pad_bottom": 48,
+  "margin_x": 40,
+  "shadow": false,
+  "clips": {
+    "idle": [["idle-01", 0.45]]
+  },
+  "deck": [],
+  "required_phases": {},
+  "labels": {}
+}

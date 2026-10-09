@@ -72,6 +72,46 @@ const manifest = {
   settingsContribution: "notes"
 };
 
+test("updates only the same local mascot project and preserves its previous package", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mascot-update-"));
+  const projectId = "11111111-1111-4111-8111-111111111111";
+  const project = join(root, "mascots", projectId);
+  const source = join(project, "plugin");
+  const manager = new PluginManager(root);
+  try {
+    await mkdir(source, { recursive: true });
+    const mascot = { apiVersion: 1, id: "sample-mascot", name: "Sample Mascot", version: "1.0.0",
+      description: "Fixture mascot", permissions: [], contributions: [{ id: "character", kind: "canvas-app",
+        title: "Character", entry: "index.html", defaultSize: { width: 260, height: 520 } }] };
+    await writeFile(join(source, "canvastty.plugin.json"), JSON.stringify(mascot));
+    await writeFile(join(source, "index.html"), "<p>first build</p>");
+    await manager.load();
+    const destination = join(root, "plugins", mascot.id);
+    await mkdir(destination, { recursive: true });
+    await writeFile(join(destination, "owner.txt"), "Unknown owner's files");
+    await assert.rejects(manager.installLocalMascot(projectId, source, mascot.id), /Unregistered plugin directory/);
+    assert.equal(await readFile(join(destination, "owner.txt"), "utf8"), "Unknown owner's files");
+    assert.equal(manager.list().length, 0);
+    await rm(destination, { recursive: true });
+    const first = await manager.installLocalMascot(projectId, source, mascot.id);
+    await writeFile(join(source, "index.html"), "<p>second build</p>");
+    await manager.installLocalMascot(projectId, source, mascot.id);
+    assert.equal(await readFile(join(root, "plugins", mascot.id, "index.html"), "utf8"), "<p>second build</p>");
+    const revisions = await readdir(join(project, "revisions"));
+    assert.equal(revisions.length, 1);
+    assert.equal(await readFile(join(project, "revisions", revisions[0], "index.html"), "utf8"), "<p>first build</p>");
+    assert.equal(manager.list()[0].sourceUrl, first.sourceUrl);
+    const otherId = "22222222-2222-4222-8222-222222222222";
+    const other = join(root, "mascots", otherId, "plugin");
+    await cp(source, other, { recursive: true });
+    await assert.rejects(manager.installLocalMascot(otherId, other, mascot.id), /another source/);
+    assert.equal(await readFile(join(root, "plugins", mascot.id, "index.html"), "utf8"), "<p>second build</p>");
+  } finally {
+    await manager.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 const hookOnlyManifest = {
   apiVersion: 1,
   id: "com.example.lifecycle-audit",
@@ -107,6 +147,22 @@ test("normalizes only GitHub repository root links", () => {
 
 test("validates all supported contribution shapes and permissions", () => {
   assert.deepEqual(validatePluginManifest(manifest), manifest);
+});
+
+test("allows narrow canvas mascots without shrinking standalone plugin windows", () => {
+  const portrait = {
+    ...manifest,
+    contributions: manifest.contributions.map((contribution) => contribution.id === "notes"
+      ? { ...contribution, defaultSize: { width: 260, height: 520 }, minSize: { width: 128, height: 140 } }
+      : contribution)
+  };
+  assert.deepEqual(validatePluginManifest(portrait), portrait);
+  assert.throws(() => validatePluginManifest({
+    ...manifest,
+    contributions: manifest.contributions.map((contribution) => contribution.id === "focus"
+      ? { ...contribution, defaultSize: { width: 260, height: 520 } }
+      : contribution)
+  }), /outside the supported bounds/);
 });
 
 test("validates hook-only plugins and rejects ambiguous executable hook declarations", () => {

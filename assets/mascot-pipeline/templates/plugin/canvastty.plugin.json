@@ -1,0 +1,19 @@
+{
+  "apiVersion": 1,
+  "id": "__ID__",
+  "name": "__NAME__",
+  "version": "1.0.0",
+  "description": "__DESCRIPTION__",
+  "permissions": [],
+  "contributions": [
+    {
+      "id": "character",
+      "kind": "canvas-app",
+      "title": "__NAME__",
+      "description": "__DESCRIPTION__",
+      "entry": "index.html",
+      "defaultSize": { "width": 320, "height": 520 },
+      "minSize": { "width": 128, "height": 140 }
+    }
+  ]
+}

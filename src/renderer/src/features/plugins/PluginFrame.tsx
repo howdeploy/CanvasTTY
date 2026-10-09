@@ -35,6 +35,7 @@ interface PluginFrameProps {
   onHoverChange(active: boolean): void;
   onOpenLauncher(provider: ProviderId): void;
   onError(message: string): void;
+  onMascotDrag?(event: { phase: "start" | "move" | "end"; x: number; y: number; pointerId: number }): void;
   /**
    * Nobody can see the frame (summary, HOME editing, off-screen, minimized). The document stays loaded;
    * the host tells it so, and the injected bridge reports `document.visibilityState === "hidden"`,
@@ -49,6 +50,10 @@ interface PluginMessage {
   requestId?: unknown;
   method?: unknown;
   params?: unknown;
+  phase?: unknown;
+  x?: unknown;
+  y?: unknown;
+  pointerId?: unknown;
 }
 
 export function PluginFrame({
@@ -66,14 +71,15 @@ export function PluginFrame({
   onHoverChange,
   onOpenLauncher,
   onError,
+  onMascotDrag,
   suspended = false
 }: PluginFrameProps): React.JSX.Element {
   const frame = useRef<HTMLIFrameElement>(null);
   // Tells which document a finished request belongs to, so a reload never receives an earlier reply.
   const [replies] = useState(createFrameReplyGate);
   const entryUrl = useMemo(
-    () => `canvastty-plugin://${plugin.manifest.id}/${encodeAssetPath(contribution.entry)}`,
-    [contribution.entry, plugin.manifest.id]
+    () => `canvastty-plugin://${plugin.manifest.id}/${encodeAssetPath(contribution.entry)}${plugin.sourceUrl.startsWith("mascot:") ? `?revision=${plugin.installedAt}` : ""}`,
+    [contribution.entry, plugin.manifest.id, plugin.sourceUrl, plugin.installedAt]
   );
   // The plugin the frame serves right now, read when a reply is ready; and a new document the moment the
   // host points the frame elsewhere (during render, before the frame can load or ask anything).
@@ -103,6 +109,14 @@ export function PluginFrame({
       if (event.source !== frame.current?.contentWindow || !isRecord(event.data)) return;
       const message = event.data as PluginMessage;
       if (message.source !== "canvastty-plugin") return;
+      if (message.type === "mascot-drag" && plugin.sourceUrl.startsWith("mascot:") && onMascotDrag
+        && (message.phase === "start" || message.phase === "move" || message.phase === "end")
+        && typeof message.x === "number" && Number.isFinite(message.x)
+        && typeof message.y === "number" && Number.isFinite(message.y)
+        && typeof message.pointerId === "number" && Number.isInteger(message.pointerId)) {
+        onMascotDrag({ phase: message.phase, x: message.x, y: message.y, pointerId: message.pointerId });
+        return;
+      }
       const input = pluginCanvasFocusInput(event.data);
       if (input?.type === "focus") {
         onFocus();
@@ -176,7 +190,7 @@ export function PluginFrame({
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [canvasInstanceId, captureCanvasWheelOverWidgets, context, limits, onCanvasWheel, onError, onFocus, onHoverChange, onOpenLauncher, plugin, replies, sessions]);
+  }, [canvasInstanceId, captureCanvasWheelOverWidgets, context, limits, onCanvasWheel, onError, onFocus, onHoverChange, onOpenLauncher, onMascotDrag, plugin, replies, sessions]);
 
   useEffect(() => {
     postToFrame(frame.current, { source: "canvastty-host", type: "context", value: context });

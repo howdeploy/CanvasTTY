@@ -26,6 +26,9 @@ yarn-debug.log*
 yarn-error.log*
 .cache/
 .electron/
+__pycache__/
+*.pyc
+/.mascot-venv/
 settings.json
 
 # Local agent and planning context — never publish

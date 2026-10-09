@@ -14,6 +14,20 @@ function available(provider, executable, options = {}) {
   };
 }
 
+test("a mascot starts one new Codex turn with one image without changing other providers", () => {
+  const initial = { initialPrompt: "Read the pipeline.\nKeep the character identity.", initialImagePath: "/project with spaces/character.png" };
+  const launch = resolveTerminalLaunch("codex", "yolo", [], {
+    platform: "linux", environment: {}, providerCli: available("codex", "/official/codex"), ...initial
+  });
+  assert.deepEqual(launch.args.slice(-3), ["Read the pipeline. Keep the character identity.", "--image", initial.initialImagePath]);
+  assert.equal(launch.args.filter((value) => value === "--image").length, 1);
+  assert.ok(!launch.args.includes("resume"));
+  const sibling = resolveTerminalLaunch("claude", "normal", [], {
+    platform: "linux", environment: {}, providerCli: available("claude", "/official/claude"), ...initial
+  });
+  assert.ok(!sibling.args.includes("--image"));
+});
+
 test("Codex QA changes only the interactive launch and keeps the registry backend", () => {
   const environment = {
     CANVASTTY_CODEX_TUI_QA: "/qa/codex-tui",

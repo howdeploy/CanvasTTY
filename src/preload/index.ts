@@ -60,6 +60,15 @@ ipcRenderer.on(IPC.windowOpenUpdates, () => {
 });
 
 const api: CanvasTTYApi = {
+  mascots: {
+    list: () => ipcRenderer.invoke(IPC.mascotsList),
+    start: (image) => ipcRenderer.invoke(IPC.mascotsStart, image),
+    link: (projectId, sessionId) => ipcRenderer.invoke(IPC.mascotsLink, projectId, sessionId),
+    fail: (projectId, message) => ipcRenderer.invoke(IPC.mascotsFail, projectId, message),
+    retry: (projectId) => ipcRenderer.invoke(IPC.mascotsRetry, projectId),
+    openLog: (projectId) => ipcRenderer.invoke(IPC.mascotsOpenLog, projectId),
+    onChanged: (listener) => subscribe(IPC.mascotsChanged, listener)
+  },
   diagnostics: {
     configuration: () => ipcRenderer.invoke(IPC.diagnosticsConfiguration),
     send: (description, attachment) => ipcRenderer.invoke(IPC.diagnosticsSend, description, attachment),

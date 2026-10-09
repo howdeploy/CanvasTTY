@@ -71,6 +71,12 @@ electronFuses:
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true
 extraResources:
+  - from: assets/mascot-pipeline
+    to: mascot-pipeline
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!**/*.pyc"
   - from: scripts/canvastty-control.mjs
     to: agent-control/canvastty-control.mjs
   - from: agent/orchestrator

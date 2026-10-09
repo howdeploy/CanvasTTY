@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,6 +62,50 @@ test("Claude and Codex receive automatic lifecycle hooks without prompt or respo
     windowsSettings.hooks.Stop[0].hooks[0].command,
     /^set "ELECTRON_RUN_AS_NODE=1" && /u
   );
+});
+
+test("Codex Windows hook preserves PowerShell environment, stdin, and exit code", { skip: process.platform !== "win32" }, () => {
+  const script = "let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{process.stdout.write(JSON.stringify({input,env:process.env.ELECTRON_RUN_AS_NODE,args:process.argv.slice(1)}));process.exit(7)})";
+  const args = codexLifecycleArgs({ command: process.execPath, args: ["-e", script], env: { ELECTRON_RUN_AS_NODE: "1" } }, "win32");
+  const stop = args.find((value) => value.startsWith("hooks.Stop="));
+  const encoded = stop?.match(/command=("(?:\\.|[^"\\])*"),timeout=/u)?.[1];
+  assert.ok(encoded);
+  const command = JSON.parse(encoded);
+  assert.match(command, /^\$env:ELECTRON_RUN_AS_NODE='1'; & /u);
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
+    input: "hook stdin",
+    encoding: "utf8"
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 7, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { input: "hook stdin", env: "1", args: ["idle", "Stop"] });
+});
+
+test("Windows Codex plugin and decision hooks use PowerShell without changing Claude hooks", async (t) => {
+  const root = await fixture(t);
+  const adapters = new ProviderRuntimeLaunchAdapters({
+    ...runtimeOptionsFor(root),
+    platform: "win32",
+    helper: { command: process.execPath, args: [join(root, "helper.mjs")], env: { ELECTRON_RUN_AS_NODE: "1" } },
+    permissionGate: { command: process.execPath, args: [join(root, "gate.mjs")], env: { ELECTRON_RUN_AS_NODE: "1" } },
+    pluginHooks: {
+      runner: { command: process.execPath, args: [join(root, "runner.mjs")], env: { ELECTRON_RUN_AS_NODE: "1" } },
+      registryPath: join(root, "registry.json"),
+      list: (provider) => provider === "codex" ? [{ key: "example:hook", events: ["prompt-submit"] }] : []
+    }
+  });
+  const codex = adapters.prepare("codex", "session-codex", true, true);
+  const commands = [...codex.args.join("\n").matchAll(/command=("(?:\\.|[^"\\])*"),timeout=/gu)].map((match) => JSON.parse(match[1]));
+  assert.ok(commands.some((command) => command.includes("helper.mjs")));
+  assert.ok(commands.some((command) => command.includes("runner.mjs")));
+  assert.ok(commands.some((command) => command.includes("gate.mjs")));
+  for (const command of commands) assert.match(command, /^\$env:ELECTRON_RUN_AS_NODE='1'; /u);
+
+  const claude = adapters.prepare("claude", "session-claude", true, true);
+  const settings = JSON.parse(claude.args[1]);
+  assert.match(settings.hooks.Stop[0].hooks[0].command, /^set "ELECTRON_RUN_AS_NODE=1" && /u);
+  codex.releaseConfiguration();
+  claude.releaseConfiguration();
 });
 
 test("helper process flags stay scoped to hook commands instead of the agent PTY", async (t) => {

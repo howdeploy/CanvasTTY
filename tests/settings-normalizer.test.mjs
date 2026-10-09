@@ -900,7 +900,7 @@ test("normalizes the optional built-in browser canvas bounds", () => {
   }, fallback).browserCanvas?.size, { width: 560, height: 1_100 });
 });
 
-test("preserves plugin canvas bounds down to the manifest minimum floor", () => {
+test("preserves narrow plugin canvas bounds for mascot cards", () => {
   const normalized = normalizeSettings({
     pluginCanvas: [{
       id: "instance-1",
@@ -911,7 +911,7 @@ test("preserves plugin canvas bounds down to the manifest minimum floor", () => 
       size: { width: 120, height: 90 }
     }]
   }, fallback);
-  assert.deepEqual(normalized.pluginCanvas[0]?.size, { width: 240, height: 140 });
+  assert.deepEqual(normalized.pluginCanvas[0]?.size, { width: 128, height: 140 });
 });
 
 test("normalizes resizable Home boundaries within generous safety limits", () => {

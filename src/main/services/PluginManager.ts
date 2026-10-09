@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import {
   chmod,
+  cp,
   lstat,
   copyFile,
   mkdir,
@@ -290,7 +291,7 @@ export class PluginManager {
         const active = activeManifest(manifest, selectedModules);
         this.plugins.set(pluginId, {
           manifest,
-          sourceUrl: normalizeGithubUrl(record.sourceUrl),
+          sourceUrl: isLocalMascotSource(record.sourceUrl) ? record.sourceUrl : normalizeGithubUrl(record.sourceUrl),
           enabled: record.enabled,
           installedAt: record.installedAt,
           selectedModules,
@@ -403,6 +404,62 @@ export class PluginManager {
     // directory move run under the plugin's lock, so the second call sees the first one's entry
     // instead of failing its move and then deleting the directory and entry the first one made.
     return this.withPluginLock(preview.manifest.id, () => this.installPending(pending, modules, destination));
+  }
+
+  async installLocalMascot(projectId: string, packageRoot: string, expectedPluginId: string): Promise<InstalledPlugin> {
+    if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(projectId)) throw new Error("Mascot project ID is invalid.");
+    const projectRoot = await realpath(join(dirname(this.pluginRoot), "mascots", projectId));
+    const source = await realpath(packageRoot);
+    if (!isPathInside(projectRoot, source) || source === projectRoot) throw new Error("Mascot plugin escapes its project.");
+    await inspectPackage(source, 150 * 1024 * 1024);
+    const manifest = await readManifest(source);
+    if (manifest.id !== expectedPluginId) throw new Error("Mascot plugin ID differs from handoff.");
+    if (manifest.permissions.length !== 0 || manifest.services?.length || manifest.hooks?.length
+      || manifest.contributions.length !== 1 || manifest.contributions[0]?.kind !== "canvas-app") {
+      throw new Error("Mascot plugin must be a static canvas app without permissions.");
+    }
+    await assertManifestAssets(source, manifest);
+    return this.withPluginLock(manifest.id, async () => {
+      const previous = this.plugins.get(manifest.id);
+      if (previous && previous.sourceUrl !== `mascot:${projectId}`) throw new Error(`Plugin ${manifest.id} belongs to another source.`);
+      const staging = await mkdtemp(join(this.pluginRoot, ".mascot-"));
+      const destination = join(this.pluginRoot, manifest.id);
+      const backup = join(projectRoot, "revisions", `installed-${randomUUID()}`);
+      let backedUp = false;
+      let replaced = false;
+      try {
+        if (!previous) {
+          const existing = await lstat(destination).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT") throw error;
+            return null;
+          });
+          if (existing) throw new Error(`Unregistered plugin directory exists: ${destination}. Preserve it and resolve ownership before retrying installation.`);
+        }
+        await cp(source, staging, { recursive: true, force: false });
+        await inspectPackage(staging, 150 * 1024 * 1024);
+        if (previous) {
+          await mkdir(dirname(backup), { recursive: true });
+          await rename(destination, backup);
+          backedUp = true;
+        }
+        await rename(staging, destination);
+        replaced = true;
+        const installed: InstalledPlugin = {
+          manifest, sourceUrl: `mascot:${projectId}`, enabled: true, installedAt: Date.now(),
+          selectedModules: [], enabledHooks: [], nativeCodeTrusted: false, decisionsMayAllow: false
+        };
+        this.plugins.set(manifest.id, installed);
+        await this.persistRegistry();
+        return structuredClone(installed);
+      } catch (error) {
+        if (previous) this.plugins.set(manifest.id, previous); else this.plugins.delete(manifest.id);
+        if (replaced) await rm(destination, { recursive: true, force: true });
+        if (backedUp) await rename(backup, destination);
+        throw error;
+      } finally {
+        await rm(staging, { recursive: true, force: true });
+      }
+    });
   }
 
   private async installPending(
@@ -953,14 +1010,14 @@ export class PluginManager {
 
   async checkForUpdates(): Promise<PluginUpdateStatus[]> {
     const sources = [...this.plugins.values()]
-      .filter((plugin) => plugin.enabled && plugin.sourceUrl)
+      .filter((plugin) => plugin.enabled && plugin.sourceUrl && !isLocalMascotSource(plugin.sourceUrl))
       .sort((left, right) => left.manifest.id.localeCompare(right.manifest.id));
     // Batch: one GraphQL metadata round-trip for all manifests, then raw
     // fetches for present files — far fewer requests than one per plugin.
     const remoteVersions = await fetchRemoteManifestVersions(sources.map((plugin) => plugin.sourceUrl));
     return this.withVersionsLock((versions) => {
       const installed = [...this.plugins.values()]
-        .filter((plugin) => plugin.enabled && plugin.sourceUrl)
+        .filter((plugin) => plugin.enabled && plugin.sourceUrl && !isLocalMascotSource(plugin.sourceUrl))
         .sort((left, right) => left.manifest.id.localeCompare(right.manifest.id));
       const updates: PluginUpdateStatus[] = [];
       for (const plugin of installed) {
@@ -1975,10 +2032,10 @@ function validateContribution(value: unknown): PluginContribution {
     return { ...base, kind: "home-widget", defaultSize: validateGridSize(value.defaultSize) };
   }
   if (value.kind === "canvas-app" || value.kind === "window") {
-    const defaultSize = validateWindowSize(value.defaultSize, "defaultSize", 320, 220);
+    const defaultSize = validateWindowSize(value.defaultSize, "defaultSize", value.kind === "canvas-app" ? 128 : 320, 220);
     const minSize = value.minSize === undefined
       ? null
-      : validateWindowSize(value.minSize, "minSize", 240, 140);
+      : validateWindowSize(value.minSize, "minSize", value.kind === "canvas-app" ? 128 : 240, 140);
     if (minSize && (minSize.width > defaultSize.width || minSize.height > defaultSize.height)) {
       throw new Error("Plugin contribution minSize must not exceed defaultSize.");
     }
@@ -2008,7 +2065,7 @@ async function firstExistingFile(root: string, candidates: readonly string[]): P
   return null;
 }
 
-async function inspectPackage(root: string): Promise<void> {
+async function inspectPackage(root: string, maxBytes = MAX_PACKAGE_BYTES): Promise<void> {
   let entryCount = 0;
   let totalBytes = 0;
   const visit = async (directory: string): Promise<void> => {
@@ -2027,12 +2084,16 @@ async function inspectPackage(root: string): Promise<void> {
       }
       if (!metadata.isFile()) throw new Error("Plugin packages may contain only regular files and directories.");
       totalBytes += metadata.size;
-      if (totalBytes > MAX_PACKAGE_BYTES) {
+      if (totalBytes > maxBytes) {
         throw new Error("Plugin package exceeds the 500 entry / 25 MB limit.");
       }
     }
   };
   await visit(root);
+}
+
+function isLocalMascotSource(value: string): boolean {
+  return /^mascot:[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value);
 }
 
 async function assertManifestAssets(root: string, manifest: PluginManifest): Promise<void> {

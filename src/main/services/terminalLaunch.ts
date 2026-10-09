@@ -42,6 +42,8 @@ interface LaunchResolutionOptions {
   isolated?: boolean;
   /** The folder the CLI runs in (OpenCode's project configuration is read from it). */
   cwd?: string;
+  initialPrompt?: string;
+  initialImagePath?: string;
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -100,7 +102,9 @@ export function resolveTerminalLaunch(
       : agentBrowserArgs),
     ...providerModelArguments(provider, options.model),
     ...providerEffortArguments(provider, options.effort),
-    ...(options.resumePrevious ? resolveResumeArguments(provider, options.resumeThreadId) : [])
+    ...(options.resumePrevious ? resolveResumeArguments(provider, options.resumeThreadId) : []),
+    ...(provider === "codex" && options.initialPrompt && options.initialImagePath
+      ? [options.initialPrompt.replace(/[\r\n]+/g, " "), "--image", options.initialImagePath] : [])
   ];
   const combinedEnvironment = {
     ...providerCli.environment,

@@ -531,6 +531,33 @@ export interface CreateSessionRequest {
   model?: string;
   /** The CLI's reasoning effort for this launch; only the levels that CLI takes. */
   effort?: ReasoningEffort;
+  /** One first turn for a new Codex chat. The image must already exist inside cwd. */
+  initialPrompt?: string;
+  initialImagePath?: string;
+}
+
+export interface MascotProjectSummary {
+  id: string;
+  name: string;
+  status: "creating" | "ready" | "failed";
+  sessionId?: string;
+  pluginId?: string;
+  error?: string;
+  errorStage?: string;
+  errorLogPath?: string;
+  requestedBuildId?: string;
+  installedBuildId?: string;
+  registered?: boolean;
+  delivery?: "draft" | "final";
+  limitations?: string[];
+}
+
+export interface MascotLaunch {
+  project: MascotProjectSummary;
+  cwd: string;
+  imagePath: string;
+  prompt: string;
+  previewUrl: string;
 }
 
 /** Every non-terminal agent that CanvasTTY can install and resolve. */
@@ -1665,6 +1692,15 @@ export interface DiagnosticRendererError {
 }
 
 export interface CanvasTTYApi {
+  mascots: {
+    list(): Promise<MascotProjectSummary[]>;
+    start(image: Uint8Array): Promise<MascotLaunch>;
+    link(projectId: string, sessionId: string): Promise<void>;
+    fail(projectId: string, message: string): Promise<void>;
+    retry(projectId: string): Promise<void>;
+    openLog(projectId: string): Promise<void>;
+    onChanged(listener: (projects: MascotProjectSummary[]) => void): () => void;
+  };
   diagnostics: {
     configuration(): Promise<DiagnosticConfiguration>;
     send(description: string, attachment?: DiagnosticAttachment): Promise<DiagnosticReportReceipt>;
@@ -1873,6 +1909,13 @@ export interface CanvasTTYApi {
 }
 
 export const IPC = {
+  mascotsList: "mascots:list",
+  mascotsStart: "mascots:start",
+  mascotsLink: "mascots:link",
+  mascotsFail: "mascots:fail",
+  mascotsRetry: "mascots:retry",
+  mascotsOpenLog: "mascots:open-log",
+  mascotsChanged: "mascots:changed",
   diagnosticsConfiguration: "diagnostics:configuration",
   diagnosticsSend: "diagnostics:send",
   diagnosticsRendererError: "diagnostics:renderer-error",

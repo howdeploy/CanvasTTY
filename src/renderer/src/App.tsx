@@ -14,6 +14,7 @@ import type {
   HomeGridSize,
   HomeWidgetPlacement,
   InstalledPlugin,
+  MascotProjectSummary,
   LaunchProfileId,
   MaterialsAddResult,
   LaunchRole,
@@ -303,6 +304,20 @@ export function App(): React.JSX.Element {
   const [agentAvailability, setAgentAvailability] = useState<AgentCliAvailability | null>(null);
   const [mediaData, setMediaData] = useState<string | null>(null);
   const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
+  const [mascotProjects, setMascotProjects] = useState<MascotProjectSummary[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = window.canvasTTY.mascots.onChanged((projects) => {
+      if (!active) return;
+      setMascotProjects(projects);
+      if (projects.some((project) => project.status === "ready")) {
+        void window.canvasTTY.plugins.list().then((installed) => { if (active) setPlugins(installed); }).catch(() => undefined);
+      }
+    });
+    void window.canvasTTY.mascots.list().then((projects) => { if (active) setMascotProjects(projects); }).catch(() => undefined);
+    return () => { active = false; unsubscribe(); };
+  }, []);
   const [browser, setBrowser] = useState<BrowserSnapshot>(EMPTY_BROWSER_SNAPSHOT);
   // The camera lives in a store, not in state: a pan or zoom must not render the application tree.
   const [cameraStore] = useState(() => createCameraStore(homeCamera(DEFAULT_HOME_GRID_SIZE)));
@@ -597,7 +612,8 @@ export function App(): React.JSX.Element {
     requestedCenter?: Point,
     role: LaunchRole = "agent",
     launchOptions?: Record<string, PluginLaunchValues>,
-    environment?: SessionEnvironmentChoice
+    environment?: SessionEnvironmentChoice,
+    initial?: { initialPrompt: string; initialImagePath: string }
   ): Promise<SessionSnapshot> => {
     const currentSettings = settingsRef.current;
     const pixelSkin = isPixelSkinThemeId(currentSettings.terminalBorderSkin)
@@ -626,7 +642,8 @@ export function App(): React.JSX.Element {
     try {
       const session = await window.canvasTTY.terminal.create({
         provider, profile, cwd, position, role, ...(launchOptions ? { launchOptions } : {}),
-        ...(environment ? { environment } : {})
+        ...(environment ? { environment } : {}),
+        ...(initial ?? {})
       });
       const sizedSession = pixelSkin ? { ...session, size: { ...cardSize } } : session;
       if (pixelSkin) window.canvasTTY.terminal.setBounds(session.id, { position, size: sizedSession.size });
@@ -1038,6 +1055,26 @@ export function App(): React.JSX.Element {
     setCamera(focusCamera(browserCanvas.position, browserCanvas.size));
   }, [persistSettings, sessions.length, settings.homeGridSize, settings.locale, settings.pluginCanvas.length]);
 
+  const createMascot = useCallback(async (file: File): Promise<void> => {
+    if (!agentAvailability?.codex) throw new Error(settings.locale === "ru" ? "Codex CLI недоступен." : "Codex CLI is unavailable.");
+    // The creation button explicitly describes its YOLO launch to the person.
+    await acknowledgeDanger("codex");
+    if (!settingsRef.current.browserAgentAccess) await saveSettings({ browserAgentAccess: true });
+    const launch = await window.canvasTTY.mascots.start(new Uint8Array(await file.arrayBuffer()));
+    try {
+      const session = await createSession("codex", "yolo", launch.cwd, undefined, "agent", undefined, undefined,
+        { initialPrompt: launch.prompt, initialImagePath: launch.imagePath });
+      if (session.status === "failed") throw new Error(session.failureDetails ?? "Codex did not start.");
+      await window.canvasTTY.mascots.link(launch.project.id, session.id);
+      setSettingsOpen(false);
+    } catch (cause) {
+      await window.canvasTTY.mascots.fail(launch.project.id, cause instanceof Error ? cause.message : String(cause));
+      throw cause;
+    }
+    try { await openBrowser(launch.previewUrl); }
+    catch (cause) { showToast(cause instanceof Error ? cause.message : String(cause)); }
+  }, [agentAvailability?.codex, acknowledgeDanger, createSession, openBrowser, saveSettings, settings.locale, showToast]);
+
   useEffect(() => {
     return window.canvasTTY.plugins.onBrowserOpenRequested((request) => {
       void pluginBrowserOpenQueueRef.current.enqueue(() => openBrowser(request.url)).then(
@@ -1390,15 +1427,34 @@ export function App(): React.JSX.Element {
     await openPluginCanvasContribution(plugin, contribution);
   }, [openPluginCanvasContribution, toggleHomeWidget]);
 
-  useEffect(() => window.canvasTTY.plugins.onOpenCanvas((request) => {
-    const plugin = plugins.find((candidate) => candidate.manifest.id === request.pluginId);
-    const contribution = plugin?.manifest.contributions.find((candidate) => candidate.id === request.contributionId);
-    if (!plugin || !contribution || contribution.kind !== "canvas-app" || !plugin.enabled) {
-      showToast(t(settings.locale, "pluginActionFailed"));
+  const openMascot = useCallback(async (project: MascotProjectSummary): Promise<void> => {
+    if (project.status === "ready" && project.pluginId) {
+      const installed = await window.canvasTTY.plugins.list();
+      setPlugins(installed);
+      const plugin = installed.find((item) => item.manifest.id === project.pluginId);
+      const contribution = plugin?.manifest.contributions.find((item) => item.kind === "canvas-app");
+      if (!plugin || !contribution) throw new Error("Mascot plugin is unavailable.");
+      await openPluginCanvasContribution(plugin, contribution);
       return;
     }
-    void openPluginCanvasContribution(plugin, contribution, request.sourceCanvasInstanceId)
-      .catch((error) => showToast(error instanceof Error ? error.message : t(settings.locale, "pluginActionFailed")));
+    const session = sessionsRef.current.find((item) => item.id === project.sessionId);
+    if (!session) throw new Error(settings.locale === "ru" ? "Чат Codex больше не открыт." : "The Codex chat is no longer open.");
+    setSettingsOpen(false);
+    setActiveSessionId(session.id);
+    isHomeCamera.current = false;
+    setCamera(focusCamera(session.position, session.size));
+  }, [openPluginCanvasContribution, settings.locale]);
+
+  useEffect(() => window.canvasTTY.plugins.onOpenCanvas((request) => {
+    void (async () => {
+      const installed = plugins.find((candidate) => candidate.manifest.id === request.pluginId)
+        ? plugins : await window.canvasTTY.plugins.list();
+      if (installed !== plugins) setPlugins(installed);
+      const plugin = installed.find((candidate) => candidate.manifest.id === request.pluginId);
+      const contribution = plugin?.manifest.contributions.find((candidate) => candidate.id === request.contributionId);
+      if (!plugin || !contribution || contribution.kind !== "canvas-app" || !plugin.enabled) throw new Error(t(settings.locale, "pluginActionFailed"));
+      await openPluginCanvasContribution(plugin, contribution, request.sourceCanvasInstanceId);
+    })().catch((error) => showToast(error instanceof Error ? error.message : t(settings.locale, "pluginActionFailed")));
   }), [openPluginCanvasContribution, plugins, settings.locale, showToast]);
 
   const startHomeEditor = useCallback((): void => {
@@ -1666,6 +1722,11 @@ export function App(): React.JSX.Element {
           onToggleHomeWidget={toggleHomeWidget}
           onEditHome={startHomeEditor}
           onOpenBrowser={openBrowser}
+          onCreateMascot={createMascot}
+          mascotProjects={mascotProjects}
+          onOpenMascot={openMascot}
+          onRetryMascot={(projectId) => window.canvasTTY.mascots.retry(projectId)}
+          onOpenMascotLog={(projectId) => window.canvasTTY.mascots.openLog(projectId)}
         />
       </Suspense>
       {closedGitRisks.length > 0 && (

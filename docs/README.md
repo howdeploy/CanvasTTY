@@ -16,6 +16,7 @@ CanvasTTY is a spatial Electron desktop for real local terminals and AI-agent CL
 | [Pixel terminal themes (Russian)](pixel-skin-packs.ru.md) | Ten-PNG ZIP layout, terminal apertures, app import, and local agent CLI |
 | [Create a pixel theme with an agent](pixel-skin-agent-start.md) | Zero-context agent brief, exact install ZIP, visual checks, and validation |
 | [Runtime plugins](plugins.md) | Manifest v1, permissions, HOME widgets, canvas apps, separate windows, player media/playlist APIs, SDK, and install flow |
+| [Animated mascots](mascots.md) | PNG/JPEG intake, a Codex creation session, live previews, frame review, transparent cards, approved installation, and retry diagnostics |
 | [Metrics and telemetry](metrics-and-telemetry.md) | Subscription limits, session token usage, source priority, privacy, stale states, and tests |
 | [Terminal renderer transition check](terminal-renderer-transition.md) | Manual hide/restore check for the DOM/WebGL transition snapshot |
 | [Security policy](../SECURITY.md) | Supported release, vulnerability reporting, local data boundaries, plugins, media grants, browser storage, and audit logs |

@@ -14,6 +14,25 @@ env:
   CANVASTTY_REQUIRE_NATIVE_HELPERS: "1"
 
 jobs:
+  mascot-pipeline:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Install mascot pipeline dependencies in a virtual environment
+        run: |
+          python3 -m venv .mascot-venv
+          .mascot-venv/bin/python -m pip install -r assets/mascot-pipeline/requirements.txt
+      - name: Verify mascot intake, build, review, and delivery contracts
+        run: .mascot-venv/bin/python -B assets/mascot-pipeline/tests/smoke_pipeline.py
+      - name: Verify placement against bundled accepted artwork
+        run: .mascot-venv/bin/python -B assets/mascot-pipeline/tests/placement_regression.py
+
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -49,6 +68,17 @@ jobs:
         run: npm run typecheck
       - name: Build production bundles
         run: npm run build
+      - name: Build Linux installers and verify bundled mascot resources
+        run: |
+          npm run package:linux
+          test -f release/linux-unpacked/resources/mascot-pipeline/SKILL.md
+          test -f release/linux-unpacked/resources/mascot-pipeline/scripts/prepare_input.py
+          test -f release/linux-unpacked/resources/mascot-pipeline/templates/plugin/player.js
+      - name: Install AppImage runtime dependency
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libfuse2t64
+      - name: Smoke-test packaged Linux AppImage
+        timeout-minutes: 2
+        run: xvfb-run -a npm run smoke:appimage
       - name: Verify hidden terminal rendering and state restoration
         timeout-minutes: 2
         run: xvfb-run -a npm run smoke:terminal-hidden
@@ -116,6 +146,13 @@ jobs:
         env:
           SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY || 'iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=' }}
         run: npm run package:mac
+      - name: Verify bundled macOS mascot resources
+        run: |
+          app="$(find release -type d -name 'CanvasTTY.app' -print -quit)"
+          test -n "$app"
+          test -f "$app/Contents/Resources/mascot-pipeline/SKILL.md"
+          test -f "$app/Contents/Resources/mascot-pipeline/scripts/prepare_input.py"
+          test -f "$app/Contents/Resources/mascot-pipeline/templates/plugin/player.js"
       - name: Smoke-test packaged macOS CLI resolution
         run: npm run smoke:cli-resolution:mac
       - name: Verify hidden terminal rendering and state restoration on macOS

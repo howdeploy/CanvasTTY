@@ -394,19 +394,27 @@ test("seatbelt, for real: Claude's draft helper answers in its own card's folder
   const drafts = join(w.userData, "claude-draft");
   const own = join(drafts, "s1");
   const other = join(drafts, "s2");
+  const helper = new URL("../src/agent-runtime/draft-editor.sh", import.meta.url).pathname;
   await mkdir(own, { recursive: true });
   await mkdir(other, { recursive: true });
-  await writeFile(join(own, "req.1"), "copy\n");
-  await writeFile(join(other, "draft.2"), "другая карточка");
+  const prompt = join(w.project, "claude-prompt-t.md");
+  await writeFile(prompt, "черновик");
+  await writeFile(join(own, "req.1"), "cut\n");
+  await writeFile(join(other, "req.2"), "copy\n");
+  await writeFile(join(other, "draft.3"), "другая карточка");
   const { lines } = run(w, [
-    `mv "${own}/req.1" "${own}/claimed.1" && : > "${own}/done.1" && echo own`,
+    `/bin/sh "${helper}" "${prompt}" && echo own`,
+    // Another card's request is hidden: with none of its own, this Ctrl+G opens the person's editor.
+    `/bin/sh "${helper}" "${prompt}"`,
     `: > "${other}/req.9" 2>/dev/null && echo other-write`,
-    `cat "${other}/draft.2" 2>/dev/null && echo other-read`,
+    `cat "${other}/draft.3" 2>/dev/null && echo other-read`,
     `ls "${drafts}" 2>/dev/null && echo listed`
-  ].join("; "), { provider: "claude", ownWritable: [own] });
-  assert.deepEqual(lines, ["own"]);
-  assert.deepEqual((await readdir(own)).sort(), ["claimed.1", "done.1"]);
-  assert.deepEqual(await readdir(other), ["draft.2"]);
+  ].join("; "), { provider: "claude", ownWritable: [own], env: { CANVASTTY_DRAFT_DIR: own, CANVASTTY_DRAFT_EDITOR: "echo editor" } });
+  assert.deepEqual(lines, ["own", `editor ${prompt}`]);
+  assert.deepEqual((await readdir(own)).sort(), ["done.1", "draft.1"]);
+  assert.equal(await readFile(join(own, "draft.1"), "utf8"), "черновик");
+  assert.equal(await readFile(prompt, "utf8"), "", "cut empties Claude's prompt file");
+  assert.deepEqual((await readdir(other)).sort(), ["draft.3", "req.2"]);
 });
 
 test("seatbelt, for real: git init works, but no repository in the project gets a hook or attributes from the agent", onMac, async (t) => {

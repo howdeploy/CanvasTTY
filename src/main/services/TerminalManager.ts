@@ -63,7 +63,7 @@ import type { ClaudeDraftEditor, ClaudeDraftPaste } from "./ClaudeDraftEditor.ts
 import type { DecisionSession } from "./DecisionHooks.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
-import { canResumeThreadById, resolveTerminalLaunch } from "./terminalLaunch.ts";
+import { canResumeThreadById, parseInlineSettings, resolveTerminalLaunch } from "./terminalLaunch.ts";
 import { isLaunchProfile, PROFILE_RANK, profileAvailable, profileCeiling, type LaunchProfile } from "../../shared/autoMode.ts";
 import type { AgentIsolation, IsolationDecision } from "./isolation/AgentIsolation.ts";
 import { controlGrantFolder } from "./isolation/AgentIsolation.ts";
@@ -1793,8 +1793,10 @@ export class TerminalManager {
       };
       // OpenCode: the project folder in its other Unicode spelling is still this folder, not an external one.
       if (provider === "opencode") Object.assign(providerEnvironment, openCodeProjectFolderEnvironment({ ...baseEnvironment, ...providerEnvironment }, cwd));
-      // A plugin or a remote environment that sets its own editor keeps it; the helper only exists locally.
-      const contributesEditor = ["VISUAL", "EDITOR"].some((key) => key in (contribution?.env ?? {}));
+      // A plugin or a remote environment that sets its own editor (in the environment or in its --settings env) keeps
+      // it; the helper only exists locally.
+      const contributedNames = new Set([...Object.keys(contribution?.env ?? {}), ...inlineSettingsEnvironmentNames(contribution?.args ?? [])]);
+      const contributesEditor = ["VISUAL", "EDITOR"].some((key) => contributedNames.has(key));
       let draftEnvironment: Record<string, string> = {};
       if (provider === "claude" && process.platform === "darwin" && !environmentWrapped && !contributesEditor && this.draftEditor) {
         draftEnvironment = this.draftEditor.environment(id, baseEnvironment);
@@ -1808,8 +1810,9 @@ export class TerminalManager {
       // launch's --settings, not its environment: the helper and the locale go there too.
       if (Object.keys(draftEnvironment).length > 0) {
         const launched = { ...baseEnvironment, ...providerEnvironment };
+        // A locale a plugin or a remote environment sets is its own.
         const locale = Object.fromEntries(["LANG", "LC_ALL", "LC_CTYPE"]
-          .filter((key) => launched[key]).map((key) => [key, launched[key]!]));
+          .filter((key) => launched[key] && !contributedNames.has(key)).map((key) => [key, launched[key]!]));
         providerArgs.push("--settings", JSON.stringify({ env: { ...draftEnvironment, ...locale } }));
       }
       // Stable terminal observations for the CLI controller; leave ordinary launches unchanged.
@@ -2394,6 +2397,16 @@ export function terminalEnvironment(
   const hasLocale = ["LC_ALL", "LC_CTYPE", "LANG"].some((name) => environment[name]);
   if (platform === "darwin" && !hasLocale) environment.LANG = systemLocale;
   return { ...environment, TERM: "xterm-256color", COLORTERM: "truecolor" };
+}
+
+/** The names a launch's inline --settings set in Claude's env (`--settings <json>` or `--settings=<json>`). */
+function inlineSettingsEnvironmentNames(args: readonly string[]): string[] {
+  return args.flatMap((argument, index) => {
+    const value = argument.startsWith("--settings=") ? argument.slice("--settings=".length)
+      : args[index - 1] === "--settings" ? argument : null;
+    const env = value === null ? null : parseInlineSettings(value)?.env;
+    return env && typeof env === "object" && !Array.isArray(env) ? Object.keys(env) : [];
+  });
 }
 
 let systemLocale = "en_US.UTF-8";

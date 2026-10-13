@@ -247,6 +247,10 @@ test("a background session shown by another card answers that card's request; it
   assert.deepEqual(files(started), ["done.9", "draft.9"], "its own card's request first");
   assert.deepEqual(files(showing), ["req.3"]);
   assert.equal(readFileSync(file, "utf8"), "черновик");
+  rmSync(join(showing, "req.3"));
+  writeFileSync(join(showing, "cancel.4"), "");
+  assert.equal(runHelper(file, started), 1, "another card's cancel does not cost this Ctrl+G: the editor opens");
+  assert.deepEqual(files(showing), ["cancel.4"]);
   rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -373,6 +377,16 @@ test("TerminalManager gives local macOS Claude cards the helper and holds their 
     assert.equal(inline[0].env.CANVASTTY_DRAFT_DIR, claudeEnv.CANVASTTY_DRAFT_DIR);
     assert.equal(inline[0].env.CANVASTTY_DRAFT_EDITOR, claudeEnv.CANVASTTY_DRAFT_EDITOR);
     for (const key of ["LANG", "LC_ALL", "LC_CTYPE"]) assert.equal(inline[0].env[key], claudeEnv[key], key);
+    // A plugin's own editor (even only in its --settings env) and its own locale are kept.
+    const plugin = (env, args) => ({ ok: true, env, secretEnv: {}, args, files: [], envSources: Object.fromEntries(Object.keys(env).map((key) => [key, "Plugin p"])) });
+    terminals.spawnProcess("plugin-editor", "claude", "yolo", process.cwd(), 80, 24, null, false, "agent", undefined,
+      plugin({}, ["--settings", JSON.stringify({ env: { VISUAL: "plugin-editor" } })]));
+    assert.equal("CANVASTTY_DRAFT_DIR" in calls.at(-1).options.env, false, "a plugin's --settings editor keeps Ctrl+G");
+    terminals.spawnProcess("plugin-locale", "claude", "yolo", process.cwd(), 80, 24, null, false, "agent", undefined, plugin({ LC_ALL: "C" }, []));
+    const localeArgs = calls.at(-1).args;
+    const localeSettings = localeArgs.filter((_, index) => localeArgs[index - 1] === "--settings").map((value) => JSON.parse(value));
+    assert.equal(localeSettings[0].env.CANVASTTY_DRAFT_DIR, join(root, "plugin-locale"));
+    assert.equal("LC_ALL" in localeSettings[0].env, false, "the plugin's locale is not replaced in background sessions");
     const codex = terminals.create({ ...base, provider: "codex" });
     assert.equal("CANVASTTY_DRAFT_DIR" in calls.at(-1).options.env, false, "only Claude cards get the helper");
     assert.equal(terminals.listMetadata().find((s) => s.id === codex.id).claudeDraft, undefined);

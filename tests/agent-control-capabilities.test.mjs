@@ -11,7 +11,7 @@ import {
   isLaunchRole,
   launchRole
 } from "../src/main/services/agent-control/controlCapabilities.ts";
-import { TerminalManager, terminalEnvironment } from "../src/main/services/TerminalManager.ts";
+import { TerminalManager, setTerminalSystemLocale, terminalEnvironment } from "../src/main/services/TerminalManager.ts";
 import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 
 const CONNECTION = { connectionPath: "/data/agent-control/connection.json", cliPath: "/app/scripts/canvastty-control.mjs" };
@@ -77,8 +77,18 @@ test("terminalEnvironment strips an inherited control grant like the other reser
   assert.equal(terminalEnvironment({ VISUAL: "code --wait" }).VISUAL, "code --wait", "a person's own editor is kept");
 });
 
-test("terminalEnvironment gives a localeless macOS launch UTF-8 and keeps any explicit locale", () => {
-  assert.equal(terminalEnvironment({ PATH: "/usr/bin" }, "darwin").LC_CTYPE, "UTF-8");
+test("terminalEnvironment gives a localeless macOS launch the system's UTF-8 locale and keeps any explicit one", () => {
+  const installed = new Set(["/usr/share/locale/ru_RU.UTF-8", "/usr/share/locale/en_US.UTF-8"]);
+  const exists = (path) => installed.has(path);
+  for (const [system, expected] of [
+    ["ru-RU", "ru_RU.UTF-8"], ["ru_RU", "ru_RU.UTF-8"], ["en-RU", "en_US.UTF-8"], ["en", "en_US.UTF-8"], ["", "en_US.UTF-8"]
+  ]) {
+    setTerminalSystemLocale(system, exists);
+    const environment = terminalEnvironment({ PATH: "/usr/bin" }, "darwin");
+    assert.equal(environment.LANG, expected, system);
+    assert.equal("LC_CTYPE" in environment, false, "a full locale name, which ssh can pass to a server");
+  }
+  setTerminalSystemLocale("en-US", exists);
   for (const locale of [{ LANG: "C" }, { LC_ALL: "en_US.UTF-8" }, { LC_CTYPE: "ru_RU.KOI8-R" }]) {
     const environment = terminalEnvironment({ PATH: "/usr/bin", ...locale }, "darwin");
     assert.deepEqual(
@@ -87,7 +97,7 @@ test("terminalEnvironment gives a localeless macOS launch UTF-8 and keeps any ex
     );
   }
   for (const platform of ["linux", "win32"]) {
-    assert.equal("LC_CTYPE" in terminalEnvironment({ PATH: "/usr/bin" }, platform), false);
+    assert.equal("LANG" in terminalEnvironment({ PATH: "/usr/bin" }, platform), false);
   }
 });
 

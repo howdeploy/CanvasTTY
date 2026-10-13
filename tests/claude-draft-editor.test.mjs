@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -30,6 +30,16 @@ function fakeClaude(environment, draft) {
   return state;
 }
 
+// What the helper would do for the oldest waiting request: claim it, save the draft, report done.
+function finishRequest(directory, draft = "") {
+  const id = readdirSync(directory).filter((name) => name.startsWith("req.")).map((name) => Number(name.slice(4))).sort((a, b) => a - b)[0];
+  rmSync(join(directory, `req.${id}`));
+  writeFileSync(join(directory, `draft.${id}`), draft);
+  writeFileSync(join(directory, `done.${id}`), "");
+}
+
+const files = (directory) => (existsSync(directory) ? readdirSync(directory).sort() : []);
+
 function editorFixture(timeoutMs) {
   const root = mkdtempSync(join(tmpdir(), "claude-draft-root-"));
   const clipboard = [];
@@ -58,30 +68,36 @@ test("copy, cut and clear act on the whole Claude draft through the real helper"
     assert.equal(claude.draft, "");
     assert.deepEqual(claude.writes.slice(-2), ["\u0007", "ж"], "the replacing key follows the round trip");
     assert.equal(clipboard.length, 2, "clearing never touches the clipboard");
-    assert.equal(existsSync(join(root, "card-1", "request")), false, "no request outlives its action");
+    assert.deepEqual(files(join(root, "card-1")), [], "no request or draft copy outlives its action");
   } finally {
     claude.cleanup();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("input typed during the round trip is held and delivered after the replacing key, in order", async () => {
-  const { root, editor } = editorFixture();
+test("a session's actions run one after another, and input typed meanwhile keeps its place", async () => {
+  const { root, clipboard, editor } = editorFixture();
+  editor.environment("card-2", {});
+  const directory = join(root, "card-2");
   const writes = [];
-  let finishEditor;
-  const write = (data) => {
-    writes.push(data);
-    if (data === "\u0007") finishEditor = () => writeFileSync(join(root, "card-2", "done"), "");
-    return true;
-  };
-  const running = editor.run("card-2", "clear", "a", write);
+  const write = (data) => { writes.push(data); return true; };
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 30));
+  const copying = editor.run("card-2", "copy", "", write);
   assert.equal(editor.hold("card-2", "b"), true);
+  const clearing = editor.run("card-2", "clear", "ж", write);
   assert.equal(editor.hold("card-2", "c"), true);
   assert.equal(editor.hold("other-card", "x"), false, "other cards are never held");
-  assert.equal(await editor.run("card-2", "copy", "", write), false, "one action at a time");
-  finishEditor();
-  assert.equal(await running, true);
-  assert.deepEqual(writes, ["\u0007", "abc"]);
+  await tick();
+  assert.deepEqual(writes, ["\u0007"], "the second action waits for the first");
+  finishRequest(directory, "весь черновик");
+  assert.equal(await copying, true);
+  await tick();
+  assert.deepEqual(writes, ["\u0007", "b", "\u0007"]);
+  finishRequest(directory);
+  assert.equal(await clearing, true);
+  await tick();
+  assert.deepEqual(writes, ["\u0007", "b", "\u0007", "ж", "c"]);
+  assert.deepEqual(clipboard, ["весь черновик"]);
   assert.equal(editor.hold("card-2", "d"), false);
   rmSync(root, { recursive: true, force: true });
 });
@@ -96,34 +112,95 @@ test("a Ctrl+G Claude picks up late opens no editor and changes nothing, even af
   try {
     assert.equal(await editor.run("card-3", "cut", "ж", delayed), false, "the deadline passes");
     assert.deepEqual(writes, ["\u0007", "ж"], "what was typed still arrives");
-    assert.equal(readFileSync(join(root, "card-3", "request"), "utf8"), "cancel\n");
+    assert.deepEqual(files(join(root, "card-3")), ["cancel.1"]);
     late.shift()();
     assert.equal(claude.draft, "черновик", "the late Ctrl+G is a no-op, not the person's editor");
-    assert.equal(existsSync(join(root, "card-3", "request")), false);
+    assert.deepEqual(files(join(root, "card-3")), []);
     assert.deepEqual(clipboard, []);
 
     assert.equal(await editor.run("card-3", "copy", "", delayed), false);
     const running = editor.run("card-3", "clear", "", claude.write);
+    assert.equal(await running, true, "the newer action is done by its own Ctrl+G");
     late.shift()();
-    assert.equal(await running, true, "the newer action still completes behind the late one");
     assert.equal(claude.draft, "");
     assert.deepEqual(clipboard, []);
+    assert.deepEqual(files(join(root, "card-3")), []);
   } finally {
     claude.cleanup();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("a lost Ctrl+G costs at most the next one, and a new Claude launch forgets it", async () => {
-  const { root, editor } = editorFixture(30);
-  editor.environment("card-4", {});
-  assert.equal(await editor.run("card-4", "cut", "", () => true), false);
-  assert.equal(readFileSync(join(root, "card-4", "request"), "utf8"), "cancel\n");
-  editor.environment("card-4", {});
-  assert.equal(existsSync(join(root, "card-4")), false);
-  assert.equal(await editor.run("card-4", "cut", "", () => false), false, "an unsent Ctrl+G is not queued");
-  assert.equal(existsSync(join(root, "card-4", "request")), false);
+test("a Ctrl+G Claude never handles costs one later Ctrl+G, never the following actions", async () => {
+  const { root, clipboard, editor } = editorFixture(40);
+  const environment = editor.environment("card-4", {});
+  const claude = fakeClaude(environment, "черновик");
+  try {
+    // A dialog swallowed this Ctrl+G: it will never reach the helper.
+    assert.equal(await editor.run("card-4", "cut", "", () => true), false);
+    for (let i = 0; i < 3; i += 1) assert.equal(await editor.run("card-4", "copy", "", claude.write), true);
+    assert.deepEqual(clipboard, ["черновик", "черновик", "черновик"]);
+    assert.deepEqual(files(join(root, "card-4")), ["cancel.1"]);
+    claude.write("\u0007");
+    assert.deepEqual(files(join(root, "card-4")), [], "the next manual Ctrl+G uses it up");
+    assert.equal(claude.draft, "черновик");
+    editor.environment("card-4", {});
+    assert.equal(existsSync(join(root, "card-4")), false, "a new Claude launch starts clean");
+    assert.equal(await editor.run("card-4", "cut", "", () => false), false, "an unsent Ctrl+G is not queued");
+    assert.deepEqual(files(join(root, "card-4")), []);
+  } finally {
+    claude.cleanup();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a request is either claimed by the helper or cancelled, never both", async () => {
+  const { root, clipboard, editor } = editorFixture(40);
+  editor.environment("card-5", {});
+  const directory = join(root, "card-5");
+  let claim;
+  const write = () => {
+    // The helper claims the request just before the deadline and finishes just after it.
+    claim = setTimeout(() => {
+      rmSync(join(directory, "req.1"));
+      setTimeout(() => {
+        writeFileSync(join(directory, "draft.1"), "вырезано");
+        writeFileSync(join(directory, "done.1"), "");
+      }, 40);
+    }, 30);
+    return true;
+  };
+  assert.equal(await editor.run("card-5", "cut", "", write), true, "a claimed request is waited for, not cancelled");
+  clearTimeout(claim);
+  assert.deepEqual(clipboard, ["вырезано"], "cut text reaches the clipboard");
+  assert.deepEqual(files(directory), []);
   rmSync(root, { recursive: true, force: true });
+});
+
+test("the helper leaves the draft alone when it cannot save a copy, and ignores unknown requests", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "claude-draft-helper-"));
+  const directory = join(scratch, "card");
+  mkdirSync(directory);
+  const file = join(scratch, "prompt.md");
+  writeFileSync(file, "draft");
+  const run = () => {
+    try {
+      execFileSync("/bin/sh", [helperPath, file], { env: { PATH: process.env.PATH, CANVASTTY_DRAFT_DIR: directory, CANVASTTY_DRAFT_EDITOR: "false" } });
+      return 0;
+    } catch (error) {
+      return error.status;
+    }
+  };
+  writeFileSync(join(directory, "req.1"), "rm\n");
+  assert.equal(run(), 0);
+  assert.equal(readFileSync(file, "utf8"), "draft");
+  writeFileSync(join(directory, "req.2"), "cut\n");
+  chmodSync(file, 0o200);
+  assert.notEqual(run(), 0);
+  chmodSync(file, 0o600);
+  assert.equal(readFileSync(file, "utf8"), "draft", "no copy, no cut");
+  assert.equal(existsSync(join(directory, "done.2")), false);
+  rmSync(scratch, { recursive: true, force: true });
 });
 
 test("without a request the helper opens the person's own editor, arguments included", () => {
@@ -140,14 +217,25 @@ test("without a request the helper opens the person's own editor, arguments incl
   rmSync(scratch, { recursive: true, force: true });
 });
 
-test("the helper is only offered when it can be named safely, and actions are validated", () => {
-  const editor = new ClaudeDraftEditor({ root: "/tmp/x", helperPath: "/Applications/My App/draft-editor.sh", writeClipboard() {} });
-  assert.deepEqual(editor.environment("card", {}), {});
-  const safe = new ClaudeDraftEditor({ root: "/tmp/x", helperPath, writeClipboard() {} });
+test("the helper is only offered when it can be named safely, and actions are validated", async () => {
+  const root = mkdtempSync(join(tmpdir(), "claude-draft-names-"));
+  for (const unsafe of ["/Applications/My App/draft-editor.sh", "/opt/a$b/draft-editor.sh", "/x/'q'/draft-editor.sh"]) {
+    const editor = new ClaudeDraftEditor({ root, helperPath: unsafe, writeClipboard() {} });
+    assert.deepEqual(editor.environment("card", {}), {}, unsafe);
+    assert.equal(editor.isGranted("card"), false);
+    assert.equal(await editor.run("card", "clear", "", () => assert.fail("no Ctrl+G without the helper")), false);
+  }
+  const cyrillic = new ClaudeDraftEditor({ root, helperPath: "/opt/Программы/draft-editor.sh", writeClipboard() {} });
+  assert.equal(cyrillic.environment("card", {}).VISUAL, "/bin/sh /opt/Программы/draft-editor.sh");
+  const safe = new ClaudeDraftEditor({ root, helperPath, writeClipboard() {} });
   assert.deepEqual(safe.environment("../escape", {}), {});
   assert.equal(safe.environment("card", { EDITOR: "nano" }).CANVASTTY_DRAFT_EDITOR, "nano");
+  assert.equal(safe.isGranted("card"), true);
+  safe.forget("card");
+  assert.equal(safe.isGranted("card"), false);
   assert.equal(isClaudeDraftAction("cut"), true);
   assert.equal(isClaudeDraftAction("rm"), false);
+  rmSync(root, { recursive: true, force: true });
 });
 
 test("TerminalManager gives local macOS Claude cards the helper and holds their input during an action", {
@@ -159,10 +247,7 @@ test("TerminalManager gives local macOS Claude cards the helper and holds their 
   const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true,
     fakeSpawner(calls, { onWrite: (data, options) => {
       writes.push(data);
-      if (data === "\u0007") {
-        writeFileSync(join(options.env.CANVASTTY_DRAFT_DIR, "draft.txt"), "весь черновик");
-        writeFileSync(join(options.env.CANVASTTY_DRAFT_DIR, "done"), "");
-      }
+      if (data === "\u0007") finishRequest(options.env.CANVASTTY_DRAFT_DIR, "весь черновик");
     } }));
   terminals.configureDraftEditor(editor);
   try {
@@ -171,8 +256,10 @@ test("TerminalManager gives local macOS Claude cards the helper and holds their 
     const claudeEnv = calls.at(-1).options.env;
     assert.equal(claudeEnv.VISUAL, `/bin/sh ${helperPath}`);
     assert.equal(claudeEnv.CANVASTTY_DRAFT_DIR, join(root, claude.id));
+    assert.equal(terminals.listMetadata().find((s) => s.id === claude.id).claudeDraft, true);
     const codex = terminals.create({ ...base, provider: "codex" });
     assert.equal("CANVASTTY_DRAFT_DIR" in calls.at(-1).options.env, false, "only Claude cards get the helper");
+    assert.equal(terminals.listMetadata().find((s) => s.id === codex.id).claudeDraft, undefined);
     assert.equal(await terminals.draftAction(codex.id, "copy", ""), false);
 
     const running = terminals.draftAction(claude.id, "cut", "");

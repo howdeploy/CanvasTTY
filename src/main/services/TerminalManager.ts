@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { isPathInside } from "../../agent-runtime/path-inside.mjs";
 import * as pty from "node-pty";
@@ -281,6 +281,7 @@ export class TerminalManager {
   private readonly startingOwners = new Map<string, string>();
   // What a card's first launch found in its CLI's own configuration, before the card exists.
   private readonly pendingConfiguredModes = new Map<string, { mode: string; source: string }>();
+  private readonly pendingClaudeDrafts = new Set<string>();
   // Whether the person acknowledged YOLO for a CLI (Settings: acknowledgedDangerousProfiles); unset allows it.
   private yoloAcknowledged: (provider: ProviderId) => boolean = () => true;
   // Set and cleared around a single synchronous session emit (see emitSession):
@@ -718,6 +719,7 @@ export class TerminalManager {
     const configured = this.pendingConfiguredModes.get(id);
     this.pendingConfiguredModes.delete(id);
     if (configured) metadata.configuredMode = configured;
+    if (this.pendingClaudeDrafts.delete(id)) metadata.claudeDraft = true;
 
     const session: ManagedSession = {
       metadata,
@@ -968,10 +970,13 @@ export class TerminalManager {
     const session = this.sessions.get(id);
     const process = session?.process;
     if (!this.draftEditor || !session || !process || session.metadata.exitCode !== null
-      || session.metadata.provider !== "claude") return Promise.resolve(false);
-    return this.draftEditor.run(id, action, followUp, (data) => (
-      this.sessions.get(id) === session && session.process === process && tryPtyOperation(() => process.write(data))
-    ));
+      || session.metadata.provider !== "claude" || !session.metadata.claudeDraft) return Promise.resolve(false);
+    return this.draftEditor.run(id, action, followUp, (data) => {
+      const written = this.sessions.get(id) === session && session.process === process
+        && tryPtyOperation(() => process.write(data));
+      if (written && ANSWERS_PROMPT.test(data)) this.settleAnsweredPrompt(id, session);
+      return written;
+    });
   }
 
   /**
@@ -1182,6 +1187,7 @@ export class TerminalManager {
     this.redaction.clear(`session:${id}`);
     this.releaseIsolation(id);
     this.draftEditor?.forget(id);
+    this.pendingClaudeDrafts.delete(id);
     session.launchToken += 1;
     void session.launchCleanup?.().catch(() => undefined);
     session.launchCleanup = null;
@@ -1586,6 +1592,7 @@ export class TerminalManager {
       return { ...none, failure: planned.failure };
     }
     this.noteConfiguredMode(id, provider, profile, planned.env, planned.cwd);
+    this.noteClaudeDraft(id, planned.launchEnvironment);
     let spawn: { command: string; args: string[] | string; env: Record<string, string> } = planned;
     if (decision.apply) {
       try {
@@ -1623,6 +1630,19 @@ export class TerminalManager {
       else delete target.configuredMode;
     } else if (found) {
       this.pendingConfiguredModes.set(id, found);
+    }
+  }
+
+  /** Only a Claude launched with the draft helper as its editor gets the whole-draft keys. */
+  private noteClaudeDraft(id: string, launchEnvironment: Readonly<Record<string, string>>): void {
+    const granted = Boolean(launchEnvironment.CANVASTTY_DRAFT_DIR);
+    const target = this.sessions.get(id)?.metadata;
+    this.pendingClaudeDrafts.delete(id);
+    if (target) {
+      if (granted) target.claudeDraft = true;
+      else delete target.claudeDraft;
+    } else if (granted) {
+      this.pendingClaudeDrafts.add(id);
     }
   }
 
@@ -2089,6 +2109,8 @@ export class TerminalManager {
       return "failed";
     }
     session.process = process;
+    if (planned.launchEnvironment.CANVASTTY_DRAFT_DIR) metadata.claudeDraft = true;
+    else delete metadata.claudeDraft;
     if (planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD) {
       metadata.nativeEditor = JSON.parse(planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD);
     } else {
@@ -2352,9 +2374,19 @@ export function terminalEnvironment(
   );
   // A Finder-launched app gets no locale, and macOS tools such as pbcopy then
   // read UTF-8 as the legacy region encoding (Cyrillic turns into mojibake).
+  // Like Terminal.app, set LANG to the system's own locale: a full name ssh can pass on.
   const hasLocale = ["LC_ALL", "LC_CTYPE", "LANG"].some((name) => environment[name]);
-  if (platform === "darwin" && !hasLocale) environment.LC_CTYPE = "UTF-8";
+  if (platform === "darwin" && !hasLocale) environment.LANG = systemLocale;
   return { ...environment, TERM: "xterm-256color", COLORTERM: "truecolor" };
+}
+
+let systemLocale = "en_US.UTF-8";
+
+/** The macOS system locale (such as "ru-RU") as a UTF-8 locale name, or en_US.UTF-8 when the system lacks it. */
+export function setTerminalSystemLocale(locale: string, exists: (path: string) => boolean = existsSync): void {
+  const match = /^([a-z]{2,3})[-_]([A-Z]{2})(?![A-Za-z])/.exec(locale);
+  const name = match ? `${match[1]}_${match[2]}.UTF-8` : "";
+  systemLocale = name && exists(`/usr/share/locale/${name}`) ? name : "en_US.UTF-8";
 }
 
 function defaultTitle(provider: ProviderId, cwd: string): string {

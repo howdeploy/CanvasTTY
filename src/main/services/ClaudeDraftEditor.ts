@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ClaudeDraftAction } from "../../shared/contracts.ts";
 
@@ -14,36 +14,57 @@ const POLL_MS = 15;
 export interface ClaudeDraftEditorOptions {
   /** Private folder for the per-session request/done files; created on demand. */
   root: string;
-  /** draft-editor.sh; its path becomes part of $VISUAL, so it must not contain whitespace. */
+  /** draft-editor.sh; its path becomes part of $VISUAL, so it must be a plain path. */
   helperPath: string;
   writeClipboard: (text: string) => void;
   timeoutMs?: number;
+}
+
+type Step =
+  | { data: string }
+  | { action: ClaudeDraftAction; followUp: string; resolve: (done: boolean) => void };
+
+interface SessionQueue {
+  steps: Step[];
+  write: (data: string) => boolean;
 }
 
 /**
  * Whole-draft copy/cut/clear for Claude Code on macOS. Claude has no select-all and
  * no draft API, but its Ctrl+G external-editor round trip hands the full draft (hidden
  * lines and pasted text included) to $VISUAL and reloads whatever $VISUAL leaves.
- * Claude drops keystrokes that arrive while the editor runs, so input for the session
- * is held until the helper reports done and then delivered in order. The request file
- * has one line per Ctrl+G sent; a Ctrl+G Claude has not picked up by the deadline stays
- * queued as "cancel", so arriving late it opens no editor and changes nothing.
+ * Claude drops keystrokes that arrive while the editor runs, so a session's actions run
+ * one at a time and its input is held until they finish, then delivered in order.
+ *
+ * Each action is a file req.<n>. The helper claims the oldest one by renaming it, so a
+ * request is either claimed or cancelled, never both. A Ctrl+G Claude has not picked up
+ * by the deadline turns its request into cancel.<n>: a Ctrl+G that finds no request uses
+ * up one cancel and changes nothing, so a late one opens no editor.
  */
 export class ClaudeDraftEditor {
-  private readonly pending = new Map<string, string[]>();
+  private readonly queues = new Map<string, SessionQueue>();
+  private readonly granted = new Set<string>();
   private readonly options: ClaudeDraftEditorOptions;
   private readonly timeoutMs: number;
+  private sequence = 0;
 
   constructor(options: ClaudeDraftEditorOptions) {
     this.options = options;
     this.timeoutMs = options.timeoutMs ?? DONE_TIMEOUT_MS;
   }
 
-  /** Launch variables for one Claude session, or none when the helper cannot be named safely. */
+  /** Launch variables for one Claude session, or none when the helper cannot be used safely. */
   environment(sessionId: string, source: Readonly<Record<string, string | undefined>>): Record<string, string> {
-    if (/\s/.test(this.options.helperPath) || !isSafeId(sessionId)) return {};
+    this.forget(sessionId);
+    // $VISUAL may go through a shell: no whitespace, quoting or shell syntax in the helper's path.
+    if (/[\s'"\\$`;&|<>(){}[\]*?!#~]/.test(this.options.helperPath) || !isSafeId(sessionId)) return {};
     // A new Claude process has no Ctrl+G outstanding from an earlier one.
-    rmSync(this.directory(sessionId), { recursive: true, force: true });
+    try {
+      rmSync(this.directory(sessionId), { recursive: true, force: true });
+    } catch {
+      return {};
+    }
+    this.granted.add(sessionId);
     return {
       VISUAL: `/bin/sh ${this.options.helperPath}`,
       CANVASTTY_DRAFT_DIR: this.directory(sessionId),
@@ -51,78 +72,118 @@ export class ClaudeDraftEditor {
     };
   }
 
-  /** Queues input written while an action runs; true when the caller must not write it now. */
+  /** Whether this session's Claude was launched with the helper as its editor. */
+  isGranted(sessionId: string): boolean {
+    return this.granted.has(sessionId);
+  }
+
+  /** Queues input written while actions run; true when the caller must not write it now. */
   hold(sessionId: string, data: string): boolean {
-    const queue = this.pending.get(sessionId);
+    const queue = this.queues.get(sessionId);
     if (!queue) return false;
-    queue.push(data);
+    queue.steps.push({ data });
     return true;
   }
 
   /**
-   * Runs one action and then writes followUp (the key or paste that replaces a selected
-   * draft) and anything typed meanwhile. Resolves true when Claude's editor round trip ran.
+   * Queues one action; once earlier ones finish it runs, then writes followUp (the key or
+   * paste that replaces a selected draft). Resolves true when Claude's editor round trip ran.
    */
-  async run(sessionId: string, action: ClaudeDraftAction, followUp: string, write: (data: string) => boolean): Promise<boolean> {
-    if (!isSafeId(sessionId) || this.pending.has(sessionId)) return false;
-    const directory = this.directory(sessionId);
-    const request = join(directory, "request");
-    this.pending.set(sessionId, []);
-    let done = false;
-    let sent = false;
-    try {
-      mkdirSync(directory, { recursive: true, mode: 0o700 });
-      rmSync(join(directory, "done"), { force: true });
-      rmSync(join(directory, "draft.txt"), { force: true });
-      this.writeRequest(request, [...this.readRequest(request), action]);
-      sent = write(EXTERNAL_EDITOR_KEY);
-      if (!sent) return false;
-      const deadline = Date.now() + this.timeoutMs;
-      while (!(done = existsSync(join(directory, "done"))) && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  run(sessionId: string, action: ClaudeDraftAction, followUp: string, write: (data: string) => boolean): Promise<boolean> {
+    if (!isSafeId(sessionId) || !this.granted.has(sessionId)) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const step: Step = { action, followUp, resolve };
+      const queue = this.queues.get(sessionId);
+      if (queue) {
+        queue.steps.push(step);
+        return;
       }
-      if (done && action !== "clear") {
-        const text = readFileSync(join(directory, "draft.txt"), "utf8");
+      const started: SessionQueue = { steps: [step], write };
+      this.queues.set(sessionId, started);
+      void this.drain(sessionId, started);
+    });
+  }
+
+  /** Drops the session's queue and files; queued actions resolve false and held input is discarded. */
+  forget(sessionId: string): void {
+    this.granted.delete(sessionId);
+    const queue = this.queues.get(sessionId);
+    this.queues.delete(sessionId);
+    for (const step of queue?.steps.splice(0) ?? []) if ("action" in step) step.resolve(false);
+    if (!isSafeId(sessionId)) return;
+    try {
+      rmSync(this.directory(sessionId), { recursive: true, force: true });
+    } catch {
+      // Rebuilt with the next launch.
+    }
+  }
+
+  private async drain(sessionId: string, queue: SessionQueue): Promise<void> {
+    const live = () => this.queues.get(sessionId) === queue;
+    while (live() && queue.steps.length > 0) {
+      const step = queue.steps.shift()!;
+      if ("data" in step) {
+        queue.write(step.data);
+        continue;
+      }
+      const done = await this.roundTrip(sessionId, step.action, queue.write, live).catch(() => false);
+      if (live() && step.followUp) queue.write(step.followUp);
+      step.resolve(done);
+    }
+    if (live()) this.queues.delete(sessionId);
+  }
+
+  private async roundTrip(
+    sessionId: string,
+    action: ClaudeDraftAction,
+    write: (data: string) => boolean,
+    live: () => boolean
+  ): Promise<boolean> {
+    const directory = this.directory(sessionId);
+    const id = String(++this.sequence);
+    const request = join(directory, `req.${id}`);
+    const done = join(directory, `done.${id}`);
+    const draft = join(directory, `draft.${id}`);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    // Written aside and renamed in, so the helper never sees a half-written request.
+    const staged = join(directory, `staged.${id}`);
+    rmSync(staged, { force: true });
+    writeFileSync(staged, `${action}\n`, { mode: 0o600, flag: "wx" });
+    renameSync(staged, request);
+    try {
+      if (!write(EXTERNAL_EDITOR_KEY)) {
+        rmSync(request, { force: true });
+        return false;
+      }
+      if (!(await this.waitFor(done, live))) {
+        try {
+          // Not claimed yet: the Ctrl+G still on its way must change nothing.
+          renameSync(request, join(directory, `cancel.${id}`));
+          return false;
+        } catch {
+          // Claimed just now; the helper is finishing this very request.
+          if (!(await this.waitFor(done, live))) return false;
+        }
+      }
+      if (action !== "clear") {
+        const stat = lstatSync(draft, { throwIfNoEntry: false });
+        const text = stat?.isFile() ? readFileSync(draft, "utf8") : "";
         if (text) this.options.writeClipboard(text);
       }
-      return done;
-    } catch {
-      return false;
+      return true;
     } finally {
-      try {
-        const queued = this.readRequest(request);
-        if (!sent) queued.pop();
-        // Every line still queued is a Ctrl+G on its way; none of them may act any more.
-        this.writeRequest(request, done ? queued : queued.map(() => "cancel"));
-        rmSync(join(directory, "done"), { force: true });
-        rmSync(join(directory, "draft.txt"), { force: true });
-      } catch {
-        // The folder is private and rebuilt with the next action or launch.
-      }
-      const held = this.pending.get(sessionId) ?? [];
-      this.pending.delete(sessionId);
-      const rest = followUp + held.join("");
-      if (rest) write(rest);
+      rmSync(done, { force: true });
+      rmSync(draft, { force: true });
     }
   }
 
-  forget(sessionId: string): void {
-    this.pending.delete(sessionId);
-    if (isSafeId(sessionId)) rmSync(this.directory(sessionId), { recursive: true, force: true });
-  }
-
-  private readRequest(request: string): string[] {
-    return existsSync(request) ? readFileSync(request, "utf8").split("\n").filter(Boolean) : [];
-  }
-
-  private writeRequest(request: string, lines: readonly string[]): void {
-    if (lines.length === 0) {
-      rmSync(request, { force: true });
-      return;
+  private async waitFor(path: string, live: () => boolean): Promise<boolean> {
+    const deadline = Date.now() + this.timeoutMs;
+    while (live() && !existsSync(path)) {
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     }
-    // Renamed into place so the helper never reads a half-written queue.
-    writeFileSync(`${request}.write`, `${lines.join("\n")}\n`, { mode: 0o600 });
-    renameSync(`${request}.write`, request);
+    return live();
   }
 
   private directory(sessionId: string): string {

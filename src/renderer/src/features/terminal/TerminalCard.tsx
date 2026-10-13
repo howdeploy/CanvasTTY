@@ -216,6 +216,8 @@ function TerminalCardView({
   const sessionStartedAt = useRef(session.startedAt);
   sessionStartedAt.current = session.startedAt;
   const claudeDraftSelected = useRef(false);
+  const claudeDraftRef = useRef(session.claudeDraft === true);
+  claudeDraftRef.current = session.claudeDraft === true;
   const restartAction = useRef<(resume?: boolean) => Promise<void>>(async () => undefined);
   const invertTerminalWheelRef = useRef(invertTerminalWheel);
   invertTerminalWheelRef.current = invertTerminalWheel;
@@ -582,13 +584,17 @@ function TerminalCardView({
     draftHighlight.className = "terminal-card__draft-highlight";
     draftHighlight.hidden = true;
     screen?.append(draftHighlight);
+    const visiblePromptRows = () => {
+      const buffer = terminal.buffer.active;
+      return claudePromptRows(Array.from({ length: terminal.rows }, (_, row) => (
+        buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? ""
+      )));
+    };
+    // The launch the selection belongs to; a restarted Claude has a new draft.
+    let draftSelectedAt = 0;
     const placeDraftHighlight = (): void => {
       // The visible prompt rows show the selection; the action always covers the whole draft.
-      const buffer = terminal.buffer.active;
-      const lines = Array.from({ length: terminal.rows }, (_, row) => (
-        buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? ""
-      ));
-      const rows = claudeDraftSelected.current ? claudePromptRows(lines) : null;
+      const rows = claudeDraftSelected.current ? visiblePromptRows() : null;
       const rowHeight = (draftHighlight.parentElement?.clientHeight ?? 0) / terminal.rows;
       draftHighlight.hidden = !rows || !rowHeight;
       if (!rows || !rowHeight) return;
@@ -600,7 +606,10 @@ function TerminalCardView({
       draftHighlight.hidden = true;
     };
     const selectClaudeDraft = (): void => {
+      // Only a prompt on screen can be selected: no hidden selection behind a dialog or a startup screen.
+      if (!visiblePromptRows()) return;
       claudeDraftSelected.current = true;
+      draftSelectedAt = sessionStartedAt.current;
       placeDraftHighlight();
     };
     // Claude repaints the prompt as it streams or resizes; the layer follows it.
@@ -614,9 +623,15 @@ function TerminalCardView({
     const draftMouseDown = (): void => deselectClaudeDraft();
     terminal.element?.addEventListener("mousedown", draftMouseDown, true);
     terminal.attachCustomKeyEventHandler((event) => {
-      const draftIntent = claudeDraftKeyIntent(
-        event, window.canvasTTY.window.isMacOS, session.provider, claudeDraftSelected.current
+      if (claudeDraftSelected.current && (draftSelectedAt !== sessionStartedAt.current || !claudeDraftRef.current)) {
+        deselectClaudeDraft();
+      }
+      let draftIntent = claudeDraftKeyIntent(
+        event, window.canvasTTY.window.isMacOS && claudeDraftRef.current, session.provider, claudeDraftSelected.current
       );
+      // The prompt gave way to a dialog: the key is the dialog's, not an edit of the draft.
+      if (draftIntent !== null && draftIntent !== "select" && draftIntent !== "swallow"
+        && claudeDraftSelected.current && !visiblePromptRows()) draftIntent = "deselect";
       if (draftIntent === "deselect") deselectClaudeDraft();
       else if (draftIntent !== null) {
         event.preventDefault();

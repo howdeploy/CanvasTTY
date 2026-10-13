@@ -28,7 +28,7 @@ import { SettingsStore } from "./services/SettingsStore";
 import { FileAccessService } from "./services/FileAccessService";
 import { SkinRegistry } from "./services/SkinRegistry";
 import { PixelSkinPackRegistry } from "./services/PixelSkinPackRegistry";
-import { TerminalManager, reachesObservers, reachesRenderer } from "./services/TerminalManager";
+import { TerminalManager, reachesObservers, reachesRenderer, setTerminalSystemLocale } from "./services/TerminalManager";
 import { ClaudeDraftEditor } from "./services/ClaudeDraftEditor";
 import { TerminalRendererOutbox } from "./services/TerminalRendererOutbox";
 import { AgentControlGateway } from "./services/agent-control/AgentControlGateway";
@@ -643,6 +643,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   terminalManager.configureYoloAcknowledgement((provider) => settings.get().acknowledgedDangerousProfiles.includes(provider as AgentProviderId));
   // OpenCode's auto profile runs shell commands without asking only while base protection guards them.
   terminalManager.configureBaseProtection(() => settings.get().baseProtectionEnabled);
+  if (process.platform === "darwin") setTerminalSystemLocale(app.getSystemLocale());
   terminalManager.configureDraftEditor(new ClaudeDraftEditor({
     root: join(userDataPath, "claude-draft"),
     helperPath: app.isPackaged

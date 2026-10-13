@@ -674,6 +674,8 @@ export interface SessionMetadata {
   provider: ProviderId;
   /** Bindings actually consumed by this separately launched Codex editor. */
   nativeEditor?: { submit: string; submitAlternate: string; submitSuper: string; newline: string; selectAll: string };
+  /** macOS Claude launched with CanvasTTY's draft helper: Command+A selects the whole draft. */
+  claudeDraft?: boolean;
   /** Provider conversation id, when the session is attached to one. */
   threadId?: string;
   profile: LaunchProfileId;

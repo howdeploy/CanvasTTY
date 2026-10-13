@@ -41,6 +41,7 @@ function terminalKeyHandler(source, scope) {
     terminalRef: { current: terminal },
     terminalHost: { current: null },
     claudeDraftSelected: { current: false },
+    claudeDraftRef: { current: scope.session?.claudeDraft === true },
     document: { createElement: () => ({ className: "", hidden: false, style: {}, parentElement: null }) },
     screen: undefined,
     ...scope,
@@ -162,7 +163,8 @@ test("Command+A selects a macOS Claude draft that copy, cut, typing, paste and d
       draftAction: async (id, action, followUp) => { calls.push(["draft", action, followUp ?? ""]); return true; }
     }
   } };
-  const scope = { window, terminal, screen, session: { id: "claude-card", provider: "claude" },
+  const scope = { window, terminal, screen, sessionStartedAt: { current: 1 },
+    session: { id: "claude-card", provider: "claude", claudeDraft: true },
     onMouseDown: (listener) => { mouseDown = listener; } };
   const handler = terminalKeyHandler(source, scope);
   const key = (key, code, modifiers = {}) => handler({ type: "keydown", key, code, ctrlKey: false, shiftKey: false,
@@ -219,6 +221,34 @@ test("Command+A selects a macOS Claude draft that copy, cut, typing, paste and d
   assert.equal(highlight(), null);
   assert.equal(key("ж", "Semicolon"), true, "a click replaces the draft selection");
   assert.deepEqual(calls, []);
+
+  key("a", "KeyA", { metaKey: true });
+  scope.sessionStartedAt.current = 2;
+  assert.equal(key("ж", "Semicolon"), true, "a restarted Claude has a new draft: no selection carries over");
+  key("a", "KeyA", { metaKey: true });
+  rows = ["Do you want to proceed?", "❯ 1. Yes", "  2. No"];
+  scope.repaint();
+  assert.equal(highlight(), null);
+  assert.equal(key("Backspace", "Backspace"), true, "with a dialog in place of the prompt the key is the dialog's");
+  assert.equal(key("a", "KeyA", { metaKey: true }), false);
+  assert.equal(key("Backspace", "Backspace"), true, "Command+A selects nothing without a prompt on screen");
+  assert.deepEqual(calls, []);
+});
+
+test("a Claude card launched without the draft helper keeps xterm's own Command+A and clipboard keys", async () => {
+  const source = await readFile(terminalCardPath, "utf8");
+  const calls = [];
+  const window = { canvasTTY: {
+    window: { isMacOS: true },
+    terminal: { input: (id, data) => calls.push(data), draftAction: async () => calls.push("draft") }
+  } };
+  const handler = terminalKeyHandler(source, { window, session: { id: "plugin-claude", provider: "claude" } });
+  const key = (key, code, modifiers = {}) => handler({ type: "keydown", key, code, ctrlKey: false, shiftKey: false,
+    altKey: false, metaKey: false, repeat: false, ...modifiers, preventDefault() {}, stopPropagation() {} });
+  assert.equal(key("a", "KeyA", { metaKey: true }), true);
+  assert.equal(key("Backspace", "Backspace"), true);
+  assert.equal(key("x", "KeyX", { metaKey: true }), true);
+  assert.deepEqual(calls, [], "no Ctrl+G, so Claude never opens the person's editor");
 });
 
 test("Claude prompt rows are found between the last two rules, and nothing is guessed without them", () => {

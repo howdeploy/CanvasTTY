@@ -63,7 +63,7 @@ export function isRenameInputTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * Renderer-owned editing includes terminal surfaces and shortcut recorders: both need Command+C/V/A delivered
+ * Renderer-owned editing includes terminal surfaces and shortcut recorders: both need Command+C/V/A/X delivered
  * as keyboard events. The terminal-named focus API also covers these recorder controls. Ordinary fields and plugin
  * pages (an iframe is the active element) use the menu's native editing.
  */

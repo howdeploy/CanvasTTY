@@ -710,7 +710,7 @@ export class TerminalManager {
       this.initialCodexInputs.set(id, { prompt: request.initialPrompt, imagePath: request.initialImagePath });
     }
     if (control.ownerPluginId !== undefined) this.startingOwners.set(id, control.ownerPluginId);
-    let launched: ReturnType<TerminalManager["spawnProcess"]> | { process: null; agentBrowser: null; agentRuntime: null; agentOrchestration: null; failure: null };
+    let launched: ReturnType<TerminalManager["spawnProcess"]>;
     try {
       launched = awaitMeasuredGrid || contributed
         ? { process: null, agentBrowser: null, agentRuntime: null, agentOrchestration: null, failure: null }
@@ -725,6 +725,7 @@ export class TerminalManager {
     const configured = this.pendingConfiguredModes.get(id);
     this.pendingConfiguredModes.delete(id);
     if (configured) metadata.configuredMode = configured;
+    if (launched.nativeEditor) metadata.nativeEditor = launched.nativeEditor;
     if (this.pendingClaudeDrafts.delete(id)) metadata.claudeDraft = true;
 
     const session: ManagedSession = {
@@ -870,6 +871,8 @@ export class TerminalManager {
       session.metadata.parentSessionId
     );
     session.process = launched.process;
+    if (launched.nativeEditor) session.metadata.nativeEditor = launched.nativeEditor;
+    else delete session.metadata.nativeEditor;
     session.agentBrowser = launched.agentBrowser;
     session.agentRuntime = launched.agentRuntime;
     session.agentOrchestration = launched.agentOrchestration;
@@ -1347,6 +1350,7 @@ export class TerminalManager {
           this.startingModels.delete(descriptor.id);
         }
         process = launched.process;
+        if (launched.nativeEditor) metadata.nativeEditor = launched.nativeEditor;
         agentBrowser = launched.agentBrowser;
         agentRuntime = launched.agentRuntime;
         agentOrchestration = launched.agentOrchestration;
@@ -1543,6 +1547,8 @@ export class TerminalManager {
         session.metadata.parentSessionId
       );
       session.process = launched.process;
+      if (launched.nativeEditor) session.metadata.nativeEditor = launched.nativeEditor;
+      else delete session.metadata.nativeEditor;
       session.agentBrowser = launched.agentBrowser;
       session.agentRuntime = launched.agentRuntime;
       session.agentOrchestration = launched.agentOrchestration;
@@ -1587,6 +1593,7 @@ export class TerminalManager {
     agentRuntime: PreparedAgentRuntimePtyLaunch | null;
     agentOrchestration: PreparedOrchestrationPtyLaunch | null;
     failure: LaunchFailure | null;
+    nativeEditor?: SessionMetadata["nativeEditor"];
   } {
     const none = { process: null, agentBrowser: null, agentRuntime: null, agentOrchestration: null };
     const decision = this.launchIsolation(id, provider, profile, role, null);
@@ -1618,6 +1625,9 @@ export class TerminalManager {
         agentBrowser: planned.agentBrowser,
         agentRuntime: planned.agentRuntime,
         agentOrchestration: planned.agentOrchestration,
+        // The renderer must encode the same editor keys that this local frontend received.
+        ...(globalThis.process.platform === "darwin" && planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD
+          ? { nativeEditor: JSON.parse(planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD) } : {}),
         failure: null
       };
     } catch (error) {

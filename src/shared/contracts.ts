@@ -188,10 +188,17 @@ export interface ShortcutBindings {
   terminalPageUp: string;
   terminalPageDown: string;
   codexSubmit: string;
+  /** Linux and Windows only; off on macOS. */
   codexSubmitAlternate: string;
   codexSubmitSuper: string;
   codexNewline: string;
+  /** The owned macOS frontend only; off elsewhere. */
+  codexNewlineAlternate: string;
   codexSelectAll: string;
+  /** The owned macOS frontend only, on a selected draft; off elsewhere. */
+  codexCopy: string;
+  codexCut: string;
+  codexClear: string;
   /** macOS Claude cards while Claude's prompt box is on screen ("Claude draft keys" on). */
   claudeSubmit: string;
   claudeNewline: string;
@@ -223,7 +230,11 @@ export const DEFAULT_SHORTCUTS: ShortcutBindings = {
   codexSubmitAlternate: "Ctrl+Enter",
   codexSubmitSuper: "Meta+Enter",
   codexNewline: "Shift+Enter",
+  codexNewlineAlternate: "",
   codexSelectAll: "Ctrl+A",
+  codexCopy: "",
+  codexCut: "",
+  codexClear: "",
   claudeSubmit: "Meta+Enter",
   claudeNewline: "Enter",
   claudeNewlineAlternate: "Shift+Enter",
@@ -233,7 +244,20 @@ export const DEFAULT_SHORTCUTS: ShortcutBindings = {
   claudeClear: "Backspace"
 };
 
-export function keyboardPresetShortcuts(preset: Exclude<KeyboardPreset, "custom">): ShortcutBindings {
+/** The owned Codex frontend reads its editor keys this way on a macOS host only; elsewhere they stay as they were. */
+const MACOS_CODEX_EDITOR = {
+  codexSubmit: "Meta+Enter", codexSubmitAlternate: "", codexSubmitSuper: "",
+  codexNewline: "Enter", codexNewlineAlternate: "Shift+Enter", codexSelectAll: "Meta+A",
+  codexCopy: "Meta+C", codexCut: "Meta+X", codexClear: "Backspace"
+} as const;
+
+/** Keys for a selected Codex draft: they clash with the Codex editor's keys, not with the terminal's Copy. */
+export const CODEX_DRAFT_SHORTCUTS: readonly ShortcutAction[] = ["codexCopy", "codexCut", "codexClear"];
+
+export function keyboardPresetShortcuts(
+  preset: Exclude<KeyboardPreset, "custom">,
+  macHost: boolean = preset === "macos"
+): ShortcutBindings {
   return {
     ...DEFAULT_SHORTCUTS,
     toggleFullscreen: preset === "macos" ? "Meta+F" : "F11",
@@ -241,12 +265,16 @@ export function keyboardPresetShortcuts(preset: Exclude<KeyboardPreset, "custom"
     ...(preset === "macos" ? {
       commandPalette: "Meta+K", openSettings: "Meta+Comma",
       terminalCopy: "Meta+C", terminalPaste: "Meta+V", codexSelectAll: "Meta+A"
-    } : {})
+    } : {}),
+    ...(macHost ? MACOS_CODEX_EDITOR : {})
   };
 }
 
 /** Claude editor actions are a context of their own: they act only while Claude's prompt box is on screen. */
 export function shortcutsShareContext(left: ShortcutAction, right: ShortcutAction): boolean {
+  if (CODEX_DRAFT_SHORTCUTS.includes(left) || CODEX_DRAFT_SHORTCUTS.includes(right)) {
+    return left === "toggleDetail" || right === "toggleDetail" || (left.startsWith("codex") && right.startsWith("codex"));
+  }
   const context = (action: ShortcutAction) => action.startsWith("claude") ? "claude"
     : action.startsWith("terminal") || action.startsWith("codex") ? "terminal" : "canvas";
   return left === "toggleDetail" || right === "toggleDetail" || context(left) === context(right);
@@ -254,7 +282,7 @@ export function shortcutsShareContext(left: ShortcutAction, right: ShortcutActio
 
 /** Editor actions that always keep a key: without them the prompt cannot be sent, broken or selected. */
 export const REQUIRED_SHORTCUTS: readonly ShortcutAction[] = [
-  "codexSubmit", "codexNewline", "codexSelectAll", "claudeSubmit", "claudeNewline", "claudeNewlineAlternate", "claudeSelectAll"
+  "codexSubmit", "codexNewline", "codexNewlineAlternate", "codexSelectAll", "claudeSubmit", "claudeNewline", "claudeNewlineAlternate", "claudeSelectAll"
 ];
 
 export const INITIAL_TERMINAL_COLS = 80;
@@ -697,7 +725,8 @@ export interface SessionMetadata {
   revision: number;
   provider: ProviderId;
   /** Bindings actually consumed by this separately launched Codex editor. */
-  nativeEditor?: { submit: string; submitAlternate: string; submitSuper: string; newline: string; selectAll: string };
+  nativeEditor?: { submit: string; newline: string; selectAll: string }
+    & ({ newlineAlternate: string; copy: string; cut: string; clear: string } | { submitAlternate: string; submitSuper: string });
   /** macOS Claude launched with CanvasTTY's draft helper: Command+A selects the whole draft. */
   claudeDraft?: boolean;
   /** Provider conversation id, when the session is attached to one. */

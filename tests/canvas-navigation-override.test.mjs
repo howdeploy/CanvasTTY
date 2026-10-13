@@ -232,7 +232,7 @@ test("modifier-only Meta full override does not swallow ordinary Command shortcu
   assert.equal(prevented, false);
 });
 
-test("macOS Select All, Copy and Paste reach a focused terminal without capturing other Command shortcuts", () => {
+test("macOS Select All, Copy, Cut and Paste reach a focused terminal without capturing other Command shortcuts", () => {
   const contents = new EventEmitter();
   const ignored = [];
   contents.isDestroyed = () => false;
@@ -252,13 +252,15 @@ test("macOS Select All, Copy and Paste reach a focused terminal without capturin
   contents.emit("before-input-event", event, input("keyUp", "v", { code: "KeyV", meta: true }));
   contents.emit("before-input-event", event, input("keyDown", "ф", { code: "KeyA", meta: true }));
   contents.emit("before-input-event", event, input("keyUp", "ф", { code: "KeyA", meta: true }));
+  contents.emit("before-input-event", event, input("keyDown", "ч", { code: "KeyX", meta: true }));
+  contents.emit("before-input-event", event, input("keyUp", "ч", { code: "KeyX", meta: true }));
   contents.emit("before-input-event", event, input("keyDown", "q", { code: "KeyQ", meta: true }));
 
   assert.equal(prevented, false);
-  assert.deepEqual(ignored, [true, false, true, false, true, false]);
+  assert.deepEqual(ignored, [true, false, true, false, true, false, true, false]);
 });
 
-test("modified Command+A and non-macOS menu input keep their existing dispatch", () => {
+test("modified Command+A/X and non-macOS menu input keep their existing dispatch", () => {
   for (const captureMacEditShortcuts of [true, false]) {
     const contents = new EventEmitter();
     const ignored = [];
@@ -266,6 +268,7 @@ test("modified Command+A and non-macOS menu input keep their existing dispatch",
     contents.setIgnoreMenuShortcuts = (active) => ignored.push(active);
     const controller = new CanvasNavigationInputController({ wheelBinding: null, navigationBinding: null }, () => undefined);
     controller.attach(contents, { captureMacEditShortcuts });
+    controller.setTerminalEditFocus(contents, true);
     const event = { preventDefault: () => assert.fail("editing input must reach its focused native field") };
     const chords = [
       { meta: false, control: true }, { meta: true, control: true },
@@ -273,8 +276,10 @@ test("modified Command+A and non-macOS menu input keep their existing dispatch",
     ];
     if (!captureMacEditShortcuts) chords.push({ meta: true });
     for (const modifiers of chords) {
-      contents.emit("before-input-event", event, input("keyDown", "a", { code: "KeyA", ...modifiers }));
-      contents.emit("before-input-event", event, input("keyUp", "a", { code: "KeyA", ...modifiers }));
+      for (const key of ["a", "x"]) {
+        contents.emit("before-input-event", event, input("keyDown", key, { code: `Key${key.toUpperCase()}`, ...modifiers }));
+        contents.emit("before-input-event", event, input("keyUp", key, { code: `Key${key.toUpperCase()}`, ...modifiers }));
+      }
     }
     assert.deepEqual(ignored, []);
   }
@@ -434,7 +439,7 @@ test("changing a binding resets pressed state instead of activating it retroacti
   assert.equal(tracker.active, false);
 });
 
-test("macOS Command+C/V/A keep the Edit menu in ordinary fields and plugin pages; only a focused terminal captures them", () => {
+test("macOS Command+C/V/A/X keep the Edit menu in ordinary fields and plugin pages; only a focused terminal captures them", () => {
   const top = { name: "top" };
   const pluginFrame = { name: "plugin iframe" };
   const contents = new EventEmitter();
@@ -446,36 +451,39 @@ test("macOS Command+C/V/A keep the Edit menu in ordinary fields and plugin pages
   const controller = new CanvasNavigationInputController({ wheelBinding: null, navigationBinding: null }, () => undefined);
   controller.attach(contents, { captureMacEditShortcuts: true });
   const event = { preventDefault: () => assert.fail("editing keys are never cancelled") };
-  const pressV = () => {
-    contents.emit("before-input-event", event, input("keyDown", "v", { code: "KeyV", meta: true }));
-    contents.emit("before-input-event", event, input("keyUp", "v", { code: "KeyV", meta: true }));
+  const pressEditKeys = () => {
+    for (const key of ["a", "c", "v", "x"]) {
+      contents.emit("before-input-event", event, input("keyDown", key, { code: `Key${key.toUpperCase()}`, meta: true }));
+      contents.emit("before-input-event", event, input("keyUp", key, { code: `Key${key.toUpperCase()}`, meta: true }));
+    }
   };
 
   // An app field (no terminal focus reported): the menu's native Paste must run.
-  pressV();
-  assert.deepEqual(ignored, [], "an ordinary field keeps Edit > Paste");
+  pressEditKeys();
+  assert.deepEqual(ignored, [], "an ordinary field keeps native editing");
 
   // A plugin page's field: the iframe has focus, even if a terminal had focus before.
   controller.setTerminalEditFocus(contents, true);
   contents.focusedFrame = pluginFrame;
-  pressV();
-  assert.deepEqual(ignored, [], "a plugin iframe keeps Edit > Paste");
+  pressEditKeys();
+  assert.deepEqual(ignored, [], "a plugin iframe keeps native editing");
 
   // Back in the terminal: captured for xterm's own paste.
   contents.focusedFrame = top;
-  pressV();
-  assert.deepEqual(ignored, [true, false]);
+  pressEditKeys();
+  assert.deepEqual(ignored, [true, false, true, false, true, false, true, false]);
+  ignored.length = 0;
 
   // Focus leaves the terminal while the capture is held: it is released at once.
   contents.emit("before-input-event", event, input("keyDown", "c", { code: "KeyC", meta: true }));
   controller.setTerminalEditFocus(contents, false);
-  assert.deepEqual(ignored, [true, false, true, false]);
-  pressV();
-  assert.deepEqual(ignored, [true, false, true, false]);
+  assert.deepEqual(ignored, [true, false]);
+  pressEditKeys();
+  assert.deepEqual(ignored, [true, false]);
 });
 
 
-test("focused shortcut recorders receive Command+A/C/V while ordinary fields keep native editing", (t) => {
+test("focused shortcut recorders receive Command+A/C/V/X while ordinary fields keep native editing", (t) => {
   const previousElement = globalThis.Element;
   class FakeElement {
     constructor(selector) { this.selector = selector; }
@@ -507,7 +515,7 @@ test("focused shortcut recorders receive Command+A/C/V while ordinary fields kee
   const stop = trackTerminalEditFocus(doc, (focused) => controller.setTerminalEditFocus(contents, focused));
   t.after(stop);
   const pressEditKeys = () => {
-    for (const key of ["a", "c", "v"]) {
+    for (const key of ["a", "c", "v", "x"]) {
       const event = { preventDefault: () => assert.fail("the renderer must receive recorder keyboard events") };
       contents.emit("before-input-event", event, input("keyDown", key, { code: `Key${key.toUpperCase()}`, meta: true }));
       contents.emit("before-input-event", event, input("keyUp", key, { code: `Key${key.toUpperCase()}`, meta: true }));
@@ -518,7 +526,7 @@ test("focused shortcut recorders receive Command+A/C/V while ordinary fields kee
   doc.activeElement = new FakeElement('[data-shortcut-capture="true"]');
   listeners.get("focusin")();
   pressEditKeys();
-  assert.deepEqual(ignored, [true, false, true, false, true, false], "all three chords bypass the menu for the recorder");
+  assert.deepEqual(ignored, [true, false, true, false, true, false, true, false], "all four chords bypass the menu for the recorder");
   ignored.length = 0;
   contents.focusedFrame = {};
   pressEditKeys();

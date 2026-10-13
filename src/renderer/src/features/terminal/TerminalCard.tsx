@@ -657,7 +657,12 @@ function TerminalCardView({
         return false;
       }
       const editor = nativeEditorRef.current;
-      if (editor && Object.values(editor).some((binding) => matchesShortcut(event, binding))) {
+      const editorKeys = editor ? Object.entries(editor).filter(([, binding]) => matchesShortcut(event, binding)) : [];
+      // Selected output text keeps the terminal's Copy; a plain delete key reaches Codex as it is.
+      const editorKey = editor && editorKeys.length > 0
+        && !(terminal.hasSelection() && matchesShortcut(event, shortcutsRef.current.terminalCopy))
+        && !(editorKeys.length === 1 && editorKeys[0]![0] === "clear" && !editorKeys[0]![1].includes("+"));
+      if (editor && editorKey) {
         const sequence = codexShortcutSequence(event);
         if (sequence !== null) {
           event.preventDefault();

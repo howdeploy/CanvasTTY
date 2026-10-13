@@ -125,7 +125,16 @@ export function resolveTerminalLaunch(
       args: [launcher, "--backend", providerCli.executable, "--frontend", frontend, "--", ...providerArgs],
       environment: {
         ...combinedEnvironment, ELECTRON_RUN_AS_NODE: "1",
-        ...(options.shortcuts ? { CANVASTTY_CODEX_KEYBOARD: JSON.stringify({
+        // The owned macOS frontend reads one submit key and two line breaks; the Linux one, three submit keys.
+        ...(options.shortcuts ? { CANVASTTY_CODEX_KEYBOARD: JSON.stringify(platform === "darwin" ? {
+          submit: options.shortcuts.codexSubmit,
+          newline: options.shortcuts.codexNewline,
+          newlineAlternate: options.shortcuts.codexNewlineAlternate,
+          selectAll: options.shortcuts.codexSelectAll,
+          copy: options.shortcuts.codexCopy,
+          cut: options.shortcuts.codexCut,
+          clear: options.shortcuts.codexClear
+        } : {
           submit: options.shortcuts.codexSubmit,
           submitAlternate: options.shortcuts.codexSubmitAlternate,
           submitSuper: options.shortcuts.codexSubmitSuper,

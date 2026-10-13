@@ -43,7 +43,15 @@ export function ShortcutReference({ settings, onClose }: {
       [[bindings.terminalPageUp, bindings.terminalPageDown], "shortcutScrollPages"],
       [["Enter", "Shift+Enter"], "shortcutSearchMatches"]
     ] },
-    { title: "keyboardCodex", shortcuts: [
+    { title: "keyboardCodex", shortcuts: mac ? [
+      [[bindings.codexSubmit], "keyboardSubmit"],
+      [[bindings.codexNewline], "keyboardNewline"],
+      [[bindings.codexNewlineAlternate], "keyboardNewlineAlternate"],
+      [[bindings.codexSelectAll], "keyboardSelectDraft"],
+      [[bindings.codexCopy], "keyboardClaudeCopy"],
+      [[bindings.codexCut], "keyboardClaudeCut"],
+      [[bindings.codexClear], "keyboardClaudeClear"]
+    ] : [
       [[bindings.codexSubmit], "keyboardSubmit"],
       [[bindings.codexSubmitAlternate], "keyboardSubmitAlternate"],
       [[bindings.codexSubmitSuper], "keyboardSubmitSuper"],
@@ -52,9 +60,9 @@ export function ShortcutReference({ settings, onClose }: {
     ] },
     ...(mac && settings.claudeDraftKeysEnabled ? [{ title: "keyboardClaude" as const, shortcuts: [
       [[bindings.claudeSubmit], "keyboardSubmit"],
-      [[bindings.claudeNewline], "keyboardClaudeNewline"],
-      [[bindings.claudeNewlineAlternate], "keyboardClaudeNewlineAlternate"],
-      [[bindings.claudeSelectAll], "keyboardClaudeSelectAll"],
+      [[bindings.claudeNewline], "keyboardNewline"],
+      [[bindings.claudeNewlineAlternate], "keyboardNewlineAlternate"],
+      [[bindings.claudeSelectAll], "keyboardSelectDraft"],
       [[bindings.claudeCopy], "keyboardClaudeCopy"],
       [[bindings.claudeCut], "keyboardClaudeCut"],
       [[bindings.claudeClear], "keyboardClaudeClear"]

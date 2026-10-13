@@ -237,8 +237,8 @@ export class CanvasNavigationInputController {
 
   /**
    * The renderer reports whether a terminal surface or shortcut recorder has keyboard focus. Both consume
-   * Command+C/V/A themselves, so those shortcuts bypass the Edit menu. The terminal-named API covers both;
-   * ordinary fields and plugin pages keep the menu's native Copy, Paste and Select All.
+   * Command+C/V/A/X themselves, so those shortcuts bypass the Edit menu. The terminal-named API covers both;
+   * ordinary fields and plugin pages keep the menu's native Copy, Paste, Select All and Cut.
    */
   setTerminalEditFocus(contents: WebContents, focused: boolean): void {
     if (focused) this.terminalEditFocus.add(contents);
@@ -317,7 +317,7 @@ export class CanvasNavigationInputController {
       && this.terminalEditFocus.has(contents) && topFrameFocused(contents)
       && input.type === "keyDown"
       && input.meta && !input.control && !input.alt && !input.shift
-      && (input.code === "KeyA" || input.code === "KeyC" || input.code === "KeyV");
+      && (input.code === "KeyA" || input.code === "KeyC" || input.code === "KeyV" || input.code === "KeyX");
     const shouldCaptureMenuShortcuts = this.wheelTracker.shouldCaptureMenuShortcuts
       || this.navigationTracker.shouldCaptureMenuShortcuts
       || macEditShortcut;

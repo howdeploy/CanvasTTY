@@ -5,6 +5,9 @@ import test from "node:test";
 import * as terminalShortcuts from "../src/renderer/src/features/terminal/terminalShortcuts.ts";
 import { keyboardPresetShortcuts } from "../src/shared/contracts.ts";
 import { matchesShortcut } from "../src/renderer/src/lib/shortcuts.ts";
+import { TerminalManager } from "../src/main/services/TerminalManager.ts";
+import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
+import { fileURLToPath } from "node:url";
 
 const terminalCardPath = new URL(
   "../src/renderer/src/features/terminal/TerminalCard.tsx",
@@ -117,6 +120,75 @@ test("Command+A dispatches native Codex selection and leaves other providers and
     { key: "Home", code: "Home", metaKey: false }
   ]) assert.equal(codex({ ...event, ...change }), true);
   assert.deepEqual(calls, []);
+});
+
+test("a locally launched Codex card forwards its actual Cut binding after create, restart and restore", {
+  skip: process.platform !== "darwin"
+}, async () => {
+  const source = await readFile(terminalCardPath, "utf8");
+  const calls = [];
+  const events = [];
+  const runtime = {
+    prepareLaunch: () => ({ args: [], environment: {
+      CANVASTTY_CODEX_TUI_QA: fileURLToPath(import.meta.url),
+      CANVASTTY_CODEX_TUI_LAUNCHER_QA: fileURLToPath(import.meta.url)
+    }, cleanup() {} }),
+    currentStatus: () => null
+  };
+  const manager = new TerminalManager((_, event) => events.push(event), availableRegistry(), undefined,
+    runtime, true, fakeSpawner(calls));
+  let shortcuts = keyboardPresetShortcuts("macos");
+  manager.setKeyboardShortcuts(shortcuts);
+  const verify = (session, letter) => {
+    assert.deepEqual(session.nativeEditor, JSON.parse(calls.at(-1).options.env.CANVASTTY_CODEX_KEYBOARD));
+    assert.deepEqual(events.at(-1).session.nativeEditor, session.nativeEditor);
+    const writes = [];
+    const handler = terminalKeyHandler(source, { session, nativeEditorRef: { current: session.nativeEditor },
+      window: { canvasTTY: { window: { isMacOS: true }, terminal: { input: (...args) => writes.push(args) } } } });
+    assert.equal(handler({ type: "keydown", key: letter, code: `Key${letter.toUpperCase()}`, metaKey: true,
+      ctrlKey: false, altKey: false, shiftKey: false, preventDefault() {}, stopPropagation() {} }), false);
+    assert.deepEqual(writes, [[session.id, `\u001b[${letter.charCodeAt(0)};9u`]]);
+  };
+  try {
+    const session = manager.create({ provider: "codex", profile: "normal", cwd: process.cwd(), position: { x: 0, y: 0 } });
+    verify(session, "x");
+    shortcuts = { ...shortcuts, codexCut: "Meta+K" };
+    manager.setKeyboardShortcuts(shortcuts);
+    calls.at(-1).process.emitExit(0);
+    verify(manager.restart(session.id), "k");
+    const descriptor = { ...session, id: "restored-codex", lastState: "running", restore: true };
+    delete descriptor.nativeEditor;
+    manager.configureSessionPersistence({ load: async () => [descriptor], replace: async () => {} }, "continue");
+    await manager.restorePersistedSessions();
+    verify(manager.list().find(card => card.id === descriptor.id), "k");
+  } finally {
+    manager.disposeAll();
+  }
+});
+
+test("the Codex draft keys reach Codex; selected output keeps the terminal's Copy; a plain delete key passes as it is", async () => {
+  const source = await readFile(terminalCardPath, "utf8");
+  const calls = [];
+  let selected = false;
+  const terminal = { clearSelection: () => calls.push("clear"), hasSelection: () => selected, getSelection: () => "вывод" };
+  const window = { canvasTTY: {
+    window: { isMacOS: true },
+    clipboard: { writeText: (text) => calls.push(["clipboard", text]) },
+    terminal: { input: (id, sequence) => calls.push([id, sequence]) }
+  } };
+  const nativeEditor = { submit: "Meta+Enter", newline: "Enter", newlineAlternate: "Shift+Enter", selectAll: "Meta+A",
+    copy: "Meta+C", cut: "Meta+X", clear: "Backspace" };
+  const handler = terminalKeyHandler(source, { window, session: { id: "codex", provider: "codex" }, terminal,
+    nativeEditorRef: { current: nativeEditor } });
+  const key = (code, key, metaKey = true) => ({ type: "keydown", key, code, metaKey, ctrlKey: false, shiftKey: false,
+    altKey: false, preventDefault: () => {}, stopPropagation: () => {} });
+  assert.equal(handler(key("KeyX", "x")), false);
+  assert.equal(handler(key("KeyX", "ч")), false, "Cut uses the physical key on a Russian layout");
+  assert.equal(handler(key("KeyC", "c")), false);
+  selected = true;
+  assert.equal(handler(key("KeyC", "c")), false);
+  assert.equal(handler(key("Backspace", "Backspace", false)), true, "Codex gets its usual Backspace byte");
+  assert.deepEqual(calls, [["codex", "\u001b[120;9u"], ["codex", "\u001b[120;9u"], ["codex", "\u001b[99;9u"], ["clipboard", "вывод"]]);
 });
 
 // A fake xterm whose screen shows `rows()`: Claude's prompt box is the part between the last two rules.

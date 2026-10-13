@@ -131,9 +131,10 @@ const SHORTCUT_LABELS = {
   terminalCopy: "shortcutCopySelection", terminalPaste: "shortcutPaste", terminalSearch: "terminalSearch",
   terminalRestart: "shortcutRestartExited", terminalPageUp: "keyboardPageUp", terminalPageDown: "keyboardPageDown",
   codexSubmit: "keyboardSubmit", codexSubmitAlternate: "keyboardSubmitAlternate", codexSubmitSuper: "keyboardSubmitSuper",
-  codexNewline: "shortcutLineBreak", codexSelectAll: "keyboardSelectAll",
-  claudeSubmit: "keyboardSubmit", claudeNewline: "keyboardClaudeNewline", claudeNewlineAlternate: "keyboardClaudeNewlineAlternate",
-  claudeSelectAll: "keyboardClaudeSelectAll",
+  codexNewline: "shortcutLineBreak", codexNewlineAlternate: "keyboardNewlineAlternate", codexSelectAll: "keyboardSelectAll",
+  codexCopy: "keyboardClaudeCopy", codexCut: "keyboardClaudeCut", codexClear: "keyboardClaudeClear",
+  claudeSubmit: "keyboardSubmit", claudeNewline: "keyboardNewline", claudeNewlineAlternate: "keyboardNewlineAlternate",
+  claudeSelectAll: "keyboardSelectDraft",
   claudeCopy: "keyboardClaudeCopy", claudeCut: "keyboardClaudeCut", claudeClear: "keyboardClaudeClear"
 } as const;
 
@@ -595,7 +596,7 @@ export function SettingsPanel({
                     setCapturing(null);
                     setShortcutError(null);
                     void onChange({ keyboardPreset, ...(keyboardPreset === "custom" ? {} : {
-                      shortcuts: keyboardPresetShortcuts(keyboardPreset),
+                      shortcuts: keyboardPresetShortcuts(keyboardPreset, window.canvasTTY.window.isMacOS),
                       canvasWheelOverride: keyboardPreset === "macos" ? "Meta" : "Ctrl",
                       canvasNavigationOverride: "Alt"
                     }) });
@@ -607,7 +608,9 @@ export function SettingsPanel({
                 {([
                   ["keyboardCanvas", ["home", "renameWindow", "toggleFullscreen", "commandPalette", "openSettings", "focusUp", "focusDown", "focusLeft", "focusRight", "toggleDetail"]],
                   ["keyboardTerminal", ["terminalCopy", "terminalPaste", "terminalSearch", "terminalRestart", "terminalPageUp", "terminalPageDown"]],
-                  ["keyboardCodex", ["codexSubmit", "codexSubmitAlternate", "codexSubmitSuper", "codexNewline", "codexSelectAll"]],
+                  ["keyboardCodex", window.canvasTTY.window.isMacOS
+                    ? ["codexSubmit", "codexNewline", "codexNewlineAlternate", "codexSelectAll", "codexCopy", "codexCut", "codexClear"] as ShortcutAction[]
+                    : ["codexSubmit", "codexSubmitAlternate", "codexSubmitSuper", "codexNewline", "codexSelectAll"] as ShortcutAction[]],
                   ["keyboardClaude", ["claudeSubmit", "claudeNewline", "claudeNewlineAlternate", "claudeSelectAll", "claudeCopy", "claudeCut", "claudeClear"]]
                 ] as const).filter(([group]) => group !== "keyboardClaude" || window.canvasTTY.window.isMacOS).map(([group, actions]) => (
                   <div key={group}>

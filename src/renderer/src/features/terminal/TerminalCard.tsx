@@ -35,6 +35,9 @@ import { attachTerminalCopyOnSelect } from "./terminalCopyOnSelect";
 import {
   CODEX_SELECT_ALL_SEQUENCE,
   SHIFT_ENTER_SEQUENCE,
+  claudeCommandEnterSequence,
+  claudeDraftKeyIntent,
+  claudePromptRows,
   codexEnterSequence,
   codexShortcutSequence,
   shouldCopyTerminalSelection,
@@ -212,6 +215,7 @@ function TerminalCardView({
   sessionExited.current = session.exitCode !== null;
   const sessionStartedAt = useRef(session.startedAt);
   sessionStartedAt.current = session.startedAt;
+  const claudeDraftSelected = useRef(false);
   const restartAction = useRef<(resume?: boolean) => Promise<void>>(async () => undefined);
   const invertTerminalWheelRef = useRef(invertTerminalWheel);
   invertTerminalWheelRef.current = invertTerminalWheel;
@@ -555,7 +559,80 @@ function TerminalCardView({
       }
     };
     fitRef.current = fit;
+    const pasteClipboard = (withImages: boolean): void => {
+      const pasteStartedAt = sessionStartedAt.current;
+      const acceptsPaste = () => terminalRef.current === terminal && !sessionExited.current
+        && sessionStartedAt.current === pasteStartedAt;
+      if (!acceptsPaste()) return;
+      void (withImages ? window.canvasTTY.clipboard.hasImage() : Promise.resolve(false))
+        .then(async (hasImage) => {
+          if (!acceptsPaste()) return;
+          if (hasImage) {
+            window.canvasTTY.terminal.input(session.id, "\u0016");
+            return;
+          }
+          const text = await window.canvasTTY.clipboard.readText();
+          if (text && acceptsPaste()) terminal.paste(text);
+        })
+        .catch(() => undefined);
+    };
+    // Claude runs fullscreen with mouse reporting on, where xterm drops its own selection at the
+    // first mouse move, so the draft selection is a CanvasTTY layer over the prompt rows instead.
+    const draftHighlight = document.createElement("div");
+    draftHighlight.className = "terminal-card__draft-highlight";
+    draftHighlight.hidden = true;
+    screen?.append(draftHighlight);
+    const placeDraftHighlight = (): void => {
+      // The visible prompt rows show the selection; the action always covers the whole draft.
+      const buffer = terminal.buffer.active;
+      const lines = Array.from({ length: terminal.rows }, (_, row) => (
+        buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? ""
+      ));
+      const rows = claudeDraftSelected.current ? claudePromptRows(lines) : null;
+      const rowHeight = (draftHighlight.parentElement?.clientHeight ?? 0) / terminal.rows;
+      draftHighlight.hidden = !rows || !rowHeight;
+      if (!rows || !rowHeight) return;
+      draftHighlight.style.top = `${rows.first * rowHeight}px`;
+      draftHighlight.style.height = `${(rows.last - rows.first + 1) * rowHeight}px`;
+    };
+    const deselectClaudeDraft = (): void => {
+      claudeDraftSelected.current = false;
+      draftHighlight.hidden = true;
+    };
+    const selectClaudeDraft = (): void => {
+      claudeDraftSelected.current = true;
+      placeDraftHighlight();
+    };
+    // Claude repaints the prompt as it streams or resizes; the layer follows it.
+    const draftRepaint = terminal.onWriteParsed(() => {
+      if (claudeDraftSelected.current) placeDraftHighlight();
+    });
+    const draftResize = terminal.onResize(() => {
+      if (claudeDraftSelected.current) placeDraftHighlight();
+    });
+    // A click or a mouse selection replaces the draft selection; moving the mouse does not.
+    const draftMouseDown = (): void => deselectClaudeDraft();
+    terminal.element?.addEventListener("mousedown", draftMouseDown, true);
     terminal.attachCustomKeyEventHandler((event) => {
+      const draftIntent = claudeDraftKeyIntent(
+        event, window.canvasTTY.window.isMacOS, session.provider, claudeDraftSelected.current
+      );
+      if (draftIntent === "deselect") deselectClaudeDraft();
+      else if (draftIntent !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (draftIntent === "select") selectClaudeDraft();
+        else if (draftIntent === "copy") void window.canvasTTY.terminal.draftAction(session.id, "copy");
+        else if (draftIntent !== "swallow") {
+          deselectClaudeDraft();
+          const action = draftIntent === "cut" ? "cut" : "clear";
+          const followUp = draftIntent === "replace" ? event.key : "";
+          void window.canvasTTY.terminal.draftAction(session.id, action, followUp).then(() => {
+            if (draftIntent === "paste") pasteClipboard(true);
+          });
+        }
+        return false;
+      }
       const editor = nativeEditorRef.current;
       if (editor && Object.values(editor).some((binding) => matchesShortcut(event, binding))) {
         const sequence = codexShortcutSequence(event);
@@ -572,6 +649,13 @@ function TerminalCardView({
         event.preventDefault();
         event.stopPropagation();
         window.canvasTTY.terminal.input(session.id, codexEnter);
+        return false;
+      }
+      const claudeEnter = claudeCommandEnterSequence(event, window.canvasTTY.window.isMacOS, session.provider);
+      if (claudeEnter !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        window.canvasTTY.terminal.input(session.id, claudeEnter);
         return false;
       }
       const selectCodexDraft = nativeEditorRef.current ? false
@@ -633,21 +717,7 @@ function TerminalCardView({
 
       event.preventDefault();
       event.stopPropagation();
-      const pasteStartedAt = sessionStartedAt.current;
-      const acceptsPaste = () => terminalRef.current === terminal && !sessionExited.current
-        && sessionStartedAt.current === pasteStartedAt;
-      if (!acceptsPaste()) return false;
-      void (event.metaKey ? window.canvasTTY.clipboard.hasImage() : Promise.resolve(false))
-        .then(async (hasImage) => {
-          if (!acceptsPaste()) return;
-          if (hasImage) {
-            window.canvasTTY.terminal.input(session.id, "\u0016");
-            return;
-          }
-          const text = await window.canvasTTY.clipboard.readText();
-          if (text && acceptsPaste()) terminal.paste(text);
-        })
-        .catch(() => undefined);
+      pasteClipboard(event.metaKey);
       return false;
     });
     const detachMouseCoordinateAdapter = screen
@@ -724,6 +794,10 @@ function TerminalCardView({
       pinnedScroll.dispose();
       pinnedCursor.dispose();
       pinnedOutput.dispose();
+      draftRepaint.dispose();
+      draftResize.dispose();
+      terminal.element?.removeEventListener("mousedown", draftMouseDown, true);
+      draftHighlight.remove();
       pinnedRefresh.dispose();
       if (pinnedFitFrame !== null) cancelAnimationFrame(pinnedFitFrame);
       if (pinnedInputRefreshRef.current === updatePinnedInput) pinnedInputRefreshRef.current = null;

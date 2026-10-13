@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute } from "node:path";
 import { EvenG2Controller } from "./services/companion/EvenG2Controller";
 import { join } from "node:path";
-import { app, BrowserWindow, dialog, Menu, net, Notification, protocol, safeStorage, session } from "electron";
+import { app, BrowserWindow, clipboard, dialog, Menu, net, Notification, protocol, safeStorage, session } from "electron";
 import {
   IPC,
   type LocaleId,
@@ -29,6 +29,7 @@ import { FileAccessService } from "./services/FileAccessService";
 import { SkinRegistry } from "./services/SkinRegistry";
 import { PixelSkinPackRegistry } from "./services/PixelSkinPackRegistry";
 import { TerminalManager, reachesObservers, reachesRenderer } from "./services/TerminalManager";
+import { ClaudeDraftEditor } from "./services/ClaudeDraftEditor";
 import { TerminalRendererOutbox } from "./services/TerminalRendererOutbox";
 import { AgentControlGateway } from "./services/agent-control/AgentControlGateway";
 import { TerminalSessionStore } from "./services/TerminalSessionStore";
@@ -642,6 +643,13 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   terminalManager.configureYoloAcknowledgement((provider) => settings.get().acknowledgedDangerousProfiles.includes(provider as AgentProviderId));
   // OpenCode's auto profile runs shell commands without asking only while base protection guards them.
   terminalManager.configureBaseProtection(() => settings.get().baseProtectionEnabled);
+  terminalManager.configureDraftEditor(new ClaudeDraftEditor({
+    root: join(userDataPath, "claude-draft"),
+    helperPath: app.isPackaged
+      ? join(process.resourcesPath, "agent-runtime", "draft-editor.sh")
+      : join(app.getAppPath(), "src", "agent-runtime", "draft-editor.sh"),
+    writeClipboard: (text) => clipboard.writeText(text)
+  }));
   const terminalSessionStore = new TerminalSessionStore(userDataPath);
   terminalManager.configureSessionPersistence(terminalSessionStore, settings.get().sessionRestoreMode);
   agentChatHistory = new AgentChatHistoryService(settings, providerClis, terminalManager, hermesHomeDirectory);

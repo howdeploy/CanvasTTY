@@ -64,12 +64,31 @@ test("terminalEnvironment strips an inherited control grant like the other reser
     PATH: "/usr/bin",
     CANVASTTY_CONTROL_CONNECTION: "/leaked/connection.json",
     CANVASTTY_CONTROL_CLI: "/leaked/cli.mjs",
-    CANVASTTY_RUNTIME_CAPTURE_RESULT: "1"
+    CANVASTTY_RUNTIME_CAPTURE_RESULT: "1",
+    CANVASTTY_DRAFT_DIR: "/leaked/claude-draft/card",
+    CANVASTTY_DRAFT_EDITOR: "vi",
+    VISUAL: "/bin/sh /opt/app/agent-runtime/draft-editor.sh"
   });
   assert.equal(environment.PATH, "/usr/bin");
   assert.equal("CANVASTTY_CONTROL_CONNECTION" in environment, false);
   assert.equal("CANVASTTY_CONTROL_CLI" in environment, false);
   assert.equal("CANVASTTY_RUNTIME_CAPTURE_RESULT" in environment, false);
+  for (const name of ["CANVASTTY_DRAFT_DIR", "CANVASTTY_DRAFT_EDITOR", "VISUAL"]) assert.equal(name in environment, false, name);
+  assert.equal(terminalEnvironment({ VISUAL: "code --wait" }).VISUAL, "code --wait", "a person's own editor is kept");
+});
+
+test("terminalEnvironment gives a localeless macOS launch UTF-8 and keeps any explicit locale", () => {
+  assert.equal(terminalEnvironment({ PATH: "/usr/bin" }, "darwin").LC_CTYPE, "UTF-8");
+  for (const locale of [{ LANG: "C" }, { LC_ALL: "en_US.UTF-8" }, { LC_CTYPE: "ru_RU.KOI8-R" }]) {
+    const environment = terminalEnvironment({ PATH: "/usr/bin", ...locale }, "darwin");
+    assert.deepEqual(
+      ["LANG", "LC_ALL", "LC_CTYPE"].filter((name) => name in environment),
+      Object.keys(locale)
+    );
+  }
+  for (const platform of ["linux", "win32"]) {
+    assert.equal("LC_CTYPE" in terminalEnvironment({ PATH: "/usr/bin" }, platform), false);
+  }
 });
 
 test("TerminalManager hands the descriptor to orchestrator sessions only, and records the role", async () => {

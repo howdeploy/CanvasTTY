@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import * as terminalShortcuts from "../src/renderer/src/features/terminal/terminalShortcuts.ts";
 import { keyboardPresetShortcuts } from "../src/shared/contracts.ts";
@@ -13,17 +14,42 @@ const appStylesPath = new URL("../src/renderer/src/styles/app.css", import.meta.
 const terminalManagerPath = new URL("../src/main/services/TerminalManager.ts", import.meta.url);
 const contractsPath = new URL("../src/shared/contracts.ts", import.meta.url);
 
-function terminalKeyHandler(body, scope) {
+// Runs the card's actual keyboard setup (paste and Claude draft helpers plus the xterm key handler) against fakes.
+// scope.screen, when given, is the fake .xterm-screen the Claude draft highlight layer is added to.
+function terminalKeyHandler(source, scope) {
+  const setup = source.match(/^    const pasteClipboard[\s\S]*?^    terminal\.attachCustomKeyEventHandler\(\(event\) => \{[\s\S]*?^    \}\);/m)?.[0];
+  assert.ok(setup, "the terminal's actual keyboard handler must be located");
+  let handler;
+  const listeners = { write: [] };
+  // The fake is extended in place: tests compare it with terminalRef.current.
+  const terminal = Object.assign(scope.terminal ?? {}, {
+    hasSelection: scope.terminal?.hasSelection ?? (() => false),
+    attachCustomKeyEventHandler: (attached) => { handler = attached; },
+    onWriteParsed: (listener) => { listeners.write.push(listener); return { dispose() {} }; },
+    onResize: () => ({ dispose() {} }),
+    element: {
+      addEventListener: (type, listener) => { if (type === "mousedown") scope.onMouseDown?.(listener); },
+      removeEventListener() {}
+    }
+  });
   const values = {
     ...terminalShortcuts, matchesShortcut,
     nativeEditorRef: { current: null },
     shortcutsRef: { current: keyboardPresetShortcuts("macos") },
     sessionExited: { current: false },
+    sessionStartedAt: { current: 1 },
+    terminalRef: { current: terminal },
     terminalHost: { current: null },
-    terminal: { hasSelection: () => false },
-    ...scope
+    claudeDraftSelected: { current: false },
+    document: { createElement: () => ({ className: "", hidden: false, style: {}, parentElement: null }) },
+    screen: undefined,
+    ...scope,
+    terminal
   };
-  return new Function(...Object.keys(values), `return (event) => {${body}}`)(...Object.values(values));
+  delete values.onMouseDown;
+  new Function(...Object.keys(values), stripTypeScriptTypes(setup))(...Object.values(values));
+  scope.repaint = () => listeners.write.forEach((listener) => listener());
+  return handler;
 }
 
 test("actual Codex handler preserves Enter modifiers before xterm can collapse them", async () => {
@@ -35,7 +61,7 @@ test("actual Codex handler preserves Enter modifiers before xterm can collapse t
     window: { isMacOS: true },
     terminal: { input: (id, sequence) => writes.push([id, sequence]) }
   } };
-  const handler = terminalKeyHandler(body, { window, session: { id: "draft", provider: "codex" } });
+  const handler = terminalKeyHandler(source, { window, session: { id: "draft", provider: "codex" } });
   for (const code of ["Enter", "NumpadEnter"]) {
     for (const [modifiers, sequence] of [
       [{}, "\r"], [{ shiftKey: true }, "\u001b[13;2u"], [{ metaKey: true }, "\u001b[13;9u"],
@@ -74,12 +100,13 @@ test("Command+A dispatches native Codex selection and leaves other providers and
     preventDefault: () => calls.push("prevent"),
     stopPropagation: () => calls.push("stop")
   };
-  const codex = terminalKeyHandler(body, { window, session: { id: "codex-qa", provider: "codex" }, terminal });
+  const codex = terminalKeyHandler(source, { window, session: { id: "codex-qa", provider: "codex" }, terminal });
   assert.equal(codex(event), false);
   assert.deepEqual(calls, ["prevent", "stop", "clear", ["codex-qa", "\u001b[97;9u"]]);
   calls.length = 0;
-  for (const provider of ["terminal", "claude", "gemini"]) {
-    const handler = terminalKeyHandler(body, { window, session: { id: provider, provider }, terminal });
+  // Claude's Command+A is CanvasTTY's own draft selection (its own test below).
+  for (const provider of ["terminal", "gemini"]) {
+    const handler = terminalKeyHandler(source, { window, session: { id: provider, provider }, terminal });
     assert.equal(handler(event), true);
   }
   for (const change of [
@@ -88,6 +115,124 @@ test("Command+A dispatches native Codex selection and leaves other providers and
     { key: "Home", code: "Home", metaKey: false }
   ]) assert.equal(codex({ ...event, ...change }), true);
   assert.deepEqual(calls, []);
+});
+
+test("macOS Claude keeps Enter, Shift+Enter and Command+Enter distinct", async () => {
+  const source = await readFile(terminalCardPath, "utf8");
+  const writes = [];
+  const window = { canvasTTY: {
+    window: { isMacOS: true },
+    terminal: { input: (id, sequence) => writes.push([id, sequence]) }
+  } };
+  const key = (handler, modifiers) => handler({ type: "keydown", key: "Enter", code: "Enter", ctrlKey: false,
+    altKey: false, shiftKey: false, metaKey: false, ...modifiers, preventDefault() {}, stopPropagation() {} });
+  const claude = terminalKeyHandler(source, { window, session: { id: "claude", provider: "claude" } });
+  assert.equal(key(claude, {}), true, "plain Enter stays xterm's carriage return");
+  assert.equal(key(claude, { shiftKey: true }), false);
+  assert.equal(key(claude, { metaKey: true }), false);
+  assert.equal(key(claude, { metaKey: true, isComposing: true }), true);
+  assert.deepEqual(writes.splice(0), [["claude", "\u001b[13;2u"], ["claude", "\u001b[13;9u"]]);
+  const linux = terminalKeyHandler(source, { window: { canvasTTY: { ...window.canvasTTY, window: { isMacOS: false } } },
+    session: { id: "claude", provider: "claude" } });
+  assert.equal(key(linux, { metaKey: true }), true, "other platforms keep their own Command+Enter");
+  const terminal = terminalKeyHandler(source, { window, session: { id: "shell", provider: "terminal" } });
+  assert.equal(key(terminal, { metaKey: true }), true);
+  assert.deepEqual(writes, []);
+});
+
+test("Command+A selects a macOS Claude draft that copy, cut, typing, paste and deletion act on as a whole", async () => {
+  const source = await readFile(terminalCardPath, "utf8");
+  const calls = [];
+  const rule = "─".repeat(40);
+  let rows = ["history", rule, "❯ first line", "  second line", rule, "  footer"];
+  const terminal = {
+    rows: rows.length,
+    buffer: { active: { viewportY: 10, getLine: (index) => ({ translateToString: () => rows[index - 10] ?? "" }) } },
+    selectLines: () => calls.push("xterm selection"),
+    clearSelection: () => calls.push("xterm clear"),
+    paste: (text) => calls.push(["paste", text])
+  };
+  const screen = { clientHeight: 120, append(child) { child.parentElement = screen; screen.layer = child; } };
+  let mouseDown;
+  const window = { canvasTTY: {
+    window: { isMacOS: true },
+    clipboard: { hasImage: async () => false, readText: async () => "из буфера" },
+    terminal: {
+      input: (id, data) => calls.push(["input", data]),
+      draftAction: async (id, action, followUp) => { calls.push(["draft", action, followUp ?? ""]); return true; }
+    }
+  } };
+  const scope = { window, terminal, screen, session: { id: "claude-card", provider: "claude" },
+    onMouseDown: (listener) => { mouseDown = listener; } };
+  const handler = terminalKeyHandler(source, scope);
+  const key = (key, code, modifiers = {}) => handler({ type: "keydown", key, code, ctrlKey: false, shiftKey: false,
+    altKey: false, metaKey: false, repeat: false, ...modifiers, preventDefault() {}, stopPropagation() {} });
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  const highlight = () => screen.layer.hidden ? null : [screen.layer.style.top, screen.layer.style.height];
+
+  assert.equal(screen.layer.className, "terminal-card__draft-highlight");
+  assert.equal(highlight(), null);
+  assert.equal(key("ч", "KeyX", { metaKey: true }), false, "Command+X without a selection does nothing");
+  assert.equal(key("ф", "KeyA", { metaKey: true }), false);
+  assert.deepEqual(highlight(), ["40px", "40px"], "the visible prompt rows show the selection");
+  rows = ["history", "more", rule, "❯ first line", "  second line", rule];
+  scope.repaint();
+  assert.deepEqual(highlight(), ["60px", "40px"], "the layer follows Claude's repaint");
+  assert.equal(key("Shift", "ShiftLeft", { shiftKey: true }), true, "a modifier alone keeps the selection");
+  assert.equal(key("с", "KeyC", { metaKey: true }), false);
+  assert.equal(key("с", "KeyC", { metaKey: true }), false, "copying keeps the selection");
+  assert.equal(key("с", "KeyC", { metaKey: true, repeat: true }), false, "a held shortcut acts once");
+  assert.notEqual(highlight(), null);
+  assert.equal(key("ж", "Semicolon"), false);
+  await tick();
+  assert.deepEqual(calls.splice(0), [["draft", "copy", ""], ["draft", "copy", ""], ["draft", "clear", "ж"]],
+    "xterm's own selection is never used");
+  assert.equal(highlight(), null);
+  assert.equal(key("я", "KeyZ"), true, "typing after the replacement is ordinary input");
+
+  for (const [press, expected] of [
+    [() => key("ч", "KeyX", { metaKey: true }), [["draft", "cut", ""]]],
+    [() => key("Backspace", "Backspace"), [["draft", "clear", ""]]],
+    [() => key("Delete", "Delete"), [["draft", "clear", ""]]],
+    [() => key("м", "KeyV", { metaKey: true }), [["draft", "clear", ""], ["paste", "из буфера"]]]
+  ]) {
+    key("a", "KeyA", { metaKey: true });
+    calls.length = 0;
+    assert.equal(press(), false);
+    for (let i = 0; i < 4; i += 1) await tick();
+    assert.deepEqual(calls, expected);
+    calls.length = 0;
+  }
+
+  key("a", "KeyA", { metaKey: true });
+  assert.equal(key("a", "KeyA", { metaKey: true, repeat: true }), false);
+  assert.equal(key("ч", "KeyX", { metaKey: true, repeat: true }), false, "holding Command+X cannot cut");
+  assert.deepEqual(calls.splice(0), []);
+  assert.equal(key("ArrowLeft", "ArrowLeft"), true, "other keys drop the selection and reach Claude");
+  assert.equal(highlight(), null);
+  key("a", "KeyA", { metaKey: true });
+  assert.equal(key("Enter", "Enter", { metaKey: true }), false);
+  assert.deepEqual(calls.splice(0), [["input", "\u001b[13;9u"]], "Command+Enter drops the selection, then sends");
+  assert.equal(highlight(), null);
+  key("a", "KeyA", { metaKey: true });
+  mouseDown();
+  assert.equal(highlight(), null);
+  assert.equal(key("ж", "Semicolon"), true, "a click replaces the draft selection");
+  assert.deepEqual(calls, []);
+});
+
+test("Claude prompt rows are found between the last two rules, and nothing is guessed without them", () => {
+  const rule = "─".repeat(30);
+  assert.deepEqual(terminalShortcuts.claudePromptRows(["a", rule, "❯ x", rule, "footer"]), { first: 2, last: 2 });
+  assert.deepEqual(terminalShortcuts.claudePromptRows([rule, "old", rule, "❯ x", "  y", "  " + rule, ""]), { first: 3, last: 4 });
+  assert.equal(terminalShortcuts.claudePromptRows(["❯ x", rule]), null);
+  assert.equal(terminalShortcuts.claudePromptRows([rule, rule]), null);
+  const commandA = { type: "keydown", key: "a", code: "KeyA", metaKey: true, ctrlKey: false, shiftKey: false, altKey: false };
+  for (const provider of ["codex", "terminal"]) {
+    assert.equal(terminalShortcuts.claudeDraftKeyIntent(commandA, true, provider, false), null);
+  }
+  assert.equal(terminalShortcuts.claudeDraftKeyIntent(commandA, false, "claude", false), null, "macOS only");
+  assert.equal(terminalShortcuts.claudeDraftKeyIntent({ ...commandA, isComposing: true }, true, "claude", false), null);
 });
 
 test("clipboard replies cannot paste into a restarted or exited session while normal text and image paste stay intact", async () => {
@@ -122,7 +267,7 @@ test("clipboard replies cannot paste into a restarted or exited session while no
       },
       terminal: { input: (id, sequence) => calls.push([id, sequence]) }
     } };
-    const handler = terminalKeyHandler(body, { window, session: { id: "same-card", provider: "codex" }, terminal,
+    const handler = terminalKeyHandler(source, { window, session: { id: "same-card", provider: "codex" }, terminal,
       terminalRef, sessionExited, sessionStartedAt });
     return { handler, image, text, calls, reads, terminalRef, sessionExited, sessionStartedAt };
   };

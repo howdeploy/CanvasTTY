@@ -45,6 +45,56 @@ export function codexEnterSequence(event: TerminalKeyEvent, provider: string): s
   return modifiers === 1 ? "\r" : `\u001b[13;${modifiers}u`;
 }
 
+/** Command+Enter for a macOS Claude card; xterm would send it as a plain carriage return. */
+export function claudeCommandEnterSequence(event: TerminalKeyEvent, isMacOS: boolean, provider: string): string | null {
+  if (!isMacOS || provider !== "claude" || event.type !== "keydown" || event.isComposing
+    || !(event.key === "Enter" || event.code === "Enter" || event.code === "NumpadEnter")
+    || !event.metaKey || event.shiftKey || event.ctrlKey || event.altKey) return null;
+  return "\u001b[13;9u";
+}
+
+/**
+ * What a key does to a macOS Claude card's whole-draft selection (Command+A). Claude has
+ * no selection of its own, so CanvasTTY keeps it: Command+C copies the draft, Command+X
+ * cuts it, typing, Command+V, Backspace or Delete replace it, any other key drops the
+ * selection and reaches Claude as usual. Without a selection Command+X does nothing.
+ * null: not a draft key, handle the event normally.
+ */
+export type ClaudeDraftKeyIntent = "select" | "copy" | "cut" | "clear" | "replace" | "paste" | "swallow" | "deselect";
+
+const MODIFIER_KEYS = new Set(["Shift", "Meta", "Alt", "Control", "CapsLock", "Fn"]);
+
+export function claudeDraftKeyIntent(
+  event: TerminalKeyEvent,
+  isMacOS: boolean,
+  provider: string,
+  selected: boolean
+): ClaudeDraftKeyIntent | null {
+  if (!isMacOS || provider !== "claude" || event.type !== "keydown" || event.isComposing
+    || MODIFIER_KEYS.has(event.key)) return null;
+  const command = event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+  // A held shortcut repeats; only its first press acts, so holding Command+X cannot fire a burst of cuts.
+  const once = (intent: ClaudeDraftKeyIntent): ClaudeDraftKeyIntent => event.repeat ? "swallow" : intent;
+  if (command && matchesPhysicalOrLayoutKey(event, "KeyA", "a")) return once("select");
+  if (command && matchesPhysicalOrLayoutKey(event, "KeyX", "x")) return selected ? once("cut") : "swallow";
+  if (!selected) return null;
+  if (command && matchesPhysicalOrLayoutKey(event, "KeyC", "c")) return once("copy");
+  if (command && matchesPhysicalOrLayoutKey(event, "KeyV", "v")) return once("paste");
+  if (event.metaKey || event.ctrlKey) return "deselect";
+  if (event.key === "Backspace" || event.key === "Delete") return "clear";
+  return [...event.key].length === 1 ? "replace" : "deselect";
+}
+
+/** Rows of Claude's prompt box on screen: between the last two horizontal rules. */
+export function claudePromptRows(lines: readonly string[]): { first: number; last: number } | null {
+  const rules: number[] = [];
+  for (let row = lines.length - 1; row >= 0 && rules.length < 2; row -= 1) {
+    if (/^─{20,}/.test(lines[row]!.trimStart())) rules.push(row);
+  }
+  if (rules.length < 2 || rules[0]! - rules[1]! < 2) return null;
+  return { first: rules[1]! + 1, last: rules[0]! - 1 };
+}
+
 export function shouldSelectCodexDraft(event: TerminalKeyEvent, isMacOS: boolean, provider: string): boolean {
   return isMacOS && provider === "codex"
     && event.type === "keydown"

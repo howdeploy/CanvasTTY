@@ -33,6 +33,7 @@ import type { TerminalManager } from "../services/TerminalManager";
 import type { AgentChatHistoryService } from "../services/AgentChatHistoryService";
 import { withoutAccountScope, type LimitsService } from "../services/LimitsService";
 import type { UsageHistoryService } from "../services/UsageHistoryService";
+import { isClaudeDraftAction } from "../services/ClaudeDraftEditor";
 import type { PluginManager } from "../services/PluginManager";
 import type { MascotManager } from "../services/MascotManager";
 import type { PluginServiceSupervisor } from "../services/PluginServiceSupervisor";
@@ -953,6 +954,11 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     // Fire-and-forget: a foreign sender is dropped instead of throwing into the IPC layer.
     if (!isMainRenderer(event, getMainWindow)) return;
     terminals.input(id, data);
+  });
+  ipcMain.handle(IPC.terminalDraftAction, (event, id: unknown, action: unknown, followUp: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    if (typeof id !== "string" || !isClaudeDraftAction(action)) return false;
+    return terminals.draftAction(id, action, typeof followUp === "string" ? followUp : "");
   });
   ipcMain.on(IPC.terminalResize, (event, id: string, cols: number, rows: number) => {
     if (!isMainRenderer(event, getMainWindow) || typeof id !== "string") return;

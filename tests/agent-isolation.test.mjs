@@ -182,7 +182,7 @@ test("bubblewrap: read-only root, writable project, tmpfs over what may not be r
   assert.deepEqual(args.slice(-5), ["--chdir", w.project, "--", "/usr/bin/claude", "--x"]);
 });
 
-test("the paths: Claude Code may write its fixed scratch folder /tmp/claude-<uid>, other CLIs may not", async (t) => {
+test("the paths: Claude Code may write its fixed scratch folder /tmp/claude-<uid>, other CLIs may not", { skip: process.platform === "win32" ? "POSIX /tmp only" : false }, async (t) => {
   const w = await world(t);
   const input = { cwd: w.project, sessionTemp: join(w.temp, "s"), env: w.env, userDataPath: w.userData, sessionId: "s", uid: 4242 };
   const claude = isolationPaths({ ...input, provider: "claude" });

@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { isPathInside } from "../../agent-runtime/path-inside.mjs";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import type {
+  ClaudeDraftAction,
   CreateSessionRequest,
   GitRiskReport,
   Point,
@@ -58,10 +59,11 @@ import { onDiskPath } from "./onDiskPath.ts";
 import { RESULT_CAPTURE_PROVIDERS } from "./resultCapture.ts";
 import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from "../../shared/launchModel.ts";
 import { SecretRedactionRegistry } from "./safety/SecretRedaction.ts";
+import type { ClaudeDraftEditor, ClaudeDraftPaste } from "./ClaudeDraftEditor.ts";
 import type { DecisionSession } from "./DecisionHooks.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
-import { canResumeThreadById, resolveTerminalLaunch } from "./terminalLaunch.ts";
+import { canResumeThreadById, parseInlineSettings, resolveTerminalLaunch } from "./terminalLaunch.ts";
 import { isLaunchProfile, PROFILE_RANK, profileAvailable, profileCeiling, type LaunchProfile } from "../../shared/autoMode.ts";
 import type { AgentIsolation, IsolationDecision } from "./isolation/AgentIsolation.ts";
 import { controlGrantFolder } from "./isolation/AgentIsolation.ts";
@@ -245,6 +247,10 @@ export class TerminalManager {
   private environments: EnvironmentService | null = null;
   // Every text an agent reads from another card passes through it (EP-8).
   private redaction = new SecretRedactionRegistry();
+  // macOS Claude cards: whole-draft copy/cut/clear through Claude's Ctrl+G editor round trip.
+  private draftEditor: ClaudeDraftEditor | null = null;
+  // Settings → Agents → Claude draft keys: off, a new Claude gets no helper and the keys do nothing.
+  private draftKeysOn: () => boolean = () => true;
   // Where each running card was actually started (an environment may move it) and its agent config folder.
   private readonly launchContexts = new Map<string, { cwd: string; configDir: string | null }>();
   private modelCheck: (provider: ProviderId, model: string) => string | null = () => null;
@@ -277,6 +283,7 @@ export class TerminalManager {
   private readonly startingOwners = new Map<string, string>();
   // What a card's first launch found in its CLI's own configuration, before the card exists.
   private readonly pendingConfiguredModes = new Map<string, { mode: string; source: string }>();
+  private readonly pendingClaudeDrafts = new Set<string>();
   // Whether the person acknowledged YOLO for a CLI (Settings: acknowledgedDangerousProfiles); unset allows it.
   private yoloAcknowledged: (provider: ProviderId) => boolean = () => true;
   // Set and cleared around a single synchronous session emit (see emitSession):
@@ -321,6 +328,14 @@ export class TerminalManager {
 
   setKeyboardShortcuts(shortcuts: ShortcutBindings): void {
     this.keyboardShortcuts = { ...shortcuts };
+  }
+
+  configureDraftKeys(enabled: () => boolean): void {
+    this.draftKeysOn = () => { try { return enabled() !== false; } catch { return true; } };
+  }
+
+  configureDraftEditor(editor: ClaudeDraftEditor | null): void {
+    this.draftEditor = editor;
   }
 
   /** Plugin agent tools: a session any of them applies to gets the canvastty_agents bridge. */
@@ -695,7 +710,7 @@ export class TerminalManager {
       this.initialCodexInputs.set(id, { prompt: request.initialPrompt, imagePath: request.initialImagePath });
     }
     if (control.ownerPluginId !== undefined) this.startingOwners.set(id, control.ownerPluginId);
-    let launched: ReturnType<TerminalManager["spawnProcess"]> | { process: null; agentBrowser: null; agentRuntime: null; agentOrchestration: null; failure: null };
+    let launched: ReturnType<TerminalManager["spawnProcess"]>;
     try {
       launched = awaitMeasuredGrid || contributed
         ? { process: null, agentBrowser: null, agentRuntime: null, agentOrchestration: null, failure: null }
@@ -710,6 +725,8 @@ export class TerminalManager {
     const configured = this.pendingConfiguredModes.get(id);
     this.pendingConfiguredModes.delete(id);
     if (configured) metadata.configuredMode = configured;
+    if (launched.nativeEditor) metadata.nativeEditor = launched.nativeEditor;
+    if (this.pendingClaudeDrafts.delete(id)) metadata.claudeDraft = true;
 
     const session: ManagedSession = {
       metadata,
@@ -854,6 +871,8 @@ export class TerminalManager {
       session.metadata.parentSessionId
     );
     session.process = launched.process;
+    if (launched.nativeEditor) session.metadata.nativeEditor = launched.nativeEditor;
+    else delete session.metadata.nativeEditor;
     session.agentBrowser = launched.agentBrowser;
     session.agentRuntime = launched.agentRuntime;
     session.agentOrchestration = launched.agentOrchestration;
@@ -949,10 +968,24 @@ export class TerminalManager {
     if (typeof data !== "string" || data.length === 0) return false;
     const session = this.sessions.get(id);
     if (!session || session.metadata.exitCode !== null || !session.process) return false;
+    if (this.draftEditor?.hold(id, data)) return true;
     const process = session.process;
     const written = tryPtyOperation(() => process.write(data));
     if (written && ANSWERS_PROMPT.test(data)) this.settleAnsweredPrompt(id, session);
     return written;
+  }
+
+  draftAction(id: string, action: ClaudeDraftAction, followUp: string, paste: ClaudeDraftPaste | null = null): Promise<boolean> {
+    const session = this.sessions.get(id);
+    const process = session?.process;
+    if (!this.draftEditor || !this.draftKeysOn() || !session || !process || session.metadata.exitCode !== null
+      || session.metadata.provider !== "claude" || !session.metadata.claudeDraft) return Promise.resolve(false);
+    return this.draftEditor.run(id, action, followUp, (data) => {
+      const written = this.sessions.get(id) === session && session.process === process
+        && tryPtyOperation(() => process.write(data));
+      if (written && ANSWERS_PROMPT.test(data)) this.settleAnsweredPrompt(id, session);
+      return written;
+    }, paste);
   }
 
   /**
@@ -1162,6 +1195,8 @@ export class TerminalManager {
     this.initialCodexInputs.delete(id);
     this.redaction.clear(`session:${id}`);
     this.releaseIsolation(id);
+    this.draftEditor?.forget(id);
+    this.pendingClaudeDrafts.delete(id);
     session.launchToken += 1;
     void session.launchCleanup?.().catch(() => undefined);
     session.launchCleanup = null;
@@ -1315,6 +1350,7 @@ export class TerminalManager {
           this.startingModels.delete(descriptor.id);
         }
         process = launched.process;
+        if (launched.nativeEditor) metadata.nativeEditor = launched.nativeEditor;
         agentBrowser = launched.agentBrowser;
         agentRuntime = launched.agentRuntime;
         agentOrchestration = launched.agentOrchestration;
@@ -1511,6 +1547,8 @@ export class TerminalManager {
         session.metadata.parentSessionId
       );
       session.process = launched.process;
+      if (launched.nativeEditor) session.metadata.nativeEditor = launched.nativeEditor;
+      else delete session.metadata.nativeEditor;
       session.agentBrowser = launched.agentBrowser;
       session.agentRuntime = launched.agentRuntime;
       session.agentOrchestration = launched.agentOrchestration;
@@ -1555,6 +1593,7 @@ export class TerminalManager {
     agentRuntime: PreparedAgentRuntimePtyLaunch | null;
     agentOrchestration: PreparedOrchestrationPtyLaunch | null;
     failure: LaunchFailure | null;
+    nativeEditor?: SessionMetadata["nativeEditor"];
   } {
     const none = { process: null, agentBrowser: null, agentRuntime: null, agentOrchestration: null };
     const decision = this.launchIsolation(id, provider, profile, role, null);
@@ -1566,6 +1605,7 @@ export class TerminalManager {
       return { ...none, failure: planned.failure };
     }
     this.noteConfiguredMode(id, provider, profile, planned.env, planned.cwd);
+    this.noteClaudeDraft(id, planned.launchEnvironment);
     let spawn: { command: string; args: string[] | string; env: Record<string, string> } = planned;
     if (decision.apply) {
       try {
@@ -1585,6 +1625,9 @@ export class TerminalManager {
         agentBrowser: planned.agentBrowser,
         agentRuntime: planned.agentRuntime,
         agentOrchestration: planned.agentOrchestration,
+        // The renderer must encode the same editor keys that this local frontend received.
+        ...(globalThis.process.platform === "darwin" && planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD
+          ? { nativeEditor: JSON.parse(planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD) } : {}),
         failure: null
       };
     } catch (error) {
@@ -1603,6 +1646,19 @@ export class TerminalManager {
       else delete target.configuredMode;
     } else if (found) {
       this.pendingConfiguredModes.set(id, found);
+    }
+  }
+
+  /** Only a Claude launched with the draft helper as its editor gets the whole-draft keys. */
+  private noteClaudeDraft(id: string, launchEnvironment: Readonly<Record<string, string>>): void {
+    const granted = Boolean(launchEnvironment.CANVASTTY_DRAFT_DIR);
+    const target = this.sessions.get(id)?.metadata;
+    this.pendingClaudeDrafts.delete(id);
+    if (target) {
+      if (granted) target.claudeDraft = true;
+      else delete target.claudeDraft;
+    } else if (granted) {
+      this.pendingClaudeDrafts.add(id);
     }
   }
 
@@ -1637,6 +1693,8 @@ export class TerminalManager {
     if (!this.isolation) throw new LaunchRefusal("agent isolation is not configured; the agent was not started without it.");
     if (typeof planned.args === "string") throw new LaunchRefusal("a Windows batch launcher cannot run inside agent isolation.");
     const grant = controlGrantFolder(planned.env);
+    // Claude's draft helper writes its answers in this card's own folder (never another card's).
+    const draftFolder = this.draftEditor?.folderOf(id) ?? null;
     const wrapped = this.isolation.wrap({
       sessionId: id,
       provider,
@@ -1645,7 +1703,8 @@ export class TerminalManager {
       args: planned.args,
       env: planned.env,
       profile,
-      ...(grant ? { grantedPrivate: [grant] } : {})
+      ...(grant ? { grantedPrivate: [grant] } : {}),
+      ...(draftFolder ? { ownWritable: [draftFolder] } : {})
     });
     this.releaseIsolation(id);
     this.isolationCleanups.set(id, wrapped.cleanup);
@@ -1750,7 +1809,28 @@ export class TerminalManager {
       };
       // OpenCode: the project folder in its other Unicode spelling is still this folder, not an external one.
       if (provider === "opencode") Object.assign(providerEnvironment, openCodeProjectFolderEnvironment({ ...baseEnvironment, ...providerEnvironment }, cwd));
+      // A plugin or a remote environment that sets its own editor (in the environment or in its --settings env) keeps
+      // it; the helper only exists locally.
+      const contributedNames = new Set([...Object.keys(contribution?.env ?? {}), ...inlineSettingsEnvironmentNames(contribution?.args ?? [])]);
+      const contributesEditor = ["VISUAL", "EDITOR"].some((key) => contributedNames.has(key));
+      let draftEnvironment: Record<string, string> = {};
+      if (provider === "claude" && process.platform === "darwin" && !environmentWrapped && !contributesEditor && this.draftEditor && this.draftKeysOn()) {
+        draftEnvironment = this.draftEditor.environment(id, baseEnvironment);
+      } else {
+        // Whatever ran in this card before has no helper now.
+        this.draftEditor?.forget(id);
+      }
+      Object.assign(providerEnvironment, draftEnvironment);
       const providerArgs = [...(agentRuntime?.args ?? []), ...(agentBrowser?.args ?? [])];
+      // A background Claude session (/bg, /resume, agent view) runs under Claude's own supervisor and gets this
+      // launch's --settings, not its environment: the helper and the locale go there too.
+      if (Object.keys(draftEnvironment).length > 0) {
+        const launched = { ...baseEnvironment, ...providerEnvironment };
+        // A locale a plugin or a remote environment sets is its own.
+        const locale = Object.fromEntries(["LANG", "LC_ALL", "LC_CTYPE"]
+          .filter((key) => launched[key] && !contributedNames.has(key)).map((key) => [key, launched[key]!]));
+        providerArgs.push("--settings", JSON.stringify({ env: { ...draftEnvironment, ...locale } }));
+      }
       // Stable terminal observations for the CLI controller; leave ordinary launches unchanged.
       if (captureResult && provider === "codex") providerArgs.push("-c", "tui.animations=false");
       // A Codex subagent in the person's folder is not asked to trust it again (this run only, never ~/.codex).
@@ -2064,6 +2144,8 @@ export class TerminalManager {
       return "failed";
     }
     session.process = process;
+    if (planned.launchEnvironment.CANVASTTY_DRAFT_DIR) metadata.claudeDraft = true;
+    else delete metadata.claudeDraft;
     if (planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD) {
       metadata.nativeEditor = JSON.parse(planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD);
     } else {
@@ -2300,7 +2382,8 @@ export function launchSearchPath(
 }
 
 export function terminalEnvironment(
-  source: Readonly<Record<string, string | undefined>> = process.env
+  source: Readonly<Record<string, string | undefined>> = process.env,
+  platform: NodeJS.Platform = process.platform
 ): Record<string, string> {
   const reserved = new Set<string>([
     ...Object.values(AGENT_BROWSER_ENV),
@@ -2317,11 +2400,38 @@ export function terminalEnvironment(
       typeof entry[1] === "string"
       && !reserved.has(entry[0])
       && !entry[0].startsWith("CANVASTTY_PLUGIN_HOOK_")
+      && !entry[0].startsWith("CANVASTTY_DRAFT_")
+      // A Claude card's draft helper never becomes the editor of a launch made from inside one.
+      && !(entry[0] === "VISUAL" && entry[1].endsWith("/draft-editor.sh"))
       && entry[0] !== "CANVASTTY_LIFECYCLE_HOOKS_ENABLED"
       && entry[0] !== "ELECTRON_RUN_AS_NODE"
     ))
   );
+  // A Finder-launched app gets no locale, and macOS tools such as pbcopy then
+  // read UTF-8 as the legacy region encoding (Cyrillic turns into mojibake).
+  // Like Terminal.app, set LANG to the system's own locale: a full name ssh can pass on.
+  const hasLocale = ["LC_ALL", "LC_CTYPE", "LANG"].some((name) => environment[name]);
+  if (platform === "darwin" && !hasLocale) environment.LANG = systemLocale;
   return { ...environment, TERM: "xterm-256color", COLORTERM: "truecolor" };
+}
+
+/** The names a launch's inline --settings set in Claude's env (`--settings <json>` or `--settings=<json>`). */
+function inlineSettingsEnvironmentNames(args: readonly string[]): string[] {
+  return args.flatMap((argument, index) => {
+    const value = argument.startsWith("--settings=") ? argument.slice("--settings=".length)
+      : args[index - 1] === "--settings" ? argument : null;
+    const env = value === null ? null : parseInlineSettings(value)?.env;
+    return env && typeof env === "object" && !Array.isArray(env) ? Object.keys(env) : [];
+  });
+}
+
+let systemLocale = "en_US.UTF-8";
+
+/** The macOS system locale (such as "ru-RU") as a UTF-8 locale name, or en_US.UTF-8 when the system lacks it. */
+export function setTerminalSystemLocale(locale: string, exists: (path: string) => boolean = existsSync): void {
+  const match = /^([a-z]{2,3})[-_]([A-Z]{2})(?![A-Za-z])/.exec(locale);
+  const name = match ? `${match[1]}_${match[2]}.UTF-8` : "";
+  systemLocale = name && exists(`/usr/share/locale/${name}`) ? name : "en_US.UTF-8";
 }
 
 function defaultTitle(provider: ProviderId, cwd: string): string {

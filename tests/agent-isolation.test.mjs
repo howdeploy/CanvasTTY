@@ -51,9 +51,9 @@ function isolation(w, options = {}) {
 }
 
 /** Runs `sh -c script` under the generated profile; returns stdout lines. */
-function run(w, script, { provider = "codex", env = {}, granted } = {}) {
+function run(w, script, { provider = "codex", env = {}, granted, ownWritable } = {}) {
   const wrapped = isolation(w).wrap({ sessionId: "s1", provider, cwd: w.project.normalize("NFC"), command: "/bin/sh", args: ["-c", script],
-    env: { ...w.env, ...env }, ...(granted ? { grantedPrivate: granted } : {}) });
+    env: { ...w.env, ...env }, ...(granted ? { grantedPrivate: granted } : {}), ...(ownWritable ? { ownWritable } : {}) });
   try {
     const result = spawnSync(wrapped.command, wrapped.args, { cwd: w.project, env: wrapped.env, encoding: "utf8", timeout: 20_000 });
     return { lines: result.stdout.split("\n").filter(Boolean), stderr: result.stderr, env: wrapped.env };
@@ -66,16 +66,18 @@ test("the isolation decision: delegated and non-manual launches, the person's se
   const on = new AgentIsolation({ userDataPath: "/u", enabled: () => true, platform: "darwin", exists: () => true });
   assert.deepEqual(on.decide({ provider: "codex", profile: "normal", delegated: false }), { apply: false, profile: "normal" }, "manual: the person answers");
   assert.deepEqual(on.decide({ provider: "terminal", profile: "normal", delegated: true }), { apply: false, profile: "normal" });
+  // The person's own agent runs as their terminal would run it, in every profile; only a contained auto needs the layer.
   for (const profile of ["auto", "acceptEdits", "plan", "yolo"]) {
-    assert.deepEqual(on.decide({ provider: "claude", profile, delegated: false }), { apply: true, profile, isolation: { state: "on", layer: "seatbelt" } }, profile);
+    assert.deepEqual(on.decide({ provider: "claude", profile, delegated: false }), { apply: false, profile }, profile);
   }
+  assert.deepEqual(on.decide({ provider: "qwen", profile: "auto", delegated: false }), { apply: true, profile: "auto", isolation: { state: "on", layer: "seatbelt" } }, "contained auto");
   assert.equal(on.decide({ provider: "codex", profile: "normal", delegated: true }).apply, true, "a subagent always");
   assert.deepEqual(on.decide({ provider: "codex", profile: "auto", delegated: true, environment: { isolated: true, label: "Container" } }),
     { apply: false, profile: "auto", isolation: { state: "environment", reason: "Runs in Container; the isolation layer of this computer does not apply there." } });
   assert.equal(on.decide({ provider: "codex", profile: "auto", delegated: true, environment: { isolated: false, label: "Worktree" } }).apply, true);
 
   const off = new AgentIsolation({ userDataPath: "/u", enabled: () => false, platform: "darwin", exists: () => true });
-  assert.deepEqual(off.decide({ provider: "claude", profile: "auto", delegated: false }),
+  assert.deepEqual(off.decide({ provider: "claude", profile: "auto", delegated: true }),
     { apply: false, profile: "auto", isolation: { state: "off", reason: "agent isolation is off in Settings → Agents." } });
   assert.match(off.decide({ provider: "qwen", profile: "auto", delegated: false }).refuse, /qwen has no auto mode of its own; its auto runs only inside/u);
   // Off is the person's opt-in: a subagent keeps its profile (a contained auto, a bypass, still becomes normal).
@@ -105,7 +107,7 @@ test("bubblewrap that cannot create a user namespace (Ubuntu's AppArmor restrict
   assert.match(sub.isolation.reason, /bubblewrap \(bwrap\) is installed but cannot create its sandbox here \(bwrap: setting up uid map: Permission denied\)/u);
   assert.match(sub.isolation.reason, /AppArmor\. docs\/installing-and-security\.md#linux-when-bubblewrap-cannot-start says how to allow it\. It runs in normal \(it asks\) instead of auto\./u);
   const own = linux.decide({ provider: "claude", profile: "acceptEdits", delegated: false });
-  assert.deepEqual([own.apply, own.profile, own.isolation.state], [false, "acceptEdits", "unavailable"], "the person's own launch is not refused either");
+  assert.deepEqual(own, { apply: false, profile: "acceptEdits" }, "the person's own launch does not need the layer");
   assert.equal(linux.containment(), false);
   assert.throws(() => linux.wrap({ sessionId: "s", provider: "codex", cwd: "/p", command: "codex", args: [], env: {} }), /not available: bubblewrap \(bwrap\) is installed but/u);
   assert.deepEqual(calls, ["/usr/bin/bwrap"], "checked once while the answer is fresh");
@@ -178,6 +180,18 @@ test("bubblewrap: read-only root, writable project, tmpfs over what may not be r
   assert.ok(text.includes(`--ro-bind /dev/null ${join(w.userData, "provider-secrets.bin")}`));
   assert.ok(text.includes("--tmpfs /run/user/1000"));
   assert.deepEqual(args.slice(-5), ["--chdir", w.project, "--", "/usr/bin/claude", "--x"]);
+});
+
+test("the paths: Claude Code may write its fixed scratch folder /tmp/claude-<uid>, other CLIs may not", { skip: process.platform === "win32" ? "POSIX /tmp only" : false }, async (t) => {
+  const w = await world(t);
+  const input = { cwd: w.project, sessionTemp: join(w.temp, "s"), env: w.env, userDataPath: w.userData, sessionId: "s", uid: 4242 };
+  const claude = isolationPaths({ ...input, provider: "claude" });
+  assert.ok(claude.writable.includes("/tmp/claude-4242"));
+  if (process.platform === "darwin") assert.ok(claude.writable.includes("/private/tmp/claude-4242"), "both spellings");
+  const codex = isolationPaths({ ...input, provider: "codex" });
+  assert.ok(!codex.writable.some((path) => path.endsWith("/claude-4242")));
+  const withoutUid = isolationPaths({ ...input, uid: undefined, provider: "claude" });
+  assert.ok(!withoutUid.writable.some((path) => path.endsWith("/claude-4242")));
 });
 
 test("the paths: another CLI's home moved by its own variable is unreadable, never this CLI's own", async (t) => {
@@ -283,20 +297,22 @@ test("the launch: wrapped when the layer applies, refused (never unwrapped) when
       return { command: "/usr/bin/sandbox-exec", args: ["-f", "/p.sb", launch.command, ...launch.args], env: { ...launch.env, TMPDIR: "/s/" }, cleanup: () => cleaned.push(launch.sessionId) };
     }
   });
-  const auto = terminals.create({ provider: "claude", profile: "auto", cwd: w.project, position: at });
-  assert.equal(calls.at(-1).command, "/usr/bin/sandbox-exec");
-  assert.deepEqual(calls.at(-1).args.slice(0, 3), ["-f", "/p.sb", "/resolved/claude"]);
-  assert.ok(!calls.at(-1).args.some((arg) => arg.includes("\"sandbox\"")), "no Claude sandbox inside the layer");
-  assert.deepEqual(auto.isolation, { state: "on", layer: "seatbelt" });
+  // The person's own agent runs as their terminal would run it, in auto as in manual.
+  const own = terminals.create({ provider: "claude", profile: "auto", cwd: w.project, position: at });
+  assert.equal(calls.at(-1).command, "/resolved/claude", "an auto launch by the person is not wrapped");
+  assert.equal(own.isolation, undefined);
   const manual = terminals.create({ provider: "claude", profile: "normal", cwd: w.project, position: at });
   assert.equal(calls.at(-1).command, "/resolved/claude", "a manual launch by the person is not wrapped");
   assert.equal(manual.isolation, undefined);
   // A contained auto (no auto of its own) exists only inside the layer.
-  terminals.create({ provider: "qwen", profile: "auto", cwd: w.project, position: at });
+  const auto = terminals.create({ provider: "qwen", profile: "auto", cwd: w.project, position: at });
+  assert.equal(calls.at(-1).command, "/usr/bin/sandbox-exec");
+  assert.deepEqual(calls.at(-1).args.slice(0, 3), ["-f", "/p.sb", "/resolved/qwen"]);
   assert.ok(calls.at(-1).args.includes("--yolo"));
+  assert.deepEqual(auto.isolation, { state: "on", layer: "seatbelt" });
   const count = calls.length;
   failing = true;
-  const refused = terminals.create({ provider: "codex", profile: "auto", cwd: w.project, position: at });
+  const refused = terminals.create({ provider: "qwen", profile: "auto", cwd: w.project, position: at });
   assert.equal(calls.length, count, "nothing started");
   assert.equal(refused.status, "failed");
   assert.match(refused.failureDetails, /^Launch refused: agent isolation could not be set up: disk full\. The agent was not started without it\./u);
@@ -358,6 +374,14 @@ test("seatbelt, for real: writes stay in the project, secrets stay unread, nothi
   assert.notEqual(spawnSync("defaults", ["read", "ctty.isolation.probe"]).status, 0);
 });
 
+test("seatbelt, for real: Claude's Bash tool can create its session folder in /tmp/claude-<uid>; Codex cannot", onMac, async (t) => {
+  const w = await world(t);
+  const probe = `ctty-iso-probe-${process.pid}`;
+  const script = `d="/private/tmp/claude-$(id -u)/${probe}"; mkdir -p "$d" 2>/dev/null && echo x > "$d/f" && rm -rf "$d" && echo CLAUDE-TMP-ok || echo CLAUDE-TMP-denied`;
+  assert.deepEqual(run(w, script, { provider: "claude" }).lines, ["CLAUDE-TMP-ok"]);
+  assert.deepEqual(run(w, script, { provider: "codex" }).lines, ["CLAUDE-TMP-denied"]);
+});
+
 test("seatbelt, for real: the launch writes the account home it was handed, not its permission settings, and no other home", onMac, async (t) => {
   const w = await world(t);
   const own = join(w.userData, "account-homes", "a1");
@@ -376,6 +400,45 @@ test("seatbelt, for real: the launch writes the account home it was handed, not 
   ].join("; "), { env: { CODEX_HOME: own }, granted: [grant] });
   assert.deepEqual(lines, ["HOME-W-ok", "HOME-SUB-ok", "HOME-CONFIG-denied", "OTHER-R-denied", "OTHER-W-denied", "GRANT-W-denied", "GRANT-R-ok"]);
   assert.equal(await readFile(join(own, "auth.json"), "utf8"), "refreshed\n");
+});
+
+test("the paths: a Claude card's own draft folder is writable and readable again; other cards' are hidden", async (t) => {
+  const w = await world(t);
+  const own = join(w.userData, "claude-draft", "s1");
+  const paths = isolationPaths({ provider: "claude", cwd: w.project, sessionTemp: join(w.temp, "s"), env: w.env,
+    userDataPath: w.userData, sessionId: "s1", ownWritable: [own] });
+  assert.ok(paths.writable.includes(own) && paths.readableAgain.includes(own));
+  assert.ok(paths.unreadable.includes(join(w.userData, "claude-draft")));
+  const without = isolationPaths({ provider: "claude", cwd: w.project, sessionTemp: join(w.temp, "s"), env: w.env, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(!without.writable.includes(own) && !without.readableAgain.includes(own));
+});
+
+test("seatbelt, for real: Claude's draft helper answers in its own card's folder and cannot reach another card's", onMac, async (t) => {
+  const w = await world(t);
+  const drafts = join(w.userData, "claude-draft");
+  const own = join(drafts, "s1");
+  const other = join(drafts, "s2");
+  const helper = new URL("../src/agent-runtime/draft-editor.sh", import.meta.url).pathname;
+  await mkdir(own, { recursive: true });
+  await mkdir(other, { recursive: true });
+  const prompt = join(w.project, "claude-prompt-t.md");
+  await writeFile(prompt, "черновик");
+  await writeFile(join(own, "req.1"), "cut\n");
+  await writeFile(join(other, "req.2"), "copy\n");
+  await writeFile(join(other, "draft.3"), "другая карточка");
+  const { lines } = run(w, [
+    `/bin/sh "${helper}" "${prompt}" && echo own`,
+    // Another card's request is hidden: with none of its own, this Ctrl+G opens the person's editor.
+    `/bin/sh "${helper}" "${prompt}"`,
+    `: > "${other}/req.9" 2>/dev/null && echo other-write`,
+    `cat "${other}/draft.3" 2>/dev/null && echo other-read`,
+    `ls "${drafts}" 2>/dev/null && echo listed`
+  ].join("; "), { provider: "claude", ownWritable: [own], env: { CANVASTTY_DRAFT_DIR: own, CANVASTTY_DRAFT_EDITOR: "echo editor" } });
+  assert.deepEqual(lines, ["own", `editor ${prompt}`]);
+  assert.deepEqual((await readdir(own)).sort(), ["done.1", "draft.1"]);
+  assert.equal(await readFile(join(own, "draft.1"), "utf8"), "черновик");
+  assert.equal(await readFile(prompt, "utf8"), "", "cut empties Claude's prompt file");
+  assert.deepEqual((await readdir(other)).sort(), ["draft.3", "req.2"]);
 });
 
 test("seatbelt, for real: git init works, but no repository in the project gets a hook or attributes from the agent", onMac, async (t) => {

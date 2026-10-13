@@ -188,10 +188,25 @@ export interface ShortcutBindings {
   terminalPageUp: string;
   terminalPageDown: string;
   codexSubmit: string;
+  /** Linux and Windows only; off on macOS. */
   codexSubmitAlternate: string;
   codexSubmitSuper: string;
   codexNewline: string;
+  /** The owned macOS frontend only; off elsewhere. */
+  codexNewlineAlternate: string;
   codexSelectAll: string;
+  /** The owned macOS frontend only, on a selected draft; off elsewhere. */
+  codexCopy: string;
+  codexCut: string;
+  codexClear: string;
+  /** macOS Claude cards while Claude's prompt box is on screen ("Claude draft keys" on). */
+  claudeSubmit: string;
+  claudeNewline: string;
+  claudeNewlineAlternate: string;
+  claudeSelectAll: string;
+  claudeCopy: string;
+  claudeCut: string;
+  claudeClear: string;
 }
 
 export const DEFAULT_SHORTCUTS: ShortcutBindings = {
@@ -215,10 +230,34 @@ export const DEFAULT_SHORTCUTS: ShortcutBindings = {
   codexSubmitAlternate: "Ctrl+Enter",
   codexSubmitSuper: "Meta+Enter",
   codexNewline: "Shift+Enter",
-  codexSelectAll: "Ctrl+A"
+  codexNewlineAlternate: "",
+  codexSelectAll: "Ctrl+A",
+  codexCopy: "",
+  codexCut: "",
+  codexClear: "",
+  claudeSubmit: "Meta+Enter",
+  claudeNewline: "Enter",
+  claudeNewlineAlternate: "Shift+Enter",
+  claudeSelectAll: "Meta+A",
+  claudeCopy: "Meta+C",
+  claudeCut: "Meta+X",
+  claudeClear: "Backspace"
 };
 
-export function keyboardPresetShortcuts(preset: Exclude<KeyboardPreset, "custom">): ShortcutBindings {
+/** The owned Codex frontend reads its editor keys this way on a macOS host only; elsewhere they stay as they were. */
+const MACOS_CODEX_EDITOR = {
+  codexSubmit: "Meta+Enter", codexSubmitAlternate: "", codexSubmitSuper: "",
+  codexNewline: "Enter", codexNewlineAlternate: "Shift+Enter", codexSelectAll: "Meta+A",
+  codexCopy: "Meta+C", codexCut: "Meta+X", codexClear: "Backspace"
+} as const;
+
+/** Keys for a selected Codex draft: they clash with the Codex editor's keys, not with the terminal's Copy. */
+export const CODEX_DRAFT_SHORTCUTS: readonly ShortcutAction[] = ["codexCopy", "codexCut", "codexClear"];
+
+export function keyboardPresetShortcuts(
+  preset: Exclude<KeyboardPreset, "custom">,
+  macHost: boolean = preset === "macos"
+): ShortcutBindings {
   return {
     ...DEFAULT_SHORTCUTS,
     toggleFullscreen: preset === "macos" ? "Meta+F" : "F11",
@@ -226,14 +265,25 @@ export function keyboardPresetShortcuts(preset: Exclude<KeyboardPreset, "custom"
     ...(preset === "macos" ? {
       commandPalette: "Meta+K", openSettings: "Meta+Comma",
       terminalCopy: "Meta+C", terminalPaste: "Meta+V", codexSelectAll: "Meta+A"
-    } : {})
+    } : {}),
+    ...(macHost ? MACOS_CODEX_EDITOR : {})
   };
 }
 
+/** Claude editor actions are a context of their own: they act only while Claude's prompt box is on screen. */
 export function shortcutsShareContext(left: ShortcutAction, right: ShortcutAction): boolean {
-  const terminal = (action: ShortcutAction) => action.startsWith("terminal") || action.startsWith("codex");
-  return left === "toggleDetail" || right === "toggleDetail" || terminal(left) === terminal(right);
+  if (CODEX_DRAFT_SHORTCUTS.includes(left) || CODEX_DRAFT_SHORTCUTS.includes(right)) {
+    return left === "toggleDetail" || right === "toggleDetail" || (left.startsWith("codex") && right.startsWith("codex"));
+  }
+  const context = (action: ShortcutAction) => action.startsWith("claude") ? "claude"
+    : action.startsWith("terminal") || action.startsWith("codex") ? "terminal" : "canvas";
+  return left === "toggleDetail" || right === "toggleDetail" || context(left) === context(right);
 }
+
+/** Editor actions that always keep a key: without them the prompt cannot be sent, broken or selected. */
+export const REQUIRED_SHORTCUTS: readonly ShortcutAction[] = [
+  "codexSubmit", "codexNewline", "codexNewlineAlternate", "codexSelectAll", "claudeSubmit", "claudeNewline", "claudeNewlineAlternate", "claudeSelectAll"
+];
 
 export const INITIAL_TERMINAL_COLS = 80;
 export const INITIAL_TERMINAL_ROWS = 24;
@@ -247,6 +297,9 @@ export interface Size {
   width: number;
   height: number;
 }
+
+/** Whole-draft operations CanvasTTY performs for Claude Code on macOS (Command+A/C/X, replace-on-type). */
+export type ClaudeDraftAction = "copy" | "cut" | "clear";
 
 export interface SessionBounds {
   position: Point;
@@ -493,6 +546,8 @@ export interface AppSettings {
   agentLifecycleHooksEnabled: boolean;
   /** Base protection: deny-only hard rules for agents' tool calls (writes outside the folder, sudo, …). */
   baseProtectionEnabled: boolean;
+  /** macOS Claude cards: Command+A selects the whole prompt draft for copy, cut and delete (Claude's Ctrl+G round trip). */
+  claudeDraftKeysEnabled: boolean;
   uiScale: number;
   canvasColor: CanvasColorId;
   canvasBackground: CanvasBackgroundId;
@@ -670,7 +725,10 @@ export interface SessionMetadata {
   revision: number;
   provider: ProviderId;
   /** Bindings actually consumed by this separately launched Codex editor. */
-  nativeEditor?: { submit: string; submitAlternate: string; submitSuper: string; newline: string; selectAll: string };
+  nativeEditor?: { submit: string; newline: string; selectAll: string }
+    & ({ newlineAlternate: string; copy: string; cut: string; clear: string } | { submitAlternate: string; submitSuper: string });
+  /** macOS Claude launched with CanvasTTY's draft helper: Command+A selects the whole draft. */
+  claudeDraft?: boolean;
   /** Provider conversation id, when the session is attached to one. */
   threadId?: string;
   profile: LaunchProfileId;
@@ -2060,6 +2118,11 @@ export interface CanvasTTYApi {
     /** `resume` continues the card's own conversation instead of starting a new one. */
     restart(id: string, options?: { resume?: boolean }): Promise<SessionSnapshot>;
     input(id: string, data: string): void;
+    /**
+     * Copies, cuts or clears a macOS Claude card's whole draft, then types followUp, or pastes the clipboard as it is
+     * then (bracketed when Claude turned bracketed paste on); false when nothing ran.
+     */
+    draftAction(id: string, action: ClaudeDraftAction, followUp?: string, paste?: "plain" | "bracketed"): Promise<boolean>;
     resize(id: string, cols: number, rows: number): void;
     setBounds(id: string, bounds: SessionBounds): void;
     rename(id: string, title: string): Promise<SessionMetadata>;
@@ -2256,6 +2319,7 @@ export const IPC = {
   agentChatHistoryResume: "agent-chat-history:resume",
   terminalRestart: "terminal:restart",
   terminalInput: "terminal:input",
+  terminalDraftAction: "terminal:draft-action",
   terminalResize: "terminal:resize",
   terminalBounds: "terminal:bounds",
   terminalRename: "terminal:rename",

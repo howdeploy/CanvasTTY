@@ -214,7 +214,7 @@ test("an isolated session that ends with a dangerous git setting shows it on its
   const project = join(base, "p");
   await mkdir(project);
   const { terminals, calls } = await isolatedManager(t, project);
-  const card = terminals.create({ provider: "codex", profile: "auto", cwd: project, position: at });
+  const card = terminals.create({ provider: "qwen", profile: "auto", cwd: project, position: at });
   assert.equal(card.isolation?.state, "on");
   await plant(project);
   calls.at(-1).process.emitExit(0);
@@ -233,11 +233,11 @@ test("a closed isolated card's git settings are reported to the app; keep leaves
   await mkdir(project);
   const events = [];
   const { terminals } = await isolatedManager(t, project, events);
-  const clean = terminals.create({ provider: "codex", profile: "auto", cwd: project, position: at });
+  const clean = terminals.create({ provider: "qwen", profile: "auto", cwd: project, position: at });
   terminals.dispose(clean.id);
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.deepEqual(events.filter((event) => event.channel === IPC.terminalGitRisk), []);
-  const card = terminals.create({ provider: "codex", profile: "auto", cwd: project, position: at, title: "worker" });
+  const card = terminals.create({ provider: "qwen", profile: "auto", cwd: project, position: at, title: "worker" });
   await plant(project);
   terminals.dispose(card.id);
   const reported = await until(() => events.find((event) => event.channel === IPC.terminalGitRisk)?.payload);
@@ -255,7 +255,7 @@ test("a card restored after the app quit mid-session is audited on restore", asy
   await mkdir(project);
   await mkdir(storeDirectory);
   const first = await isolatedManager(t, project, [], new TerminalSessionStore(storeDirectory));
-  const card = first.terminals.create({ provider: "codex", profile: "auto", cwd: project, position: at });
+  const card = first.terminals.create({ provider: "qwen", profile: "auto", cwd: project, position: at });
   await plant(project);
   await first.terminals.shutdown();
   const saved = JSON.parse(await readFile(join(storeDirectory, "terminal-sessions.json"), "utf8")).sessions;

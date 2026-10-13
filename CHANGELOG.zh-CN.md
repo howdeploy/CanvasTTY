@@ -2,6 +2,13 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## 未发布
+
+- **你自己启动的智能体按你的终端方式运行。** 操作系统隔离层（macOS `sandbox-exec`，Linux bubblewrap）现在只包裹子智能体、插件启动的智能体，以及没有自带自动模式的 CLI 的 auto（其跳过审批）。此前它包裹所有非 Manual 的智能体，导致 Claude Code 的 Bash 工具和外部编辑器以 `EPERM` 失败：无论 `TMPDIR` 如何，Claude 都把这些文件放在 `/tmp/claude-<uid>`。现在隔离层内的 Claude Code 可以写入该文件夹。基础防护不变，仍默认开启。
+- CanvasTTY 不再在 Auto 中开启 Claude Code 自身的沙箱，改为遵循用户的 Claude 设置。
+- **设置 → 键盘 → Claude 编辑器**（macOS）：为 Claude Code 卡片提供可重新绑定的按键，与 Codex 编辑器相同。当屏幕上显示 Claude 的输入框时，Enter 换行，Command+Enter 发送；在对话框、确认提示和其他界面中 Enter 保持原有含义，Shift+Enter 始终换行。Command+A 选中整段草稿，随后 Command+C、Command+X、Delete 或直接输入会复制、剪切、删除或替换它，终端的粘贴键会用粘贴内容替换它。发送、换行和全选始终保留按键；复制、剪切和删除可以关闭。修改会立即作用于已打开的卡片。分组顶部的 **Claude 草稿按键** 开关（默认开启）可关闭以上全部功能：按键原样发送给 Claude（Enter 发送），新的 Claude 会话使用用户自己的编辑器，而不是 CanvasTTY 的 `VISUAL`。
+- **设置 → 键盘 → Codex 编辑器**（macOS）：按键现在可以真正重新绑定，自带的 Codex 前端会读取它们。默认值与 Claude 编辑器一致：Command+Enter 发送（或加入队列，并选择 `/` 命令），Enter 和 Shift+Enter 换行，Command+A 选中整个草稿，Command+C、Command+X 和 Delete 复制、剪切或删除已选中的草稿（选中的终端输出仍用终端的复制键复制）。不再有单独的备用发送和 Command 发送行。仍为旧 Codex 默认值的设置会改用新默认值；自定义的发送和换行按键会保留。复制、剪切和删除可以关闭。未被任何按键占用的普通 Enter 仍是 Codex 自身的发送；对话框和内嵌编辑器保留各自的按键。更改对新建或重启的 Codex 卡片生效。Linux 和 Windows 不变。
+
 ## 1.8.1
 
 - 修复 macOS 拒绝读取所有普通文件的问题：不再将 `/dev/fd` 设备路径当作文件实际路径，读取前核对已打开文件与当前路径的身份。1.8.0 构建未发布。

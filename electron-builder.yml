@@ -99,6 +99,7 @@ extraResources:
     to: agent-runtime
     filter:
       - "*.mjs"
+      - "*.sh"
   - from: agent/browser
     to: agent/browser
     filter:

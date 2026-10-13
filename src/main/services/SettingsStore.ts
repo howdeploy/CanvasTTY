@@ -52,6 +52,8 @@ import {
   DEFAULT_HOME_LAYOUT,
   DEFAULT_RADIAL_LAUNCHER_ITEMS,
   keyboardPresetShortcuts,
+  REQUIRED_SHORTCUTS,
+  CODEX_DRAFT_SHORTCUTS,
   shortcutsShareContext,
   DEFAULT_UI_SCALE,
   HOME_GRID_MAX_COLUMNS,
@@ -177,6 +179,7 @@ export class SettingsStore {
         || !("radialLauncherEnabled" in source)
         || !("agentLifecycleHooksEnabled" in source)
         || !("baseProtectionEnabled" in source)
+        || !("claudeDraftKeysEnabled" in source)
         || !("uiScale" in source)
         || !("canvasColor" in source)
         || !("canvasBackground" in source)
@@ -375,6 +378,7 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     radialLauncherEnabled: false,
     agentLifecycleHooksEnabled: true,
     baseProtectionEnabled: true,
+    claudeDraftKeysEnabled: true,
     uiScale: DEFAULT_UI_SCALE,
     canvasColor: "sage",
     canvasBackground: "none",
@@ -616,6 +620,10 @@ export function normalizeSettings(
     baseProtectionEnabled: typeof source.baseProtectionEnabled === "boolean"
       ? source.baseProtectionEnabled
       : fallback.baseProtectionEnabled ?? true,
+    // On unless the person turned it off; an install from before it existed gets it on.
+    claudeDraftKeysEnabled: typeof source.claudeDraftKeysEnabled === "boolean"
+      ? source.claudeDraftKeysEnabled
+      : fallback.claudeDraftKeysEnabled ?? true,
     uiScale: normalizeUiScale(source.uiScale, fallback.uiScale ?? DEFAULT_UI_SCALE),
     canvasColor,
     canvasBackground,
@@ -1156,15 +1164,15 @@ function normalizeBrowserCanvas(candidate: unknown, fallback: BrowserCanvasState
 }
 
 function normalizeShortcuts(candidate: unknown, fallback: ShortcutBindings): ShortcutBindings {
-  const source = candidate && typeof candidate === "object"
-    ? candidate as Partial<ShortcutBindings>
-    : {};
+  const saved = candidate && typeof candidate === "object" ? candidate as Partial<ShortcutBindings> : {};
+  // Only a macOS host's defaults bind the alternate line break: elsewhere the Codex keys stay as they were.
+  const source = fallback.codexNewlineAlternate ? migrateCodexShortcuts(saved) : saved;
   const shortcuts = { ...fallback };
   for (const action of Object.keys(fallback) as Array<keyof ShortcutBindings>) {
     const binding = source[action];
     const keyboardOnly = !["home", "renameWindow", "toggleFullscreen"].includes(action);
     if (isValidShortcut(binding) && !(keyboardOnly && binding.includes("Mouse"))) shortcuts[action] = binding;
-    else if (binding === "" && !["codexSubmit", "codexNewline", "codexSelectAll"].includes(action)) shortcuts[action] = "";
+    else if (binding === "" && !REQUIRED_SHORTCUTS.includes(action)) shortcuts[action] = "";
   }
 
   const accepted: Array<keyof ShortcutBindings> = [];
@@ -1174,11 +1182,31 @@ function normalizeShortcuts(candidate: unknown, fallback: ShortcutBindings): Sho
       && shortcuts[action].toLowerCase() === shortcuts[other].toLowerCase());
     if (conflict) {
       // Preserve old customized actions; newly added defaults can be rebound in Settings.
-      if (source[action] === undefined && !action.startsWith("codex")) shortcuts[action] = "";
+      if (source[action] === undefined && !REQUIRED_SHORTCUTS.includes(action)
+        && (!action.startsWith("codex") || CODEX_DRAFT_SHORTCUTS.includes(action))) shortcuts[action] = "";
       else return { ...fallback };
     } else accepted.push(action);
   }
   return shortcuts;
+}
+
+/**
+ * On macOS the Codex editor once had three submit keys (Enter, Ctrl+Enter, Command+Enter) and Shift+Enter
+ * for a line break; it now has one submit key and two line breaks. Settings from before (extra submit keys,
+ * no alternate line break) still at those old defaults take the new ones; customized submit and line-break keys are kept,
+ * the extra submit keys go, and the alternate line break takes the first of its keys still free.
+ */
+function migrateCodexShortcuts(source: Partial<ShortcutBindings>): Partial<ShortcutBindings> {
+  if (source.codexNewlineAlternate || (!source.codexSubmitAlternate && !source.codexSubmitSuper)) return source;
+  const { codexSubmitAlternate, codexSubmitSuper, ...rest } = source;
+  const oldDefaults = rest.codexSubmit === "Enter" && codexSubmitAlternate === "Ctrl+Enter"
+    && codexSubmitSuper === "Meta+Enter" && rest.codexNewline === "Shift+Enter";
+  if (oldDefaults) {
+    const { codexSubmit: _submit, codexNewline: _newline, ...migrated } = rest;
+    return migrated;
+  }
+  const alternate = ["Shift+Enter", "Enter", "Alt+Enter"].find((key) => key !== rest.codexSubmit && key !== rest.codexNewline);
+  return { ...rest, codexNewlineAlternate: alternate };
 }
 
 function isValidShortcut(value: unknown): value is string {

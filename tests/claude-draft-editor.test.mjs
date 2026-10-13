@@ -9,6 +9,8 @@ import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 
 const helperPath = new URL("../src/agent-runtime/draft-editor.sh", import.meta.url).pathname;
+// The helper is a POSIX shell script for macOS Claude cards; Windows has no /bin/sh to run it.
+const POSIX = { skip: process.platform === "win32" ? "the draft helper is a POSIX shell script" : false };
 
 // Stands in for Claude Code: Ctrl+G hands the draft to $VISUAL and reloads what it leaves.
 function fakeClaude(environment, draft) {
@@ -60,7 +62,7 @@ function runHelper(file, directory, ownEditor = "false") {
   }
 }
 
-test("copy, cut and clear act on the whole Claude draft through the real helper", async () => {
+test("copy, cut and clear act on the whole Claude draft through the real helper", POSIX, async () => {
   const { root, clipboard, editor } = editorFixture();
   const environment = editor.environment("card-1", { VISUAL: "code --wait" });
   assert.deepEqual(environment, {
@@ -115,7 +117,7 @@ test("a session's actions run one after another, and input typed meanwhile keeps
   rmSync(root, { recursive: true, force: true });
 });
 
-test("a Ctrl+G Claude picks up late opens no editor and changes nothing, even after a newer action", async () => {
+test("a Ctrl+G Claude picks up late opens no editor and changes nothing, even after a newer action", POSIX, async () => {
   const { root, clipboard, editor } = editorFixture(60);
   const environment = editor.environment("card-3", {});
   const claude = fakeClaude(environment, "черновик");
@@ -144,7 +146,7 @@ test("a Ctrl+G Claude picks up late opens no editor and changes nothing, even af
   }
 });
 
-test("a Ctrl+G Claude never handles costs one later Ctrl+G, never the following actions", async () => {
+test("a Ctrl+G Claude never handles costs one later Ctrl+G, never the following actions", POSIX, async () => {
   const { root, clipboard, editor } = editorFixture(40);
   const environment = editor.environment("card-4", {});
   const claude = fakeClaude(environment, "черновик");
@@ -190,7 +192,7 @@ test("a request is either claimed by the helper or cancelled, never both", async
   rmSync(root, { recursive: true, force: true });
 });
 
-test("the helper leaves the draft alone when it cannot save a copy, and ignores unknown requests", () => {
+test("the helper leaves the draft alone when it cannot save a copy, and ignores unknown requests", POSIX, () => {
   const scratch = mkdtempSync(join(tmpdir(), "claude-draft-helper-"));
   const directory = join(scratch, "card");
   mkdirSync(directory);
@@ -209,7 +211,7 @@ test("the helper leaves the draft alone when it cannot save a copy, and ignores 
   rmSync(scratch, { recursive: true, force: true });
 });
 
-test("only Claude's own prompt file is acted on: a program Claude runs gets the person's editor", () => {
+test("only Claude's own prompt file is acted on: a program Claude runs gets the person's editor", POSIX, () => {
   const scratch = mkdtempSync(join(tmpdir(), "claude-draft-other-file-"));
   const directory = join(scratch, "card");
   mkdirSync(directory);
@@ -226,7 +228,7 @@ test("only Claude's own prompt file is acted on: a program Claude runs gets the 
   rmSync(scratch, { recursive: true, force: true });
 });
 
-test("a background session shown by another card answers that card's request; its own come first", () => {
+test("a background session shown by another card answers that card's request; its own come first", POSIX, () => {
   const scratch = mkdtempSync(join(tmpdir(), "claude-draft-cards-"));
   const started = join(scratch, "card-a");
   const showing = join(scratch, "card-b");
@@ -254,7 +256,7 @@ test("a background session shown by another card answers that card's request; it
   rmSync(scratch, { recursive: true, force: true });
 });
 
-test("a cancel the helper cannot remove is not used up: that Ctrl+G opens the editor", { skip: process.getuid?.() === 0 && "root ignores permissions" }, () => {
+test("a cancel the helper cannot remove is not used up: that Ctrl+G opens the editor", { skip: POSIX.skip || (process.getuid?.() === 0 && "root ignores permissions") }, () => {
   const scratch = mkdtempSync(join(tmpdir(), "claude-draft-locked-"));
   const directory = join(scratch, "card");
   mkdirSync(directory);
@@ -315,7 +317,7 @@ test("leftovers of an earlier CanvasTTY run are removed before any card launches
   assert.equal(editor.environment("card", {}).CANVASTTY_DRAFT_DIR, join(root, "card"));
 });
 
-test("without a request the helper opens the person's own editor, arguments included", () => {
+test("without a request the helper opens the person's own editor, arguments included", POSIX, () => {
   const scratch = mkdtempSync(join(tmpdir(), "claude-draft-own-"));
   const file = join(scratch, "claude-prompt-test.md");
   writeFileSync(file, "draft");

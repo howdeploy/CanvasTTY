@@ -2,6 +2,12 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## 未发布
+
+- **你自己启动的智能体按你的终端方式运行。** 操作系统隔离层（macOS `sandbox-exec`，Linux bubblewrap）现在只包裹子智能体、插件启动的智能体，以及没有自带自动模式的 CLI 的 auto（其跳过审批）。此前它包裹所有非 Manual 的智能体，导致 Claude Code 的 Bash 工具和外部编辑器以 `EPERM` 失败：无论 `TMPDIR` 如何，Claude 都把这些文件放在 `/tmp/claude-<uid>`。现在隔离层内的 Claude Code 可以写入该文件夹。基础防护不变，仍默认开启。
+- CanvasTTY 不再在 Auto 中开启 Claude Code 自身的沙箱，改为遵循用户的 Claude 设置。
+- **设置 → 智能体 → Claude 草稿按键**（macOS，默认开启）：可关闭 CanvasTTY 在 Claude 卡片中的整段草稿按键（Command+A，然后复制、剪切、删除或替换）。关闭后按键原样发送给 Claude，新的 Claude 会话使用用户自己的编辑器，而不是 CanvasTTY 的 `VISUAL`。
+
 ## 1.8.1
 
 - 修复 macOS 拒绝读取所有普通文件的问题：不再将 `/dev/fd` 设备路径当作文件实际路径，读取前核对已打开文件与当前路径的身份。1.8.0 构建未发布。

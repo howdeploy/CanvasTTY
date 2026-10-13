@@ -144,6 +144,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   radialLauncherEnabled: false,
   agentLifecycleHooksEnabled: true,
   baseProtectionEnabled: true,
+  claudeDraftKeysEnabled: true,
   uiScale: DEFAULT_UI_SCALE,
   canvasColor: "sage",
   canvasBackground: "none",

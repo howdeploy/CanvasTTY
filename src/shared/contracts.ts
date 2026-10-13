@@ -496,6 +496,8 @@ export interface AppSettings {
   agentLifecycleHooksEnabled: boolean;
   /** Base protection: deny-only hard rules for agents' tool calls (writes outside the folder, sudo, …). */
   baseProtectionEnabled: boolean;
+  /** macOS Claude cards: Command+A selects the whole prompt draft for copy, cut and delete (Claude's Ctrl+G round trip). */
+  claudeDraftKeysEnabled: boolean;
   uiScale: number;
   canvasColor: CanvasColorId;
   canvasBackground: CanvasBackgroundId;

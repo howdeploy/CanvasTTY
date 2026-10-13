@@ -177,6 +177,7 @@ export class SettingsStore {
         || !("radialLauncherEnabled" in source)
         || !("agentLifecycleHooksEnabled" in source)
         || !("baseProtectionEnabled" in source)
+        || !("claudeDraftKeysEnabled" in source)
         || !("uiScale" in source)
         || !("canvasColor" in source)
         || !("canvasBackground" in source)
@@ -375,6 +376,7 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     radialLauncherEnabled: false,
     agentLifecycleHooksEnabled: true,
     baseProtectionEnabled: true,
+    claudeDraftKeysEnabled: true,
     uiScale: DEFAULT_UI_SCALE,
     canvasColor: "sage",
     canvasBackground: "none",
@@ -616,6 +618,10 @@ export function normalizeSettings(
     baseProtectionEnabled: typeof source.baseProtectionEnabled === "boolean"
       ? source.baseProtectionEnabled
       : fallback.baseProtectionEnabled ?? true,
+    // On unless the person turned it off; an install from before it existed gets it on.
+    claudeDraftKeysEnabled: typeof source.claudeDraftKeysEnabled === "boolean"
+      ? source.claudeDraftKeysEnabled
+      : fallback.claudeDraftKeysEnabled ?? true,
     uiScale: normalizeUiScale(source.uiScale, fallback.uiScale ?? DEFAULT_UI_SCALE),
     canvasColor,
     canvasBackground,

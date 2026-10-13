@@ -249,6 +249,8 @@ export class TerminalManager {
   private redaction = new SecretRedactionRegistry();
   // macOS Claude cards: whole-draft copy/cut/clear through Claude's Ctrl+G editor round trip.
   private draftEditor: ClaudeDraftEditor | null = null;
+  // Settings → Agents → Claude draft keys: off, a new Claude gets no helper and the keys do nothing.
+  private draftKeysOn: () => boolean = () => true;
   // Where each running card was actually started (an environment may move it) and its agent config folder.
   private readonly launchContexts = new Map<string, { cwd: string; configDir: string | null }>();
   private modelCheck: (provider: ProviderId, model: string) => string | null = () => null;
@@ -326,6 +328,10 @@ export class TerminalManager {
 
   setKeyboardShortcuts(shortcuts: ShortcutBindings): void {
     this.keyboardShortcuts = { ...shortcuts };
+  }
+
+  configureDraftKeys(enabled: () => boolean): void {
+    this.draftKeysOn = () => { try { return enabled() !== false; } catch { return true; } };
   }
 
   configureDraftEditor(editor: ClaudeDraftEditor | null): void {
@@ -969,7 +975,7 @@ export class TerminalManager {
   draftAction(id: string, action: ClaudeDraftAction, followUp: string, paste: ClaudeDraftPaste | null = null): Promise<boolean> {
     const session = this.sessions.get(id);
     const process = session?.process;
-    if (!this.draftEditor || !session || !process || session.metadata.exitCode !== null
+    if (!this.draftEditor || !this.draftKeysOn() || !session || !process || session.metadata.exitCode !== null
       || session.metadata.provider !== "claude" || !session.metadata.claudeDraft) return Promise.resolve(false);
     return this.draftEditor.run(id, action, followUp, (data) => {
       const written = this.sessions.get(id) === session && session.process === process
@@ -1798,7 +1804,7 @@ export class TerminalManager {
       const contributedNames = new Set([...Object.keys(contribution?.env ?? {}), ...inlineSettingsEnvironmentNames(contribution?.args ?? [])]);
       const contributesEditor = ["VISUAL", "EDITOR"].some((key) => contributedNames.has(key));
       let draftEnvironment: Record<string, string> = {};
-      if (provider === "claude" && process.platform === "darwin" && !environmentWrapped && !contributesEditor && this.draftEditor) {
+      if (provider === "claude" && process.platform === "darwin" && !environmentWrapped && !contributesEditor && this.draftEditor && this.draftKeysOn()) {
         draftEnvironment = this.draftEditor.environment(id, baseEnvironment);
       } else {
         // Whatever ran in this card before has no helper now.

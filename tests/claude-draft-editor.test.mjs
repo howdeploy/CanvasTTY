@@ -404,3 +404,35 @@ test("TerminalManager gives local macOS Claude cards the helper and holds their 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("with the Claude draft keys turned off a new Claude keeps the person's editor and actions do nothing", {
+  skip: process.platform !== "darwin" && "the draft helper is macOS-only"
+}, async () => {
+  const { root, editor } = editorFixture();
+  const calls = [];
+  const writes = [];
+  let enabled = false;
+  const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true,
+    fakeSpawner(calls, { onWrite: (data) => writes.push(data) }));
+  terminals.configureDraftEditor(editor);
+  terminals.configureDraftKeys(() => enabled);
+  try {
+    const base = { profile: "yolo", cwd: process.cwd(), position: { x: 0, y: 0 } };
+    const off = terminals.create({ ...base, provider: "claude" });
+    const env = calls.at(-1).options.env;
+    assert.equal("CANVASTTY_DRAFT_DIR" in env, false);
+    assert.notEqual(env.VISUAL, `/bin/sh ${helperPath}`);
+    assert.equal(terminals.listMetadata().find((s) => s.id === off.id).claudeDraft, undefined);
+    assert.equal(await terminals.draftAction(off.id, "clear", ""), false);
+    // Turned on again: a new Claude gets the helper; while it is off, a running one's actions do nothing.
+    enabled = true;
+    const on = terminals.create({ ...base, provider: "claude" });
+    assert.equal(terminals.listMetadata().find((s) => s.id === on.id).claudeDraft, true);
+    enabled = false;
+    assert.equal(await terminals.draftAction(on.id, "clear", ""), false);
+    assert.deepEqual(writes, [], "no Ctrl+G was sent");
+  } finally {
+    for (const session of terminals.list()) terminals.dispose(session.id);
+    rmSync(root, { recursive: true, force: true });
+  }
+});

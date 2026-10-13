@@ -87,6 +87,8 @@ interface TerminalCardProps {
   focusActivation: FocusActivation;
   invertTerminalWheel: boolean;
   copyOnSelect: boolean;
+  /** Settings → Agents → Claude draft keys; off, the keys reach Claude as they are. */
+  claudeDraftKeys: boolean;
   captureCanvasWheelOverWidgets: boolean;
   focused: boolean;
   focusChangeSource: "explicit" | "hover";
@@ -167,6 +169,7 @@ function TerminalCardView({
   focusActivation,
   invertTerminalWheel,
   copyOnSelect,
+  claudeDraftKeys,
   captureCanvasWheelOverWidgets,
   focused,
   focusChangeSource,
@@ -216,8 +219,8 @@ function TerminalCardView({
   const sessionStartedAt = useRef(session.startedAt);
   sessionStartedAt.current = session.startedAt;
   const claudeDraftSelected = useRef(false);
-  const claudeDraftRef = useRef(session.claudeDraft === true);
-  claudeDraftRef.current = session.claudeDraft === true;
+  const claudeDraftRef = useRef(session.claudeDraft === true && claudeDraftKeys);
+  claudeDraftRef.current = session.claudeDraft === true && claudeDraftKeys;
   const restartAction = useRef<(resume?: boolean) => Promise<void>>(async () => undefined);
   const invertTerminalWheelRef = useRef(invertTerminalWheel);
   invertTerminalWheelRef.current = invertTerminalWheel;

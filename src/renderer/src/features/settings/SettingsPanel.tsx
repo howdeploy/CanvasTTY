@@ -901,6 +901,15 @@ export function SettingsPanel({
                   onChange={(value) => void onChange({ baseProtectionEnabled: value === "on" })}
                 />
               </SettingGroup>
+              {window.canvasTTY.window.isMacOS && (
+                <SettingGroup label={t(locale, "claudeDraftKeys")} description={t(locale, "claudeDraftKeysDescription")}>
+                  <Segmented
+                    value={settings.claudeDraftKeysEnabled ? "on" : "off"}
+                    options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
+                    onChange={(value) => void onChange({ claudeDraftKeysEnabled: value === "on" })}
+                  />
+                </SettingGroup>
+              )}
               <SettingGroup label={t(locale, "agentIsolation")} description={t(locale, "agentIsolationDescription")}>
                 <Segmented
                   value={settings.agentIsolation === "off" ? "off" : "on"}

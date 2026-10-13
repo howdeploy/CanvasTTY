@@ -2,6 +2,12 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+- **Agents you launch run as your terminal would run them.** The OS isolation layer (macOS `sandbox-exec`, Linux bubblewrap) now wraps only subagents, plugin-started agents and the auto of a CLI without an auto mode of its own (its approval bypass). Before, it wrapped every agent outside Manual, and Claude Code's Bash tool and external editor failed with `EPERM`: Claude keeps their files in `/tmp/claude-<uid>` whatever `TMPDIR` says. Inside the layer Claude Code may now write that folder. Base protection is unchanged and still on by default.
+- CanvasTTY no longer switches Claude Code's own sandbox on in Auto; it follows the person's Claude settings.
+- **Settings → Agents → Claude draft keys** (macOS, on by default): turns off CanvasTTY's whole-draft keys in Claude cards (Command+A, then copy, cut, delete or replace). Off, the keys reach Claude as they are, and new Claude sessions start with the person's own editor instead of CanvasTTY's `VISUAL`.
+
 ## 1.8.1
 
 - Fixed the Files reader rejecting all regular files on macOS: `/dev/fd` device paths are not treated as resolved file targets, and the opened file's identity is checked against its current path before reading. The 1.8.0 build was not published.

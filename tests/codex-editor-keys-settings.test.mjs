@@ -18,6 +18,9 @@ const OLD_DEFAULTS = { codexSubmit: "Enter", codexSubmitAlternate: "Ctrl+Enter",
 const codexKeys = (shortcuts) => Object.fromEntries(Object.keys(shortcuts).filter((action) => action.startsWith("codex"))
   .map((action) => [action, shortcuts[action]]));
 const withoutCodex = Object.fromEntries(Object.entries(keyboardPresetShortcuts("macos")).filter(([action]) => !action.startsWith("codex")));
+// The store's defaults follow the host; these tests need a macOS host's on any CI runner.
+const macDefaults = () => ({ ...new SettingsStore("unused-settings-test-path", "en").get(), keyboardPreset: "macos",
+  shortcuts: keyboardPresetShortcuts("macos", true) });
 
 test("Codex editor defaults: Command+Enter submits, Enter and Shift+Enter break the line, Command+A selects on macOS", () => {
   assert.deepEqual(codexKeys(keyboardPresetShortcuts("macos")), { ...NEW_DEFAULTS, codexSelectAll: "Meta+A" });
@@ -31,7 +34,7 @@ test("Codex editor defaults: Command+Enter submits, Enter and Shift+Enter break 
 });
 
 test("settings still at the old Codex defaults take the new ones; the extra submit keys are gone", () => {
-  const defaults = new SettingsStore("unused-settings-test-path", "en").get();
+  const defaults = macDefaults();
   const saved = { keyboardPreset: "custom", shortcuts: { ...withoutCodex, ...OLD_DEFAULTS } };
   const migrated = normalizeSettings(saved, defaults, "macos").shortcuts;
   assert.deepEqual(codexKeys(migrated), { ...NEW_DEFAULTS, codexSelectAll: "Meta+A" });
@@ -50,7 +53,7 @@ test("Linux and Windows settings are not migrated", () => {
 });
 
 test("customized Codex submit and line-break keys are kept through the migration", () => {
-  const defaults = new SettingsStore("unused-settings-test-path", "en").get();
+  const defaults = macDefaults();
   const custom = normalizeSettings({ shortcuts: { ...withoutCodex, ...OLD_DEFAULTS, codexSubmit: "Ctrl+Enter", codexSubmitAlternate: "" } },
     defaults, "macos").shortcuts;
   assert.deepEqual(codexKeys(custom), { ...NEW_DEFAULTS, codexSubmit: "Ctrl+Enter", codexNewline: "Shift+Enter",
@@ -68,7 +71,7 @@ test("customized Codex submit and line-break keys are kept through the migration
 });
 
 test("no Codex editor key can be switched off", () => {
-  const defaults = new SettingsStore("unused-settings-test-path", "en").get();
+  const defaults = macDefaults();
   const off = { codexSubmit: "", codexNewline: "", codexNewlineAlternate: "", codexSelectAll: "", codexSubmitAlternate: "",
     codexSubmitSuper: "", codexCopy: "", codexCut: "", codexClear: "" };
   const normalized = normalizeSettings({ shortcuts: { ...keyboardPresetShortcuts("macos"), ...off } }, defaults, "macos").shortcuts;
@@ -82,7 +85,7 @@ test("Codex draft copy, cut and delete clash with the Codex editor's keys, not w
   assert.equal(shortcutsShareContext("codexClear", "codexNewline"), true);
   assert.equal(shortcutsShareContext("codexCopy", "toggleDetail"), true);
   assert.equal(shortcutsShareContext("codexSubmit", "terminalCopy"), true, "the other Codex keys keep their context");
-  const defaults = new SettingsStore("unused-settings-test-path", "en").get();
+  const defaults = macDefaults();
   const { codexCopy, codexCut, codexClear, ...older } = keyboardPresetShortcuts("macos");
   const custom = normalizeSettings({ shortcuts: { ...older, codexNewline: "Backspace", codexNewlineAlternate: "Enter" } },
     defaults, "macos").shortcuts;

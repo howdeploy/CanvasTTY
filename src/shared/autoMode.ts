@@ -38,7 +38,7 @@ export interface AutoModeFlags {
   readonly plan: readonly string[];
 }
 
-/** The native flag table. Claude's sandbox is not a flag but an inline settings block (CLAUDE_SANDBOX_SETTINGS). */
+/** The native flag table. Claude's own sandbox follows the person's Claude settings; CanvasTTY does not switch it on. */
 export const AUTO_MODE: Readonly<Partial<Record<ProviderId, AutoModeFlags>>> = Object.freeze({
   // claude --help: `--permission-mode <mode>` (choices: "acceptEdits", "auto", "bypassPermissions", "manual",
   // "dontAsk", "plan").
@@ -64,15 +64,7 @@ export const AUTO_MODE: Readonly<Partial<Record<ProviderId, AutoModeFlags>>> = O
     acceptEdits: ["--permission-mode", "acceptEdits"],
     plan: ["--permission-mode", "plan"]
   }
-});
-
-/**
- * Claude Code's sandbox, merged into the one inline `--settings` CanvasTTY passes, where CanvasTTY's own isolation
- * layer does not run (macOS does not let a sandbox start inside another one). `autoAllowBashIfSandboxed` defaults to
- * true, which would run every sandboxed command without its classifier or a prompt, so it is off; so is
- * `allowUnsandboxedCommands`, which would let a command leave the sandbox.
- */
-export const CLAUDE_SANDBOX_SETTINGS = Object.freeze({ enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false });
+ });
 
 /**
  * Agents whose modes are a per-run permission configuration instead of a flag: OpenCode (1.18) has no auto flag, so its

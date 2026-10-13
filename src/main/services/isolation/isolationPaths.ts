@@ -32,6 +32,8 @@ export interface IsolationPathInput {
   socketFolders?: readonly string[];
   /** Plan: the project is readable only (the CLI's own folders stay writable). */
   readOnlyProject?: boolean;
+  /** The person's user id: Claude Code keeps its scratch files in /tmp/claude-<uid>, whatever TMPDIR says. */
+  uid?: number;
 }
 
 export interface IsolationPaths {
@@ -263,6 +265,8 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
       input.sessionTemp,
       ...ownFolders,
       ...ownWritable,
+      // Claude Code's Bash tool and external editor write here, not in TMPDIR; without it every shell call fails.
+      ...(input.provider === "claude" && input.uid !== undefined ? [join("/tmp", `claude-${input.uid}`)] : []),
       join(home, ".npm"), join(home, ".bun"), join(xdg.cache, "npm"), join(xdg.cache, "bun")
     ]),
     writableFiles: all(own.files),

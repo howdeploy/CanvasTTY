@@ -3,7 +3,7 @@ import { posix, win32 } from "node:path";
 import type { ProviderId, ShortcutBindings } from "../../shared/contracts.ts";
 import { normalizeThreadId } from "../../agent-runtime/runtime-protocol.mjs";
 import { openCodeAutoEnvironment, openCodeYoloEnvironment } from "./openCodeConfig.ts";
-import { autoKind, CLAUDE_SANDBOX_SETTINGS, profileArguments, type LaunchProfile } from "../../shared/autoMode.ts";
+import { autoKind, profileArguments, type LaunchProfile } from "../../shared/autoMode.ts";
 import { providerEffortArguments, providerModelArguments, type ReasoningEffort } from "../../shared/launchModel.ts";
 import {
   providerTerminalBatchCommandLine,
@@ -86,9 +86,6 @@ export function resolveTerminalLaunch(
         ...(options.cwd ? { cwd: options.cwd } : {})
       })
         : undefined;
-  // Claude Code's own sandbox where CanvasTTY's layer does not run (and the CLI has one on this platform).
-  const claudeSandbox = provider === "claude" && (profile === "auto" || profile === "acceptEdits") && options.isolated !== true
-    && (platform === "darwin" || platform === "linux");
   const providerArgs = [
     ...(provider === "codex" && agentBrowserArgs.includes("-c") ? ["--no-daemon"] : []),
     ...((profile === "yolo" || containedAuto) && provider !== "opencode" ? DANGEROUS_ARGUMENTS[provider] : []),
@@ -96,10 +93,8 @@ export function resolveTerminalLaunch(
       ? codexInsideIsolation(profile, options.thirdPartyModel === true)
       : profile !== "normal" && profile !== "yolo" && !containedAuto ? profileArguments(provider, profile, options.thirdPartyModel === true) : []),
     // Claude Code keeps only the last inline --settings: a plugin's (after the hooks') would silently drop the hooks.
-    // Its sandbox joins the same one.
-    ...(provider === "claude"
-      ? mergeClaudeInlineSettings(claudeSandbox ? [...agentBrowserArgs, "--settings", JSON.stringify({ sandbox: CLAUDE_SANDBOX_SETTINGS })] : agentBrowserArgs)
-      : agentBrowserArgs),
+    // Claude's own sandbox is left to the person's Claude settings.
+    ...(provider === "claude" ? mergeClaudeInlineSettings(agentBrowserArgs) : agentBrowserArgs),
     ...providerModelArguments(provider, options.model),
     ...providerEffortArguments(provider, options.effort),
     ...(options.resumePrevious ? resolveResumeArguments(provider, options.resumeThreadId) : []),

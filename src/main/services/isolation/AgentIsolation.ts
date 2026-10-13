@@ -92,8 +92,10 @@ export interface WrappedLaunch {
 /**
  * CanvasTTY's operating-system isolation layer around an agent's whole process tree (the CLI, its tools, MCP servers
  * and hooks): macOS seatbelt through sandbox-exec, Linux bubblewrap. It applies to agents the person did not launch
- * directly (subagents, plugin-started agents) and to every launch in a profile other than normal (manual), unless
- * the person turned it off. It fails closed: when it cannot be set up, the launch is refused, never run without it.
+ * directly (subagents, plugin-started agents) and to a CLI's contained auto (a bypass that exists only inside the
+ * layer), unless the person turned it off. An agent the person launched runs as their terminal would run it, with its
+ * own sandbox and the person's temporary folders. It fails closed: when it cannot be set up, the launch is refused,
+ * never run without it.
  */
 export class AgentIsolation {
   private readonly options: AgentIsolationOptions;
@@ -141,9 +143,9 @@ export class AgentIsolation {
     const { provider, delegated } = input;
     let profile = input.profile;
     if (provider === "terminal") return { apply: false, profile };
-    const wanted = delegated || profile !== "normal";
-    if (!wanted) return { apply: false, profile };
     const containedAuto = profile === "auto" && autoKind(provider) === "contained";
+    const wanted = delegated || containedAuto;
+    if (!wanted) return { apply: false, profile };
     if (input.environment?.isolated) {
       return { apply: false, profile, isolation: { state: "environment", reason: `Runs in ${input.environment.label}; the isolation layer of this computer does not apply there.` } };
     }
@@ -194,6 +196,7 @@ export class AgentIsolation {
         hostEnvironment: this.hostEnvironment,
         userDataPath: this.options.userDataPath,
         sessionId: launch.sessionId,
+        ...(typeof process.getuid === "function" ? { uid: process.getuid() } : {}),
         ...(launch.grantedPrivate ? { grantedPrivate: launch.grantedPrivate } : {}),
         ...(launch.ownWritable ? { ownWritable: launch.ownWritable } : {}),
         ...(launch.profile === "plan" ? { readOnlyProject: true } : {})

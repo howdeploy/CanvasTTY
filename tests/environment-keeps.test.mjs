@@ -46,7 +46,7 @@ function setup(t, keeps, project) {
     decide: (input) => new AgentIsolation({ userDataPath: "/u", enabled: () => true, platform: "darwin", exists: () => true }).decide(input),
     wrap: (launch) => ({ command: "/usr/bin/sandbox-exec", args: ["-f", "/p.sb", launch.command, ...launch.args], env: launch.env, cleanup() {} })
   });
-  const create = (profile) => terminals.create({ provider: "codex", profile, cwd: project, position: at, environment: { pluginId: PLUGIN, kind: "box" } });
+  const create = (profile, provider = "codex") => terminals.create({ provider, profile, cwd: project, position: at, environment: { pluginId: PLUGIN, kind: "box" } });
   const card = (id) => terminals.list().find((session) => session.id === id);
   return { terminals, calls, create, card };
 }
@@ -81,10 +81,12 @@ test("an isolated environment (container, remote) is not wrapped again; a local 
   const inside = container.create("auto");
   await waitFor(() => container.calls.length === 1);
   assert.equal(container.calls[0].command, WRAPPER, "no second sandbox around a container");
-  assert.equal(container.card(inside.id).isolation.state, "environment");
+  // The person's own auto needs no layer, so the card has nothing to say about it.
+  assert.equal(container.card(inside.id).isolation, undefined);
   // No shell guard is claimed for a wrapped launch (OpenCode would otherwise run commands without asking).
   const local = setup(t, { launch: true }, project);
-  const worktree = local.create("auto");
+  // The person's own auto runs as their terminal would; a contained auto (a bypass) runs only inside the layer.
+  const worktree = local.create("auto", "qwen");
   await waitFor(() => local.calls.length === 1);
   assert.equal(local.calls[0].command, "/usr/bin/sandbox-exec", "the local environment's command runs inside the layer");
   assert.deepEqual(local.calls[0].args.slice(0, 3), ["-f", "/p.sb", WRAPPER]);

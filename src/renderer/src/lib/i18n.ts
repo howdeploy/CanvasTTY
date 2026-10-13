@@ -139,6 +139,13 @@ const ru = {
   keyboardSubmitAlternate: "Отправка — дополнительное сочетание",
   keyboardSubmitSuper: "Отправка — Command/Super",
   keyboardSelectAll: "Выделить весь черновик",
+  keyboardClaude: "Редактор Claude",
+  keyboardClaudeNewline: "Перенос строки",
+  keyboardClaudeNewlineAlternate: "Перенос строки — дополнительное сочетание",
+  keyboardClaudeSelectAll: "Выделить черновик",
+  keyboardClaudeCopy: "Копировать черновик",
+  keyboardClaudeCut: "Вырезать черновик",
+  keyboardClaudeClear: "Удалить черновик",
   appearance: "Оформление",
   agents: "Агенты",
   about: "О приложении",
@@ -1029,8 +1036,7 @@ const ru = {
   filesError: "Не удалось прочитать",
   baseProtection: "Базовая защита",
   baseProtectionDescription: "Запрещает агентам (Claude Code, Codex, Qwen Code, OpenCode на этом компьютере) sudo, curl | sh, запуск скачанного, команды для дисков, форк-бомбы и запись или удаление вне рабочей папки, включая /tmp. Только запрещает, ничего не разрешает. Действует для агентов, запущенных после изменения.",
-  claudeDraftKeys: "Клавиши черновика Claude",
-  claudeDraftKeysDescription: "macOS: в карточке Claude Code Command+A выделяет весь черновик, а Command+C, Command+X, Delete, Command+V и набор текста копируют, вырезают, удаляют или заменяют его. Работает через внешний редактор Claude (Ctrl+G), поэтому CanvasTTY подставляет Claude свой VISUAL. Выключено: клавиши уходят в Claude как есть, новые сессии Claude запускаются с вашим редактором."
+  claudeDraftKeys: "Клавиши черновика Claude"
 } as const;
 
 const en: Record<keyof typeof ru, string> = {
@@ -1172,6 +1178,13 @@ const en: Record<keyof typeof ru, string> = {
   keyboardSubmitAlternate: "Submit — alternate shortcut",
   keyboardSubmitSuper: "Submit — Command/Super shortcut",
   keyboardSelectAll: "Select entire draft",
+  keyboardClaude: "Claude editor",
+  keyboardClaudeNewline: "Line break",
+  keyboardClaudeNewlineAlternate: "Line break — alternate shortcut",
+  keyboardClaudeSelectAll: "Select draft",
+  keyboardClaudeCopy: "Copy draft",
+  keyboardClaudeCut: "Cut draft",
+  keyboardClaudeClear: "Delete draft",
   appearance: "Appearance",
   agents: "Agents",
   about: "About",
@@ -2062,8 +2075,7 @@ const en: Record<keyof typeof ru, string> = {
   filesError: "Failed to read",
   baseProtection: "Base protection",
   baseProtectionDescription: "Blocks agents (Claude Code, Codex, Qwen Code, OpenCode on this computer) from sudo, curl | sh, running downloads, disk commands, fork bombs, and writing or deleting outside the working folder, /tmp included. It only blocks and never allows. Applies to agents started after a change.",
-  claudeDraftKeys: "Claude draft keys",
-  claudeDraftKeysDescription: "macOS: in a Claude Code card, Command+A selects the whole prompt draft, and Command+C, Command+X, Delete, Command+V and typing copy, cut, delete or replace it. It works through Claude's external editor (Ctrl+G), so CanvasTTY gives Claude its own VISUAL. Off: the keys reach Claude as they are, and new Claude sessions start with your editor."
+  claudeDraftKeys: "Claude draft keys"
 };
 
 export type TranslationKey = keyof typeof ru;

@@ -35,8 +35,8 @@ import { attachTerminalCopyOnSelect } from "./terminalCopyOnSelect";
 import {
   CODEX_SELECT_ALL_SEQUENCE,
   SHIFT_ENTER_SEQUENCE,
-  claudeCommandEnterSequence,
   claudeDraftKeyIntent,
+  claudeEnterSequence,
   claudePromptRows,
   codexEnterSequence,
   codexShortcutSequence,
@@ -221,6 +221,9 @@ function TerminalCardView({
   const claudeDraftSelected = useRef(false);
   const claudeDraftRef = useRef(session.claudeDraft === true && claudeDraftKeys);
   claudeDraftRef.current = session.claudeDraft === true && claudeDraftKeys;
+  // The Claude editor's Enter keys need no draft helper: they follow the setting in every Claude card.
+  const claudeKeysRef = useRef(claudeDraftKeys);
+  claudeKeysRef.current = claudeDraftKeys;
   const restartAction = useRef<(resume?: boolean) => Promise<void>>(async () => undefined);
   const invertTerminalWheelRef = useRef(invertTerminalWheel);
   invertTerminalWheelRef.current = invertTerminalWheel;
@@ -632,9 +635,8 @@ function TerminalCardView({
       if (claudeDraftSelected.current && (draftSelectedAt !== sessionStartedAt.current || !claudeDraftRef.current)) {
         deselectClaudeDraft();
       }
-      let draftIntent = claudeDraftKeyIntent(
-        event, window.canvasTTY.window.isMacOS && claudeDraftRef.current, session.provider, claudeDraftSelected.current
-      );
+      let draftIntent = claudeDraftKeyIntent(event, window.canvasTTY.window.isMacOS && claudeDraftRef.current,
+        session.provider, claudeDraftSelected.current, shortcutsRef.current);
       // The prompt gave way to a dialog: the key is the dialog's, not an edit of the draft.
       if (draftIntent !== null && draftIntent !== "select" && draftIntent !== "swallow"
         && claudeDraftSelected.current && !visiblePromptRows()) draftIntent = "deselect";
@@ -672,8 +674,10 @@ function TerminalCardView({
         window.canvasTTY.terminal.input(session.id, codexEnter);
         return false;
       }
-      const claudeEnter = claudeCommandEnterSequence(event, window.canvasTTY.window.isMacOS, session.provider);
-      if (claudeEnter !== null) {
+      const claudeEnter = claudeKeysRef.current
+        ? claudeEnterSequence(event, window.canvasTTY.window.isMacOS, session.provider, shortcutsRef.current) : null;
+      // Only Claude's prompt box takes the editor's submit and newline; a dialog or a menu keeps Enter.
+      if (claudeEnter !== null && visiblePromptRows()) {
         event.preventDefault();
         event.stopPropagation();
         window.canvasTTY.terminal.input(session.id, claudeEnter);

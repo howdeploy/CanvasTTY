@@ -52,6 +52,7 @@ import {
   DEFAULT_HOME_LAYOUT,
   DEFAULT_RADIAL_LAUNCHER_ITEMS,
   keyboardPresetShortcuts,
+  REQUIRED_SHORTCUTS,
   shortcutsShareContext,
   DEFAULT_UI_SCALE,
   HOME_GRID_MAX_COLUMNS,
@@ -1170,7 +1171,7 @@ function normalizeShortcuts(candidate: unknown, fallback: ShortcutBindings): Sho
     const binding = source[action];
     const keyboardOnly = !["home", "renameWindow", "toggleFullscreen"].includes(action);
     if (isValidShortcut(binding) && !(keyboardOnly && binding.includes("Mouse"))) shortcuts[action] = binding;
-    else if (binding === "" && !["codexSubmit", "codexNewline", "codexSelectAll"].includes(action)) shortcuts[action] = "";
+    else if (binding === "" && !REQUIRED_SHORTCUTS.includes(action)) shortcuts[action] = "";
   }
 
   const accepted: Array<keyof ShortcutBindings> = [];
@@ -1180,7 +1181,7 @@ function normalizeShortcuts(candidate: unknown, fallback: ShortcutBindings): Sho
       && shortcuts[action].toLowerCase() === shortcuts[other].toLowerCase());
     if (conflict) {
       // Preserve old customized actions; newly added defaults can be rebound in Settings.
-      if (source[action] === undefined && !action.startsWith("codex")) shortcuts[action] = "";
+      if (source[action] === undefined && !action.startsWith("codex") && !REQUIRED_SHORTCUTS.includes(action)) shortcuts[action] = "";
       else return { ...fallback };
     } else accepted.push(action);
   }

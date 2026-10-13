@@ -45,22 +45,41 @@ export function codexEnterSequence(event: TerminalKeyEvent, provider: string): s
   return modifiers === 1 ? "\r" : `\u001b[13;${modifiers}u`;
 }
 
-/** Command+Enter for a macOS Claude card; xterm would send it as a plain carriage return. */
-export function claudeCommandEnterSequence(event: TerminalKeyEvent, isMacOS: boolean, provider: string): string | null {
-  if (!isMacOS || provider !== "claude" || event.type !== "keydown" || event.isComposing
-    || !(event.key === "Enter" || event.code === "Enter" || event.code === "NumpadEnter")
-    || !event.metaKey || event.shiftKey || event.ctrlKey || event.altKey) return null;
-  return "\u001b[13;9u";
+/** True for the Claude editor keys on a macOS Claude card ("Claude draft keys" on); other platforms keep theirs. */
+function claudeEditorKey(event: TerminalKeyEvent, isMacOS: boolean, provider: string): boolean {
+  return isMacOS && provider === "claude" && event.type === "keydown" && !event.isComposing;
 }
 
 /**
- * What a key does to a macOS Claude card's whole-draft selection (Command+A). Claude has
- * no selection of its own, so CanvasTTY keeps it: Command+C copies the draft, Command+X
- * cuts it, typing, Command+V, Backspace or Delete replace it, any other key drops the
- * selection and reaches Claude as usual. Without a selection Command+X does nothing.
+ * What the Claude editor's submit and newline keys send while Claude's prompt box is on screen: submit is
+ * Claude's own Enter, newline is Shift+Enter. The caller checks the prompt box; elsewhere (dialogs, menus
+ * without a prompt) Enter keeps its usual meaning. null: not one of these keys.
+ */
+export function claudeEnterSequence(
+  event: TerminalKeyEvent,
+  isMacOS: boolean,
+  provider: string,
+  bindings: Pick<ShortcutBindings, "claudeSubmit" | "claudeNewline" | "claudeNewlineAlternate">
+): string | null {
+  if (!claudeEditorKey(event, isMacOS, provider)) return null;
+  if (bindings.claudeSubmit && matchesShortcut(event, bindings.claudeSubmit)) return "\r";
+  if ([bindings.claudeNewline, bindings.claudeNewlineAlternate].some((binding) => binding && matchesShortcut(event, binding))) {
+    return SHIFT_ENTER_SEQUENCE;
+  }
+  return null;
+}
+
+/**
+ * What a key does to a macOS Claude card's whole-draft selection (Claude editor "select" key, Command+A by
+ * default). Claude has no selection of its own, so CanvasTTY keeps it: the copy key copies the draft, the cut
+ * key cuts it, typing, the terminal paste key or the delete key replace it, any other key drops the selection
+ * and reaches Claude as usual. Without a selection the cut key does nothing. An empty binding is switched off.
  * null: not a draft key, handle the event normally.
  */
 export type ClaudeDraftKeyIntent = "select" | "copy" | "cut" | "clear" | "replace" | "paste" | "swallow" | "deselect";
+
+export type ClaudeDraftBindings = Pick<ShortcutBindings,
+  "claudeSelectAll" | "claudeCopy" | "claudeCut" | "claudeClear" | "terminalPaste">;
 
 const MODIFIER_KEYS = new Set(["Shift", "Meta", "Alt", "Control", "CapsLock", "Fn"]);
 
@@ -68,20 +87,21 @@ export function claudeDraftKeyIntent(
   event: TerminalKeyEvent,
   isMacOS: boolean,
   provider: string,
-  selected: boolean
+  selected: boolean,
+  bindings: ClaudeDraftBindings
 ): ClaudeDraftKeyIntent | null {
-  if (!isMacOS || provider !== "claude" || event.type !== "keydown" || event.isComposing
-    || MODIFIER_KEYS.has(event.key)) return null;
-  const command = event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
-  // A held shortcut repeats; only its first press acts, so holding Command+X cannot fire a burst of cuts.
+  if (!claudeEditorKey(event, isMacOS, provider) || MODIFIER_KEYS.has(event.key)) return null;
+  const pressed = (binding: string) => binding !== "" && matchesShortcut(event, binding);
+  // A held shortcut repeats; only its first press acts, so holding the cut key cannot fire a burst of cuts.
   const once = (intent: ClaudeDraftKeyIntent): ClaudeDraftKeyIntent => event.repeat ? "swallow" : intent;
-  if (command && matchesPhysicalOrLayoutKey(event, "KeyA", "a")) return once("select");
-  if (command && matchesPhysicalOrLayoutKey(event, "KeyX", "x")) return selected ? once("cut") : "swallow";
+  if (pressed(bindings.claudeSelectAll)) return once("select");
+  if (pressed(bindings.claudeCut)) return selected ? once("cut") : "swallow";
   if (!selected) return null;
-  if (command && matchesPhysicalOrLayoutKey(event, "KeyC", "c")) return once("copy");
-  if (command && matchesPhysicalOrLayoutKey(event, "KeyV", "v")) return once("paste");
+  if (pressed(bindings.claudeCopy)) return once("copy");
+  if (pressed(bindings.terminalPaste)) return once("paste");
+  // The Mac delete key is Backspace; forward delete (fn+delete) clears the selection with it.
+  if (pressed(bindings.claudeClear) || (bindings.claudeClear === "Backspace" && pressed("Delete"))) return "clear";
   if (event.metaKey || event.ctrlKey) return "deselect";
-  if (event.key === "Backspace" || event.key === "Delete") return "clear";
   return [...event.key].length === 1 ? "replace" : "deselect";
 }
 

@@ -49,7 +49,16 @@ export function ShortcutReference({ settings, onClose }: {
       [[bindings.codexSubmitSuper], "keyboardSubmitSuper"],
       [[bindings.codexNewline], "shortcutLineBreak"],
       [[bindings.codexSelectAll], "keyboardSelectAll"]
-    ] }
+    ] },
+    ...(mac && settings.claudeDraftKeysEnabled ? [{ title: "keyboardClaude" as const, shortcuts: [
+      [[bindings.claudeSubmit], "keyboardSubmit"],
+      [[bindings.claudeNewline], "keyboardClaudeNewline"],
+      [[bindings.claudeNewlineAlternate], "keyboardClaudeNewlineAlternate"],
+      [[bindings.claudeSelectAll], "keyboardClaudeSelectAll"],
+      [[bindings.claudeCopy], "keyboardClaudeCopy"],
+      [[bindings.claudeCut], "keyboardClaudeCut"],
+      [[bindings.claudeClear], "keyboardClaudeClear"]
+    ] as [string[], TranslationKey][] }] : [])
   ];
   const contexts: [string[], TranslationKey][] = [
     [["↑ ↓", "Enter"], "shortcutPaletteNavigation"],

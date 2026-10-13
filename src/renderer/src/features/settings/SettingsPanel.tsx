@@ -52,6 +52,7 @@ import type {
 import {
   BROWSER_PROVIDER_COLORS,
   keyboardPresetShortcuts,
+  REQUIRED_SHORTCUTS,
   shortcutsShareContext,
   BUNDLED_CANVAS_BACKGROUND_IDS,
   CANVAS_LAUNCHER_ITEMS,
@@ -130,7 +131,10 @@ const SHORTCUT_LABELS = {
   terminalCopy: "shortcutCopySelection", terminalPaste: "shortcutPaste", terminalSearch: "terminalSearch",
   terminalRestart: "shortcutRestartExited", terminalPageUp: "keyboardPageUp", terminalPageDown: "keyboardPageDown",
   codexSubmit: "keyboardSubmit", codexSubmitAlternate: "keyboardSubmitAlternate", codexSubmitSuper: "keyboardSubmitSuper",
-  codexNewline: "shortcutLineBreak", codexSelectAll: "keyboardSelectAll"
+  codexNewline: "shortcutLineBreak", codexSelectAll: "keyboardSelectAll",
+  claudeSubmit: "keyboardSubmit", claudeNewline: "keyboardClaudeNewline", claudeNewlineAlternate: "keyboardClaudeNewlineAlternate",
+  claudeSelectAll: "keyboardClaudeSelectAll",
+  claudeCopy: "keyboardClaudeCopy", claudeCut: "keyboardClaudeCut", claudeClear: "keyboardClaudeClear"
 } as const;
 
 const SETTINGS_SECTIONS: ReadonlyArray<{
@@ -603,10 +607,20 @@ export function SettingsPanel({
                 {([
                   ["keyboardCanvas", ["home", "renameWindow", "toggleFullscreen", "commandPalette", "openSettings", "focusUp", "focusDown", "focusLeft", "focusRight", "toggleDetail"]],
                   ["keyboardTerminal", ["terminalCopy", "terminalPaste", "terminalSearch", "terminalRestart", "terminalPageUp", "terminalPageDown"]],
-                  ["keyboardCodex", ["codexSubmit", "codexSubmitAlternate", "codexSubmitSuper", "codexNewline", "codexSelectAll"]]
-                ] as const).map(([group, actions]) => (
+                  ["keyboardCodex", ["codexSubmit", "codexSubmitAlternate", "codexSubmitSuper", "codexNewline", "codexSelectAll"]],
+                  ["keyboardClaude", ["claudeSubmit", "claudeNewline", "claudeNewlineAlternate", "claudeSelectAll", "claudeCopy", "claudeCut", "claudeClear"]]
+                ] as const).filter(([group]) => group !== "keyboardClaude" || window.canvasTTY.window.isMacOS).map(([group, actions]) => (
                   <div key={group}>
                     <h3>{t(locale, group)}</h3>
+                    {group === "keyboardClaude" && (
+                      <SettingGroup label={t(locale, "claudeDraftKeys")}>
+                        <Segmented
+                          value={settings.claudeDraftKeysEnabled ? "on" : "off"}
+                          options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
+                          onChange={(value) => void onChange({ claudeDraftKeysEnabled: value === "on" })}
+                        />
+                      </SettingGroup>
+                    )}
                     {actions.map((action) => (
                       <ShortcutRow
                         key={action}
@@ -617,7 +631,7 @@ export function SettingsPanel({
                         onKeyDown={(event) => captureShortcut(action, event)}
                         onPointerDown={(event) => capturePointerShortcut(action, event)}
                         disableLabel={t(locale, "disabled")}
-                        onDisable={["codexSubmit", "codexNewline", "codexSelectAll"].includes(action) ? undefined : () => {
+                        onDisable={REQUIRED_SHORTCUTS.includes(action) ? undefined : () => {
                           setCapturing(null);
                           setShortcutError(null);
                           void onChange({ keyboardPreset: "custom", shortcuts: { ...settings.shortcuts, [action]: "" } });
@@ -901,15 +915,6 @@ export function SettingsPanel({
                   onChange={(value) => void onChange({ baseProtectionEnabled: value === "on" })}
                 />
               </SettingGroup>
-              {window.canvasTTY.window.isMacOS && (
-                <SettingGroup label={t(locale, "claudeDraftKeys")} description={t(locale, "claudeDraftKeysDescription")}>
-                  <Segmented
-                    value={settings.claudeDraftKeysEnabled ? "on" : "off"}
-                    options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
-                    onChange={(value) => void onChange({ claudeDraftKeysEnabled: value === "on" })}
-                  />
-                </SettingGroup>
-              )}
               <SettingGroup label={t(locale, "agentIsolation")} description={t(locale, "agentIsolationDescription")}>
                 <Segmented
                   value={settings.agentIsolation === "off" ? "off" : "on"}

@@ -192,6 +192,14 @@ export interface ShortcutBindings {
   codexSubmitSuper: string;
   codexNewline: string;
   codexSelectAll: string;
+  /** macOS Claude cards while Claude's prompt box is on screen ("Claude draft keys" on). */
+  claudeSubmit: string;
+  claudeNewline: string;
+  claudeNewlineAlternate: string;
+  claudeSelectAll: string;
+  claudeCopy: string;
+  claudeCut: string;
+  claudeClear: string;
 }
 
 export const DEFAULT_SHORTCUTS: ShortcutBindings = {
@@ -215,7 +223,14 @@ export const DEFAULT_SHORTCUTS: ShortcutBindings = {
   codexSubmitAlternate: "Ctrl+Enter",
   codexSubmitSuper: "Meta+Enter",
   codexNewline: "Shift+Enter",
-  codexSelectAll: "Ctrl+A"
+  codexSelectAll: "Ctrl+A",
+  claudeSubmit: "Meta+Enter",
+  claudeNewline: "Enter",
+  claudeNewlineAlternate: "Shift+Enter",
+  claudeSelectAll: "Meta+A",
+  claudeCopy: "Meta+C",
+  claudeCut: "Meta+X",
+  claudeClear: "Backspace"
 };
 
 export function keyboardPresetShortcuts(preset: Exclude<KeyboardPreset, "custom">): ShortcutBindings {
@@ -230,10 +245,17 @@ export function keyboardPresetShortcuts(preset: Exclude<KeyboardPreset, "custom"
   };
 }
 
+/** Claude editor actions are a context of their own: they act only while Claude's prompt box is on screen. */
 export function shortcutsShareContext(left: ShortcutAction, right: ShortcutAction): boolean {
-  const terminal = (action: ShortcutAction) => action.startsWith("terminal") || action.startsWith("codex");
-  return left === "toggleDetail" || right === "toggleDetail" || terminal(left) === terminal(right);
+  const context = (action: ShortcutAction) => action.startsWith("claude") ? "claude"
+    : action.startsWith("terminal") || action.startsWith("codex") ? "terminal" : "canvas";
+  return left === "toggleDetail" || right === "toggleDetail" || context(left) === context(right);
 }
+
+/** Editor actions that always keep a key: without them the prompt cannot be sent, broken or selected. */
+export const REQUIRED_SHORTCUTS: readonly ShortcutAction[] = [
+  "codexSubmit", "codexNewline", "codexSelectAll", "claudeSubmit", "claudeNewline", "claudeNewlineAlternate", "claudeSelectAll"
+];
 
 export const INITIAL_TERMINAL_COLS = 80;
 export const INITIAL_TERMINAL_ROWS = 24;

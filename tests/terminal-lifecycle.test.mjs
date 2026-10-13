@@ -42,6 +42,7 @@ function terminalKeyHandler(source, scope) {
     terminalHost: { current: null },
     claudeDraftSelected: { current: false },
     claudeDraftRef: { current: scope.session?.claudeDraft === true },
+    claudeKeysRef: { current: true },
     document: { createElement: () => ({ className: "", hidden: false, style: {}, parentElement: null }) },
     screen: undefined,
     ...scope,
@@ -118,26 +119,70 @@ test("Command+A dispatches native Codex selection and leaves other providers and
   assert.deepEqual(calls, []);
 });
 
-test("macOS Claude keeps Enter, Shift+Enter and Command+Enter distinct", async () => {
+// A fake xterm whose screen shows `rows()`: Claude's prompt box is the part between the last two rules.
+const screenTerminal = (rows) => ({
+  get rows() { return rows().length; },
+  buffer: { active: { viewportY: 0, getLine: (index) => ({ translateToString: () => rows()[index] ?? "" }) } },
+  hasSelection: () => false
+});
+
+test("macOS Claude editor: Enter breaks the line and Command+Enter submits only while the prompt box is on screen", async () => {
   const source = await readFile(terminalCardPath, "utf8");
   const writes = [];
   const window = { canvasTTY: {
     window: { isMacOS: true },
     terminal: { input: (id, sequence) => writes.push([id, sequence]) }
   } };
-  const key = (handler, modifiers) => handler({ type: "keydown", key: "Enter", code: "Enter", ctrlKey: false,
+  const rule = "─".repeat(40);
+  let rows = ["history", rule, "❯ draft", rule, "  footer"];
+  const key = (handler, modifiers, code = "Enter") => handler({ type: "keydown", key: "Enter", code, ctrlKey: false,
     altKey: false, shiftKey: false, metaKey: false, ...modifiers, preventDefault() {}, stopPropagation() {} });
-  const claude = terminalKeyHandler(source, { window, session: { id: "claude", provider: "claude" } });
-  assert.equal(key(claude, {}), true, "plain Enter stays xterm's carriage return");
-  assert.equal(key(claude, { shiftKey: true }), false);
+  const claudeKeysRef = { current: true };
+  const shortcutsRef = { current: keyboardPresetShortcuts("macos") };
+  const claude = terminalKeyHandler(source, { window, session: { id: "claude", provider: "claude" },
+    terminal: screenTerminal(() => rows), claudeKeysRef, shortcutsRef });
+  assert.equal(key(claude, {}), false);
+  assert.equal(key(claude, {}, "NumpadEnter"), false);
   assert.equal(key(claude, { metaKey: true }), false);
+  assert.equal(key(claude, { shiftKey: true }), false, "Shift+Enter stays a line break");
   assert.equal(key(claude, { metaKey: true, isComposing: true }), true);
-  assert.deepEqual(writes.splice(0), [["claude", "\u001b[13;2u"], ["claude", "\u001b[13;9u"]]);
+  assert.equal(key(claude, { type: "keyup" }), true);
+  assert.deepEqual(writes.splice(0), [["claude", "\u001b[13;2u"], ["claude", "\u001b[13;2u"], ["claude", "\r"],
+    ["claude", "\u001b[13;2u"]]);
+
+  // A dialog in place of the prompt box keeps Enter: it answers the dialog.
+  rows = ["Do you want to proceed?", "❯ 1. Yes", "  2. No"];
+  assert.equal(key(claude, {}), true, "plain Enter stays xterm's carriage return");
+  assert.equal(key(claude, { metaKey: true }), true);
+  assert.deepEqual(writes.splice(0), []);
+
+  // Rebinding applies at once, in the open card.
+  rows = ["history", rule, "❯ draft", rule];
+  shortcutsRef.current = { ...shortcutsRef.current, claudeSubmit: "Ctrl+Enter", claudeNewline: "Alt+Enter",
+    claudeNewlineAlternate: "Shift+Meta+Enter" };
+  assert.equal(key(claude, {}), true, "an unbound plain Enter is Claude's own submit");
+  assert.equal(key(claude, { ctrlKey: true }), false);
+  assert.equal(key(claude, { altKey: true }), false);
+  assert.equal(key(claude, { metaKey: true, shiftKey: true }), false, "the alternate line break");
+  assert.deepEqual(writes.splice(0), [["claude", "\r"], ["claude", "\u001b[13;2u"], ["claude", "\u001b[13;2u"]]);
+  shortcutsRef.current = keyboardPresetShortcuts("macos");
+
+  // Switched off: no Claude editor keys at all; the generic Shift+Enter line break stays.
+  claudeKeysRef.current = false;
+  assert.equal(key(claude, {}), true);
+  assert.equal(key(claude, { metaKey: true }), true);
+  assert.equal(key(claude, { shiftKey: true }), false);
+  assert.deepEqual(writes.splice(0), [["claude", "\u001b[13;2u"]]);
+  claudeKeysRef.current = true;
+
   const linux = terminalKeyHandler(source, { window: { canvasTTY: { ...window.canvasTTY, window: { isMacOS: false } } },
-    session: { id: "claude", provider: "claude" } });
-  assert.equal(key(linux, { metaKey: true }), true, "other platforms keep their own Command+Enter");
-  const terminal = terminalKeyHandler(source, { window, session: { id: "shell", provider: "terminal" } });
-  assert.equal(key(terminal, { metaKey: true }), true);
+    session: { id: "claude", provider: "claude" }, terminal: screenTerminal(() => rows) });
+  assert.equal(key(linux, {}), true, "other platforms keep their own Enter");
+  assert.equal(key(linux, { metaKey: true }), true);
+  const shell = terminalKeyHandler(source, { window, session: { id: "shell", provider: "terminal" },
+    terminal: screenTerminal(() => rows) });
+  assert.equal(key(shell, {}), true);
+  assert.equal(key(shell, { metaKey: true }), true);
   assert.deepEqual(writes, []);
 });
 
@@ -216,7 +261,7 @@ test("Command+A selects a macOS Claude draft that copy, cut, typing, paste and d
   assert.equal(highlight(), null);
   key("a", "KeyA", { metaKey: true });
   assert.equal(key("Enter", "Enter", { metaKey: true }), false);
-  assert.deepEqual(calls.splice(0), [["input", "\u001b[13;9u"]], "Command+Enter drops the selection, then sends");
+  assert.deepEqual(calls.splice(0), [["input", "\r"]], "Command+Enter drops the selection, then submits");
   assert.equal(highlight(), null);
   key("a", "KeyA", { metaKey: true });
   mouseDown();
@@ -269,11 +314,34 @@ test("Claude prompt rows are found between the last two rules, and nothing is gu
   assert.equal(terminalShortcuts.claudePromptRows(["❯ x", rule]), null);
   assert.equal(terminalShortcuts.claudePromptRows([rule, rule]), null);
   const commandA = { type: "keydown", key: "a", code: "KeyA", metaKey: true, ctrlKey: false, shiftKey: false, altKey: false };
+  const mac = keyboardPresetShortcuts("macos");
   for (const provider of ["codex", "terminal"]) {
-    assert.equal(terminalShortcuts.claudeDraftKeyIntent(commandA, true, provider, false), null);
+    assert.equal(terminalShortcuts.claudeDraftKeyIntent(commandA, true, provider, false, mac), null);
   }
-  assert.equal(terminalShortcuts.claudeDraftKeyIntent(commandA, false, "claude", false), null, "macOS only");
-  assert.equal(terminalShortcuts.claudeDraftKeyIntent({ ...commandA, isComposing: true }, true, "claude", false), null);
+  assert.equal(terminalShortcuts.claudeDraftKeyIntent(commandA, false, "claude", false, mac), null, "macOS only");
+  assert.equal(terminalShortcuts.claudeDraftKeyIntent({ ...commandA, isComposing: true }, true, "claude", false, mac), null);
+});
+
+test("Claude draft keys follow their bindings; an empty binding is switched off", () => {
+  const press = (key, code, modifiers = {}) => ({ type: "keydown", key, code, metaKey: false, ctrlKey: false,
+    shiftKey: false, altKey: false, ...modifiers });
+  const intent = (event, selected, bindings) => terminalShortcuts.claudeDraftKeyIntent(event, true, "claude", selected, bindings);
+  const mac = keyboardPresetShortcuts("macos");
+  assert.equal(intent(press("ф", "KeyA", { metaKey: true }), false, mac), "select", "the physical key, any layout");
+  assert.equal(intent(press("Backspace", "Backspace"), true, mac), "clear");
+  assert.equal(intent(press("Delete", "Delete"), true, mac), "clear", "forward delete goes with the Mac delete key");
+  assert.equal(intent(press("Backspace", "Backspace"), false, mac), null, "without a selection deletion is Claude's");
+  const custom = { ...mac, claudeSelectAll: "Shift+Meta+A", claudeCopy: "", claudeCut: "Ctrl+X", claudeClear: "Delete" };
+  assert.equal(intent(press("a", "KeyA", { metaKey: true }), false, custom), null, "the old key is free again");
+  assert.equal(intent(press("A", "KeyA", { metaKey: true, shiftKey: true }), false, custom), "select");
+  assert.equal(intent(press("c", "KeyC", { metaKey: true }), true, custom), "deselect", "copy switched off");
+  assert.equal(intent(press("x", "KeyX", { ctrlKey: true }), true, custom), "cut");
+  assert.equal(intent(press("x", "KeyX", { metaKey: true }), true, custom), "deselect");
+  assert.equal(intent(press("Delete", "Delete"), true, custom), "clear");
+  assert.equal(intent(press("Backspace", "Backspace"), true, custom), "deselect", "Backspace edits as usual");
+  assert.equal(intent(press("v", "KeyV", { metaKey: true }), true, { ...mac, terminalPaste: "Ctrl+Shift+V" }), "deselect",
+    "paste follows the terminal Paste key");
+  assert.equal(intent(press("V", "KeyV", { ctrlKey: true, shiftKey: true }), true, { ...mac, terminalPaste: "Ctrl+Shift+V" }), "paste");
 });
 
 test("clipboard replies cannot paste into a restarted or exited session while normal text and image paste stay intact", async () => {

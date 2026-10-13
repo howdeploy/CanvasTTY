@@ -75,6 +75,8 @@ export interface IsolationLaunch {
   env: Record<string, string>;
   /** Folders under CanvasTTY's private data this launch was handed (its control grant, its account home). */
   grantedPrivate?: readonly string[];
+  /** Folders under CanvasTTY's private data this launch may also write (its Claude draft folder). */
+  ownWritable?: readonly string[];
   /** The launch profile: in plan the project is not writable. */
   profile?: LaunchProfile;
 }
@@ -193,6 +195,7 @@ export class AgentIsolation {
         userDataPath: this.options.userDataPath,
         sessionId: launch.sessionId,
         ...(launch.grantedPrivate ? { grantedPrivate: launch.grantedPrivate } : {}),
+        ...(launch.ownWritable ? { ownWritable: launch.ownWritable } : {}),
         ...(launch.profile === "plan" ? { readOnlyProject: true } : {})
       });
       // `git init` and `git clone` copy git's template, sample hooks included: an empty one writes no hooks.

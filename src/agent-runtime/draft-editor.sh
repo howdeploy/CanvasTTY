@@ -5,36 +5,49 @@
 # A cancel.<n> stands for a Ctrl+G that Claude took too long to pick up: when no request
 # is waiting, one is used up and nothing changes, so a late Ctrl+G opens no editor.
 # With neither, this is an ordinary Ctrl+G and the person's own editor opens.
+#
+# A background Claude session may be shown by another card than the one that started it,
+# so after this card's own folder the other cards' folders are looked at too.
 file=$1
 dir=$CANVASTTY_DRAFT_DIR
-oldest() {
-  ls "$dir" 2>/dev/null | sed -n "s/^$1\.\([0-9][0-9]*\)\$/\1/p" | sort -n | head -n 1
+# Only Claude's own prompt file: a program Claude runs (git commit, crontab -e) gets the person's editor.
+case "${file##*/}" in
+  claude-prompt-*.md) ;;
+  *) dir= ;;
+esac
+# Sets found (a folder) and id to the oldest <kind>.<n>, this card's own folder first.
+find_oldest() {
+  for found in "$dir" "${dir%/*}"/*; do
+    [ -d "$found" ] || continue
+    id=$(ls "$found" 2>/dev/null | sed -n "s/^$1\.\([0-9][0-9]*\)\$/\1/p" | sort -n | head -n 1)
+    [ -n "$id" ] && return 0
+  done
+  return 1
 }
-if [ -n "$dir" ] && [ -d "$dir" ]; then
-  while id=$(oldest req) && [ -n "$id" ]; do
+if [ -n "$dir" ] && [ -d "${dir%/*}" ]; then
+  while find_oldest req; do
     # Renaming is atomic: CanvasTTY cancels a request the same way, so only one side gets it.
-    if ! mv "$dir/req.$id" "$dir/claimed.$id" 2>/dev/null; then
-      [ -e "$dir/req.$id" ] && exit 1
+    if ! mv "$found/req.$id" "$found/claimed.$id" 2>/dev/null; then
+      [ -e "$found/req.$id" ] && exit 1
       continue
     fi
-    action=$(head -n 1 "$dir/claimed.$id")
-    rm -f "$dir/claimed.$id"
+    action=$(head -n 1 "$found/claimed.$id")
+    rm -f "$found/claimed.$id"
     case "$action" in
       copy|cut|clear) ;;
       *) exit 0 ;;
     esac
-    rm -f "$dir/draft.$id"
+    rm -f "$found/draft.$id"
     # Without a saved copy the draft is left as it was.
-    cp "$file" "$dir/draft.$id" || exit 1
+    cp "$file" "$found/draft.$id" || exit 1
     case "$action" in
       cut|clear) : > "$file" ;;
     esac
-    : > "$dir/done.$id"
+    : > "$found/done.$id"
     exit 0
   done
-  id=$(oldest cancel)
-  if [ -n "$id" ]; then
-    rm -f "$dir/cancel.$id"
+  # A cancel that cannot be removed is not used up: this Ctrl+G opens the editor.
+  if find_oldest cancel && rm "$found/cancel.$id" 2>/dev/null; then
     exit 0
   fi
 fi

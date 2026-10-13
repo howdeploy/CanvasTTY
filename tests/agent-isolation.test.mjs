@@ -51,9 +51,9 @@ function isolation(w, options = {}) {
 }
 
 /** Runs `sh -c script` under the generated profile; returns stdout lines. */
-function run(w, script, { provider = "codex", env = {}, granted } = {}) {
+function run(w, script, { provider = "codex", env = {}, granted, ownWritable } = {}) {
   const wrapped = isolation(w).wrap({ sessionId: "s1", provider, cwd: w.project.normalize("NFC"), command: "/bin/sh", args: ["-c", script],
-    env: { ...w.env, ...env }, ...(granted ? { grantedPrivate: granted } : {}) });
+    env: { ...w.env, ...env }, ...(granted ? { grantedPrivate: granted } : {}), ...(ownWritable ? { ownWritable } : {}) });
   try {
     const result = spawnSync(wrapped.command, wrapped.args, { cwd: w.project, env: wrapped.env, encoding: "utf8", timeout: 20_000 });
     return { lines: result.stdout.split("\n").filter(Boolean), stderr: result.stderr, env: wrapped.env };
@@ -376,6 +376,37 @@ test("seatbelt, for real: the launch writes the account home it was handed, not 
   ].join("; "), { env: { CODEX_HOME: own }, granted: [grant] });
   assert.deepEqual(lines, ["HOME-W-ok", "HOME-SUB-ok", "HOME-CONFIG-denied", "OTHER-R-denied", "OTHER-W-denied", "GRANT-W-denied", "GRANT-R-ok"]);
   assert.equal(await readFile(join(own, "auth.json"), "utf8"), "refreshed\n");
+});
+
+test("the paths: a Claude card's own draft folder is writable and readable again; other cards' are hidden", async (t) => {
+  const w = await world(t);
+  const own = join(w.userData, "claude-draft", "s1");
+  const paths = isolationPaths({ provider: "claude", cwd: w.project, sessionTemp: join(w.temp, "s"), env: w.env,
+    userDataPath: w.userData, sessionId: "s1", ownWritable: [own] });
+  assert.ok(paths.writable.includes(own) && paths.readableAgain.includes(own));
+  assert.ok(paths.unreadable.includes(join(w.userData, "claude-draft")));
+  const without = isolationPaths({ provider: "claude", cwd: w.project, sessionTemp: join(w.temp, "s"), env: w.env, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(!without.writable.includes(own) && !without.readableAgain.includes(own));
+});
+
+test("seatbelt, for real: Claude's draft helper answers in its own card's folder and cannot reach another card's", onMac, async (t) => {
+  const w = await world(t);
+  const drafts = join(w.userData, "claude-draft");
+  const own = join(drafts, "s1");
+  const other = join(drafts, "s2");
+  await mkdir(own, { recursive: true });
+  await mkdir(other, { recursive: true });
+  await writeFile(join(own, "req.1"), "copy\n");
+  await writeFile(join(other, "draft.2"), "другая карточка");
+  const { lines } = run(w, [
+    `mv "${own}/req.1" "${own}/claimed.1" && : > "${own}/done.1" && echo own`,
+    `: > "${other}/req.9" 2>/dev/null && echo other-write`,
+    `cat "${other}/draft.2" 2>/dev/null && echo other-read`,
+    `ls "${drafts}" 2>/dev/null && echo listed`
+  ].join("; "), { provider: "claude", ownWritable: [own] });
+  assert.deepEqual(lines, ["own"]);
+  assert.deepEqual((await readdir(own)).sort(), ["claimed.1", "done.1"]);
+  assert.deepEqual(await readdir(other), ["draft.2"]);
 });
 
 test("seatbelt, for real: git init works, but no repository in the project gets a hook or attributes from the agent", onMac, async (t) => {

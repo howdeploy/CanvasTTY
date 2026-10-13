@@ -151,7 +151,8 @@ test("Command+A selects a macOS Claude draft that copy, cut, typing, paste and d
     buffer: { active: { viewportY: 10, getLine: (index) => ({ translateToString: () => rows[index - 10] ?? "" }) } },
     selectLines: () => calls.push("xterm selection"),
     clearSelection: () => calls.push("xterm clear"),
-    paste: (text) => calls.push(["paste", text])
+    paste: (text) => calls.push(["paste", text]),
+    modes: { bracketedPasteMode: true }
   };
   const screen = { clientHeight: 120, append(child) { child.parentElement = screen; screen.layer = child; } };
   let mouseDown;
@@ -160,7 +161,7 @@ test("Command+A selects a macOS Claude draft that copy, cut, typing, paste and d
     clipboard: { hasImage: async () => false, readText: async () => "из буфера" },
     terminal: {
       input: (id, data) => calls.push(["input", data]),
-      draftAction: async (id, action, followUp) => { calls.push(["draft", action, followUp ?? ""]); return true; }
+      draftAction: async (id, action, followUp, paste) => { calls.push(["draft", action, followUp ?? "", ...(paste ? [paste] : [])]); return true; }
     }
   } };
   const scope = { window, terminal, screen, sessionStartedAt: { current: 1 },
@@ -196,7 +197,8 @@ test("Command+A selects a macOS Claude draft that copy, cut, typing, paste and d
     [() => key("ч", "KeyX", { metaKey: true }), [["draft", "cut", ""]]],
     [() => key("Backspace", "Backspace"), [["draft", "clear", ""]]],
     [() => key("Delete", "Delete"), [["draft", "clear", ""]]],
-    [() => key("м", "KeyV", { metaKey: true }), [["draft", "clear", ""], ["paste", "из буфера"]]]
+    // The main process types the clipboard right after the clear, in order with later keys.
+    [() => key("м", "KeyV", { metaKey: true }), [["draft", "clear", "", "bracketed"]]]
   ]) {
     key("a", "KeyA", { metaKey: true });
     calls.length = 0;
@@ -232,6 +234,15 @@ test("Command+A selects a macOS Claude draft that copy, cut, typing, paste and d
   assert.equal(key("Backspace", "Backspace"), true, "with a dialog in place of the prompt the key is the dialog's");
   assert.equal(key("a", "KeyA", { metaKey: true }), false);
   assert.equal(key("Backspace", "Backspace"), true, "Command+A selects nothing without a prompt on screen");
+  rows = ["history", rule, "❯ draft", rule];
+  scope.repaint();
+  key("a", "KeyA", { metaKey: true });
+  rows = ["Do you want to proceed?", "❯ 1. Yes", "  2. No"];
+  key("a", "KeyA", { metaKey: true });
+  rows = ["history", rule, "❯ draft", rule];
+  scope.repaint();
+  assert.equal(highlight(), null, "Command+A over a dialog drops an earlier selection instead of keeping it hidden");
+  assert.equal(key("Backspace", "Backspace"), true);
   assert.deepEqual(calls, []);
 });
 

@@ -644,13 +644,16 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   // OpenCode's auto profile runs shell commands without asking only while base protection guards them.
   terminalManager.configureBaseProtection(() => settings.get().baseProtectionEnabled);
   if (process.platform === "darwin") setTerminalSystemLocale(app.getSystemLocale());
-  terminalManager.configureDraftEditor(new ClaudeDraftEditor({
+  const draftEditor = new ClaudeDraftEditor({
     root: join(userDataPath, "claude-draft"),
     helperPath: app.isPackaged
       ? join(process.resourcesPath, "agent-runtime", "draft-editor.sh")
       : join(app.getAppPath(), "src", "agent-runtime", "draft-editor.sh"),
-    writeClipboard: (text) => clipboard.writeText(text)
-  }));
+    writeClipboard: (text) => clipboard.writeText(text),
+    readClipboard: () => ({ image: !clipboard.readImage().isEmpty(), text: clipboard.readText() })
+  });
+  draftEditor.removeLeftovers();
+  terminalManager.configureDraftEditor(draftEditor);
   const terminalSessionStore = new TerminalSessionStore(userDataPath);
   terminalManager.configureSessionPersistence(terminalSessionStore, settings.get().sessionRestoreMode);
   agentChatHistory = new AgentChatHistoryService(settings, providerClis, terminalManager, hermesHomeDirectory);

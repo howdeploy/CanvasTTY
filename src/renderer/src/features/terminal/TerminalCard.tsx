@@ -607,7 +607,10 @@ function TerminalCardView({
     };
     const selectClaudeDraft = (): void => {
       // Only a prompt on screen can be selected: no hidden selection behind a dialog or a startup screen.
-      if (!visiblePromptRows()) return;
+      if (!visiblePromptRows()) {
+        deselectClaudeDraft();
+        return;
+      }
       claudeDraftSelected.current = true;
       draftSelectedAt = sessionStartedAt.current;
       placeDraftHighlight();
@@ -642,9 +645,9 @@ function TerminalCardView({
           deselectClaudeDraft();
           const action = draftIntent === "cut" ? "cut" : "clear";
           const followUp = draftIntent === "replace" ? event.key : "";
-          void window.canvasTTY.terminal.draftAction(session.id, action, followUp).then(() => {
-            if (draftIntent === "paste") pasteClipboard(true);
-          });
+          // The paste is typed in turn after the clear, so keys pressed meanwhile stay after it.
+          const paste = draftIntent !== "paste" ? undefined : terminal.modes.bracketedPasteMode ? "bracketed" : "plain";
+          void window.canvasTTY.terminal.draftAction(session.id, action, followUp, paste);
         }
         return false;
       }

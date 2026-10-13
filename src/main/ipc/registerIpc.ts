@@ -955,10 +955,11 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     if (!isMainRenderer(event, getMainWindow)) return;
     terminals.input(id, data);
   });
-  ipcMain.handle(IPC.terminalDraftAction, (event, id: unknown, action: unknown, followUp: unknown) => {
+  ipcMain.handle(IPC.terminalDraftAction, (event, id: unknown, action: unknown, followUp: unknown, paste: unknown) => {
     assertMainRenderer(event, getMainWindow);
     if (typeof id !== "string" || !isClaudeDraftAction(action)) return false;
-    return terminals.draftAction(id, action, typeof followUp === "string" ? followUp : "");
+    return terminals.draftAction(id, action, typeof followUp === "string" ? followUp : "",
+      paste === "plain" || paste === "bracketed" ? paste : null);
   });
   ipcMain.on(IPC.terminalResize, (event, id: string, cols: number, rows: number) => {
     if (!isMainRenderer(event, getMainWindow) || typeof id !== "string") return;

@@ -59,7 +59,7 @@ import { onDiskPath } from "./onDiskPath.ts";
 import { RESULT_CAPTURE_PROVIDERS } from "./resultCapture.ts";
 import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from "../../shared/launchModel.ts";
 import { SecretRedactionRegistry } from "./safety/SecretRedaction.ts";
-import type { ClaudeDraftEditor } from "./ClaudeDraftEditor.ts";
+import type { ClaudeDraftEditor, ClaudeDraftPaste } from "./ClaudeDraftEditor.ts";
 import type { DecisionSession } from "./DecisionHooks.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
@@ -966,7 +966,7 @@ export class TerminalManager {
     return written;
   }
 
-  draftAction(id: string, action: ClaudeDraftAction, followUp: string): Promise<boolean> {
+  draftAction(id: string, action: ClaudeDraftAction, followUp: string, paste: ClaudeDraftPaste | null = null): Promise<boolean> {
     const session = this.sessions.get(id);
     const process = session?.process;
     if (!this.draftEditor || !session || !process || session.metadata.exitCode !== null
@@ -976,7 +976,7 @@ export class TerminalManager {
         && tryPtyOperation(() => process.write(data));
       if (written && ANSWERS_PROMPT.test(data)) this.settleAnsweredPrompt(id, session);
       return written;
-    });
+    }, paste);
   }
 
   /**
@@ -1677,6 +1677,8 @@ export class TerminalManager {
     if (!this.isolation) throw new LaunchRefusal("agent isolation is not configured; the agent was not started without it.");
     if (typeof planned.args === "string") throw new LaunchRefusal("a Windows batch launcher cannot run inside agent isolation.");
     const grant = controlGrantFolder(planned.env);
+    // Claude's draft helper writes its answers in this card's own folder (never another card's).
+    const draftFolder = this.draftEditor?.folderOf(id) ?? null;
     const wrapped = this.isolation.wrap({
       sessionId: id,
       provider,
@@ -1685,7 +1687,8 @@ export class TerminalManager {
       args: planned.args,
       env: planned.env,
       profile,
-      ...(grant ? { grantedPrivate: [grant] } : {})
+      ...(grant ? { grantedPrivate: [grant] } : {}),
+      ...(draftFolder ? { ownWritable: [draftFolder] } : {})
     });
     this.releaseIsolation(id);
     this.isolationCleanups.set(id, wrapped.cleanup);
@@ -1792,10 +1795,23 @@ export class TerminalManager {
       if (provider === "opencode") Object.assign(providerEnvironment, openCodeProjectFolderEnvironment({ ...baseEnvironment, ...providerEnvironment }, cwd));
       // A plugin or a remote environment that sets its own editor keeps it; the helper only exists locally.
       const contributesEditor = ["VISUAL", "EDITOR"].some((key) => key in (contribution?.env ?? {}));
+      let draftEnvironment: Record<string, string> = {};
       if (provider === "claude" && process.platform === "darwin" && !environmentWrapped && !contributesEditor && this.draftEditor) {
-        Object.assign(providerEnvironment, this.draftEditor.environment(id, baseEnvironment));
+        draftEnvironment = this.draftEditor.environment(id, baseEnvironment);
+      } else {
+        // Whatever ran in this card before has no helper now.
+        this.draftEditor?.forget(id);
       }
+      Object.assign(providerEnvironment, draftEnvironment);
       const providerArgs = [...(agentRuntime?.args ?? []), ...(agentBrowser?.args ?? [])];
+      // A background Claude session (/bg, /resume, agent view) runs under Claude's own supervisor and gets this
+      // launch's --settings, not its environment: the helper and the locale go there too.
+      if (Object.keys(draftEnvironment).length > 0) {
+        const launched = { ...baseEnvironment, ...providerEnvironment };
+        const locale = Object.fromEntries(["LANG", "LC_ALL", "LC_CTYPE"]
+          .filter((key) => launched[key]).map((key) => [key, launched[key]!]));
+        providerArgs.push("--settings", JSON.stringify({ env: { ...draftEnvironment, ...locale } }));
+      }
       // Stable terminal observations for the CLI controller; leave ordinary launches unchanged.
       if (captureResult && provider === "codex") providerArgs.push("-c", "tui.animations=false");
       // A Codex subagent in the person's folder is not asked to trust it again (this run only, never ~/.codex).

@@ -17,12 +17,17 @@ export interface ClaudeDraftEditorOptions {
   /** draft-editor.sh; its path becomes part of $VISUAL, so it must be a plain path. */
   helperPath: string;
   writeClipboard: (text: string) => void;
+  /** The clipboard at the moment a paste that replaces the draft is typed. */
+  readClipboard: () => { image: boolean; text: string };
   timeoutMs?: number;
 }
 
+/** How a paste is typed: as xterm types it, bracketed when Claude turned bracketed paste on. */
+export type ClaudeDraftPaste = "plain" | "bracketed";
+
 type Step =
   | { data: string }
-  | { action: ClaudeDraftAction; followUp: string; resolve: (done: boolean) => void };
+  | { action: ClaudeDraftAction; followUp: string; paste: ClaudeDraftPaste | null; resolve: (done: boolean) => void };
 
 interface SessionQueue {
   steps: Step[];
@@ -53,7 +58,20 @@ export class ClaudeDraftEditor {
     this.timeoutMs = options.timeoutMs ?? DONE_TIMEOUT_MS;
   }
 
-  /** Launch variables for one Claude session, or none when the helper cannot be used safely. */
+  /** Drops what an earlier run of CanvasTTY left: its Claude sessions are gone, and so are their requests. */
+  removeLeftovers(): void {
+    try {
+      rmSync(this.options.root, { recursive: true, force: true });
+    } catch {
+      // Each session's folder is cleared again at its launch.
+    }
+  }
+
+  /**
+   * Launch variables for one Claude session, or none when the helper cannot be used safely. They are given to
+   * Claude twice: in its environment and in its --settings env, which is what a background session (/bg,
+   * /resume, agent view) gets: such a session runs under Claude's own supervisor, not under this process.
+   */
   environment(sessionId: string, source: Readonly<Record<string, string | undefined>>): Record<string, string> {
     this.forget(sessionId);
     // $VISUAL may go through a shell: no whitespace, quoting or shell syntax in the helper's path.
@@ -77,6 +95,11 @@ export class ClaudeDraftEditor {
     return this.granted.has(sessionId);
   }
 
+  /** The folder the helper of a session launched with it answers in; null for any other session. */
+  folderOf(sessionId: string): string | null {
+    return this.granted.has(sessionId) ? this.directory(sessionId) : null;
+  }
+
   /** Queues input written while actions run; true when the caller must not write it now. */
   hold(sessionId: string, data: string): boolean {
     const queue = this.queues.get(sessionId);
@@ -89,10 +112,16 @@ export class ClaudeDraftEditor {
    * Queues one action; once earlier ones finish it runs, then writes followUp (the key or
    * paste that replaces a selected draft). Resolves true when Claude's editor round trip ran.
    */
-  run(sessionId: string, action: ClaudeDraftAction, followUp: string, write: (data: string) => boolean): Promise<boolean> {
+  run(
+    sessionId: string,
+    action: ClaudeDraftAction,
+    followUp: string,
+    write: (data: string) => boolean,
+    paste: ClaudeDraftPaste | null = null
+  ): Promise<boolean> {
     if (!isSafeId(sessionId) || !this.granted.has(sessionId)) return Promise.resolve(false);
     return new Promise((resolve) => {
-      const step: Step = { action, followUp, resolve };
+      const step: Step = { action, followUp, paste, resolve };
       const queue = this.queues.get(sessionId);
       if (queue) {
         queue.steps.push(step);
@@ -127,10 +156,25 @@ export class ClaudeDraftEditor {
         continue;
       }
       const done = await this.roundTrip(sessionId, step.action, queue.write, live).catch(() => false);
-      if (live() && step.followUp) queue.write(step.followUp);
+      // A paste reads the clipboard only now, so keys typed after it still come after it.
+      const followUp = step.paste ? this.pasteData(step.paste) : step.followUp;
+      if (live() && followUp) queue.write(followUp);
       step.resolve(done);
     }
     if (live()) this.queues.delete(sessionId);
+  }
+
+  private pasteData(paste: ClaudeDraftPaste): string {
+    try {
+      const clipboard = this.options.readClipboard();
+      // An image goes the way Claude reads it: Ctrl+V makes Claude read the clipboard itself.
+      if (clipboard.image) return "\u0016";
+      if (!clipboard.text) return "";
+      const text = clipboard.text.replace(/\r?\n/g, "\r");
+      return paste === "bracketed" ? `\u001b[200~${text}\u001b[201~` : text;
+    } catch {
+      return "";
+    }
   }
 
   private async roundTrip(

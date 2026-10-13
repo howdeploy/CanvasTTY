@@ -2065,8 +2065,11 @@ export interface CanvasTTYApi {
     /** `resume` continues the card's own conversation instead of starting a new one. */
     restart(id: string, options?: { resume?: boolean }): Promise<SessionSnapshot>;
     input(id: string, data: string): void;
-    /** Copies, cuts or clears a macOS Claude card's whole draft, then types followUp; false when nothing ran. */
-    draftAction(id: string, action: ClaudeDraftAction, followUp?: string): Promise<boolean>;
+    /**
+     * Copies, cuts or clears a macOS Claude card's whole draft, then types followUp, or pastes the clipboard as it is
+     * then (bracketed when Claude turned bracketed paste on); false when nothing ran.
+     */
+    draftAction(id: string, action: ClaudeDraftAction, followUp?: string, paste?: "plain" | "bracketed"): Promise<boolean>;
     resize(id: string, cols: number, rows: number): void;
     setBounds(id: string, bounds: SessionBounds): void;
     rename(id: string, title: string): Promise<SessionMetadata>;

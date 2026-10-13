@@ -18,7 +18,7 @@ function fakeClaude(environment, draft) {
     state.writes.push(data);
     if (data !== "\u0007") return true;
     state.editorRuns += 1;
-    const file = join(scratch, "prompt.md");
+    const file = join(scratch, "claude-prompt-test.md");
     writeFileSync(file, state.draft);
     execFileSync("/bin/sh", ["-c", `${environment.VISUAL} "$1"`, "claude", file], {
       env: { PATH: process.env.PATH, ...environment, CANVASTTY_DRAFT_EDITOR: "true" }
@@ -43,8 +43,21 @@ const files = (directory) => (existsSync(directory) ? readdirSync(directory).sor
 function editorFixture(timeoutMs) {
   const root = mkdtempSync(join(tmpdir(), "claude-draft-root-"));
   const clipboard = [];
-  const editor = new ClaudeDraftEditor({ root, helperPath, writeClipboard: (text) => clipboard.push(text), timeoutMs });
-  return { root, clipboard, editor };
+  const source = { image: false, text: "" };
+  const editor = new ClaudeDraftEditor({
+    root, helperPath, writeClipboard: (text) => clipboard.push(text), readClipboard: () => ({ ...source }), timeoutMs
+  });
+  return { root, clipboard, source, editor };
+}
+
+/** Runs the helper as Claude's $VISUAL on `file`; returns its exit status. */
+function runHelper(file, directory, ownEditor = "false") {
+  try {
+    execFileSync("/bin/sh", [helperPath, file], { env: { PATH: process.env.PATH, CANVASTTY_DRAFT_DIR: directory, CANVASTTY_DRAFT_EDITOR: ownEditor } });
+    return 0;
+  } catch (error) {
+    return error.status;
+  }
 }
 
 test("copy, cut and clear act on the whole Claude draft through the real helper", async () => {
@@ -181,16 +194,9 @@ test("the helper leaves the draft alone when it cannot save a copy, and ignores 
   const scratch = mkdtempSync(join(tmpdir(), "claude-draft-helper-"));
   const directory = join(scratch, "card");
   mkdirSync(directory);
-  const file = join(scratch, "prompt.md");
+  const file = join(scratch, "claude-prompt-test.md");
   writeFileSync(file, "draft");
-  const run = () => {
-    try {
-      execFileSync("/bin/sh", [helperPath, file], { env: { PATH: process.env.PATH, CANVASTTY_DRAFT_DIR: directory, CANVASTTY_DRAFT_EDITOR: "false" } });
-      return 0;
-    } catch (error) {
-      return error.status;
-    }
-  };
+  const run = () => runHelper(file, directory);
   writeFileSync(join(directory, "req.1"), "rm\n");
   assert.equal(run(), 0);
   assert.equal(readFileSync(file, "utf8"), "draft");
@@ -203,9 +209,111 @@ test("the helper leaves the draft alone when it cannot save a copy, and ignores 
   rmSync(scratch, { recursive: true, force: true });
 });
 
+test("only Claude's own prompt file is acted on: a program Claude runs gets the person's editor", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "claude-draft-other-file-"));
+  const directory = join(scratch, "card");
+  mkdirSync(directory);
+  const commitMessage = join(scratch, "COMMIT_EDITMSG");
+  writeFileSync(commitMessage, "fix: keep me");
+  writeFileSync(join(directory, "req.1"), "cut\n");
+  writeFileSync(join(directory, "cancel.2"), "");
+  const ownEditor = join(scratch, "own-editor.sh");
+  writeFileSync(ownEditor, 'printf "%s" "$1" > "$(dirname "$0")/opened"\n');
+  assert.equal(runHelper(commitMessage, directory, `/bin/sh ${ownEditor}`), 0);
+  assert.equal(readFileSync(join(scratch, "opened"), "utf8"), commitMessage, "git's editor is the person's");
+  assert.equal(readFileSync(commitMessage, "utf8"), "fix: keep me");
+  assert.deepEqual(files(directory), ["cancel.2", "req.1"], "the card's request and cancel stay for Claude's Ctrl+G");
+  rmSync(scratch, { recursive: true, force: true });
+});
+
+test("a background session shown by another card answers that card's request; its own come first", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "claude-draft-cards-"));
+  const started = join(scratch, "card-a");
+  const showing = join(scratch, "card-b");
+  mkdirSync(started);
+  mkdirSync(showing);
+  const file = join(scratch, "claude-prompt-test.md");
+  writeFileSync(file, "черновик");
+  // card-b sent the Ctrl+G; the session's helper names card-a's folder, where it was started.
+  writeFileSync(join(showing, "req.7"), "copy\n");
+  assert.equal(runHelper(file, started), 0);
+  assert.deepEqual(files(showing), ["done.7", "draft.7"]);
+  assert.equal(readFileSync(join(showing, "draft.7"), "utf8"), "черновик");
+  rmSync(join(showing, "done.7"));
+  rmSync(join(showing, "draft.7"));
+  writeFileSync(join(showing, "req.3"), "cut\n");
+  writeFileSync(join(started, "req.9"), "copy\n");
+  assert.equal(runHelper(file, started), 0);
+  assert.deepEqual(files(started), ["done.9", "draft.9"], "its own card's request first");
+  assert.deepEqual(files(showing), ["req.3"]);
+  assert.equal(readFileSync(file, "utf8"), "черновик");
+  rmSync(scratch, { recursive: true, force: true });
+});
+
+test("a cancel the helper cannot remove is not used up: that Ctrl+G opens the editor", { skip: process.getuid?.() === 0 && "root ignores permissions" }, () => {
+  const scratch = mkdtempSync(join(tmpdir(), "claude-draft-locked-"));
+  const directory = join(scratch, "card");
+  mkdirSync(directory);
+  const file = join(scratch, "claude-prompt-test.md");
+  writeFileSync(file, "draft");
+  writeFileSync(join(directory, "cancel.1"), "");
+  chmodSync(directory, 0o500);
+  try {
+    const ownEditor = join(scratch, "own-editor.sh");
+    writeFileSync(ownEditor, ': > "$(dirname "$0")/opened"\n');
+    assert.equal(runHelper(file, directory, `/bin/sh ${ownEditor}`), 0);
+    assert.equal(existsSync(join(scratch, "opened")), true);
+    assert.deepEqual(files(directory), ["cancel.1"]);
+  } finally {
+    chmodSync(directory, 0o700);
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("a paste that replaces the draft reads the clipboard in its turn, so later keys stay after it", async () => {
+  const { root, source, editor } = editorFixture();
+  editor.environment("card-p", {});
+  const directory = join(root, "card-p");
+  const writes = [];
+  const write = (data) => { writes.push(data); return true; };
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 30));
+  source.text = "старый буфер";
+  const pasting = editor.run("card-p", "clear", "", write, "bracketed");
+  assert.equal(editor.hold("card-p", "x"), true);
+  await tick();
+  source.text = "строка 1\nстрока 2";
+  finishRequest(directory);
+  assert.equal(await pasting, true);
+  await tick();
+  assert.deepEqual(writes, ["\u0007", "\u001b[200~строка 1\rстрока 2\u001b[201~", "x"]);
+  source.image = true;
+  const image = editor.run("card-p", "clear", "", write, "plain");
+  await tick();
+  finishRequest(directory);
+  await image;
+  assert.equal(writes.at(-1), "\u0016", "an image is left for Claude to read itself");
+  source.image = false;
+  source.text = "a\r\nb";
+  const plain = editor.run("card-p", "clear", "", write, "plain");
+  await tick();
+  finishRequest(directory);
+  await plain;
+  assert.equal(writes.at(-1), "a\rb");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("leftovers of an earlier CanvasTTY run are removed before any card launches", () => {
+  const { root, editor } = editorFixture();
+  mkdirSync(join(root, "old-card"));
+  writeFileSync(join(root, "old-card", "cancel.4"), "");
+  editor.removeLeftovers();
+  assert.equal(existsSync(root), false);
+  assert.equal(editor.environment("card", {}).CANVASTTY_DRAFT_DIR, join(root, "card"));
+});
+
 test("without a request the helper opens the person's own editor, arguments included", () => {
   const scratch = mkdtempSync(join(tmpdir(), "claude-draft-own-"));
-  const file = join(scratch, "prompt.md");
+  const file = join(scratch, "claude-prompt-test.md");
   writeFileSync(file, "draft");
   const ownEditor = join(scratch, "own-editor.sh");
   writeFileSync(ownEditor, 'printf "%s|" "$@" > "$(dirname "$0")/opened"\n');
@@ -257,6 +365,14 @@ test("TerminalManager gives local macOS Claude cards the helper and holds their 
     assert.equal(claudeEnv.VISUAL, `/bin/sh ${helperPath}`);
     assert.equal(claudeEnv.CANVASTTY_DRAFT_DIR, join(root, claude.id));
     assert.equal(terminals.listMetadata().find((s) => s.id === claude.id).claudeDraft, true);
+    // A background session (/bg, /resume) gets Claude's --settings, not this environment.
+    const args = calls.at(-1).args;
+    const inline = args.filter((_, index) => args[index - 1] === "--settings").map((value) => JSON.parse(value));
+    assert.equal(inline.length, 1, "one merged --settings, so the hooks are kept");
+    assert.equal(inline[0].env.VISUAL, claudeEnv.VISUAL);
+    assert.equal(inline[0].env.CANVASTTY_DRAFT_DIR, claudeEnv.CANVASTTY_DRAFT_DIR);
+    assert.equal(inline[0].env.CANVASTTY_DRAFT_EDITOR, claudeEnv.CANVASTTY_DRAFT_EDITOR);
+    for (const key of ["LANG", "LC_ALL", "LC_CTYPE"]) assert.equal(inline[0].env[key], claudeEnv[key], key);
     const codex = terminals.create({ ...base, provider: "codex" });
     assert.equal("CANVASTTY_DRAFT_DIR" in calls.at(-1).options.env, false, "only Claude cards get the helper");
     assert.equal(terminals.listMetadata().find((s) => s.id === codex.id).claudeDraft, undefined);

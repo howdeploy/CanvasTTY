@@ -979,3 +979,19 @@ test("a delivered handoff says when the outcome could not be saved", async () =>
     await rm(blocked, { recursive: true });
   });
 });
+
+test("a handoff waits for the agent's CLI to take input instead of failing at once", async () => {
+  await withHandoffs(async ({ handoffs, terminal, draft }) => {
+    terminal.add({ provider: "claude", id: "s1" });
+    terminal.tui = claudeTui(terminal);
+    const waits = [];
+    const deliverInput = terminal.deliverInput.bind(terminal);
+    terminal.deliverInput = async (id, data, waitMs) => {
+      waits.push(waitMs);
+      return deliverInput(id, data);
+    };
+    assert.equal((await handoffs.send(draft("s1"))).handoff.delivery.state, "submitted");
+    assert.ok(waits.length >= 2, "the paste and its Enter");
+    assert.ok(waits.every((waitMs) => waitMs >= 10_000), `waits: ${waits.join(", ")}`);
+  });
+});

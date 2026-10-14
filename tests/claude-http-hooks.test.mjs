@@ -262,7 +262,7 @@ test("Claude's lifecycle hooks become HTTP hooks except SessionStart; the decisi
   assert.equal(settings.hooks.PreToolUse[0].hooks[0].type, "command");
   assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /permission-gate\.mjs' 'pretool'/u);
   for (const [event, state] of [["UserPromptSubmit", "working"], ["PermissionRequest", "needs_approval"], ["PostToolUse", "working"],
-    ["Stop", "idle"], ["StopFailure", "idle"], ["SessionEnd", "idle"], ["Notification", "needs_approval"]]) {
+    ["PostToolUseFailure", "working"], ["Stop", "idle"], ["StopFailure", "idle"], ["SessionEnd", "idle"], ["Notification", "needs_approval"]]) {
     const hook = settings.hooks[event][0].hooks[0];
     assert.deepEqual(hook, {
       type: "http",

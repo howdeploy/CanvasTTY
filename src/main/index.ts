@@ -36,6 +36,7 @@ import { AgentChatHistoryService } from "./services/AgentChatHistoryService";
 import { LimitsService, withoutAccountScope } from "./services/LimitsService";
 import { UsageHistoryService } from "./services/UsageHistoryService";
 import { LocalUsageCollector } from "./services/LocalUsageCollector";
+import { runShutdownSteps } from "./services/shutdownSteps";
 import {
   createProviderCliRegistry,
   providerCliAvailability,
@@ -91,6 +92,7 @@ import {
   RuntimeGateway
 } from "./services/agent-runtime";
 import type { RuntimeHookHelperLaunch } from "./services/agent-runtime/ProviderRuntimeLaunch";
+import { applyRuntimeSignal } from "./services/agent-runtime/applyRuntimeSignal";
 import { agentHelperLaunches } from "./services/agentHelpers";
 import {
   recoverHermesConfigurationOnStartup,
@@ -529,15 +531,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       runtimeDirectory: lifecycleRuntimeDirectory,
       windowsHostPath,
       onSignal: (terminalSessionId, signal) => {
-        terminalManager?.applyProviderSignal(terminalSessionId, {
-          kind: "lifecycle",
-          state: signal.state,
-          event: signal.event,
-          ...(signal.turnId ? { requestId: signal.turnId } : {}),
-          ...(signal.threadId ? { threadId: signal.threadId } : {})
-        });
-        // A subagent's final answer (Codex Stop hook, OpenCode plugin) for get_agent_result and wait_for_agent.
-        if (signal.result) terminalManager?.recordAnswer(terminalSessionId, signal.result);
+        if (terminalManager) applyRuntimeSignal(terminalManager, terminalSessionId, signal);
         agentControl?.onSignal(terminalSessionId, signal);
         if (signal.lastAssistantMessage !== undefined && signal.answerCaptureGrantExpiresAt !== undefined) {
           evenG2?.answer(
@@ -1275,30 +1269,36 @@ void IPC.terminalData;
 
 async function shutdownServices(): Promise<void> {
   diagnostics.record("info", "application", "shutdown.started");
-  mascotManager?.dispose();
-  agentChatHistory?.dispose();
-  if (agentControl) await Promise.allSettled([agentControl.close()]);
   if (updateTimer) clearTimeout(updateTimer);
   if (updateInterval) clearInterval(updateInterval);
   for (const request of browserRequests.values()) { clearTimeout(request.timer); request.reject(new Error("App closing")); }
   browserRequests.clear();
-  await evenG2?.close();
-  if (terminalManager) await terminalManager.shutdown();
+  // Each step runs even when an earlier one fails, so the terminals are always hung up and saved.
+  await runShutdownSteps([
+    { name: "mascots", run: () => mascotManager?.dispose() },
+    { name: "agent chat history", run: () => agentChatHistory?.dispose() },
+    { name: "agent control", run: () => agentControl?.close() },
+    { name: "Even G2", run: () => evenG2?.close() },
+    { name: "terminal processes", run: async () => { if (terminalManager) await terminalManager.shutdown(); } }
+  ]);
   // The hung-up PTYs exit while the other services close; quitting waits for them (see waitForProcessExits).
   const ptyExits = terminalManager?.waitForProcessExits().then((left) => {
     if (left > 0) console.warn(`CanvasTTY quit with ${left} terminal process(es) that did not exit after SIGKILL.`);
   });
-  // Stop the timer first, then abort in-flight limit requests so the final save is prompt.
-  const usageHistoryClosed = usageHistory?.dispose();
-  limitsService?.dispose();
-  await usageHistoryClosed;
-  if (agentGateway) await Promise.allSettled([agentGateway.close()]);
-  if (runtimeGateway) await Promise.allSettled([runtimeGateway.close()]);
-  if (browserService) await Promise.allSettled([browserService.dispose()]);
-  if (pluginServices) await Promise.allSettled([pluginServices.dispose()]);
-  if (pluginManager) await Promise.allSettled([pluginManager.dispose()]);
-  await handoffService?.dispose();
-  if (materialService) await Promise.allSettled([materialService.dispose()]);
+  // Stop the usage-history timer first, then abort in-flight limit requests so its final save is prompt.
+  let usageHistoryClosed: Promise<unknown> | undefined;
+  await runShutdownSteps([
+    { name: "usage history", run: () => { usageHistoryClosed = usageHistory?.dispose(); } },
+    { name: "limits", run: () => limitsService?.dispose() },
+    { name: "usage history save", run: () => usageHistoryClosed },
+    { name: "agent gateway", run: () => agentGateway?.close() },
+    { name: "runtime gateway", run: () => runtimeGateway?.close() },
+    { name: "browser", run: () => browserService?.dispose() },
+    { name: "plugin services", run: () => pluginServices?.dispose() },
+    { name: "plugins", run: () => pluginManager?.dispose() },
+    { name: "handoff", run: () => handoffService?.dispose() },
+    { name: "materials", run: () => materialService?.dispose() }
+  ]);
   await ptyExits;
   diagnostics.record("info", "application", "shutdown.completed");
   await diagnostics.flush();

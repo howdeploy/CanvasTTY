@@ -54,12 +54,11 @@ import { TerminalCard } from "../terminal/TerminalCard";
 import { shouldTogglePixelSkinMasterView } from "../terminal/terminalShortcuts";
 import { isPixelSkinThemeId } from "../skins/skinCatalog";
 import { isPixelSkinPackId, usePixelSkinPackAssets } from "../skins/SkinAssets";
-import { CanvasCommandPalette } from "./CanvasCommandPalette";
-import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasMinimap } from "./CanvasMinimap";
 import { AgentChatHistoryHud } from "./AgentChatHistoryHud";
 import { CanvasRegionCard } from "./CanvasRegionCard";
 import { CanvasRegionMenu } from "./CanvasRegionMenu";
+import type { CanvasAutoSortState } from "./canvasAutoSortScope";
 import { cameraFittingContent } from "./canvasCameraGeometry";
 import { fixedCameraStore, sceneTransform, useCameraSelector, type CameraStore } from "./cameraStore";
 import {
@@ -115,6 +114,8 @@ import { useCanvasWheelNavigation } from "./useCanvasWheelNavigation";
 import { useCanvasWidgetFocus } from "./useCanvasWidgetFocus";
 import { useRemarkPopoverRect } from "./useRemarkPopoverRect";
 import { webglContextPool } from "../terminal/webglContextPool";
+import { preloadWhenIdle, usePreloadedSurface } from "../../lib/preloadedSurface";
+import { canvasCommandPaletteSurface, canvasContextMenuSurface } from "./canvasOverlaySurfaces";
 
 const CANVAS_OVERLAY_PLACEMENTS: readonly CanvasOverlayPlacement[] = [
   "top-left",  "top-right",
@@ -123,6 +124,9 @@ const CANVAS_OVERLAY_PLACEMENTS: readonly CanvasOverlayPlacement[] = [
 ];
 
 const EMPTY_MARQUEE_SELECTION: ReadonlySet<string> = new Set<string>();
+/** How long the windows an auto-sort moved keep their outline, unless the next press clears it. */
+const AUTO_SORT_MARK_MS = 4_000;
+const NO_AUTO_SORT: CanvasAutoSortState = { mode: null, undo: null };
 const NO_SNAP_TARGETS = (): readonly SessionBounds[] => [];
 /** The fullscreen layer is outside the scene: its card always draws at scale 1. */
 const FULLSCREEN_CAMERA = fixedCameraStore({ x: 0, y: 0, zoom: 1 });
@@ -307,6 +311,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const [contextMenu, setContextMenu] = useState<CanvasMenuState | null>(null);
   const [regionEditor, setRegionEditor] = useState<RegionEditorState | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  // Out of the startup bundle, preloaded once the canvas is idle, rendered without a Suspense boundary (see preloadedSurface).
+  const CanvasContextMenu = usePreloadedSurface(canvasContextMenuSurface, contextMenu !== null);
+  const CanvasCommandPalette = usePreloadedSurface(canvasCommandPaletteSurface, commandPaletteOpen);
+  useEffect(() => preloadWhenIdle([canvasContextMenuSurface, canvasCommandPaletteSurface]), []);
   const [radialLauncher, setRadialLauncher] = useState<{
     anchor: Point;
     pointerAnchor: Point;
@@ -321,6 +329,12 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
 
   const [regionMovePreview, setRegionMovePreview] = useState<RegionMovePreview | null>(null);
   const [marqueeSelection, setMarqueeSelection] = useState<ReadonlySet<string>>(EMPTY_MARQUEE_SELECTION);
+  // Auto-sort state lives in renderer memory only: the last criterion for this app session and
+  // the single undo step. Nothing here is persisted.
+  const [autoSortState, setAutoSortState] = useState(NO_AUTO_SORT);
+  // The windows the last sort or undo moved: they glide and keep an outline for a moment. Outline
+  // only: unlike the marquee selection it never makes them a drag group or narrows the next sort.
+  const [autoSortMarked, setAutoSortMarked] = useState<ReadonlySet<string>>(EMPTY_MARQUEE_SELECTION);
   const [masterPixelSkinSessionIds, setMasterPixelSkinSessionIds] = useState<ReadonlySet<string>>(() => new Set());
   const overlays = useRef<HTMLDivElement>(null);
   const lastPointerClient = useRef<Point | null>(null);
@@ -531,6 +545,37 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
 
   const groupDragBasis = useRef<GroupDragBasis | null>(null);
 
+  /** Persist new bounds for several layers, each by its own kind; materials go in one batch. */
+  const commitLayerBounds = useCallback((next: ReadonlyMap<string, SessionBounds>): void => {
+    const materialBatch: { id: string; bounds: SessionBounds }[] = [];
+    for (const [layerId, moved] of next) {
+      const ref = parseCanvasLayerId(layerId);
+      if (!ref) continue;
+      // Commit each window by its own identity, including individual Browser cards.
+      if (ref.kind === "terminal" && ref.targetId !== null) onSessionBoundsChange(ref.targetId, moved);
+      else if (ref.kind === "plugin" && ref.targetId !== null) onPluginCanvasBoundsChange(ref.targetId, moved);
+      else if (ref.kind === "note" && ref.targetId !== null) onStickyNoteBoundsChange(ref.targetId, moved);
+      else if (ref.kind === "files" && ref.targetId !== null) onFileCardBoundsChange(ref.targetId, moved);
+      else if (ref.kind === "material" && ref.targetId !== null) materialBatch.push({ id: ref.targetId, bounds: moved });
+      else if (ref.kind === "browser" && settings.browserCanvas) onBrowserBoundsChange({ ...settings.browserCanvas, ...moved });
+    }
+    if (materialBatch.length > 0) onMaterialBoundsChangeBatch(materialBatch);
+  }, [onBrowserBoundsChange, onFileCardBoundsChange, onMaterialBoundsChangeBatch, onPluginCanvasBoundsChange,
+    onSessionBoundsChange, onStickyNoteBoundsChange, settings.browserCanvas]);
+
+  // The outline of a sort clears after a moment, or at the next press anywhere on the canvas.
+  useEffect(() => {
+    if (autoSortMarked.size === 0) return;
+    const clear = (): void => setAutoSortMarked(EMPTY_MARQUEE_SELECTION);
+    const timer = window.setTimeout(clear, AUTO_SORT_MARK_MS);
+    const element = viewport.current;
+    element?.addEventListener("pointerdown", clear, true);
+    return () => {
+      window.clearTimeout(timer);
+      element?.removeEventListener("pointerdown", clear, true);
+    };
+  }, [autoSortMarked]);
+
   const beginGroupDrag = useCallback((layerId: string): void => {
     const anchor = boundsByLayer.get(layerId);
     if (!anchor) return;
@@ -567,23 +612,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       x: anchorPosition.x - anchor.position.x,
       y: anchorPosition.y - anchor.position.y
     };
-    const materialBatch: { id: string; bounds: SessionBounds }[] = [];
-    for (const [memberLayerId, memberBounds] of members) {
-      const moved = translateBounds(memberBounds, rigid);
-      const ref = parseCanvasLayerId(memberLayerId);
-      if (!ref) continue;
-      // Commit each window by its own identity, including individual Browser cards.
-      if (ref.kind === "terminal" && ref.targetId !== null) onSessionBoundsChange(ref.targetId, moved);
-      else if (ref.kind === "plugin" && ref.targetId !== null) onPluginCanvasBoundsChange(ref.targetId, moved);
-      else if (ref.kind === "note" && ref.targetId !== null) onStickyNoteBoundsChange(ref.targetId, moved);
-      else if (ref.kind === "files" && ref.targetId !== null) onFileCardBoundsChange(ref.targetId, moved);
-      else if (ref.kind === "material" && ref.targetId !== null) materialBatch.push({ id: ref.targetId, bounds: moved });
-      else if (ref.kind === "browser" && settings.browserCanvas) onBrowserBoundsChange({ ...settings.browserCanvas, ...moved });
-    }
-    if (materialBatch.length > 0) onMaterialBoundsChangeBatch(materialBatch);
-  }, [boundsByLayer, homeBounds, onBrowserBoundsChange, onFileCardBoundsChange, onMaterialBoundsChangeBatch, onPluginCanvasBoundsChange,
-
-    onSessionBoundsChange, onStickyNoteBoundsChange, renderedCanvasRegions, settings.browserCanvas, settings.snapToGrid]);
+    commitLayerBounds(new Map([...members].map(([memberLayerId, memberBounds]) => [
+      memberLayerId,
+      translateBounds(memberBounds, rigid)
+    ])));
+  }, [boundsByLayer, commitLayerBounds, homeBounds, renderedCanvasRegions, settings.snapToGrid]);
 
   const focusController = useCanvasWidgetFocus({
     viewport,
@@ -786,7 +819,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     return clampCanvasMenuPosition(
       viewportPoint(clientX, clientY),
       { width: bounds.width, height: bounds.height },
-      { width: 300 * settings.uiScale, height: 380 * settings.uiScale }
+      { width: 300 * settings.uiScale, height: 420 * settings.uiScale }
     );
   }, [settings.uiScale, viewportPoint]);
   const worldPoint = useCallback((clientX: number, clientY: number): Point => {
@@ -1049,7 +1082,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       ref={viewport}
       data-theme-background={themeBackground ?? (packBackground ? "custom" : undefined)}
       style={packBackground ? { backgroundImage: `url("${packBackground}")` } : undefined}
-      className={`workspace pattern-${settings.pattern} ${pointerNavigation.panning ? "workspace--panning" : ""} ${wheelNavigation.zooming ? "workspace--zooming" : ""} ${wheelNavigation.wheelPanning ? "workspace--wheel-panning" : ""} ${canvasOverrideActive ? "workspace--canvas-override" : ""}`}
+      className={`workspace pattern-${settings.pattern} ${pointerNavigation.panning ? "workspace--panning" : ""} ${wheelNavigation.zooming ? "workspace--zooming" : ""} ${wheelNavigation.wheelPanning ? "workspace--wheel-panning" : ""} ${canvasOverrideActive ? "workspace--canvas-override" : ""} ${autoSortMarked.size > 0 ? "workspace--auto-sorting" : ""}`}
       onPointerDownCapture={(event) => {
         if (openRadialLauncher(event)) return;
         const element = event.target as HTMLElement;
@@ -1214,7 +1247,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               focusRevision={widgetFocus.id === terminalCanvasWidgetId(session.id) ? widgetFocus.revision : 0}
               selected={activeSessionId === session.id}
               forceMasterDetail={masterPixelSkinSessionIds.has(session.id)}
-              groupSelected={marqueeSelection.has(terminalLayerId(session.id))}
+              groupSelected={marqueeSelection.has(terminalLayerId(session.id)) || autoSortMarked.has(terminalLayerId(session.id))}
               renaming={renamingSessionId === session.id}
               fullscreen={fullscreenSessionId === session.id}
               hidden={homeEditing}
@@ -1262,7 +1295,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                   else focusController.cancelHover(pluginCanvasWidgetId(instance.id));
                 }}
                 onCanvasWheel={wheelNavigation.applyCanvasWheel}
-                groupSelected={marqueeSelection.has(pluginLayerId(instance.id))}
+                groupSelected={marqueeSelection.has(pluginLayerId(instance.id)) || autoSortMarked.has(pluginLayerId(instance.id))}
                 hidden={homeEditing}
               />
             );
@@ -1301,7 +1334,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               onWidgetHoverChange={focusController.hoverBrowser}
               onClose={onCloseBrowser}
               onError={onPluginError}
-              groupSelected={marqueeSelection.has(browserLayerId)}
+              groupSelected={marqueeSelection.has(browserLayerId) || autoSortMarked.has(browserLayerId)}
             />
           )}
           {renderedStickyNotes.map((note) => (
@@ -1454,7 +1487,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         </div>
       )}
 
-      {contextMenu && (
+      {contextMenu && CanvasContextMenu && (
         <CanvasContextMenu
           kind={contextMenu.kind}
           position={contextMenu.position}
@@ -1543,6 +1576,21 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             setCommandPaletteOpen(false);
             onSendAllRemarks();
           } : null}
+          autoSort={{
+            bounds: boundsByLayer,
+            selection: marqueeSelection,
+            home: homeBounds,
+            regions: renderedCanvasRegions,
+            sessions,
+            pluginCanvas: renderedPluginCanvas,
+            plugins,
+            snapToGrid: settings.snapToGrid,
+            state: autoSortState,
+            setState: setAutoSortState,
+            commit: commitLayerBounds,
+            mark: setAutoSortMarked,
+            onError: onPluginError
+          }}
           onClose={() => setContextMenu(null)}
         />
       )}
@@ -1580,7 +1628,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         />
       )}
 
-      {commandPaletteOpen && (
+      {commandPaletteOpen && CanvasCommandPalette && (
         <CanvasCommandPalette
           locale={settings.locale}
           sessions={sessions}

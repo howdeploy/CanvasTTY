@@ -67,11 +67,17 @@ test("Settings and the launch/link dialogs are split out of the app's static imp
   assert.ok(settingsPath, "SettingsPanel must be emitted as its own on-demand chunk");
   assert.ok(launchDialogPath, "AgentLaunchDialog must be emitted as its own on-demand chunk");
   assert.ok(linkDialogPath, "TerminalLinkDialog must be emitted as its own on-demand chunk");
+  const paletteChunk = Object.keys(metafile.outputs).find((p) => /CanvasCommandPalette-/.test(p));
+  assert.ok(paletteChunk, "the canvas command palette must be emitted as its own on-demand chunk");
+  const contextMenuChunk = Object.keys(metafile.outputs).find((p) => /CanvasContextMenu-/.test(p));
+  assert.ok(contextMenuChunk, "the canvas context menu must be emitted as its own on-demand chunk");
 
   const { paths: eagerPaths, bytes: eagerBytes } = staticallyReachableBytes(metafile, appPath);
   assert.ok(!eagerPaths.has(settingsPath), "SettingsPanel must only be reachable through a dynamic import()");
   assert.ok(!eagerPaths.has(launchDialogPath), "AgentLaunchDialog must only be reachable through a dynamic import()");
   assert.ok(!eagerPaths.has(linkDialogPath), "TerminalLinkDialog must only be reachable through a dynamic import()");
+  assert.ok(!eagerPaths.has(paletteChunk), "the command palette must only be reachable through a dynamic import()");
+  assert.ok(!eagerPaths.has(contextMenuChunk), "the canvas context menu must only be reachable through a dynamic import()");
 
   const settingsBytes = metafile.outputs[settingsPath].bytes;
   assert.ok(settingsBytes > 100_000, `SettingsPanel chunk should carry real weight, got ${settingsBytes} bytes`);

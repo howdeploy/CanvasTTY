@@ -65,8 +65,11 @@ export default { useState, useRef, useEffect, useLayoutEffect, useCallback, useM
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
-/** Imports `exports` (comma-separated names) from a repository-relative module, plus the fake React controls. */
-export async function importWithFakeReact(modulePath, exports, { checkSnapshots = false } = {}) {
+/**
+ * Imports `exports` (comma-separated names) from a repository-relative module, plus the fake React controls.
+ * Extra esbuild `plugins` can stand in for modules, e.g. to make a lazily imported one fail to load.
+ */
+export async function importWithFakeReact(modulePath, exports, { checkSnapshots = false, plugins = [] } = {}) {
   const { outputFiles } = await build({
     stdin: {
       contents: `export { ${exports} } from "./${modulePath}"; export { __render, __flush, __pending, __unmount, __reset } from "react";`,
@@ -86,7 +89,7 @@ export async function importWithFakeReact(modulePath, exports, { checkSnapshots 
         builder.onResolve({ filter: /^react(\/jsx-runtime)?$/ }, () => ({ path: "react", namespace: "fake-react" }));
         builder.onLoad({ filter: /.*/, namespace: "fake-react" }, () => ({ contents: FAKE_REACT, loader: "js" }));
       }
-    }]
+    }, ...plugins]
   });
   return import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString("base64")}`);
 }

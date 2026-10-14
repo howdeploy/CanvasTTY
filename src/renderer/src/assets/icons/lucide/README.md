@@ -3,7 +3,8 @@
 These SVG files are unmodified icons downloaded from the official
 [`lucide-icons/lucide`](https://github.com/lucide-icons/lucide) repository on
 2026-08-04, with menu and Settings navigation additions fetched from the same
-source on 2026-08-30 and canvas material additions on 2026-09-28.
+source on 2026-08-30 and canvas material additions on 2026-09-28, and the canvas
+Tools menu additions (`wrench`, `undo-2`) on 2026-10-12.
 They are vendored as local assets so CanvasTTY does not need to
 execute or fetch an icon package from npm.
 

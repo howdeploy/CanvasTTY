@@ -38,7 +38,9 @@ import slidersHorizontalIcon from "../assets/icons/lucide/sliders-horizontal.svg
 import stickyNoteIcon from "../assets/icons/lucide/sticky-note.svg";
 import terminalIcon from "../assets/icons/lucide/square-terminal.svg";
 import trashIcon from "../assets/icons/lucide/trash-2.svg";
+import undoIcon from "../assets/icons/lucide/undo-2.svg";
 import workingIcon from "../assets/icons/lucide/loader-circle.svg";
+import wrenchIcon from "../assets/icons/lucide/wrench.svg";
 import zoomInIcon from "../assets/icons/lucide/zoom-in.svg";
 import zoomOutIcon from "../assets/icons/lucide/zoom-out.svg";
 
@@ -84,6 +86,8 @@ export type UiIconName =
   | "clipboard-paste"
   | "ellipsis"
   | "trash"
+  | "undo"
+  | "wrench"
   | "working"
   | "attention"
   | "error"
@@ -137,6 +141,8 @@ const ICONS: Record<UiIconName, string> = {
   "clipboard-paste": clipboardPasteIcon,
   ellipsis: ellipsisIcon,
   trash: trashIcon,
+  undo: undoIcon,
+  wrench: wrenchIcon,
   working: workingIcon,
   attention: attentionIcon,
   error: errorIcon,

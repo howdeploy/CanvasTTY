@@ -1,3 +1,5 @@
+import { codexComposerReady } from "../codexInput.ts";
+export { codexComposerReady } from "../codexInput.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { mkdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
@@ -770,11 +772,6 @@ export class AgentControlGateway {
     if (value !== "minimal" && value !== "detailed") throw new ControlError("INVALID_PARAMS", "detail must be minimal or detailed.");
     return value;
   }
-}
-
-export function codexComposerReady(screen: string): boolean {
-  if (/Do you trust the contents|Press enter to confirm|Update Model Permissions|model:\s+loading|MCP startup/i.test(screen)) return false;
-  return screen.split("\n").some((line) => /^\s*›\s*(?:Ask Codex to do anything)?\s*$/.test(line));
 }
 
 function codexChoices(screen: string): { revision: string; selected: number; options: Array<{ number: number; label: string }> } | null {

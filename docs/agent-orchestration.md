@@ -114,6 +114,7 @@ The default private controller file is next to the connection descriptor. Use a 
 - `status` returns the native session state plus the controller-submitted turn, if any.
 - Before its first prompt a ready provider can still report `unavailable`; inspect `screen`. Startup/authentication/trust menus require resolution before tasks. Task delivery never doubles as menu confirmation.
 - `send` accepts at most 16,000 characters of task text. It rejects slash commands, terminal control sequences and input while a submitted turn is active. It does not offer automatic permission approval.
+- Automated Codex prompts wait for its empty task composer in the current launch, then use explicit bracketed paste followed by Enter. Startup menus are not task input; cancellation, timeout or restart drops the pending text. A screen from a previous launch cannot establish readiness, and paste-only sends do not submit the draft.
 - An accepted send means text was written to the PTY. It is not a completed task.
 - A result becomes fresh only after a corresponding working-to-idle lifecycle transition. Provider turn IDs, when present, reject stale completion signals.
 - `resultRevision` counts completed observations. A previous completed answer is kept separate from the active turn. `result --after N` returns `fresh: false` until a newer result exists.

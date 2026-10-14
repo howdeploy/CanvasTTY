@@ -31,14 +31,18 @@ function clis() {
   };
 }
 
-function spawner(calls) {
+function spawner(calls, readiness) {
   return (command, args, options) => {
     const exits = [];
     const call = { command, args, options, written: [], exit: (code) => exits.forEach((listener) => listener({ exitCode: code })) };
     calls.push(call);
     return {
       pid: 60_000 + calls.length, process: command, write(text) { call.written.push(text); }, resize() {}, kill() {}, pause() {}, resume() {},
-      onData() { return { dispose() {} }; },
+      onData(listener) {
+        call.data = listener;
+        if (command === "/resolved/codex" && readiness.auto) queueMicrotask(() => listener("\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› Ask Codex to do anything\r\n"));
+        return { dispose() {} };
+      },
       onExit(listener) { exits.push(listener); return { dispose() {} }; }
     };
   };
@@ -64,8 +68,9 @@ async function fixture(t) {
     timeoutMs: 5_000
   });
   const calls = [];
+  const readiness = { auto: true };
   let sessions;
-  const terminals = new TerminalManager((channel, payload) => sessions?.observe(channel, payload), clis(), undefined, undefined, true, spawner(calls));
+  const terminals = new TerminalManager((channel, payload) => sessions?.observe(channel, payload), clis(), undefined, undefined, true, spawner(calls, readiness));
   t.after(() => terminals.shutdown());
   terminals.configureLaunchPipeline(pipeline);
   const control = new AgentControlService(terminals);
@@ -81,7 +86,7 @@ async function fixture(t) {
     return next;
   };
   return {
-    terminals, control, handler, calls, pending, orchestrator, execute, answerNext,
+    terminals, control, handler, calls, pending, orchestrator, execute, answerNext, readiness,
     attachSessions: (value) => { sessions = value; }
   };
 }
@@ -130,7 +135,7 @@ test("a launch policy alone (no launch options) also delays delivery; send_to_ag
   assert.equal(policy.params.chosen, false);
   await spawned;
   assert.deepEqual(await sent, { sessionId: childId, sent: true });
-  assert.deepEqual(f.calls[1].written, ["Review the diff\r", "and the tests\r"]);
+  assert.deepEqual(f.calls[1].written, ["\x1b[200~Review the diff\x1b[201~\r", "\x1b[200~and the tests\x1b[201~\r"]);
 });
 
 test("a refused launch is not a delivery: spawn_agent and send_to_agent fail with the reason and nothing is written later", async (t) => {
@@ -208,4 +213,22 @@ test("the control CLI says a starting session is not ready instead of claiming t
   for (let i = 0; i < 50 && f.calls.length < 2; i++) await tick();
   assert.equal(f.calls.length, 2);
   assert.deepEqual(f.calls[1].written, [], "the refused send was not queued");
+});
+
+
+test("a prompt queued during a prepared restart cannot use the previous Codex composer's readiness", async (t) => {
+  const f = await fixture(t);
+  const spawned = f.execute("spawn_agent", { provider: "codex", cwd, prompt: "first task" });
+  await f.answerNext(null);
+  const child = await spawned;
+  f.calls.at(-1).exit(0);
+  f.readiness.auto = false;
+  f.terminals.restart(child.sessionId);
+  const sent = f.execute("send_to_agent", { sessionId: child.sessionId, prompt: "next task" });
+  await f.answerNext(null);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(f.calls.at(-1).written, [], "a ready screen from the old process cannot release new input");
+  f.calls.at(-1).data("\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› Ask Codex to do anything\r\n");
+  await sent;
+  assert.deepEqual(f.calls.at(-1).written, ["\x1b[200~next task\x1b[201~\r"]);
 });

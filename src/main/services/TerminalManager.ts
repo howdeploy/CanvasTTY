@@ -60,6 +60,8 @@ import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from ".
 import { SecretRedactionRegistry } from "./safety/SecretRedaction.ts";
 import type { DecisionSession } from "./DecisionHooks.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
+import { SessionScreen, withoutBraille } from "./materials/sessionScreen.ts";
+import { codexComposerReady } from "./codexInput.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
 import { canResumeThreadById, resolveTerminalLaunch } from "./terminalLaunch.ts";
 import { isLaunchProfile, PROFILE_RANK, profileAvailable, profileCeiling, type LaunchProfile } from "../../shared/autoMode.ts";
@@ -141,6 +143,10 @@ interface ManagedSession {
   environmentReady: boolean;
   /** Bumped by every launch the person or the app asks for (create, restart, restore); input waits for one. */
   launchEpoch: number;
+  /** Codex's task composer was observed ready in this exact launch, not merely its PTY. */
+  codexInputReadyEpoch?: number;
+  /** Output from an earlier launch or restored replay cannot prove this process is ready. */
+  launchOutputOffset?: number;
   /** Input waiting for this launch to start (deliverInput): woken whenever the launch moves on. */
   launchWaiters: Set<() => void>;
   /** Brought back from the saved sessions at startup (plugins see a "restored" event, not "created"). */
@@ -899,46 +905,71 @@ export class TerminalManager {
    * once, when that launch has started. A launch that is refused, fails, is cancelled or superseded (closed,
    * restarted), or does not start within LAUNCH_INPUT_WAIT_MS delivers nothing, says why, and drops the text:
    * it never reaches a later launch of the card. An aborted `signal` (the sender cancelled) delivers nothing either.
+   * Automated Codex prompts additionally wait for an empty task composer in this launch; a PTY alone is not ready.
    */
-  async deliverInput(id: string, data: string, waitMs = LAUNCH_INPUT_WAIT_MS, signal?: AbortSignal): Promise<InputDelivery> {
+  async deliverInput(id: string, data: string, waitMs = LAUNCH_INPUT_WAIT_MS, signal?: AbortSignal, waitForCodexComposer = false): Promise<InputDelivery> {
     const canceled: InputDelivery = { delivered: false, reason: "The delivery was cancelled." };
     if (signal?.aborted) return canceled;
     const session = this.sessions.get(id);
     if (!session) return { delivered: false, reason: "The session does not exist." };
     const epoch = session.launchEpoch;
     const deadline = Date.now() + waitMs;
-    const waiting = (): boolean => this.sessions.get(id) === session && session.launchEpoch === epoch
-      && session.metadata.exitCode === null && !session.process;
-    while (waiting() && !signal?.aborted) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        return { delivered: false, reason: `The session did not start within ${Math.round(waitMs / 1000)} s.` };
-      }
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(wake, remaining);
-        function wake(): void {
-          clearTimeout(timer);
-          session!.launchWaiters.delete(wake);
-          signal?.removeEventListener("abort", wake);
-          resolve();
+    const launchOutput = (): TerminalBufferSnapshot => {
+      const snapshot = this.readBuffer(id);
+      const start = snapshot.outputOffset - snapshot.buffer.length;
+      return { ...snapshot, buffer: snapshot.buffer.slice(Math.max(0, (session.launchOutputOffset ?? 0) - start)) };
+    };
+    // Build the screen only after this launch has a PTY: a pending restart
+    // still has its previous process's scrollback until bindProcess records the new offset.
+    let screen: SessionScreen | null = null;
+    let inputReady = !waitForCodexComposer || session.codexInputReadyEpoch === epoch;
+    try {
+      const waiting = (): boolean => this.sessions.get(id) === session && session.launchEpoch === epoch
+        && session.metadata.exitCode === null && (!session.process || !inputReady);
+      while (waiting() && !signal?.aborted) {
+        if (session.process && !inputReady) {
+          screen ??= new SessionScreen({ geometry: (id) => this.geometry(id), readBuffer: launchOutput }, id);
+          const snapshot = launchOutput();
+          screen.feed({ id, data: snapshot.buffer, outputOffset: snapshot.outputOffset });
+          if (codexComposerReady(withoutBraille(await screen.text()))) {
+            inputReady = true;
+            session.codexInputReadyEpoch = epoch;
+            break;
+          }
         }
-        session.launchWaiters.add(wake);
-        signal?.addEventListener("abort", wake, { once: true });
-      });
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          if (session.process && !inputReady) return { delivered: false, reason: `Codex did not become ready for input within ${Math.round(waitMs / 1000)} s.` };
+          return { delivered: false, reason: `The session did not start within ${Math.round(waitMs / 1000)} s.` };
+        }
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(wake, session.process && !inputReady ? Math.min(100, remaining) : remaining);
+          function wake(): void {
+            clearTimeout(timer);
+            session!.launchWaiters.delete(wake);
+            signal?.removeEventListener("abort", wake);
+            resolve();
+          }
+          session.launchWaiters.add(wake);
+          signal?.addEventListener("abort", wake, { once: true });
+        });
+      }
+      if (signal?.aborted) return canceled;
+      if (this.sessions.get(id) !== session) return { delivered: false, reason: "The session was closed before it started." };
+      if (session.launchEpoch !== epoch) return { delivered: false, reason: "The session was restarted before it started." };
+      if (session.metadata.exitCode !== null) {
+        return { delivered: false, reason: session.metadata.failureDetails
+          ? `The session did not start: ${this.redactSecrets(session.metadata.failureDetails)}`
+          : "The session has already exited." };
+      }
+      // A submitted prompt: the agent's next turn is the one that answers it (turnProgress).
+      const mark = session.turnStarts ?? 0;
+      if (!this.inputChecked(id, data)) return { delivered: false, reason: "The terminal no longer accepts input." };
+      if (data.endsWith("\r")) session.promptTurnMark = mark;
+      return { delivered: true };
+    } finally {
+      screen?.dispose();
     }
-    if (signal?.aborted) return canceled;
-    if (this.sessions.get(id) !== session) return { delivered: false, reason: "The session was closed before it started." };
-    if (session.launchEpoch !== epoch) return { delivered: false, reason: "The session was restarted before it started." };
-    if (session.metadata.exitCode !== null) {
-      return { delivered: false, reason: session.metadata.failureDetails
-        ? `The session did not start: ${this.redactSecrets(session.metadata.failureDetails)}`
-        : "The session has already exited." };
-    }
-    // A submitted prompt: the agent's next turn is the one that answers it (turnProgress).
-    const mark = session.turnStarts ?? 0;
-    if (!this.inputChecked(id, data)) return { delivered: false, reason: "The terminal no longer accepts input." };
-    if (data.endsWith("\r")) session.promptTurnMark = mark;
-    return { delivered: true };
   }
 
   private wakeLaunchWaiters(session: ManagedSession): void {
@@ -2100,6 +2131,7 @@ export class TerminalManager {
   }
 
   private bindProcess(id: string, session: ManagedSession, process: IPty): void {
+    session.launchOutputOffset = session.outputOffset;
     session.agentBrowser?.retainUntilExit?.();
     process.onData((data) => {
       const current = this.sessions.get(id);

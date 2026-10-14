@@ -1,3 +1,4 @@
+import { codexPromptInput } from "./codexInput.ts";
 import type {
   AgentProviderId,
   CreateSessionRequest,
@@ -191,7 +192,9 @@ export class AgentControlService {
       ...(request.effort !== undefined ? { effort: request.effort } : {})
     }, { ...(RESULT_CAPTURE_PROVIDERS.has(request.provider) ? { captureResult: true } : {}), origin: "subagent" });
     if (request.initialPrompt === undefined || request.initialPrompt.length === 0) return Promise.resolve(created);
-    return this.deliver(created.id, `${request.initialPrompt}\r`, "prompt", signal)
+    const input = request.provider === "codex"
+      ? codexPromptInput(request.initialPrompt) : `${request.initialPrompt}\r`;
+    return this.deliver(created.id, input, "prompt", signal)
       .then(() => this.terminals.getMetadata(created.id) ?? created, (error: unknown) => {
         // Cancelled while it started: nobody receives its id, so the card is closed instead of left running.
         if (!signal?.aborted) throw error;
@@ -213,7 +216,8 @@ export class AgentControlService {
     if (!capabilities.send) throw new Error(`${session.provider} cannot receive prompts.`);
     if (typeof text !== "string" || text.length === 0) throw new Error("Prompt text is required.");
     if (session.exitCode !== null) throw new Error("Agent session has already exited.");
-    return this.deliver(sessionId, submit ? `${text}\r` : text, "text", signal);
+    const input = session.provider === "codex" ? codexPromptInput(text, submit) : submit ? `${text}\r` : text;
+    return this.deliver(sessionId, input, "text", signal);
   }
 
   status(sessionId: string): SessionMetadata {
@@ -382,7 +386,7 @@ export class AgentControlService {
 
   /** Through the terminal manager's one delivery rule: exactly once, into the launch that is starting now. */
   private async deliver(sessionId: string, data: string, what: "prompt" | "text", signal?: AbortSignal): Promise<void> {
-    const delivery = await this.terminals.deliverInput(sessionId, data, undefined, signal);
+    const delivery = await this.terminals.deliverInput(sessionId, data, undefined, signal, this.requireSession(sessionId).provider === "codex");
     if (!delivery.delivered) {
       throw new PromptNotDeliveredError(sessionId, `The ${what} for agent ${sessionId} was not delivered: ${delivery.reason}`);
     }

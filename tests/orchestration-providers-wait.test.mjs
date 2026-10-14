@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AGENT_PROVIDER_IDS,
+  CLIENT_SAFE_AGENT_WAIT_SECONDS,
+  DEFAULT_AGENT_WAIT_SECONDS,
   MAX_AGENT_WAIT_SECONDS,
   ORCHESTRATION_TOOL_DEFINITIONS,
   ORCHESTRATION_TOOL_NAMES,
@@ -22,10 +24,14 @@ test("the catalog lists list_providers first and wait_for_agent with a bounded t
   assert.deepEqual(definition("list_providers").inputSchema, { type: "object", properties: {}, required: [], additionalProperties: false });
   const wait = definition("wait_for_agent").inputSchema;
   assert.deepEqual(wait.required, ["sessionId"]);
-  assert.equal(wait.properties.timeoutSeconds.maximum, 600);
-  assert.equal(MAX_AGENT_WAIT_SECONDS, 600);
-  assert.equal(validateOrchestrationArguments("wait_for_agent", { sessionId: "a", timeoutSeconds: 600 }).ok, true);
-  assert.match(validateOrchestrationArguments("wait_for_agent", { sessionId: "a", timeoutSeconds: 601 }).error, /above the maximum/u);
+  assert.equal(wait.properties.timeoutSeconds.maximum, 100);
+  assert.equal(MAX_AGENT_WAIT_SECONDS, 100);
+  assert.ok(DEFAULT_AGENT_WAIT_SECONDS <= CLIENT_SAFE_AGENT_WAIT_SECONDS && CLIENT_SAFE_AGENT_WAIT_SECONDS < 60,
+    "a call without timeoutSeconds, and every call from a 60-second MCP client, ends before that client gives up");
+  assert.equal(validateOrchestrationArguments("wait_for_agent", { sessionId: "a", timeoutSeconds: 100 }).ok, true);
+  assert.match(validateOrchestrationArguments("wait_for_agent", { sessionId: "a", timeoutSeconds: 101 }).error, /above the maximum/u);
+  assert.match(definition("wait_for_agent").description, /at most 100; unless this session is Claude Code, a call returns after at most 50 seconds/u);
+  assert.match(definition("wait_for_agent").description, /A timeout means it is still running: read output as its progress and call wait_for_agent again/u);
   assert.equal(validateOrchestrationArguments("list_providers", {}).ok, true);
   assert.match(validateOrchestrationArguments("list_providers", { x: 1 }).error, /Unexpected argument/u);
   assert.match(definition("list_providers").description, /Never search the filesystem/u);
@@ -217,7 +223,7 @@ test("wait_for_agent stops at once when the call is canceled", async () => {
   const controller = new AbortController();
   const started = Date.now();
   setTimeout(() => controller.abort(), 20);
-  await assert.rejects(call(handler, "wait_for_agent", { sessionId: "child", timeoutSeconds: 600 }, controller.signal),
+  await assert.rejects(call(handler, "wait_for_agent", { sessionId: "child", timeoutSeconds: 100 }, controller.signal),
     (error) => error.bridgeError?.code === "CANCELED");
   assert.ok(Date.now() - started < 1_000);
   const aborted = new AbortController();
@@ -261,7 +267,7 @@ test("after a prompt, an idle before the turn starts does not end wait_for_agent
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { TerminalManager } = await import("../src/main/services/TerminalManager.ts");
-  const { availableRegistry, fakeSpawner } = await import("./helpers/terminal.mjs");
+  const { availableRegistry, fakeSpawner, openCodeInputReady } = await import("./helpers/terminal.mjs");
   const root = await realpath(await mkdtemp(join(tmpdir(), "ctty-turn-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const calls = [];
@@ -277,7 +283,9 @@ test("after a prompt, an idle before the turn starts does not end wait_for_agent
   terminals.applyProviderSignal(idleChild.sessionId, { kind: "lifecycle", state: "idle" });
   assert.equal((await handler.execute(orchestrator.id, { id: "i", tool: "wait_for_agent", arguments: { sessionId: idleChild.sessionId } })).reason, "idle");
 
-  const child = await handler.execute(orchestrator.id, { id: "1", tool: "spawn_agent", arguments: { provider: "opencode", cwd: root, prompt: "do part A" } });
+  const spawning = handler.execute(orchestrator.id, { id: "1", tool: "spawn_agent", arguments: { provider: "opencode", cwd: root, prompt: "do part A" } });
+  await openCodeInputReady(calls, 2);
+  const child = await spawning;
   // The CLI's startup idle arrives after the prompt was typed but before its turn starts.
   terminals.applyProviderSignal(child.sessionId, { kind: "lifecycle", state: "idle" });
   const early = await wait(1);
@@ -302,4 +310,167 @@ test("the skill tells the orchestrator to pass a model the person names", async 
   const { readFile } = await import("node:fs/promises");
   const skill = await readFile(new URL("../agent/orchestrator/SKILL.md", import.meta.url), "utf8");
   assert.match(skill, /If the person names a model, pass it as `model`/u);
+});
+
+test("wait_for_agent returns before the orchestrator's MCP client gives up, as a timeout that says the agent still runs", async () => {
+  for (const [provider, requested, expectedMs] of [
+    ["opencode", 100, 50_000], ["codex", 100, 50_000], ["opencode", undefined, 50_000], ["opencode", 20, 20_000], ["claude", 100, 100_000]
+  ]) {
+    const { terminals, control, handler } = setup();
+    terminals.sessions.get("orch").provider = provider;
+    let received;
+    const real = control.waitFor.bind(control);
+    control.waitFor = (id, request) => { received = request.timeoutMs; return real(id, { ...request, timeoutMs: 30 }); };
+    terminals.sessions.get("child").buffer = "step 3 of 5";
+    const result = await call(handler, "wait_for_agent", { sessionId: "child", ...(requested ? { timeoutSeconds: requested } : {}) });
+    assert.equal(received, expectedMs, `${provider} asking for ${requested ?? "the default"}`);
+    assert.deepEqual([result.reason, result.status, result.output], ["timeout", "working", "step 3 of 5"]);
+    assert.match(result.message, /Still running\. Read output for its progress and call wait_for_agent again\./u);
+  }
+  const { terminals, handler } = setup();
+  terminals.sessions.get("child").status = "idle";
+  assert.equal((await call(handler, "wait_for_agent", { sessionId: "child" })).message, undefined, "only a timeout says to call again");
+});
+
+/** A recorded OpenCode-style session: alternate screen, absolute cursor moves, colors, a spinner and in-place redraws. */
+function openCodeRedraws() {
+  const e = "\u001b";
+  const at = (row, column) => `${e}[${row};${column}H`;
+  const parts = [
+    `${e}[?1049h${e}[?25l${e}[?2004h${e}]0;opencode${e}\\${e}[2J${e}[H`,
+    `${at(1, 1)}${e}[48;2;24;24;37m${e}[38;2;205;214;244m┃ opencode  build  gpt-5.5${e}[K${e}[0m`,
+    `${at(3, 3)}${e}[1mYou${e}[22m`,
+    `${at(4, 3)}${e}[38;5;252mFix the failing Button test${e}[39m`,
+    `${at(6, 3)}${e}[38;5;245mThinking${e}[0m`
+  ];
+  // The spinner turns in place many times while the model works.
+  for (let turn = 0; turn < 120; turn++) parts.push(`${at(6, 12)}${"⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[turn % 10]}${at(40, 1)}${e}[7m working ${turn}s ${e}[27m${e}[K`);
+  parts.push(
+    `${at(6, 1)}${e}[2K${at(6, 3)}${e}[38;2;166;227;161mThe Button test passes now.${e}[0m`,
+    `${at(7, 3)}Used key sk-secret-value for the request.`,
+    `${at(8, 3)}${e}[38;5;111m│${e}[0m src/Button.tsx ${e}[32m+3${e}[0m ${e}[31m-1${e}[0m`,
+    `${at(40, 1)}${e}[2K${e}[7m ctrl+p commands ${e}[27m`
+  );
+  return parts.join("");
+}
+
+test("wait_for_agent and get_agent_result return a TUI's screen as plain text, not its escape sequences", async () => {
+  const { terminals, handler } = setup();
+  const child = terminals.sessions.get("child");
+  setTimeout(() => {
+    child.buffer = openCodeRedraws();
+    child.outputOffset = child.buffer.length;
+    child.status = "idle";
+  }, 20);
+  const waited = await call(handler, "wait_for_agent", { sessionId: "child", timeoutSeconds: 5 });
+  const result = await call(handler, "get_agent_result", { sessionId: "child" });
+  for (const output of [waited.output, result.output]) {
+    assert.equal(/[\u0000-\u0008\u000b-\u001f\u007f]/u.test(output), false, "no control characters or escape sequences");
+    assert.deepEqual(output.split("\n"), [
+      "┃ opencode  build  gpt-5.5",
+      "",
+      "  You",
+      "  Fix the failing Button test",
+      "",
+      "  The Button test passes now.",
+      "  Used key [redacted] for the request.",
+      "  │ src/Button.tsx +3 -1",
+      ...Array.from({ length: 31 }, () => ""),
+      " ctrl+p commands"
+    ]);
+    assert.ok(!output.includes("sk-secret") && !output.includes("Thinking") && !output.includes("working"), "masked; only what the screen shows now");
+  }
+});
+
+test("the plain-text output stays bounded and masked for a long line-based transcript", async () => {
+  const { terminals, control } = setup();
+  const child = terminals.sessions.get("child");
+  child.buffer = Array.from({ length: 4_000 }, (_value, index) => `\u001b[32mline ${index}\u001b[0m with key sk-secret-value\r\n`).join("");
+  child.outputOffset = child.buffer.length;
+  child.status = "idle";
+  const result = await control.result("child");
+  assert.ok(result.output.length <= 8_192);
+  assert.ok(result.output.endsWith("line 3999 with key [redacted]"), result.output.slice(-80));
+  assert.ok(!result.output.includes("\u001b") && !result.output.includes("sk-secret"));
+});
+
+/** Invisible SGR resets that pad a stream to an exact length: any length from 6 up is a sum of 3s and 4s. */
+function sgrPadding(length) {
+  const e = "\u001b";
+  let fours = 0;
+  while ((length - 4 * fours) % 3 !== 0) fours++;
+  return `${e}[0m`.repeat(fours) + `${e}[m`.repeat((length - 4 * fours) / 3);
+}
+
+test("a scrollback window that starts inside an escape sequence leaves no fragment of it on the screen", async () => {
+  const { terminals, handler } = setup();
+  const child = terminals.sessions.get("child");
+  const e = "\u001b";
+  const at = (row, column) => `${e}[${row};${column}H`;
+  const start = "18;9Hof specialists who had internalized the machine.";
+  const redraws = [];
+  for (let turn = 0; turn < 900; turn++) redraws.push(`${at(40, 1)}${e}[7m working ${turn}s ${e}[27m${e}[K`);
+  const end = `${at(3, 3)}The first response was the assembler.`;
+  const body = start + redraws.join("") + end;
+  // The last 65,536 characters (the window the screen is rendered from) begin right after the ESC [ of a cursor move.
+  child.buffer = `${"earlier output\r\n".repeat(50)}${e}[` + body + sgrPadding(65_536 - body.length);
+  child.outputOffset = child.buffer.length;
+  child.status = "idle";
+  const waited = await call(handler, "wait_for_agent", { sessionId: "child", timeoutSeconds: 5 });
+  const result = await call(handler, "get_agent_result", { sessionId: "child" });
+  for (const output of [waited.output, result.output]) {
+    assert.ok(!output.includes("18;9H"), output.slice(0, 80));
+    assert.ok(output.includes("  The first response was the assembler."), output);
+  }
+});
+
+test("exitLines are the exited TUI's screen as plain text, not its redraws joined together", async () => {
+  const { terminals, handler } = setup();
+  const child = terminals.sessions.get("child");
+  const e = "\u001b";
+  const at = (row, column) => `${e}[${row};${column}H`;
+  // Drawn once at the start and never again: still on the screen when the CLI exits, more than 16 KiB later.
+  const early = `${at(3, 3)}${e}[2mThinking${e}[0m${at(8, 3)}${e}[38;5;111m▣  Build · glm-5.3-flash${e}[0m`;
+  const turns = 1_300;
+  const progress = [];
+  for (let turn = 0; turn < turns; turn++) progress.push(`${at(2, 3)}${e}[38;2;166;227;161m${"■".repeat(turn % 7)}${"⬝".repeat(7 - (turn % 7))}${e}[0m`);
+  // A TUI redraws only the cells that changed: here a line written once, then its typos fixed in place.
+  const body = early + progress.join("") +
+    `${at(4, 3)}As explicit memoy address, and if a single instructon was` +
+    `${at(4, 19)}ry address, and if a single instruction was` +
+    `${at(6, 3)}${e}[31mError: the model stopped answering.${e}[0m`;
+  assert.ok(body.length > 16_384 && body.length < 65_000, String(body.length));
+  // The rendered window (the last 65,536 characters) begins with the `m` of a color sequence whose start was cut off.
+  child.buffer = `${"x".repeat(100)}${e}[38;2;1;2;3` + "m" + body + sgrPadding(65_536 - 1 - body.length);
+  child.outputOffset = child.buffer.length;
+  child.exitCode = 1;
+  child.status = "failed";
+  const waited = await call(handler, "wait_for_agent", { sessionId: "child", timeoutSeconds: 5 });
+  const observed = await call(handler, "observe_agent", { sessionId: "child" });
+  const result = await call(handler, "get_agent_result", { sessionId: "child" });
+  assert.equal(waited.reason, "failed");
+  const last = (turns - 1) % 7;
+  assert.deepEqual(waited.exitLines.split("\n"), [
+    `  ${"■".repeat(last)}${"⬝".repeat(7 - last)}`,
+    "  Thinking",
+    "  As explicit memory address, and if a single instruction was",
+    "  Error: the model stopped answering.",
+    "  ▣  Build · glm-5.3-flash"
+  ]);
+  assert.equal(observed.exitLines, waited.exitLines);
+  assert.equal(result.exitLines, waited.exitLines);
+});
+
+test("observe_agent returns the screen as plain text too, within its maxChars", async () => {
+  const { terminals, handler } = setup();
+  const child = terminals.sessions.get("child");
+  child.buffer = openCodeRedraws();
+  child.outputOffset = child.buffer.length;
+  child.status = "working";
+  const observed = await call(handler, "observe_agent", { sessionId: "child" });
+  assert.equal(/[\u0000-\u0008\u000b-\u001f\u007f]/u.test(observed.output), false, "no ESC or other control bytes");
+  assert.ok(observed.output.includes("  The Button test passes now.") && observed.output.includes("[redacted]"));
+  assert.ok(!observed.output.includes("sk-secret") && !observed.output.includes("working"));
+  const short = await call(handler, "observe_agent", { sessionId: "child", maxChars: 256 });
+  assert.ok(short.output.length <= 256 && short.output.endsWith(" ctrl+p commands"), short.output);
 });

@@ -654,6 +654,7 @@ export class PluginManager {
         pluginName: manifest.name,
         serviceId: service.id,
         launch: structuredClone(service.launch),
+        dataDir: join(this.dataRoot, plugin.manifest.id),
         secrets: manifest.permissions.includes("secrets")
       });
     }

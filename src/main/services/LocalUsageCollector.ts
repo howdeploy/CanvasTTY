@@ -149,6 +149,28 @@ export function sanitizeCollectorState(input: unknown): Clean {
 async function sideFile(path: string): Promise<number | null> {
   try { return (await stat(path)).size; } catch { return null; }
 }
+/** Attempts of a rollback-journal read while a writer holds the database, each after the CLI's busy timeout. */
+const BUSY_ATTEMPTS = 3;
+const BUSY_RETRY_MS = 250;
+const isBusy = (error: unknown): boolean => /database (?:table )?is locked|SQLITE_BUSY|\bbusy\b/i
+  .test(String((error as { stderr?: unknown }).stderr ?? (error as Error)?.message ?? ''));
+/**
+ * Whether the database header marks WAL mode: file format write and read versions (bytes 18 and 19) are both 2.
+ * A rollback-journal database has 1 there; an unreadable or foreign header counts as not WAL.
+ */
+async function walHeader(path: string): Promise<boolean> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(path, 'r');
+    const header = Buffer.alloc(100);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    return bytesRead === header.length && header.toString('latin1', 0, 16) === 'SQLite format 3\0' && header[18] === 2 && header[19] === 2;
+  } catch {
+    return false;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
 function sqliteProblem(error: unknown): string {
   if (error instanceof SourceProblem) return error.message;
   const e = error as NodeJS.ErrnoException & { stderr?: unknown; killed?: boolean };
@@ -396,11 +418,16 @@ export class LocalUsageCollector {
   }
 
   /**
-   * A plain read-only connection creates a missing -shm file; readonly_shm never does. When no WAL
-   * frames can exist (no or empty -wal) an immutable read takes no locks and creates nothing.
+   * A rollback-journal database (header not WAL) is read through a plain read-only connection: it takes a shared
+   * lock, so a writer's half-written pages are never read, and it creates no side files. A busy database is
+   * retried a few times, then skipped for this poll. For a WAL database a plain read-only connection creates a
+   * missing -shm file; readonly_shm never does. When no WAL frames can exist (no or empty -wal) an immutable read
+   * takes no locks and creates nothing; only a WAL database may be read that way, since its writer always keeps
+   * -wal and -shm beside it while it runs.
    */
   private async sqlite(database: string, sql: string): Promise<Record<string, unknown>[]> {
     const target = (query: string): string => `${pathToFileURL(database).href}?${query}`;
+    if (!await walHeader(database)) return await this.lockedQuery(target('mode=ro'), sql);
     const [wal, shm] = await Promise.all([sideFile(`${database}-wal`), sideFile(`${database}-shm`)]);
     if (shm === null && wal) throw new SourceProblem('WAL without shared-memory index (writer stopped uncleanly); skipped to avoid a stale read');
     // A read-only WAL connection can still create side files beside a stopped writer.
@@ -411,6 +438,17 @@ export class LocalUsageCollector {
       if (!/unable to open/i.test(String((error as { stderr?: unknown }).stderr ?? ''))) throw error;
       if (await sideFile(`${database}-wal`)) throw error;
       return await this.query(target('mode=ro&immutable=1'), sql);
+    }
+  }
+
+  private async lockedQuery(target: string, sql: string): Promise<Record<string, unknown>[]> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.query(target, sql);
+      } catch (error) {
+        if (attempt >= BUSY_ATTEMPTS || !isBusy(error)) throw error;
+        await new Promise(done => setTimeout(done, BUSY_RETRY_MS * attempt));
+      }
     }
   }
 

@@ -3,10 +3,13 @@ import { CAPTURE_RESULT_ENV } from "./runtime-protocol.mjs";
 import { finalAnswer } from "./opencode-final-answer.mjs";
 import { createOpenCodeDecisions } from "./opencode-decisions.mjs";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { HOOK_TIMEOUT_MS, preparePluginHook } from "./plugin-hook-dispatch.mjs";
 
 let rootSessionId = null;
 let rootWorking = false;
+// One id per root turn (not the session id), so a late answer of an earlier turn is never taken for the current one.
+let rootTurnId = null;
 const lifecycleEnabled = process.env.CANVASTTY_LIFECYCLE_HOOKS_ENABLED !== "0";
 const pluginHookRegistry = process.env.CANVASTTY_PLUGIN_HOOK_REGISTRY ?? "";
 const pluginHookRunnerCommand = process.env.CANVASTTY_PLUGIN_HOOK_RUNNER_COMMAND ?? "";
@@ -45,6 +48,7 @@ async function lifecycleEvent(event, decisions, client) {
     if (session.parentID || session.parentId) return;
     rootSessionId = stringField(session.id, sessionId);
     rootWorking = false;
+    rootTurnId = null;
     if (!rootSessionId) return;
     if (lifecycleEnabled) {
       await reportLifecycle({ state: "idle", event: event.type, threadId: rootSessionId });
@@ -63,44 +67,55 @@ async function lifecycleEvent(event, decisions, client) {
         ? statusValue.type
         : null;
     if (status === "busy" || status === "retry") {
+      const startsTurn = status === "busy" && !rootWorking;
+      if (startsTurn || !rootTurnId) rootTurnId = randomUUID();
+      rootWorking = true;
       if (lifecycleEnabled) {
-        await reportLifecycle({ state: "working", event: `session.status:${status}`, turnId: rootSessionId });
+        await reportLifecycle({ state: "working", event: `session.status:${status}`, turnId: rootTurnId });
       }
-      if (status === "busy" && !rootWorking) {
+      if (startsTurn) {
         runPluginHooks("prompt-submit", `session.status:${status}`, event);
       }
-      rootWorking = true;
     } else if (status === "idle") {
       rootWorking = false;
-      if (lifecycleEnabled) await reportLifecycle({ state: "idle", event: "session.status:idle", turnId: rootSessionId });
+      // A result-capturing turn ends with session.idle, once its final answer was read: an idle reported here would
+      // let a waiting orchestrator take the turn as finished before its answer arrived.
+      if (lifecycleEnabled && !captureResult) await reportLifecycle({ state: "idle", event: "session.status:idle", turnId: rootTurnId });
     }
     return;
   }
   if (event.type === "session.idle") {
     rootWorking = false;
-    const result = captureResult ? await finalAnswer(client, rootSessionId) : undefined;
-    if (lifecycleEnabled || result) {
-      await reportLifecycle({ state: "idle", event: event.type, turnId: rootSessionId, ...(result ? { result } : {}) });
+    const endingSessionId = rootSessionId, endingTurnId = rootTurnId;
+    // With CanvasTTY status hooks off nothing is reported, the answer included: it is never read.
+    const result = lifecycleEnabled && captureResult && endingTurnId ? await finalAnswer(client, endingSessionId) : undefined;
+    // The read is asynchronous: when the next turn started meanwhile, this answer and this idle are no longer current.
+    const superseded = endingSessionId !== rootSessionId || endingTurnId !== rootTurnId || rootWorking;
+    if (lifecycleEnabled && !superseded) {
+      await reportLifecycle({ state: "idle", event: event.type, turnId: endingTurnId, ...(result ? { result } : {}) });
     }
     runPluginHooks("stop", event.type, event);
   } else if (event.type === "permission.asked") {
-    if (lifecycleEnabled) await reportLifecycle({ state: "needs_approval", event: event.type, turnId: rootSessionId });
+    if (lifecycleEnabled) await reportLifecycle({ state: "needs_approval", event: event.type, turnId: rootTurnId });
     runPluginHooks("permission-request", event.type, event);
   } else if (event.type === "permission.replied") {
-    if (lifecycleEnabled) await reportLifecycle({ state: "working", event: event.type, turnId: rootSessionId });
+    rootWorking = true;
+    if (lifecycleEnabled) await reportLifecycle({ state: "working", event: event.type, turnId: rootTurnId });
     runPluginHooks("permission-result", event.type, event);
   } else if (event.type === "question.asked") {
-    if (lifecycleEnabled) await reportLifecycle({ state: "needs_approval", event: event.type, turnId: rootSessionId });
+    if (lifecycleEnabled) await reportLifecycle({ state: "needs_approval", event: event.type, turnId: rootTurnId });
   } else if (event.type === "question.replied" || event.type === "question.rejected") {
-    if (lifecycleEnabled) await reportLifecycle({ state: "working", event: event.type, turnId: rootSessionId });
+    rootWorking = true;
+    if (lifecycleEnabled) await reportLifecycle({ state: "working", event: event.type, turnId: rootTurnId });
   } else if (event.type === "session.error") {
     rootWorking = false;
-    if (lifecycleEnabled) await reportLifecycle({ state: "idle", event: event.type, turnId: rootSessionId });
+    if (lifecycleEnabled) await reportLifecycle({ state: "idle", event: event.type, turnId: rootTurnId });
     runPluginHooks("stop", event.type, event);
   } else if (event.type === "session.deleted") {
     runPluginHooks("session-end", event.type, event);
     rootWorking = false;
     rootSessionId = null;
+    rootTurnId = null;
   } else if (event.type === "tool.execute.after") {
     runPluginHooks("after-tool", event.type, event);
   }

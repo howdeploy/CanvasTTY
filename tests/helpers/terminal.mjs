@@ -25,6 +25,18 @@ export function availableRegistry() {
  * returns a fake PTY: `emitData`/`emitExit` drive its listeners, `lastResize`
  * holds the last size, and `onWrite(data, options)` sees what was written.
  */
+/**
+ * What OpenCode prints once its prompt has focus: the alternate screen, its hidden cursor while it draws, then the
+ * cursor shown in the input field (TerminalManager types queued input only after that for OpenCode).
+ */
+export const OPENCODE_INPUT_READY = "\x1b[?1049h\x1b[?2004h\x1b[?25l  Ask anything\x1b[?25h";
+
+/** Shows OpenCode's input field on the fake PTY OpenCode was spawned on, once that PTY exists. */
+export async function openCodeInputReady(calls, index = calls.length) {
+  for (let i = 0; i < 200 && calls.length <= index; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  calls[index].process.emitData(OPENCODE_INPUT_READY);
+}
+
 export function fakeSpawner(calls, { pidBase = 20_000, onWrite } = {}) {
   return (command, args, options) => {
     let dataListener = () => undefined;
@@ -50,6 +62,16 @@ export function fakeSpawner(calls, { pidBase = 20_000, onWrite } = {}) {
       emitExit(exitCode) { exitListener({ exitCode, signal: 0 }); }
     };
     calls.push({ command, args, options, process });
+    return process;
+  };
+}
+
+/** fakeSpawner whose PTYs show OpenCode's input field shortly after they start (input waits for it for OpenCode). */
+export function inputReadySpawner(calls, options) {
+  const spawner = fakeSpawner(calls, options);
+  return (command, args, spawnOptions) => {
+    const process = spawner(command, args, spawnOptions);
+    setTimeout(() => process.emitData(OPENCODE_INPUT_READY), 10);
     return process;
   };
 }

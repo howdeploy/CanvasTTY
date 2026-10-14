@@ -5,7 +5,8 @@ import type { IsolationPaths } from "./isolationPaths.ts";
  * except what is listed, and a later rule wins over an earlier one:
  *
  * - writes: nowhere, then the project (every spelling), this launch's own temporary folder, the CLI's own state,
- *   config and cache folders and the package caches, then again nowhere in the project's git hooks and git config
+ *   config and cache folders and the package caches, then again nowhere in CanvasTTY's own data folder when the project
+ *   contains it (its writable folders inside excepted), the project's git hooks and git config
  *   (a hook runs outside the layer the next time the person commits) and the CLI's own permission settings;
  * - reads: not of other CLIs' credential folders, SSH/cloud keys and CanvasTTY's own tokens and secret stores, except
  *   what this launch was handed (its control grant, its account home, its plugin launch files);
@@ -31,6 +32,16 @@ export function seatbeltProfile(paths: IsolationPaths): string {
   if (paths.writableFiles.length > 0) {
     lines.push(`(allow file-write*${paths.writableFiles.map((path) => ` (regex ${regex(`^${escapeRegex(path)}(\\.[^/]*)?$`)})`).join("")})`);
   }
+  // CanvasTTY's data folder inside a writable project: read-only again, except the writable folders inside it.
+  if (paths.readOnlyFolders.length > 0) {
+    lines.push(`(deny file-write*${paths.readOnlyFolders.map((path) => ` (subpath ${quote(path)})`).join("")})`);
+    const inside = paths.writable.filter((path) => paths.readOnlyFolders.some((folder) => path.startsWith(`${folder}/`)));
+    if (inside.length > 0) lines.push(`(allow file-write*${inside.map((path) => ` (subpath ${quote(path)})`).join("")})`);
+  }
+  // Its parent folders inside the project: entries can be created in them, but they cannot be renamed or replaced.
+  if (paths.fixedFolders.length > 0) {
+    lines.push(`(deny file-write-unlink${paths.fixedFolders.map((path) => ` (literal ${quote(path)})`).join("")})`);
+  }
   if (paths.unreadable.length > 0) {
     lines.push(`(deny file-read* file-write*${paths.unreadable.map((path) => ` (subpath ${quote(path)})`).join("")})`);
   }
@@ -53,8 +64,14 @@ export function seatbeltProfile(paths: IsolationPaths): string {
     lines.push(`(deny file-write*${hookRules.map((pattern) => ` (regex ${regex(pattern)})`).join("")})`);
     lines.push(`(allow file-write*${hookRules.map((pattern) => ` (regex ${regex(`${pattern}[^/]+\\.sample$`)})`).join("")})`);
   }
+  // Also what git reads its config and paths from, existing or not: `commondir`, `config.worktree` and the linked
+  // worktrees' records (`worktrees/`). Objects, refs, the index, logs and HEAD stay writable: add, commit, checkout work.
   if (paths.projectRoots.length > 0) {
-    lines.push(`(deny file-write*${paths.projectRoots.map((path) => ` (regex ${regex(`^${escapeRegex(path)}/(.*/)?\\.git/info/attributes$`)})`).join("")})`);
+    const files = "(info/attributes|commondir|config\\.worktree(\\.lock)?|worktrees(/.*)?)";
+    lines.push(`(deny file-write*${paths.projectRoots.map((path) => ` (regex ${regex(`^${escapeRegex(path)}/(.*/)?\\.git/${files}$`)})`).join("")})`);
+    // These rules match by path: a `.git`, `hooks` or `info` folder renamed away and back would carry changes past
+    // them. They cannot be renamed or removed; entries inside them can still be created where allowed.
+    lines.push(`(deny file-write-unlink${paths.projectRoots.map((path) => ` (regex ${regex(`^${escapeRegex(path)}/(.*/)?\\.git(/hooks|/info)?$`)})`).join("")})`);
   }
   const protectedPaths = [...paths.protectedWrites, ...(paths.protectedDirectories ?? [])];
   if (protectedPaths.length > 0) {

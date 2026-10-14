@@ -51,6 +51,7 @@ import { useRemarkDraft } from "../materials/useRemarkDraft";
 import { stickyNoteAtPoint } from "../notes/stickyNoteBounds";
 import { PluginCanvasCard } from "../plugins/PluginCanvasCard";
 import { TerminalCard } from "../terminal/TerminalCard";
+import type { PluginReviewRequest } from "../terminal/pluginReviewUiState";
 import { shouldTogglePixelSkinMasterView } from "../terminal/terminalShortcuts";
 import { isPixelSkinThemeId } from "../skins/skinCatalog";
 import { isPixelSkinPackId, usePixelSkinPackAssets } from "../skins/SkinAssets";
@@ -145,6 +146,8 @@ interface TerminalCardHandlers {
   restart(id: string, resume?: boolean): Promise<void>;
   dispose(id: string, keepEnvironmentData?: boolean): void;
   openUrl(url: string): void;
+  pluginReview(request: PluginReviewRequest): void;
+  openCheckpoints(sessionId: string, cardTitle: string): void;
 }
 
 /** A group drag's commit basis, frozen once when the press activates: the pressed layer's start
@@ -213,6 +216,10 @@ interface WorkspaceCanvasProps {
   onOpenTerminal(position?: Point): void;
   onOpenBrowser(position?: Point): void;
   onOpenTerminalUrl(url: string): void;
+  /** A card action answered with a change review. */
+  onPluginReview(request: PluginReviewRequest): void;
+  /** An agent card's "Rollback points…" menu item. */
+  onOpenCheckpoints(sessionId: string, cardTitle: string): void;
   onFocusSession(session: SessionSnapshot): void;
   onResumeHistory(item: AgentChatHistoryItem, position: Point): Promise<SessionSnapshot>;
   activeSessionId: string | null;
@@ -286,7 +293,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const {
     settings, mediaData, sessions, limits, limitsLoadState, plugins, browser,
     browserViewVisible, homeEditing, camera, onCameraChange, onGoHome,
-    onOpenSettings, onOpenAgent, onOpenTerminal, onOpenBrowser, onOpenTerminalUrl, onFocusSession,
+    onOpenSettings, onOpenAgent, onOpenTerminal, onOpenBrowser, onOpenTerminalUrl, onPluginReview, onOpenCheckpoints, onFocusSession,
     activeSessionId, browserSelected, renamingSessionId, fullscreenSessionId, onToggleFullscreen, onSelectSession,
     onSelectBrowser, onClearCanvasSelection, onRenameSession, onRenameEnd,
     onRequestMedia, onRemoveMedia, onHomeLayoutChange, onHomeGridSizeChange,
@@ -726,7 +733,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     boundsChange: onSessionBoundsChange,
     restart: onRestartSession,
     dispose: onDisposeSession,
-    openUrl: onOpenTerminalUrl
+    openUrl: onOpenTerminalUrl,
+    pluginReview: onPluginReview,
+    openCheckpoints: onOpenCheckpoints
   };
   const terminalCardCallbacks = useMemo(() => {
     const latest = terminalCardHandlers;
@@ -735,7 +744,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       onRenameEnd: () => latest.current!.renameEnd(),
       onRestart: (id: string, resume?: boolean) => latest.current!.restart(id, resume),
       onDispose: (id: string, keepEnvironmentData?: boolean) => latest.current!.dispose(id, keepEnvironmentData),
-      onOpenUrl: (url: string) => latest.current!.openUrl(url)
+      onOpenUrl: (url: string) => latest.current!.openUrl(url),
+      onPluginReview: (request: PluginReviewRequest) => latest.current!.pluginReview(request),
+      onOpenCheckpoints: (sessionId: string, cardTitle: string) => latest.current!.openCheckpoints(sessionId, cardTitle)
     };
     return {
       canvas: {

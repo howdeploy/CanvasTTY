@@ -204,9 +204,13 @@ export class FileAccessService {
       if (!isContainedPath(root.path, resolvedAfterOpen)) {
         return { kind: "unsupported", reason: "not-permitted" };
       }
+      // Bind the descriptor to that contained path: the file it names now must be the very file that
+      // was opened. Where no descriptor path is exposed (macOS, Windows) this is what catches an open
+      // redirected outside the root by a swapped intermediate directory. Inode numbers are compared as
+      // bigints: 64-bit file ids (NTFS, some network file systems) lose precision as numbers.
       try {
-        const current = await stat(resolvedAfterOpen);
-        if (current.dev !== metadata.dev || current.ino !== metadata.ino) {
+        const [current, opened] = [await stat(resolvedAfterOpen, { bigint: true }), await handle.stat({ bigint: true })];
+        if (current.dev !== opened.dev || current.ino !== opened.ino) {
           return { kind: "unsupported", reason: "not-permitted" };
         }
       } catch {

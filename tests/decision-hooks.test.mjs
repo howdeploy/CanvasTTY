@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AGENT_RUNTIME_ENV, OPENCODE_DECISIONS_ENV, RUNTIME_PROTOCOL_VERSION } from "../src/agent-runtime/runtime-protocol.mjs";
+import { AGENT_RUNTIME_ENV, OPENCODE_DECISIONS_ENV, OPENCODE_DECISION_READS_ENV, RUNTIME_PROTOCOL_VERSION } from "../src/agent-runtime/runtime-protocol.mjs";
 import { buildRequest, hookOutput, parseDecision } from "../src/agent-runtime/permission-gate.mjs";
 import { createOpenCodeDecisions, guardedCall } from "../src/agent-runtime/opencode-decisions.mjs";
 import { DecisionHooks, TOO_LARGE_MESSAGE, mergeDecisions } from "../src/main/services/DecisionHooks.ts";
@@ -129,8 +129,10 @@ test("cut input under base protection: a shell call, or a file write whose targe
   // A file write whose path is at the start of the preview is judged by that path, as before.
   const inside = JSON.stringify({ file_path: join(project, "big.txt"), content: "x".repeat(300) }).slice(0, 200);
   assert.equal((await decisions.decide("s1", cut("Write", inside), live())).behavior, "none");
+  // A cut read-only call may hide the file it reads (a long read_many_files list): denied too.
+  assert.deepEqual(await decisions.decide("s1", cut("read_many_files", "{\"paths\":[\"src/a.ts\""), live()), { behavior: "deny", message: TOO_LARGE_MESSAGE });
   // Tools the rules do not read, and base protection off, are unchanged.
-  assert.equal((await decisions.decide("s1", cut("Read", "{\"file_path\":"), live())).behavior, "none");
+  assert.equal((await decisions.decide("s1", cut("WebFetch", "{\"url\":"), live())).behavior, "none");
   assert.equal((await hooks({ protect: false }).decide("s1", cut("Bash", "{\"command\":\"ls"), live())).behavior, "none");
 });
 
@@ -302,6 +304,9 @@ test("launch: the decision hook is added only when wanted, per provider, with or
   const claude = JSON.parse(adapters.prepare("claude", "t1", false, true).args[1]);
   assert.deepEqual(Object.keys(claude.hooks), ["PreToolUse"]);
   assert.equal(claude.hooks.PreToolUse[0].matcher, "Bash|Write|Edit|MultiEdit|NotebookEdit");
+  // Read-only file tools only when base protection was on at launch (they are checked for its private-data rule).
+  const claudeReads = JSON.parse(adapters.prepare("claude", "t1", false, true, undefined, undefined, true).args[1]);
+  assert.equal(claudeReads.hooks.PreToolUse[0].matcher, "Bash|Write|Edit|MultiEdit|NotebookEdit|Read|NotebookRead|Grep|Glob|LS");
   assert.match(claude.hooks.PreToolUse[0].hooks[0].command, /permission-gate\.mjs['"] ['"]pretool['"]$/u);
   assert.ok(JSON.parse(adapters.prepare("claude", "t1", true, true).args[1]).hooks.Stop, "status hooks stay alongside");
   const codex = adapters.prepare("codex", "t2", false, true).args.join(" ");
@@ -309,8 +314,15 @@ test("launch: the decision hook is added only when wanted, per provider, with or
   const qwen = adapters.prepare("qwen", "t3", false, true);
   const qwenSettings = JSON.parse(await readFile(qwen.environment.QWEN_CODE_SYSTEM_SETTINGS_PATH, "utf8"));
   assert.equal(qwenSettings.hooks.PreToolUse[0].hooks[0].timeout, 15_000);
+  assert.equal(qwenSettings.hooks.PreToolUse[0].matcher, "^(run_shell_command|write_file|edit|replace)$");
   qwen.releaseConfiguration();
+  const qwenReads = adapters.prepare("qwen", "t3", false, true, undefined, undefined, true);
+  assert.equal(JSON.parse(await readFile(qwenReads.environment.QWEN_CODE_SYSTEM_SETTINGS_PATH, "utf8")).hooks.PreToolUse[0].matcher,
+    "^(run_shell_command|write_file|edit|replace|read_file|read_many_files|grep_search|search_file_content|glob|list_directory)$");
+  qwenReads.releaseConfiguration();
   assert.equal(adapters.prepare("opencode", "t4", false, true).environment[OPENCODE_DECISIONS_ENV], "1");
+  assert.equal(adapters.prepare("opencode", "t4", false, true).environment[OPENCODE_DECISION_READS_ENV], undefined);
+  assert.equal(adapters.prepare("opencode", "t4", false, true, undefined, undefined, true).environment[OPENCODE_DECISION_READS_ENV], "1");
   assert.equal(adapters.prepare("opencode", "t4", false, false).environment[OPENCODE_DECISIONS_ENV], undefined);
   assert.equal(adapters.decisionsSupported("kimi"), false);
   assert.deepEqual(adapters.prepare("kimi", "t5", false, true).args, []);
@@ -325,9 +337,10 @@ test("launch: the decision hook is added only when wanted, per provider, with or
   };
   const bridge = new AgentRuntimeBridge(gateway, { helper, runtimeDirectory, openCodePluginPath: "/opt/CanvasTTY/opencode-plugin.mjs",
     kimiHomeDirectory: join(runtimeDirectory, "kimi"), hermesHomeDirectory: join(runtimeDirectory, "hermes"), grokHomeDirectory: join(runtimeDirectory, "grok"),
-    permissionGate, coreHooksEnabled: true, wantsDecisions: (provider) => provider === "claude" });
+    permissionGate, coreHooksEnabled: true, wantsDecisions: (provider) => provider === "claude", decisionReads: () => true });
   const launched = bridge.prepareLaunch({ terminalSessionId: "a", provider: "claude", cwd: project });
   assert.equal(launched.decisions, true);
+  assert.match(JSON.stringify(launched.args), /NotebookEdit\|Read\|NotebookRead/u, "base protection on: the hook sees reads");
   assert.equal(registered[0][4], true);
   assert.equal(bridge.prepareLaunch({ terminalSessionId: "b", provider: "codex", cwd: project }).decisions, false);
   bridge.setCoreHooksEnabled(false);
@@ -336,7 +349,7 @@ test("launch: the decision hook is added only when wanted, per provider, with or
 
 test("OpenCode: the guard throws a deny, remembers an allow and answers OpenCode's prompt once", async () => {
   const env = {
-    [OPENCODE_DECISIONS_ENV]: "1", [AGENT_RUNTIME_ENV.address]: "/tmp/x.sock", [AGENT_RUNTIME_ENV.terminalSessionId]: "t",
+    [OPENCODE_DECISIONS_ENV]: "1", [OPENCODE_DECISION_READS_ENV]: "1", [AGENT_RUNTIME_ENV.address]: "/tmp/x.sock", [AGENT_RUNTIME_ENV.terminalSessionId]: "t",
     [AGENT_RUNTIME_ENV.provider]: "opencode", [AGENT_RUNTIME_ENV.capabilityToken]: "c".repeat(40)
   };
   const replies = [];
@@ -354,10 +367,25 @@ test("OpenCode: the guard throws a deny, remembers an allow and answers OpenCode
   next = { behavior: "ask", message: "" };
   await decisions.guard({ tool: "bash", callID: "c3" }, { args: { command: "ls" } });
   assert.equal(await decisions.permissionAsked({ id: "r3", tool: { callID: "c3" } }), false, "ask leaves OpenCode's own prompt");
-  await decisions.guard({ tool: "read", callID: "c4" }, { args: { filePath: "/etc/hosts" } });
-  assert.equal(sent.length, 3, "tools that neither run commands nor write files are not sent");
+  await decisions.guard({ tool: "webfetch", callID: "c4" }, { args: { url: "https://example.com" } });
+  assert.equal(sent.length, 3, "tools that neither run commands, write files nor read them are not sent");
+  await decisions.guard({ tool: "read", callID: "c5" }, { args: { filePath: "/etc/hosts" } });
+  assert.equal(sent.length, 4, "a read-only file tool is sent for base protection's private-data rule");
+  assert.equal(sent[3].toolName, "Read");
+  // Base protection off at launch: reads are not sent at all.
+  const noReads = [];
+  await createOpenCodeDecisions({ client, env: { ...env, [OPENCODE_DECISION_READS_ENV]: undefined }, send: async (_address, message) => { noReads.push(message); return null; } })
+    .guard({ tool: "read", callID: "c6" }, { args: { filePath: "/etc/hosts" } });
+  assert.equal(noReads.length, 0);
   assert.equal(createOpenCodeDecisions({ env: { ...env, [OPENCODE_DECISIONS_ENV]: "0" } }).enabled, false);
   assert.deepEqual(guardedCall("apply_patch", { patchText: "*** Begin Patch" }), { toolName: "apply_patch", toolInput: { patch: "*** Begin Patch" } });
+  assert.deepEqual(guardedCall("read", { filePath: "/p/a.ts" }, true), { toolName: "Read", toolInput: { file_path: "/p/a.ts" } });
+  assert.deepEqual(guardedCall("grep", { pattern: "x", path: "/p" }, true), { toolName: "Grep", toolInput: { path: "/p" } });
+  assert.deepEqual(guardedCall("glob", { pattern: "**/*.ts" }, true), { toolName: "Glob", toolInput: { pattern: "**/*.ts" } });
+  assert.deepEqual(guardedCall("glob", { pattern: "*.md", path: "/p" }, true), { toolName: "Glob", toolInput: { path: "/p", pattern: "*.md" } });
+  assert.deepEqual(guardedCall("list", { path: "/p" }, true), { toolName: "LS", toolInput: { path: "/p" } });
+  assert.deepEqual(guardedCall("grep", { pattern: "x", include: "*.ts" }, true), { toolName: "Grep", toolInput: { path: "." } }, "a grep without a path searches the current folder");
+  assert.equal(guardedCall("read", { filePath: "/p/a.ts" }), null, "reads are mapped only when the launch checks them");
   // multiedit: every edit's new text reaches the decision, as Claude's MultiEdit tool_input does.
   assert.deepEqual(guardedCall("multiedit", { filePath: "/p/a.ts", edits: [{ oldString: "a", newString: "TOKEN=1" }, { oldString: "b", newString: "rm -rf /" }, { newString: 5 }] }),
     { toolName: "edit", toolInput: { file_path: "/p/a.ts", content: "TOKEN=1\nrm -rf /" } });

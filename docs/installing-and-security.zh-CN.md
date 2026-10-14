@@ -83,9 +83,9 @@ gh variable set SPARKLE_PUBLIC_ED_KEY --repo howdeploy/CanvasTTY \
 智能体按自己的模式工作；CanvasTTY 的各层位于其外部，作为安静的安全网：项目内的常规工作不会增加提问，只拦截危险操作并给出简短原因。
 
 - **启动模式**：自动（默认）、手动、接受编辑、计划、绕过，仅在 CLI 支持时提供。绕过由用户按 CLI 确认，在主进程中检查，绝不交给子智能体，并且仍处于下列各层之内。
-- **基础保护**（hooks）为有 hooks 的智能体拒绝提权、`curl | sh`、磁盘命令以及项目外的写入；它检查命令，不是沙箱。
+- **基础保护**（hooks）为有 hooks 的智能体拒绝提权、`curl | sh`、磁盘命令以及项目外的写入，并拒绝访问 CanvasTTY 的私有数据；它是尽力而为的命令检查，不是沙箱：包含 CanvasTTY 数据的项目（例如主目录）只有在隔离下才受保护。
 - **委派规则**：子智能体的权限不超过其编排者（绝不为 YOLO），只在项目文件夹内工作，并受用户设定的深度和数量限制；智能体无法更改设置、防护、配置档或隔离。
-- **智能体隔离**（macOS 使用 sandbox-exec，Linux 使用 bubblewrap）：只能写入项目、自身临时目录和其 CLI 的目录；密钥和令牌不可读；其他进程、应用和守护进程不可达；无法建立时拒绝启动。网络不受限制；Windows 暂无此层，子智能体在那里以手动模式运行。详见 [agent-orchestration.md](agent-orchestration.md)。
+- **智能体隔离**（macOS 使用 sandbox-exec，Linux 使用 bubblewrap）：只能写入项目、自身临时目录和其 CLI 的目录；密钥和令牌不可读；其他进程、应用和守护进程不可达；无法建立时拒绝启动。插件的私有数据（`plugin-data`）整体不可读；只重新开放两类路径：所选启动插件启动该智能体时使用的 CLI 目录（该插件自身数据内的一个确切真实文件夹），以及插件数据内的项目——仅作为这一个文件夹，且仅限 CanvasTTY 安排启动的位置：环境在其插件自身数据内准备的文件夹，或用户为卡片选择的文件夹（及其下方子智能体的文件夹）。插件数据内的任何其他项目（例如智能体要求的子智能体文件夹）都会被拒绝。在 Linux 上，CanvasTTY 网关的 socket 文件夹以只读方式挂载，且只挂载 CanvasTTY 自身网关为本次启动准备的 socket：来自用户环境或插件的 `CANVASTTY_*_ADDRESS` 不会挂载任何东西，包含隐藏或可写文件夹的网关 socket 文件夹会被拒绝。网络不受限制；Windows 暂无此层，子智能体在那里以手动模式运行。详见 [agent-orchestration.md](agent-orchestration.md)。
 
 **Git 审计。** 隔离的智能体会话结束、被关闭或在退出后恢复时，CanvasTTY 会检查其文件夹下 git 目录发生变化的仓库。如果 git 现在会在隔离外运行某些东西（`core.hooksPath`、filter 或 diff 驱动、`fsmonitor`、hook 文件、`info/attributes`），会出现一条列出具体变化的通知；**Neutralize** 删除这些键并停用这些文件，**Keep as is** 保持不变。它不会撤销项目内的其他文件改动。
 

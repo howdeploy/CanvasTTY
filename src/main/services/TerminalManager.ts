@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { constants as osConstants } from "node:os";
 import { realpathSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { isPathInside } from "../../agent-runtime/path-inside.mjs";
@@ -8,6 +9,7 @@ import type {
   CreateSessionRequest,
   GitRiskReport,
   Point,
+  PluginLaunchValues,
   ProviderId,
   SessionBounds,
   SessionEnvironmentChoice,
@@ -64,9 +66,11 @@ import { terminalFailureDetails } from "./terminalFailureDetails.ts";
 import { canResumeThreadById, resolveTerminalLaunch } from "./terminalLaunch.ts";
 import { isLaunchProfile, PROFILE_RANK, profileAvailable, profileCeiling, type LaunchProfile } from "../../shared/autoMode.ts";
 import type { AgentIsolation, IsolationDecision } from "./isolation/AgentIsolation.ts";
-import { controlGrantFolder } from "./isolation/AgentIsolation.ts";
+import { controlGrantFolder, gatewaySocketAddresses } from "./isolation/AgentIsolation.ts";
 import { auditRepositories, neutralizeRepositories, type GitRiskRepository } from "./isolation/gitAudit.ts";
+import { providerHomeVariables, type PlacedProject } from "./isolation/isolationPaths.ts";
 import { LaunchRefusal } from "./launchRefusal.ts";
+import { CheckpointRefusal } from "./checkpointRefusal.ts";
 import { configuredMode } from "./configuredMode.ts";
 import { envKey, RESERVED_ENV, type LaunchPipeline, type PreparedLaunch } from "./LaunchPipeline.ts";
 import type { EnvironmentRegistry } from "./EnvironmentRegistry.ts";
@@ -127,6 +131,20 @@ interface ManagedSession {
   /** The last turn's final answer its hook or plugin reported (captureResult only); cleared when a turn starts. */
   answer?: { text: string; truncated: boolean; at: number };
   /**
+   * Status hooks were off when this launch was planned, or were turned off since: it has no lifecycle hooks, so its
+   * card stays unavailable and no answer is captured until a restart with status hooks on.
+   */
+  statusHooksOff?: boolean;
+  /** Something other than Enter was typed since the last submitted input (an Enter alone then submits nothing). */
+  typedSinceSubmit?: boolean;
+  /** Bumped by every submitted input (except an approval answer) and every launch: the turn an answer must belong to. */
+  inputGeneration?: number;
+  /** inputGeneration when the current turn started. */
+  answerTurnGeneration?: number;
+  /** OpenCode's current turn id and the inputGeneration each recent turn id started in. */
+  providerTurnId?: string;
+  providerTurnGenerations?: Map<string, number>;
+  /**
    * Plugin options, environment ref (or, until the plugin has prepared it, the launcher's environment choice)
    * and owning plugin carried into the saved record.
    */
@@ -135,10 +153,21 @@ interface ManagedSession {
   launchToken: number;
   /** Removes the current run's plugin files; called when the process exits. */
   launchCleanup: (() => Promise<void>) | null;
+  /** Cleanup already started by an earlier exit; closing the card must drain it before deleting its parent. */
+  launchCleanupPending?: Promise<void>;
+  /** Whole contributed launches, including asynchronous preparation/wrapping and abandoned-run cleanup. */
+  launchTasks?: Set<Promise<unknown>>;
+  /**
+   * The pipelines that prepared launches for this card, each with the run folders it created for this card object,
+   * retained across host reconfiguration/restart. Closing removes only these, never a later card's under the same id.
+   */
+  launchRunFolders?: Map<Pick<LaunchPipeline, "forgetSession">, Set<string>>;
   /** A restored grok card waits for its grid before launching; plugins still learn it is a restore. */
   restoringLaunch: boolean;
   /** The environment was prepared or resumed in this run of the app, so it can be wrapped now. */
   environmentReady: boolean;
+  /** Plugins whose launch contribution decided this run's model (LaunchPipeline.prepare), once prepared. */
+  modelSetBy?: string[];
   /** Bumped by every launch the person or the app asks for (create, restart, restore); input waits for one. */
   launchEpoch: number;
   /** Input waiting for this launch to start (deliverInput): woken whenever the launch moves on. */
@@ -151,6 +180,24 @@ interface ManagedSession {
   hookSignals?: number;
   /** Set after the person answered a hooked Claude prompt; see settleAnsweredPrompt. */
   answeredPromptTimer?: ReturnType<typeof setTimeout>;
+  /** The last deliverInput of this card: the next one waits for it, so sends arrive in order. */
+  inputQueue?: Promise<InputDelivery>;
+  /** This launch's CLI turned its text cursor on in its full-screen view: its input field is up (watchInputReadiness). */
+  inputReady?: boolean;
+  /** While watching for inputReady: this launch's CLI is on its alternate (full-screen) buffer. */
+  alternateScreen?: boolean;
+  /** While watching for inputReady: an escape sequence cut off at the end of the last output chunk. */
+  readinessCarry?: string;
+  /** When this launch's first lifecycle hook stops waiting for inputReady (INPUT_READY_HOOK_GRACE_MS after it). */
+  hookReadyAt?: number;
+  hookReadyTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Bumped by every submitted input (and restart): a pre-turn rollback point belongs to one generation. Separate from
+   * inputGeneration, which ties a subagent's answer to its prompt.
+   */
+  checkpointGeneration?: number;
+  /** Bumped by every input submitted while no approval is pending, even inside a turn (see submittedInputs). */
+  submittedInputs?: number;
 }
 
 type EnvironmentService = Pick<EnvironmentRegistry,
@@ -177,6 +224,8 @@ interface PlannedSpawn {
   agentBrowser: PreparedAgentBrowserPtyLaunch | null;
   agentRuntime: PreparedAgentRuntimePtyLaunch | null;
   agentOrchestration: PreparedOrchestrationPtyLaunch | null;
+  /** The folder of the control grant CanvasTTY itself gave this launch (orchestrators only), never read from `env`. */
+  controlGrant: string | null;
   cleanup(): void;
 }
 /** Quitting with saving off asks environments to stop compute, but never waits longer than this. */
@@ -190,6 +239,30 @@ export const PTY_EXIT_WAIT_MS = 2_000;
 export const PTY_KILL_WAIT_MS = 1_000;
 /** Longer than every plugin step of a launch together (prepare, resume, launch options, wrap). */
 export const LAUNCH_INPUT_WAIT_MS = 60_000;
+
+/**
+ * CLIs that drop what is typed before their input field is up. OpenCode's full-screen view throws away every key that
+ * arrives while it starts (a few seconds), so a first prompt typed when the PTY exists is lost and the agent waits at
+ * an empty prompt. Its readiness is structured: a lifecycle hook, or the terminal control sequence that shows its text
+ * cursor on the alternate screen once its prompt has focus (never the human-readable screen text).
+ */
+const WAITS_FOR_INPUT_READY: ReadonlySet<ProviderId> = new Set<ProviderId>(["opencode"]);
+
+/**
+ * Whether input for this CLI waits for its input field. Only on macOS and Linux: Windows' pseudo console (ConPTY,
+ * winpty) may not pass the alternate-screen and cursor sequences through, so there the gate could never open, and
+ * input is typed as soon as the PTY exists, as before.
+ */
+function waitsForInputReady(provider: ProviderId): boolean {
+  return (process.platform === "darwin" || process.platform === "linux") && WAITS_FOR_INPUT_READY.has(provider);
+}
+
+/**
+ * A lifecycle hook alone is not proof that the input field is up: OpenCode's plugin reports (for a resumed session,
+ * idle on session.updated) about 0.6 s before typed keys reach its prompt. The cursor signal decides; a hook counts
+ * only this long after the launch's first one, for a CLI whose cursor sequence never arrives.
+ */
+export const INPUT_READY_HOOK_GRACE_MS = 2_000;
 
 /** What happened to input handed to deliverInput. */
 export type InputDelivery = { delivered: true } | { delivered: false; reason: string };
@@ -246,7 +319,11 @@ export class TerminalManager {
   // Every text an agent reads from another card passes through it (EP-8).
   private redaction = new SecretRedactionRegistry();
   // Where each running card was actually started (an environment may move it) and its agent config folder.
-  private readonly launchContexts = new Map<string, { cwd: string; configDir: string | null }>();
+  /**
+   * Where each running card was started: its folder, and its own config folders (CLAUDE_CONFIG_DIR, and the account
+   * home a launch contributor selected inside its plugin data), which base protection treats as the agent's own.
+   */
+  private readonly launchContexts = new Map<string, { cwd: string; configDirs: string[] }>();
   private modelCheck: (provider: ProviderId, model: string) => string | null = () => null;
   // Whether base protection is on (Settings → Agents); OpenCode's auto profile lets shell commands run without asking
   // only then. Unknown counts as off.
@@ -283,6 +360,11 @@ export class TerminalManager {
   // the main process reads it from its emit callback to tell a failure that is
   // merely re-derived state from one the user just caused.
   private emittingFailureOrigin: FailureOrigin | null = null;
+  // A rollback point restore in progress: its folder, the cards it holds (no input, launch or close), the closes it
+  // deferred, and when it ends.
+  private checkpointRestore: { cwd: string; ids: Set<string>; closes: Map<string, { keepEnvironmentData?: boolean }>; done: Promise<void> } | null = null;
+  // Cards whose plugin launch (options, environment) is still being prepared: their final folder is not known yet.
+  private readonly pendingLaunches = new Set<string>();
 
   constructor(
     emit: Emit,
@@ -362,7 +444,7 @@ export class TerminalManager {
       provider: session.metadata.provider,
       role: session.metadata.role ?? "agent",
       cwd: launched?.cwd ?? session.metadata.cwd,
-      configDirs: launched?.configDir ? [launched.configDir] : [],
+      configDirs: launched ? [...launched.configDirs] : [],
       profile: session.metadata.profile
     };
   }
@@ -407,16 +489,22 @@ export class TerminalManager {
     this.sessionRestoreMode = mode;
   }
 
-  async restorePersistedSessions(): Promise<void> {
+  /**
+   * Brings the saved cards back. Returns the ids of saved cards known not to come back (so data kept for them, such as
+   * rollback points, may go); empty when the saved cards could not be read, are from a newer version, or restore is off.
+   */
+  async restorePersistedSessions(): Promise<string[]> {
     const store = this.sessionStore;
-    if (!store) return;
+    if (!store) return [];
     const persisted = await store.load();
     if (this.sessionRestoreMode === "off") {
       if (persisted.length > 0) await store.clear();
-      return;
+      return [];
     }
 
     await this.restoreSessionRecords(persisted, this.sessionRestoreMode);
+    if (store.loadProblem) return [];
+    return persisted.map((record) => record.id).filter((id) => !this.sessions.has(id));
   }
 
   private async restoreSessionRecords(persisted: PersistedTerminalSession[], mode: SessionRestoreMode): Promise<void> {
@@ -468,6 +556,7 @@ export class TerminalManager {
   }
 
   async shutdown(): Promise<void> {
+    if (this.checkpointRestore) await this.checkpointRestore.done;
     if (this.persistenceTimer !== null) {
       clearTimeout(this.persistenceTimer);
       this.persistenceTimer = null;
@@ -581,6 +670,134 @@ export class TerminalManager {
     return { promptSent: mark !== undefined, turnStartedSincePrompt: mark !== undefined && (session.turnStarts ?? 0) > mark };
   }
 
+  /** A rollback point restore holds this card: no input, launch or close reaches it until the restore ends. */
+  isCheckpointRestoreActive(id: string): boolean {
+    return this.checkpointRestore?.ids.has(id) ?? false;
+  }
+
+  /** The app is quitting: closing cards now keeps their rollback points for the next start. */
+  isQuitting(): boolean {
+    return this.quitting;
+  }
+
+  /** A rollback point restore is writing files in (or above, or below) this folder. */
+  isRestoringFolder(path: string): boolean {
+    const lease = this.checkpointRestore;
+    if (!lease) return false;
+    let folder: string;
+    try { folder = realpathSync(path); } catch { folder = path; }
+    return isPathInside(lease.cwd, folder) || isPathInside(folder, lease.cwd);
+  }
+
+  /** A pre-turn rollback point may be taken for this card now. */
+  canCaptureCheckpoint(id: string): boolean {
+    const session = this.sessions.get(id);
+    return Boolean(session && session.metadata.exitCode === null && !this.isCheckpointRestoreActive(id));
+  }
+
+  /**
+   * A host-only freshness check for a pre-turn rollback point: false once the card was replaced, received new submitted
+   * input, ended, or a restore holds it.
+   */
+  providerSignalGuard(id: string): () => boolean {
+    const session = this.sessions.get(id);
+    const generation = session?.checkpointGeneration ?? 0;
+    return () => Boolean(session && this.sessions.get(id) === session && (session.checkpointGeneration ?? 0) === generation
+      && session.metadata.status !== "done" && session.metadata.status !== "failed" && !this.isCheckpointRestoreActive(id));
+  }
+
+  /**
+   * How many inputs were submitted to this card (not counting answers to an approval). A CLI without a turn-end hook
+   * keeps its card "working", so the turn barrier compares this count to tell a new prompt from the running turn.
+   */
+  submittedInputs(id: string): number {
+    return this.sessions.get(id)?.submittedInputs ?? 0;
+  }
+
+  /** No launch may start in (or above, or below) a folder whose files are being restored, nor any plugin launch. */
+  private assertCheckpointLaunchAllowed(cwd: string, contributed = false): void {
+    const lease = this.checkpointRestore;
+    if (!lease) return;
+    let folder: string;
+    try { folder = realpathSync(cwd); } catch { folder = cwd; }
+    if (contributed || isPathInside(lease.cwd, folder) || isPathInside(folder, lease.cwd)) {
+      throw new LaunchRefusal("Workspace rollback point restoration is in progress. Try the launch again after it finishes.");
+    }
+  }
+
+  /**
+   * Restores a card's files under a lease over every card whose folder overlaps it. Refused (CheckpointRefusal) while
+   * any of them is still running or launching, or when a related plugin environment ran isolated (stopping its local
+   * wrapper does not prove the remote or container workload stopped). While it runs, those cards take no input, no
+   * launch starts in the folder, and closing one waits until the restore ends.
+   */
+  async withCheckpointRestore<T>(id: string, restore: (cwd: string) => Promise<T>): Promise<T> {
+    if (this.checkpointRestore) throw new CheckpointRefusal("restore-in-progress", "Another rollback point restoration is in progress.");
+    const target = this.sessions.get(id);
+    if (!target) throw new CheckpointRefusal("missing-session", "Terminal session does not exist.");
+    if (this.pendingLaunches.size > 0) throw new CheckpointRefusal("pending-launch", "Wait for pending agent launches before restoring files.");
+    let cwd: string;
+    try { cwd = realpathSync(this.launchContexts.get(id)?.cwd ?? target.metadata.cwd); }
+    catch { throw new CheckpointRefusal("not-git-root", "The card's folder is unavailable."); }
+    const targetScopes = new Set([cwd]);
+    let targetScopeAmbiguous = false;
+    for (const path of [target.metadata.cwd, this.taskProjectRoot(target.metadata.cwd, target.metadata.parentSessionId)]) {
+      try { targetScopes.add(realpathSync(path)); } catch { targetScopeAmbiguous = true; }
+    }
+    const overlaps = (path: string): boolean => [...targetScopes].some((scope) => isPathInside(path, scope) || isPathInside(scope, path));
+    const taskRoot = (session: ManagedSession): string => {
+      let root = session;
+      for (let depth = 0; root.metadata.parentSessionId && depth < 64; depth++) {
+        const parent = this.sessions.get(root.metadata.parentSessionId);
+        if (!parent) break;
+        root = parent;
+      }
+      return root.metadata.id;
+    };
+    const targetTask = taskRoot(target);
+    const affected: ManagedSession[] = [];
+    for (const session of this.sessions.values()) {
+      const isolated = session.extras.isolatedEnvironmentScopes;
+      if (isolated && (isolated.roots.length > 0 || isolated.ambiguous)) {
+        // Recorded folders decide. Evidence that is incomplete (ambiguous) also counts the card's own folders and its
+        // task: an unrelated card elsewhere never blocks this restore, an unknown one in the same task or folder does.
+        let related = targetScopeAmbiguous || isolated.roots.some(overlaps);
+        if (!related && isolated.ambiguous) {
+          let known = 0;
+          for (const path of [session.metadata.cwd, this.taskProjectRoot(session.metadata.cwd, session.metadata.parentSessionId)]) {
+            try { if (overlaps(realpathSync(path))) related = true; known++; } catch { /* unknown folder */ }
+          }
+          if (known === 0 || taskRoot(session) === targetTask) related = true;
+        }
+        if (related) throw new CheckpointRefusal("isolated-environment", "Rollback point restoration is unavailable for a related isolated environment.");
+      }
+      let folder: string;
+      try { folder = realpathSync(this.launchContexts.get(session.metadata.id)?.cwd ?? session.metadata.cwd); }
+      catch { if (session.metadata.exitCode !== null) continue; folder = session.metadata.cwd; }
+      if (!isPathInside(cwd, folder) && !isPathInside(folder, cwd)) continue;
+      if (session.metadata.exitCode === null) {
+        throw new CheckpointRefusal("agent-running", "Close or exit every agent and terminal in this folder before restoring files.");
+      }
+      affected.push(session);
+    }
+    let complete!: () => void;
+    const lease = { cwd, ids: new Set(affected.map((session) => session.metadata.id)), closes: new Map<string, { keepEnvironmentData?: boolean }>(),
+      done: new Promise<void>((resolve) => { complete = resolve; }) };
+    // Closing an ancestor closes its children and may release their environment: the whole close waits.
+    for (const session of affected) {
+      let parent = session.metadata.parentSessionId;
+      while (parent && !lease.ids.has(parent)) { lease.ids.add(parent); parent = this.sessions.get(parent)?.metadata.parentSessionId; }
+    }
+    this.checkpointRestore = lease;
+    try {
+      return await restore(cwd);
+    } finally {
+      this.checkpointRestore = null;
+      complete();
+      for (const [closed, options] of lease.closes) this.dispose(closed, options);
+    }
+  }
+
   /** The session's output offset without copying its scrollback; null when it does not exist. */
   outputOffset(id: string): number | null {
     return this.sessions.get(id)?.outputOffset ?? null;
@@ -609,6 +826,7 @@ export class TerminalManager {
     control: { captureResult?: boolean; answerCaptureGrantExpiresAt?: number; origin?: LaunchOrigin; ownerPluginId?: string } = {}
   ): SessionSnapshot {
     assertCreateRequest(request, this.containment());
+    this.assertCheckpointLaunchAllowed(request.cwd, Boolean(request.environment || request.launchOptions));
     const origin: LaunchOrigin = request.role === "subagent" ? "subagent" : control.origin ?? "person";
     if (request.profile === "yolo" && request.provider !== "terminal") {
       // YOLO is the person's decision, made in the launcher for that CLI; nothing else starts it on their behalf.
@@ -654,8 +872,15 @@ export class TerminalManager {
     }
 
     const delegated = origin === "subagent" || control.ownerPluginId !== undefined;
+    // The orchestrator's own options are the person's choice: its subagent may repeat them even where the plugin did
+    // not declare its options delegable. Any other choice needs the plugin's delegable declaration.
+    // Only a subagent of the same CLI: the person chose them for that CLI (as AgentControlService.subagentLaunchOptions).
+    const parent = origin === "subagent" && request.parentSessionId !== undefined ? this.sessions.get(request.parentSessionId) : undefined;
+    const parentOptions = parent && parent.metadata.provider === request.provider
+      ? parent.extras.options as Record<string, PluginLaunchValues> | undefined : undefined;
     const launchOptions = this.launchPipeline
-      ? this.launchPipeline.normalizeOptions(request.provider, request.launchOptions, origin === "subagent" ? { delegated: true } : undefined)
+      ? this.launchPipeline.normalizeOptions(request.provider, request.launchOptions, origin === "subagent"
+        ? { delegated: true, ...(parentOptions ? { inherited: parentOptions } : {}) } : undefined)
       : request.launchOptions === undefined ? undefined : failWith("Plugin launch options are not available.");
     // The isolation layer decides before anything starts: a subagent without it runs in normal, a launch that
     // needs it and cannot have it is refused.
@@ -768,6 +993,9 @@ export class TerminalManager {
     const session = this.sessions.get(id);
     if (!session) throw new Error("Terminal session does not exist.");
     if (session.metadata.exitCode === null) throw new Error("Terminal session is still running.");
+    if (this.isCheckpointRestoreActive(id)) throw new LaunchRefusal("Workspace rollback point restoration is in progress.");
+    this.assertCheckpointLaunchAllowed(session.metadata.cwd,
+      Boolean(session.extras.environment || session.extras.environmentChoice || session.extras.options));
     const environment = session.extras.environment;
     if (environment && !this.environmentUsable(environment)) {
       // Never run a placed session locally instead of where it belongs.
@@ -781,6 +1009,7 @@ export class TerminalManager {
     if (missingPlugins.length > 0) throw new Error(`Launch refused: ${missingLaunchPlugins(missingPlugins)}`);
     delete session.extras.heldState;
     delete session.metadata.restoreNote;
+    session.checkpointGeneration = (session.checkpointGeneration ?? 0) + 1;
     // Input queued for the launch that ended never reaches this one.
     session.launchEpoch += 1;
     this.wakeLaunchWaiters(session);
@@ -896,29 +1125,59 @@ export class TerminalManager {
    * The one delivery rule for text another agent, a plugin or a controller sends to a card (spawn_agent's first
    * prompt, send_to_agent, plugin sessions.send). A running card gets it at once. A card whose launch plugins are
    * still preparing (launch options, a launch policy, an environment) or that waits for its grid gets it exactly
-   * once, when that launch has started. A launch that is refused, fails, is cancelled or superseded (closed,
-   * restarted), or does not start within LAUNCH_INPUT_WAIT_MS delivers nothing, says why, and drops the text:
-   * it never reaches a later launch of the card. An aborted `signal` (the sender cancelled) delivers nothing either.
+   * once, when that launch has started. A CLI that drops keys typed while it starts (WAITS_FOR_INPUT_READY) gets it
+   * only once its input field is up. A launch that is refused, fails, is cancelled or superseded (closed, restarted),
+   * or does not start or become ready within `waitMs` delivers nothing, says why, and drops the text: it never reaches
+   * a later launch of the card. An aborted `signal` (the sender cancelled) delivers nothing either. Sends to one card
+   * are delivered in the order they were made; the wait of each counts from its own call.
    */
-  async deliverInput(id: string, data: string, waitMs = LAUNCH_INPUT_WAIT_MS, signal?: AbortSignal): Promise<InputDelivery> {
-    const canceled: InputDelivery = { delivered: false, reason: "The delivery was cancelled." };
-    if (signal?.aborted) return canceled;
+  deliverInput(id: string, data: string, waitMs = LAUNCH_INPUT_WAIT_MS, signal?: AbortSignal): Promise<InputDelivery> {
     const session = this.sessions.get(id);
-    if (!session) return { delivered: false, reason: "The session does not exist." };
+    if (!session) return Promise.resolve({ delivered: false, reason: "The session does not exist." });
+    // The launch this call was made for: a send queued behind another never reaches a later launch either.
     const epoch = session.launchEpoch;
     const deadline = Date.now() + waitMs;
-    const waiting = (): boolean => this.sessions.get(id) === session && session.launchEpoch === epoch
-      && session.metadata.exitCode === null && !session.process;
-    while (waiting() && !signal?.aborted) {
+    const previous = session.inputQueue;
+    const run = (): Promise<InputDelivery> => this.deliverQueuedInput(id, session, epoch, data, waitMs, deadline, signal);
+    const pending = previous ? previous.then(run, run) : run();
+    session.inputQueue = pending;
+    void pending.finally(() => { if (session.inputQueue === pending) delete session.inputQueue; }).catch(() => undefined);
+    if (!signal || !previous) return pending;
+    // A send cancelled while it waits behind another settles at once; its turn in the queue then types nothing.
+    const canceled: InputDelivery = { delivered: false, reason: "The delivery was cancelled." };
+    if (signal.aborted) return Promise.resolve(canceled);
+    return new Promise<InputDelivery>((resolve) => {
+      const abort = (): void => resolve(canceled);
+      signal.addEventListener("abort", abort, { once: true });
+      void pending.then(resolve, () => resolve(canceled)).finally(() => signal.removeEventListener("abort", abort));
+    });
+  }
+
+  private async deliverQueuedInput(
+    id: string, session: ManagedSession, epoch: number, data: string, waitMs: number, deadline: number, signal?: AbortSignal
+  ): Promise<InputDelivery> {
+    const canceled: InputDelivery = { delivered: false, reason: "The delivery was cancelled." };
+    if (signal?.aborted) return canceled;
+    // What the text still waits for: the launch to start, or (once its PTY exists) the CLI's input field.
+    const awaiting = (): "launch" | "input" | null => {
+      if (this.sessions.get(id) !== session || session.launchEpoch !== epoch || session.metadata.exitCode !== null) return null;
+      if (!session.process) return "launch";
+      return cliAcceptsInput(session) ? null : "input";
+    };
+    for (let stage = awaiting(); stage && !signal?.aborted; stage = awaiting()) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
-        return { delivered: false, reason: `The session did not start within ${Math.round(waitMs / 1000)} s.` };
+        // A caller that does not wait (0) is told the state, not a wait it never made.
+        const within = waitMs <= 0 ? "yet" : waitMs >= 1_000 ? `within ${Math.round(waitMs / 1_000)} s` : `within ${waitMs} ms`;
+        return { delivered: false, reason: stage === "launch"
+          ? `The session did not start ${within}.`
+          : `The agent's CLI did not show its input field ${within}; nothing was typed. Look at the card, then send the prompt again.` };
       }
       await new Promise<void>((resolve) => {
         const timer = setTimeout(wake, remaining);
         function wake(): void {
           clearTimeout(timer);
-          session!.launchWaiters.delete(wake);
+          session.launchWaiters.delete(wake);
           signal?.removeEventListener("abort", wake);
           resolve();
         }
@@ -941,6 +1200,23 @@ export class TerminalManager {
     return { delivered: true };
   }
 
+  /**
+   * Submitted text starts a new task (an approval answer continues the current turn), so an earlier answer is not its.
+   * An Enter with nothing typed before it in an idle card submits nothing: the stored answer stays.
+   */
+  private noteSubmittedInput(session: ManagedSession, data: string): void {
+    const typed = /[^\r\n]/u.test(data);
+    if (!data.endsWith("\r")) {
+      if (typed) session.typedSinceSubmit = true;
+      return;
+    }
+    const empty = !typed && !session.typedSinceSubmit;
+    session.typedSinceSubmit = false;
+    if (empty && session.metadata.status === "idle") return;
+    if (session.metadata.status !== "needs_approval") session.inputGeneration = (session.inputGeneration ?? 0) + 1;
+    delete session.answer;
+  }
+
   private wakeLaunchWaiters(session: ManagedSession): void {
     for (const wake of [...session.launchWaiters]) wake();
   }
@@ -949,8 +1225,26 @@ export class TerminalManager {
     if (typeof data !== "string" || data.length === 0) return false;
     const session = this.sessions.get(id);
     if (!session || session.metadata.exitCode !== null || !session.process) return false;
-    const process = session.process;
+    return this.writeInput(id, session, session.process, data);
+  }
+
+  /**
+   * The one write of person or agent input to a card's CLI, and what it means for turns and answers. Everything that
+   * types into a card goes through here: input(), deliverInput, and any writer that holds input and replays it later,
+   * so a replayed Enter is a submitted prompt like a typed one. Nothing is written to a process the card no longer runs.
+   */
+  private writeInput(id: string, session: ManagedSession, process: IPty, data: string): boolean {
+    if (this.sessions.get(id) !== session || session.process !== process || session.metadata.exitCode !== null) return false;
+    // A rollback point restore holds the card: neither typed nor replayed input reaches it until the restore ends.
+    if (this.isCheckpointRestoreActive(id)) return false;
     const written = tryPtyOperation(() => process.write(data));
+    if (written) this.noteSubmittedInput(session, data);
+    // Input submitted while the agent is not in a turn starts the next one: an earlier turn's rollback point is not
+    // this one's. An Enter inside a running turn (answering a prompt or a menu) never does.
+    if (written && data.includes("\r") && session.metadata.status !== "working" && session.metadata.status !== "needs_approval") {
+      session.checkpointGeneration = (session.checkpointGeneration ?? 0) + 1;
+    }
+    if (written && data.includes("\r") && session.metadata.status !== "needs_approval") session.submittedInputs = (session.submittedInputs ?? 0) + 1;
     if (written && ANSWERS_PROMPT.test(data)) this.settleAnsweredPrompt(id, session);
     return written;
   }
@@ -1021,11 +1315,53 @@ export class TerminalManager {
     return publicSessionMetadata(session);
   }
 
-  /** `source` "hook" is the agent's own lifecycle hook (through the runtime gateway); "title" is its terminal title. */
-  applyProviderSignal(id: string, signal: ProviderLifecycleSignal, source: "hook" | "title" = "hook"): void {
+  /**
+   * `source` "hook" is the agent's own lifecycle hook (through the runtime gateway); "title" is its terminal title.
+   * Returns whether the signal belongs to the current turn and the last submitted input, so the answer it carries may
+   * be kept (applyRuntimeSignal). With status hooks off for this launch nothing applies and no answer is kept.
+   */
+  applyProviderSignal(id: string, signal: ProviderLifecycleSignal, source: "hook" | "title" = "hook"): boolean {
     const session = this.sessions.get(id);
-    if (!this.lifecycleHooksEnabled || !session || session.metadata.status === "done" || session.metadata.status === "failed") return;
-    if (source === "hook") session.hookSignals = (session.hookSignals ?? 0) + 1;
+    if (!this.lifecycleHooksEnabled || !session || session.statusHooksOff) return false;
+    // A result-capturing OpenCode names each turn. A signal of an earlier turn is stale and changes nothing; a signal
+    // of the current turn that started before the last submitted input still moves the status (so a wait ends), but
+    // is not that input's turn: it neither counts as a turn start nor brings an answer.
+    const exited = session.metadata.status === "done" || session.metadata.status === "failed";
+    let current = true;
+    let startsProviderTurn = false;
+    if (source === "hook" && session.captureResult && session.metadata.provider === "opencode" && signal.requestId) {
+      const turns = session.providerTurnGenerations ??= new Map();
+      const generation = session.inputGeneration ?? 0;
+      const known = turns.get(signal.requestId);
+      if (known === undefined) {
+        // A turn id not seen yet opens the next turn, also when its start was lost (as the gateway counts it); after
+        // the exit no turn opens.
+        if (exited) return false;
+        startsProviderTurn = true;
+        turns.set(signal.requestId, generation);
+        session.providerTurnId = signal.requestId;
+        while (turns.size > 64) turns.delete(turns.keys().next().value!);
+      } else if (session.providerTurnId !== signal.requestId) {
+        return false;
+      } else {
+        current = known === generation;
+      }
+    }
+    // The process already exited: its status stays, but the answer its last turn reported as it ended still counts.
+    if (exited) return current;
+    if (source === "hook") {
+      session.hookSignals = (session.hookSignals ?? 0) + 1;
+      // The CLI runs, but its input field may not be up yet: input waiting for it (deliverInput) goes on the cursor
+      // signal, or once the grace after this first hook has passed.
+      if (session.hookSignals === 1 && waitsForInputReady(session.metadata.provider) && !session.inputReady) {
+        session.hookReadyAt = Date.now() + INPUT_READY_HOOK_GRACE_MS;
+        session.hookReadyTimer = setTimeout(() => {
+          session.hookReadyTimer = undefined;
+          this.wakeLaunchWaiters(session);
+        }, INPUT_READY_HOOK_GRACE_MS);
+        session.hookReadyTimer.unref?.();
+      }
+    }
 
     const threadId = normalizeThreadId(session.metadata.provider, signal.threadId);
     const threadChanged = Boolean(threadId && threadId !== session.threadId);
@@ -1036,24 +1372,44 @@ export class TerminalManager {
 
     const nextStatus = signal.state;
     // A turn starts when the agent moves to working; wait_for_agent compares it with the last delivered prompt.
-    if (nextStatus === "working" && session.metadata.status !== "working") session.turnStarts = (session.turnStarts ?? 0) + 1;
-    // A new turn: the previous answer is no longer this turn's.
-    if (nextStatus === "working") session.answer = undefined;
+    if (current && nextStatus === "working") {
+      if (startsProviderTurn || session.metadata.status !== "working") session.turnStarts = (session.turnStarts ?? 0) + 1;
+      // A new turn: the previous answer is no longer this turn's.
+      session.answer = undefined;
+      session.answerTurnGeneration = session.inputGeneration ?? 0;
+    }
     const completed = nextStatus === "idle" && ["Stop", "StopFailure", "StopCancelled"].includes(signal.event ?? "");
     const nextTurnCompleted = nextStatus === "working" ? false : completed || Boolean(session.metadata.turnCompleted);
-    if (!threadChanged && session.metadata.status === nextStatus && Boolean(session.metadata.turnCompleted) === nextTurnCompleted) return;
+    if (!threadChanged && session.metadata.status === nextStatus && Boolean(session.metadata.turnCompleted) === nextTurnCompleted) return current;
     session.metadata.status = nextStatus;
     session.metadata.turnCompleted = nextTurnCompleted;
     this.emitSession(session.metadata);
+    return current;
+  }
+
+  /**
+   * Why a result-capturing session's final answer cannot be captured, or null when it can (or the session does not
+   * capture one). With CanvasTTY status hooks off for its launch it gets no hooks, so nothing reports the answer.
+   */
+  answerUnavailable(id: string): "status_hooks_off" | null {
+    const session = this.sessions.get(id);
+    if (!session?.captureResult) return null;
+    return !this.lifecycleHooksEnabled || session.statusHooksOff ? "status_hooks_off" : null;
   }
 
   /**
    * Keeps the final answer a result-capturing session reported with its turn's end (the Codex Stop hook, the OpenCode
-   * plugin's session.idle); read back masked by answer(). In memory only, never saved.
+   * plugin's session.idle), only while it belongs to the current turn and the last submitted input; read back masked
+   * by answer(). OpenCode passes its turn id. In memory only, never saved.
    */
-  recordAnswer(id: string, result: { text: string; truncated: boolean }): void {
+  recordAnswer(id: string, result: { text: string; truncated: boolean }, correlation?: { turnId?: string | null }): void {
     const session = this.sessions.get(id);
     if (!session?.captureResult || typeof result?.text !== "string") return;
+    const generation = session.inputGeneration ?? 0;
+    if (session.metadata.provider === "opencode" && correlation && "turnId" in correlation) {
+      if (!correlation.turnId || correlation.turnId !== session.providerTurnId
+        || session.providerTurnGenerations?.get(correlation.turnId) !== generation) return;
+    } else if (session.promptTurnMark !== undefined && session.answerTurnGeneration !== generation) return;
     session.answer = { text: result.text, truncated: result.truncated === true, at: Date.now() };
   }
 
@@ -1071,6 +1427,7 @@ export class TerminalManager {
     if (next) return;
     for (const session of this.sessions.values()) {
       session.lifecycle = null;
+      session.statusHooksOff = true;
       if (
         session.metadata.provider === "terminal"
         || session.metadata.status === "done"
@@ -1130,11 +1487,43 @@ export class TerminalManager {
     }
   }
 
+  /** Serializes this card's run cleanup across exit/restart; callbacks retain their specific launch ownership. */
+  private cleanupLaunchFiles(session: ManagedSession): Promise<void> {
+    const cleanup = session.launchCleanup;
+    session.launchCleanup = null;
+    const previous = session.launchCleanupPending;
+    if (!cleanup) return previous ?? Promise.resolve();
+    const pending = (async (): Promise<void> => {
+      if (previous) await previous.catch(() => undefined);
+      await cleanup();
+    })();
+    session.launchCleanupPending = pending;
+    void pending.finally(() => {
+      if (session.launchCleanupPending === pending) delete session.launchCleanupPending;
+    }).catch(() => undefined);
+    return pending;
+  }
+
+  /** Closing a card waits for producers of run files, not just the current process's adopted cleanup. */
+  private async forgetLaunchFiles(session: ManagedSession): Promise<void> {
+    while (session.launchTasks?.size) await Promise.allSettled([...session.launchTasks]);
+    try { await this.cleanupLaunchFiles(session); }
+    finally {
+      const errors: unknown[] = [];
+      // Different pipeline instances may share runsRoot; even their parent deletions must not overlap.
+      for (const [pipeline, runDirectories] of session.launchRunFolders ?? []) {
+        try { await pipeline.forgetSession(session.metadata.id, runDirectories); } catch (error) { errors.push(error); }
+      }
+      if (errors.length) throw new AggregateError(errors, "Launch file folders could not be removed.");
+    }
+  }
+
   /**
    * Closes a card. A card in a plugin environment releases it: `keepEnvironmentData` is the person's
    * answer to "Keep environment data?" (kept unless they said no). Quitting releases nothing.
    */
   dispose(id: string, options: { keepEnvironmentData?: boolean } = {}): void {
+    if (this.checkpointRestore?.ids.has(id)) { this.checkpointRestore.closes.set(id, options); return; }
     const session = this.sessions.get(id);
     if (!session) return;
     // A subagent belongs to its parent: closing the parent closes its subagents first (deepest first), so none keeps
@@ -1163,9 +1552,11 @@ export class TerminalManager {
     this.redaction.clear(`session:${id}`);
     this.releaseIsolation(id);
     session.launchToken += 1;
-    void session.launchCleanup?.().catch(() => undefined);
-    session.launchCleanup = null;
-    if (session.extras.options) void this.launchPipeline?.forgetSession(id).catch(() => undefined);
+    // launchToken and launch waiters were invalidated above: pending preparation/wrapping can now unwind before
+    // parent removal. Its original pipeline remains the owner even if the host configuration has since changed.
+    void this.forgetLaunchFiles(session).catch((error: unknown) => {
+      console.warn(`CanvasTTY could not remove the launch files of card ${id}.`, error);
+    });
     session.agentBrowser?.cleanup();
     session.agentRuntime?.cleanup();
     session.agentOrchestration?.cleanup();
@@ -1228,10 +1619,12 @@ export class TerminalManager {
       ...(descriptor.effort !== undefined ? { effort: descriptor.effort } : {})
     };
     const extras: PersistedSessionExtras = {
+      ...(descriptor.isolatedEnvironmentScopes ? { isolatedEnvironmentScopes: structuredClone(descriptor.isolatedEnvironmentScopes) } : {}),
       ...(descriptor.options ? { options: descriptor.options } : {}),
       ...(descriptor.environment ? { environment: descriptor.environment } : {}),
       ...(descriptor.environmentChoice && !descriptor.environment ? { environmentChoice: descriptor.environmentChoice } : {}),
       ...(descriptor.ownerPluginId ? { ownerPluginId: descriptor.ownerPluginId } : {}),
+      ...(descriptor.projectRoot && descriptor.environment ? { projectRoot: descriptor.projectRoot } : {}),
       ...(descriptor.gitAuditSince !== undefined ? { gitAuditSince: descriptor.gitAuditSince } : {})
     };
 
@@ -1569,17 +1962,22 @@ export class TerminalManager {
     let spawn: { command: string; args: string[] | string; env: Record<string, string> } = planned;
     if (decision.apply) {
       try {
-        spawn = this.wrapIsolated(id, provider, profile, planned);
+        spawn = this.wrapIsolated(id, provider, profile, planned, planned, {
+          ...(contribution?.accountHome ? { accountHome: contribution.accountHome } : {}),
+          placedProjects: this.placedProjects(id, parentSessionId, planned.cwd, undefined),
+          taskProjectRoot: this.taskProjectRoot(cwd, parentSessionId)
+        });
       } catch (error) {
         planned.cleanup();
         return { ...none, failure: { diagnostic: `Launch refused: ${error instanceof Error ? error.message : String(error)}`, exitCode: 1 } };
       }
     }
     try {
+      this.assertCheckpointLaunchAllowed(planned.cwd);
       const process = this.spawnPty(spawn.command, spawn.args, {
         name: "xterm-256color", cols, rows, cwd: planned.cwd, env: spawn.env
       });
-      this.launchContexts.set(id, { cwd: planned.cwd, configDir: planned.env.CLAUDE_CONFIG_DIR ?? null });
+      this.launchContexts.set(id, launchContext(planned.cwd, provider, planned.env, contribution?.accountHome));
       return {
         process,
         agentBrowser: planned.agentBrowser,
@@ -1633,10 +2031,13 @@ export class TerminalManager {
   }
 
   /** Wraps a planned launch in the isolation layer (throws when the layer cannot start: the launch is refused). */
-  private wrapIsolated(id: string, provider: ProviderId, profile: LaunchProfile, planned: { command: string; args: string[] | string; cwd: string; env: Record<string, string> }): { command: string; args: string[]; env: Record<string, string> } {
+  private wrapIsolated(id: string, provider: ProviderId, profile: LaunchProfile, planned: { command: string; args: string[] | string; cwd: string; env: Record<string, string> },
+    gateways: Pick<PlannedSpawn, "agentBrowser" | "agentRuntime" | "agentOrchestration" | "controlGrant">,
+    placement: { accountHome?: string; placedProjects: readonly PlacedProject[]; taskProjectRoot?: string }): { command: string; args: string[]; env: Record<string, string> } {
     if (!this.isolation) throw new LaunchRefusal("agent isolation is not configured; the agent was not started without it.");
     if (typeof planned.args === "string") throw new LaunchRefusal("a Windows batch launcher cannot run inside agent isolation.");
-    const grant = controlGrantFolder(planned.env);
+    // Only the grant CanvasTTY handed this launch: a CANVASTTY_CONTROL_CONNECTION a plugin set reopens nothing.
+    const grant = gateways.controlGrant;
     const wrapped = this.isolation.wrap({
       sessionId: id,
       provider,
@@ -1645,7 +2046,13 @@ export class TerminalManager {
       args: planned.args,
       env: planned.env,
       profile,
-      ...(grant ? { grantedPrivate: [grant] } : {})
+      ...(placement.accountHome ? { accountHome: placement.accountHome } : {}),
+      placedProjects: placement.placedProjects,
+      ...(placement.taskProjectRoot ? { taskProjectRoot: placement.taskProjectRoot } : {}),
+      ...(grant ? { grantedPrivate: [grant] } : {}),
+      // Only the sockets CanvasTTY's own gateways prepared; a CANVASTTY_*_ADDRESS from elsewhere is never bound in.
+      gatewaySockets: gatewaySocketAddresses(gateways.agentBrowser?.environment, gateways.agentRuntime?.environment,
+        gateways.agentOrchestration?.environment)
     });
     this.releaseIsolation(id);
     this.isolationCleanups.set(id, wrapped.cleanup);
@@ -1740,13 +2147,14 @@ export class TerminalManager {
       const browserEnvironment = agentBrowser?.environment ?? {};
       const runtimeEnvironment = agentRuntime?.environment ?? {};
       const orchestrationEnvironment = agentOrchestration?.environment ?? {};
+      const hostControlEnvironment = controlEnvironment(role, this.controlConnection, id);
       const providerEnvironment: Record<string, string> = {
         ...(provider === "opencode"
           ? mergeOpenCodeLaunchEnvironment(browserEnvironment, runtimeEnvironment)
           : { ...browserEnvironment, ...runtimeEnvironment }),
         ...orchestrationEnvironment,
         // Orchestrators alone learn where the control descriptor and CLI are.
-        ...controlEnvironment(role, this.controlConnection, id)
+        ...hostControlEnvironment
       };
       // OpenCode: the project folder in its other Unicode spelling is still this folder, not an external one.
       if (provider === "opencode") Object.assign(providerEnvironment, openCodeProjectFolderEnvironment({ ...baseEnvironment, ...providerEnvironment }, cwd));
@@ -1794,12 +2202,27 @@ export class TerminalManager {
         agentBrowser,
         agentRuntime,
         agentOrchestration,
+        controlGrant: controlGrantFolder(hostControlEnvironment),
         cleanup
       };
     } catch (error) {
       cleanup();
       throw error;
     }
+  }
+
+  /**
+   * The plugin launch options this card was started with (a copy), or undefined without any. A subagent inherits them
+   * unless its spawn names the plugin (AgentControlService.subagentLaunchOptions).
+   */
+  launchOptionsOf(id: string): Record<string, PluginLaunchValues> | undefined {
+    const options = this.sessions.get(id)?.extras.options;
+    return options ? structuredClone(options) as Record<string, PluginLaunchValues> : undefined;
+  }
+
+  /** Plugins whose launch contribution decided this card's model in its current run; empty until it is prepared. */
+  modelSetByOf(id: string): string[] {
+    return [...(this.sessions.get(id)?.modelSetBy ?? [])];
   }
 
   /** The model and effort this card's launches ask the CLI for. */
@@ -1811,6 +2234,23 @@ export class TerminalManager {
       ...(metadata?.model !== undefined ? { model: metadata.model } : {}),
       ...(metadata?.effort !== undefined ? { effort: metadata.effort } : {})
     };
+  }
+
+  /**
+   * The task's original project: the folder the person chose for the top-level card a session descends from (its own
+   * when it has no parent), also after an environment placed that card in a worktree. A plugin worktree is validated
+   * against this repository.
+   */
+  private taskProjectRoot(cwd: string, parentSessionId?: string, own?: PersistedSessionExtras): string {
+    let root: ManagedSession | undefined;
+    for (let depth = 0, next = parentSessionId; next !== undefined && depth < 64; depth++) {
+      const current = this.sessions.get(next);
+      if (!current) break;
+      root = current;
+      next = current.metadata.parentSessionId;
+    }
+    if (root) return root.extras.projectRoot ?? root.metadata.cwd;
+    return own?.projectRoot ?? cwd;
   }
 
   /**
@@ -1834,6 +2274,30 @@ export class TerminalManager {
     }
   }
 
+  /**
+   * The folders CanvasTTY itself placed a launch in, the only ones the isolation layer opens inside plugin data: the
+   * folder an environment prepared for this card (inside that plugin's own data), or, for a card the person started
+   * and its subagents, the top card's folder (the person's choice, or its environment's). A subagent's own folder is
+   * never one by itself: an agent asked for it. A plugin's own card is placed by nothing but an environment.
+   */
+  private placedProjects(id: string, parentSessionId: string | undefined, cwd: string,
+    environment: { pluginId: string } | undefined): PlacedProject[] {
+    if (environment) return [{ folder: cwd, pluginId: environment.pluginId }];
+    if (parentSessionId === undefined) {
+      return (this.sessions.get(id)?.extras.ownerPluginId ?? this.startingOwners.get(id)) === undefined ? [{ folder: cwd }] : [];
+    }
+    let root: ManagedSession | undefined;
+    let next: string | undefined = parentSessionId;
+    for (let depth = 0; next !== undefined && depth < 64; depth++) {
+      root = this.sessions.get(next);
+      if (!root) return [];
+      next = root.metadata.parentSessionId;
+    }
+    if (!root || next !== undefined) return [];
+    if (root.extras.environment) return [{ folder: root.metadata.cwd, pluginId: root.extras.environment.pluginId }];
+    return root.extras.ownerPluginId === undefined ? [{ folder: root.metadata.cwd }] : [];
+  }
+
   private contributed(session: ManagedSession): boolean {
     return Boolean(session.extras.options) || Boolean(session.extras.environment) || Boolean(session.extras.environmentChoice)
       || this.policyApplies(session.metadata.provider);
@@ -1852,7 +2316,8 @@ export class TerminalManager {
     return this.environments?.available(environment) ?? false;
   }
 
-  private unavailableLaunchPlugins(options: Record<string, unknown> | undefined): string[] {
+  /** The plugins among these launch options that are disabled, removed or not trusted now. */
+  unavailableLaunchPlugins(options: Record<string, unknown> | undefined): string[] {
     if (!options) return [];
     return this.launchPipeline ? this.launchPipeline.unavailable(options) : Object.keys(options).sort();
   }
@@ -1872,7 +2337,15 @@ export class TerminalManager {
   ): void {
     const token = ++session.launchToken;
     const { metadata } = session;
-    void this.runContributedLaunch(id, session, token, resume, restoring, answerCaptureGrantExpiresAt)
+    // Each launch decides its model again; until it is prepared no plugin has.
+    session.modelSetBy = [];
+    const tasks = session.launchTasks ??= new Set();
+    this.pendingLaunches.add(id);
+    // Register before invoking plugin code, which may synchronously close or restart its card.
+    const task = Promise.resolve().then(() => {
+      this.assertCheckpointLaunchAllowed(metadata.cwd, true);
+      return this.runContributedLaunch(id, session, token, resume, restoring, answerCaptureGrantExpiresAt);
+    })
       .catch((error: unknown): LaunchOutcome => {
         metadata.failureDetails = this.redactSecrets(`Launch refused: ${error instanceof Error ? error.message : String(error)}`);
         return "failed";
@@ -1886,7 +2359,13 @@ export class TerminalManager {
         this.emitSession(metadata, outcome === "failed" ? failureOrigin : null);
         this.schedulePersistence();
       })
-      .finally(() => this.wakeLaunchWaiters(session));
+      .finally(() => {
+        tasks.delete(task);
+        if (session.launchToken === token || this.sessions.get(id) !== session) this.pendingLaunches.delete(id);
+        this.wakeLaunchWaiters(session);
+      });
+    tasks.add(task);
+    void task.catch(() => undefined);
   }
 
   private async runContributedLaunch(
@@ -1905,13 +2384,18 @@ export class TerminalManager {
       return "failed";
     };
     const environments = this.environments;
+    // The launch starts a microtask after it was registered; a card closed or restarted in that same tick is done.
+    if (!live()) return "superseded";
 
     // 1. Place a new session where the person chose. The choice stays saved with the card until the plugin has
     // prepared it, so a card whose preparation was cut short (quit, crash) or failed never restores locally.
+    // The folder asked for, before an environment may move the card: an isolated environment's evidence keeps it.
+    const requestedCwd = metadata.cwd;
     const choice = session.extras.environmentChoice;
     if (choice && !session.extras.environment) {
       if (!environments) return refuse("plugin environments are not available.");
-      const placed = await environments.prepare({ sessionId: id, provider: metadata.provider, cwd: metadata.cwd, choice });
+      const placed = await environments.prepare({ sessionId: id, provider: metadata.provider, cwd: metadata.cwd, choice,
+        projectRoot: this.taskProjectRoot(metadata.cwd, metadata.parentSessionId) });
       if (!live()) {
         // An answer for a launch that no longer exists (the card was closed or restarted, or the app is quitting)
         // is never adopted or saved: nobody used it, so it is released at once and nothing is kept.
@@ -1924,6 +2408,8 @@ export class TerminalManager {
       session.extras.environment = placed.environment;
       metadata.environment = environmentBadge(placed.environment);
       if (placed.cwd && placed.cwd !== metadata.cwd) {
+        // The folder the person chose stays the task's project: the placed worktree is validated against it.
+        session.extras.projectRoot = this.taskProjectRoot(metadata.cwd, metadata.parentSessionId);
         metadata.cwd = placed.cwd;
         session.lifecycle = this.lifecycleHooksEnabled
           ? createProviderLifecycleParser(metadata.provider, metadata.cwd)
@@ -1946,142 +2432,166 @@ export class TerminalManager {
 
     // 3. Chosen launch contributors, and the launch policies that apply.
     let contribution: LaunchContribution | null = null;
-    const trustedFolder = session.extras.environment ? undefined : this.personTrustedFolder(metadata.parentSessionId, metadata.cwd);
-    if (session.extras.options || this.policyApplies(metadata.provider)) {
-      const pipeline = this.launchPipeline;
-      if (!pipeline) return refuse(missingLaunchPlugins(Object.keys(session.extras.options ?? {})));
-      const placedIn = session.extras.environment;
-      const prepared = await pipeline.prepare({
-        sessionId: id,
-        provider: metadata.provider,
-        profile: metadata.profile,
-        role: metadata.role,
-        cwd: metadata.cwd,
-        ...(metadata.parentSessionId !== undefined ? { parentSessionId: metadata.parentSessionId } : {}),
-        restoring,
-        resume: resume !== null,
-        options: structuredClone(session.extras.options ?? {}) as Record<string, Record<string, boolean | string>>,
-        environment: placedIn ? { pluginId: placedIn.pluginId, kind: placedIn.kind } : null,
-        ...(trustedFolder ? { trustedFolder } : {})
-      });
-      if (!live()) {
-        if (prepared.ok) void prepared.cleanup().catch(() => undefined);
-        return "superseded";
-      }
-      if (!prepared.ok) return refuse(prepared.reason);
-      contribution = prepared;
-      this.addLaunchSecrets(session, prepared.secrets);
-    }
-    const dropContribution = (): void => {
-      void contribution?.cleanup().catch(() => undefined);
-    };
-
-    // 4. What the environment keeps of CanvasTTY's protection, and the isolation layer for this launch.
-    const keeps = environment ? this.environments?.keeps?.(environment) ?? {} : {};
-    if (environment && keeps.launch !== true && metadata.profile !== "normal") {
-      dropContribution();
-      return refuse(`${environment.label} does not pass the launch on unchanged (the plugin does not declare it), so the ${metadata.profile} profile's settings and CanvasTTY's hooks would not reach the agent there. Launch it in normal, or use an environment that keeps them.`);
-    }
-    const decision = this.launchIsolation(id, metadata.provider, metadata.profile, metadata.role,
-      environment ? { isolated: keeps.isolated === true, label: environment.label } : null);
-    if (decision.refuse) {
-      dropContribution();
-      return refuse(decision.refuse);
-    }
-    if (environment && keeps.launch !== true) {
-      metadata.isolation = { ...(metadata.isolation ?? { state: "environment" }),
-        reason: `${metadata.isolation?.reason ? `${metadata.isolation.reason} ` : ""}Base protection and CanvasTTY's hooks do not reach the agent in ${environment.label}.` };
-    }
-
-    // 5. The host spawns the PTY; an environment only rewrites what is spawned, and the isolation layer wraps that.
-    let planned: PlannedSpawn | { failure: LaunchFailure };
+    let adopted = false;
+    let plannedCleanup: (() => void) | undefined;
     try {
-      planned = this.planSpawn(id, metadata.provider, decision.profile, metadata.cwd, resume,
-        session.captureResult, metadata.role, answerCaptureGrantExpiresAt, contribution, trustedFolder, Boolean(environment), decision.apply);
-    } catch (error) {
-      dropContribution();
-      metadata.failureDetails = this.redactSecrets(error instanceof Error ? error.message : String(error));
-      return "failed";
-    }
-    if ("failure" in planned) {
-      dropContribution();
-      applyLaunchFailure(metadata, planned.failure);
-      return "failed";
-    }
-    const abandon = (): void => {
-      planned.cleanup();
-      dropContribution();
-    };
-    this.noteConfiguredMode(id, metadata.provider, decision.profile, planned.env, planned.cwd);
-    let spawn: { command: string; args: string[] | string; cwd: string; env: Record<string, string> } = planned;
-    if (environment && environments) {
-      if (typeof planned.args === "string") {
-        abandon();
-        return refuse("this provider's Windows batch launcher cannot run in a plugin environment.");
+      const trustedFolder = session.extras.environment ? undefined : this.personTrustedFolder(metadata.parentSessionId, metadata.cwd);
+      if (session.extras.options || this.policyApplies(metadata.provider)) {
+        const pipeline = this.launchPipeline;
+        if (!pipeline) return refuse(missingLaunchPlugins(Object.keys(session.extras.options ?? {})));
+        // This pipeline may write run files for the card, so closing it later removes its folder there.
+        const runFolders = session.launchRunFolders ??= new Map();
+        const ownFolders = runFolders.get(pipeline) ?? new Set<string>();
+        runFolders.set(pipeline, ownFolders);
+        const placedIn = session.extras.environment;
+        const prepared = await pipeline.prepare({
+          sessionId: id,
+          provider: metadata.provider,
+          profile: metadata.profile,
+          role: metadata.role,
+          cwd: metadata.cwd,
+          ...(metadata.parentSessionId !== undefined ? { parentSessionId: metadata.parentSessionId } : {}),
+          restoring,
+          resume: resume !== null,
+          options: structuredClone(session.extras.options ?? {}) as Record<string, Record<string, boolean | string>>,
+          environment: placedIn ? { pluginId: placedIn.pluginId, kind: placedIn.kind } : null,
+          ...(trustedFolder ? { trustedFolder } : {})
+        }, { ...(this.launchModelOf(id).model !== undefined ? { model: this.launchModelOf(id).model } : {}) });
+        if (prepared.ok) {
+          contribution = prepared;
+          ownFolders.add(prepared.runDirectory);
+        }
+        if (!live()) return "superseded";
+        if (!prepared.ok) return refuse(prepared.reason);
+        session.modelSetBy = prepared.modelSetBy;
+        this.addLaunchSecrets(session, prepared.secrets);
       }
-      const secretValues = new Set(contribution?.secrets ?? []);
-      const secretEnvNames = Object.keys(contribution?.env ?? {}).filter((key) => secretValues.has(contribution!.env[key]!));
-      // The environment sees the launch's own variables, never CanvasTTY's reserved ones or secret values.
-      const visible = Object.fromEntries(Object.entries(planned.launchEnvironment)
-        .filter(([key]) => !RESERVED_ENV.test(key) && !secretEnvNames.includes(key)));
-      const wrapped = await environments.wrap(environment, {
-        sessionId: id,
-        provider: metadata.provider,
-        launch: { command: planned.command, args: planned.args, env: visible, cwd: planned.cwd },
-        secretEnvNames,
-        takenEnv: new Set(Object.keys(planned.launchEnvironment)),
-        path: launchSearchPath(planned.env)
-      });
-      if (!live()) {
-        abandon();
-        return "superseded";
+
+      // 4. What the environment keeps of CanvasTTY's protection, and the isolation layer for this launch.
+      const keeps = environment ? this.environments?.keeps?.(environment) ?? {} : {};
+      const isolatedEnvironment = Boolean(environment && keeps.isolated === true);
+      if (environment && keeps.launch !== true && metadata.profile !== "normal") {
+        return refuse(`${environment.label} does not pass the launch on unchanged (the plugin does not declare it), so the ${metadata.profile} profile's settings and CanvasTTY's hooks would not reach the agent there. Launch it in normal, or use an environment that keeps them.`);
       }
-      if (!wrapped.ok) {
-        abandon();
-        return refuse(wrapped.reason);
+      const decision = this.launchIsolation(id, metadata.provider, metadata.profile, metadata.role,
+        environment ? { isolated: keeps.isolated === true, label: environment.label } : null);
+      if (decision.refuse) {
+        return refuse(decision.refuse);
       }
-      this.addLaunchSecrets(session, wrapped.secrets);
-      spawn = { command: wrapped.command, args: wrapped.args, cwd: wrapped.cwd,
-        env: { ...planned.env, ...(wrapped.cwd !== planned.cwd ? { PWD: wrapped.cwd } : {}), ...wrapped.env } };
-    }
-    if (decision.apply) {
+      if (environment && keeps.launch !== true) {
+        metadata.isolation = { ...(metadata.isolation ?? { state: "environment" }),
+          reason: `${metadata.isolation?.reason ? `${metadata.isolation.reason} ` : ""}Base protection and CanvasTTY's hooks do not reach the agent in ${environment.label}.` };
+      }
+
+      // 5. The host spawns the PTY; an environment only rewrites what is spawned, and the isolation layer wraps that.
+      let planned: PlannedSpawn | { failure: LaunchFailure };
+      // Whether this launch gets lifecycle hooks is decided as it is planned; the wrap below may take a while.
+      const statusHooks = this.lifecycleHooksEnabled;
       try {
-        spawn = { ...this.wrapIsolated(id, metadata.provider, decision.profile, spawn), cwd: spawn.cwd };
+        planned = this.planSpawn(id, metadata.provider, decision.profile, metadata.cwd, resume,
+          session.captureResult, metadata.role, answerCaptureGrantExpiresAt, contribution, trustedFolder, Boolean(environment), decision.apply);
       } catch (error) {
-        abandon();
-        return refuse(error instanceof Error ? error.message : String(error));
+        metadata.failureDetails = this.redactSecrets(error instanceof Error ? error.message : String(error));
+        return "failed";
+      }
+      if ("failure" in planned) {
+        applyLaunchFailure(metadata, planned.failure);
+        return "failed";
+      }
+      plannedCleanup = planned.cleanup;
+      this.noteConfiguredMode(id, metadata.provider, decision.profile, planned.env, planned.cwd);
+      let spawn: { command: string; args: string[] | string; cwd: string; env: Record<string, string> } = planned;
+      if (environment && environments) {
+        if (typeof planned.args === "string") {
+          return refuse("this provider's Windows batch launcher cannot run in a plugin environment.");
+        }
+        const secretValues = new Set(contribution?.secrets ?? []);
+        const secretEnvNames = Object.keys(contribution?.env ?? {}).filter((key) => secretValues.has(contribution!.env[key]!));
+        // The environment sees the launch's own variables, never CanvasTTY's reserved ones or secret values.
+        const visible = Object.fromEntries(Object.entries(planned.launchEnvironment)
+          .filter(([key]) => !RESERVED_ENV.test(key) && !secretEnvNames.includes(key)));
+        const wrapped = await environments.wrap(environment, {
+          sessionId: id,
+          provider: metadata.provider,
+          launch: { command: planned.command, args: planned.args, env: visible, cwd: planned.cwd },
+          secretEnvNames,
+          takenEnv: new Set(Object.keys(planned.launchEnvironment)),
+          path: launchSearchPath(planned.env)
+        });
+        if (!live()) {
+          return "superseded";
+        }
+        if (!wrapped.ok) {
+          return refuse(wrapped.reason);
+        }
+        this.addLaunchSecrets(session, wrapped.secrets);
+        spawn = { command: wrapped.command, args: wrapped.args, cwd: wrapped.cwd,
+          env: { ...planned.env, ...(wrapped.cwd !== planned.cwd ? { PWD: wrapped.cwd } : {}), ...wrapped.env } };
+      }
+      if (decision.apply) {
+        try {
+          spawn = { ...this.wrapIsolated(id, metadata.provider, decision.profile, spawn, planned, {
+            ...(contribution?.accountHome ? { accountHome: contribution.accountHome } : {}),
+            placedProjects: this.placedProjects(id, metadata.parentSessionId, spawn.cwd, environment),
+            taskProjectRoot: this.taskProjectRoot(metadata.cwd, metadata.parentSessionId, session.extras)
+          }), cwd: spawn.cwd };
+        } catch (error) {
+          return refuse(error instanceof Error ? error.message : String(error));
+        }
+      }
+      let process: IPty;
+      try {
+        this.assertCheckpointLaunchAllowed(spawn.cwd);
+        process = this.spawnPty(spawn.command, spawn.args, {
+          name: "xterm-256color", cols: session.cols, rows: session.rows, cwd: spawn.cwd, env: spawn.env
+        });
+      } catch (error) {
+        this.releaseIsolation(id);
+        metadata.failureDetails = this.redactSecrets(error instanceof Error ? error.message : String(error));
+        return "failed";
+      }
+      session.process = process;
+      if (environment) session.extras.isolatedEnvironmentScopes ??= { roots: [], ambiguous: false };
+      if (isolatedEnvironment) {
+        // The folders an isolated environment ran for, kept with the card: a later restore never re-reads a plugin that
+        // changed or was removed.
+        const evidence = session.extras.isolatedEnvironmentScopes!;
+        for (const path of [requestedCwd, this.taskProjectRoot(requestedCwd, metadata.parentSessionId), metadata.cwd, spawn.cwd]) {
+          try {
+            const root = realpathSync(path);
+            if (!evidence.roots.includes(root)) {
+              if (evidence.roots.length < 32) evidence.roots.push(root);
+              else evidence.ambiguous = true;
+            }
+          } catch { evidence.ambiguous = true; }
+        }
+      }
+      if (planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD) {
+        metadata.nativeEditor = JSON.parse(planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD);
+      } else {
+        delete metadata.nativeEditor;
+      }
+      this.launchContexts.set(id, launchContext(spawn.cwd, metadata.provider, spawn.env, contribution?.accountHome));
+      session.agentBrowser = planned.agentBrowser;
+      session.agentRuntime = planned.agentRuntime;
+      session.agentOrchestration = planned.agentOrchestration;
+      session.launchCleanup = contribution?.cleanup ?? null;
+      adopted = true;
+      metadata.status = initialSessionStatus(metadata.provider);
+      metadata.exitCode = null;
+      metadata.failureDetails = null;
+      this.bindProcess(id, session, process, statusHooks);
+      const runtimeStatus = this.agentRuntime?.currentStatus(id);
+      if (runtimeStatus) metadata.status = runtimeStatus;
+      if (environment) this.describeEnvironment(id, session, environment);
+      return "launched";
+    } finally {
+      // Unadopted resources remain owned by this tracked launch, including throws during plugin wrapping.
+      if (!adopted) {
+        try { plannedCleanup?.(); }
+        finally { await contribution?.cleanup().catch(() => undefined); }
       }
     }
-    let process: IPty;
-    try {
-      process = this.spawnPty(spawn.command, spawn.args, {
-        name: "xterm-256color", cols: session.cols, rows: session.rows, cwd: spawn.cwd, env: spawn.env
-      });
-    } catch (error) {
-      abandon();
-      this.releaseIsolation(id);
-      metadata.failureDetails = this.redactSecrets(error instanceof Error ? error.message : String(error));
-      return "failed";
-    }
-    session.process = process;
-    if (planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD) {
-      metadata.nativeEditor = JSON.parse(planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD);
-    } else {
-      delete metadata.nativeEditor;
-    }
-    this.launchContexts.set(id, { cwd: spawn.cwd, configDir: spawn.env.CLAUDE_CONFIG_DIR ?? null });
-    session.agentBrowser = planned.agentBrowser;
-    session.agentRuntime = planned.agentRuntime;
-    session.agentOrchestration = planned.agentOrchestration;
-    session.launchCleanup = contribution?.cleanup ?? null;
-    metadata.status = initialSessionStatus(metadata.provider);
-    metadata.exitCode = null;
-    metadata.failureDetails = null;
-    this.bindProcess(id, session, process);
-    const runtimeStatus = this.agentRuntime?.currentStatus(id);
-    if (runtimeStatus) metadata.status = runtimeStatus;
-    if (environment) this.describeEnvironment(id, session, environment);
-    return "launched";
   }
 
   private addLaunchSecrets(session: ManagedSession, secrets: readonly string[]): void {
@@ -2099,12 +2609,21 @@ export class TerminalManager {
     }).catch(() => undefined);
   }
 
-  private bindProcess(id: string, session: ManagedSession, process: IPty): void {
+  /**
+   * `statusHooks`: status hooks were on when this launch was planned (and so got its lifecycle hooks). A launch planned
+   * and spawned in one step passes nothing; a contributed launch passes what held before its asynchronous steps.
+   */
+  private bindProcess(id: string, session: ManagedSession, process: IPty, statusHooks = this.lifecycleHooksEnabled): void {
+    if (statusHooks && this.lifecycleHooksEnabled) delete session.statusHooksOff;
+    else session.statusHooksOff = true;
     session.agentBrowser?.retainUntilExit?.();
     process.onData((data) => {
       const current = this.sessions.get(id);
       if (!current || current !== session || current.process !== process) return;
 
+      if (!current.inputReady && waitsForInputReady(current.metadata.provider) && watchInputReadiness(current, data)) {
+        this.wakeLaunchWaiters(current);
+      }
       const lifecycleState = current.lifecycle?.push(data);
       if (lifecycleState) current.titleState = lifecycleState;
       if (lifecycleState && !titleDefersToHooks(current, lifecycleState)) {
@@ -2118,38 +2637,46 @@ export class TerminalManager {
 
     let exited!: () => void;
     this.liveProcesses.set(process, new Promise<void>((resolve) => { exited = resolve; }));
-    process.onExit(({ exitCode }) => {
+    process.onExit(({ exitCode, signal }) => {
       this.liveProcesses.delete(process);
       exited();
       const current = this.sessions.get(id);
       if (!current || current !== session || current.process !== process) return;
       // node-pty calls this from a native callback that aborts the whole app when JavaScript throws in it.
       try {
-        this.recordExit(id, current, exitCode);
+        this.recordExit(id, current, exitCode, signal);
       } catch (error) {
         console.warn(`PTY ${id} exit could not be recorded.`, error);
       }
     });
   }
 
-  private recordExit(id: string, current: ManagedSession, exitCode: number): void {
+  private recordExit(id: string, current: ManagedSession, reportedExitCode: number, signal?: number): void {
     this.flushOutput(id, current);
     this.releaseIsolation(id);
     if (current.extras.gitAuditSince !== undefined) void this.auditGit(id, current);
+    // node-pty reports a process killed by a signal as exitCode 0 plus the signal. That is a crash, not a clean finish:
+    // record it the way a shell does, as 128+signal, so the card, wait_for_agent and the saved session all say failed.
+    const killedBy = typeof signal === "number" && signal > 0 ? signal : 0;
+    const exitCode = killedBy ? 128 + killedBy : reportedExitCode;
     current.metadata.exitCode = exitCode;
     current.metadata.status = exitCode === 0 ? "done" : "failed";
-    current.metadata.failureDetails = exitCode === 0
+    const details = exitCode === 0
       ? null
       : terminalFailureDetails(this.redactSecrets(current.bufferChunks.slice(current.bufferStart).join("")));
+    current.metadata.failureDetails = killedBy
+      ? `${signalExitText(killedBy)}${details ? `\n${details}` : ""}`.slice(0, 8_000)
+      : details;
     current.agentBrowser?.cleanup();
     current.agentBrowser = null;
     current.agentRuntime?.cleanup();
     current.agentRuntime = null;
     current.agentOrchestration?.cleanup();
     current.agentOrchestration = null;
-    void current.launchCleanup?.().catch(() => undefined);
-    current.launchCleanup = null;
+    void this.cleanupLaunchFiles(current).catch(() => undefined);
     this.emitSession(current.metadata);
+    // Input waiting for this CLI to become ready learns at once that it never will.
+    this.wakeLaunchWaiters(current);
     // Recorded at the moment of exit, so a finished agent is never relaunched.
     this.schedulePersistence();
   }
@@ -2250,10 +2777,62 @@ function resetLaunchSignals(session: ManagedSession): void {
   delete session.answer;
   delete session.turnStarts;
   delete session.promptTurnMark;
+  // A late answer of the ended launch never belongs to the new one.
+  session.inputGeneration = (session.inputGeneration ?? 0) + 1;
+  delete session.statusHooksOff;
+  delete session.typedSinceSubmit;
+  delete session.answerTurnGeneration;
+  delete session.providerTurnId;
+  delete session.providerTurnGenerations;
   delete session.hookSignals;
   delete session.titleState;
+  delete session.inputReady;
+  delete session.alternateScreen;
+  delete session.readinessCarry;
+  delete session.hookReadyAt;
+  if (session.hookReadyTimer) clearTimeout(session.hookReadyTimer);
+  session.hookReadyTimer = undefined;
   if (session.answeredPromptTimer) clearTimeout(session.answeredPromptTimer);
   session.answeredPromptTimer = undefined;
+}
+
+/** Whether typed text reaches this launch's CLI now (see WAITS_FOR_INPUT_READY). */
+function cliAcceptsInput(session: ManagedSession): boolean {
+  return !waitsForInputReady(session.metadata.provider) || session.inputReady === true
+    || (session.hookReadyAt !== undefined && Date.now() >= session.hookReadyAt);
+}
+
+/** DEC private modes set or reset (CSI ? Pm h / l): terminal control sequences, not text the CLI shows. */
+const DEC_PRIVATE_MODES = /\x1b\[\?([\d;]+)([hl])/gu;
+/** The longest DEC private mode sequence kept from the end of one chunk for the next. */
+const READINESS_CARRY_CHARS = 32;
+
+/**
+ * Reads only terminal control sequences of one output chunk: the alternate screen (modes 1049, 1047, 47) and the text
+ * cursor (DECTCEM, mode 25). A full-screen CLI hides its cursor while it draws its start-up and shows it once its
+ * input field has focus; that moment is when typed keys start to reach that field. True once that happened; a
+ * sequence cut at the chunk's end is completed by the next chunk.
+ */
+function watchInputReadiness(session: ManagedSession, data: string): boolean {
+  const text = (session.readinessCarry ?? "") + data;
+  let consumed = 0;
+  for (const match of text.matchAll(DEC_PRIVATE_MODES)) {
+    consumed = match.index + match[0].length;
+    const set = match[2] === "h";
+    for (const mode of match[1]!.split(";")) {
+      if (mode === "1049" || mode === "1047" || mode === "47") session.alternateScreen = set;
+      else if (mode === "25" && set && session.alternateScreen) session.inputReady = true;
+    }
+    if (session.inputReady) break;
+  }
+  if (session.inputReady) {
+    delete session.readinessCarry;
+    delete session.alternateScreen;
+    return true;
+  }
+  const escape = text.lastIndexOf("\x1b");
+  session.readinessCarry = escape >= consumed && text.length - escape < READINESS_CARRY_CHARS ? text.slice(escape) : "";
+  return false;
 }
 
 function titleDefersToHooks(session: ManagedSession, state: "idle" | "working" | "needs_approval"): boolean {
@@ -2473,4 +3052,22 @@ function appendScrollback(session: ManagedSession, data: string): void {
     session.bufferChunks = session.bufferChunks.slice(session.bufferStart);
     session.bufferStart = 0;
   }
+}
+
+/** "The process was killed by signal SIGKILL (9)." from node-pty's signal number. */
+function signalExitText(signal: number): string {
+  const name = Object.entries(osConstants.signals).find(([, value]) => value === signal)?.[0];
+  return `The process was killed by signal ${name ? `${name} (${signal})` : signal}.`;
+}
+
+/**
+ * A started card's folder and own config folders. The selected account home counts only while the CLI is still
+ * started with it (an environment may have replaced the variable): then it is that card's, and only that one's.
+ */
+function launchContext(cwd: string, provider: ProviderId, env: Readonly<Record<string, string>>, accountHome: string | undefined): { cwd: string; configDirs: string[] } {
+  const configDirs = env.CLAUDE_CONFIG_DIR ? [env.CLAUDE_CONFIG_DIR] : [];
+  const started = accountHome !== undefined && providerHomeVariables(provider)
+    .some((name) => typeof env[name] === "string" && env[name]!.replace(/[\\/]+$/u, "") === accountHome);
+  if (started && !configDirs.includes(accountHome)) configDirs.push(accountHome);
+  return { cwd, configDirs };
 }

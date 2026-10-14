@@ -12,15 +12,19 @@ import { lexShell, shellQuote, type Segment, type Word } from './shellParse.ts';
  * data (its access tokens, secret stores and control sockets).
  */
 
-/** One tool call, source-neutral: a shell command or the files a file tool writes. */
+/** One tool call, source-neutral: a shell command, the files a file tool writes, or the files a read-only tool reads. */
 export interface ToolAction {
-  kind: 'shell' | 'edit' | null;
+  kind: 'shell' | 'edit' | 'read' | null;
   /** The shell command; null when none could be read. */
   command: string | null;
   /** The command's own working directory, if the agent said one. */
   commandCwd: string | null;
-  /** Paths a file tool writes. */
+  /** Paths a file tool writes, or (`read`) the files and glob patterns a read-only tool reads. */
   paths: string[];
+  /** `read` only: folders a search or listing tool walks (Grep's or Glob's `path`). */
+  searched?: string[];
+  /** The call names more paths, or longer ones, than are checked: it is refused, not checked in part. */
+  uncheckable?: boolean;
 }
 
 export type Where = 'inside' | 'outside' | 'unresolved';
@@ -51,6 +55,11 @@ export interface HardFacts {
    * (inside the project or not) is unknown.
    */
   unknownTarget: boolean;
+  /**
+   * More than the rules check in one call (paths against the private data, brace expansions, nested shells): the rest
+   * was not looked at, so the call is refused rather than let through unchecked.
+   */
+  uncheckable: boolean;
 }
 
 /**
@@ -228,7 +237,7 @@ interface Acc {
   ctx: PathContext;
   writes: Target[];
   deletes: Target[];
-  flags: { elevation: boolean; pipeToShell: boolean; downloadExec: boolean; disk: boolean; forkBomb: boolean; appPrivate: boolean; unknownTarget: boolean };
+  flags: { elevation: boolean; pipeToShell: boolean; downloadExec: boolean; disk: boolean; forkBomb: boolean; appPrivate: boolean; unknownTarget: boolean; uncheckable: boolean };
   depth: number;
   budget: number;
   /** Nesting of argv inside wrappers (nohup, env, xargs, su -c, busybox …): bounded like substitutions. */
@@ -243,7 +252,8 @@ function wordOf(text: string): Word { return { text, quoted: false, vars: [], su
 
 /** Analyses one shell command string (recursively for `bash -c`, `eval`, substitutions). */
 function analyzeText(command: string, cwd: string | null, acc: Acc): string | null {
-  if (acc.depth > 4 || --acc.budget < 0) return cwd;
+  // Deeper or more nested commands than are followed: the rest is not checked, so the call is refused.
+  if (acc.depth > 4 || --acc.budget < 0) { acc.flags.uncheckable = true; return cwd; }
   acc.depth++;
   try {
     const lexed = lexShell(command);
@@ -543,7 +553,11 @@ function runInterpreter(program: string, argWords: Word[], cwd: string | null, a
   }
   if (stdin.pipeIn) acc.flags.pipeToShell = true;
   // A program read from a heredoc (`python3 - <<EOF`): its paths and names count like inline code.
-  if (stdin.heredoc !== null && (privateCandidates(stdin.heredoc, acc.ctx).some(text => privateHit(text, cwd, acc, false)) || codeNamesPrivate(stdin.heredoc, acc.ctx))) acc.flags.appPrivate = true;
+  if (stdin.heredoc !== null) {
+    const found = privateCandidates(stdin.heredoc, acc.ctx);
+    if (found === null) acc.flags.uncheckable = true;
+    else if (found.some(text => privateHit(text, cwd, acc, false)) || codeNamesPrivate(stdin.heredoc, acc.ctx)) acc.flags.appPrivate = true;
+  }
   return cwd;
 }
 
@@ -560,14 +574,20 @@ const CONTROL_CLI = /^canvastty-control(?:\.mjs)?$/u;
 /** Programs that walk folders by themselves: naming a folder that holds private data reads it. */
 const RECURSIVE = new Set(['rg', 'ag', 'ack', 'find', 'fd', 'tar', 'bsdtar', 'zip', '7z', 'rsync', 'ditto', 'scp', 'rclone']);
 const GLOB_CHAR = /[*?[]/u;
-const MAX_PRIVATE_CHECKS = 256;
+const MAX_PRIVATE_CHECKS = 1024;
+/** Paths found inside one word or program text (`--opt=/a:/b`, interpreter code). */
+const MAX_CANDIDATES = 256;
 const MAX_SCANNED_TEXT = 64 * 1024;
 
 const parts = (path: string): string[] => path.split(/[\\/]+/u).filter(Boolean);
 
+/** macOS (APFS, HFS+) and Windows file systems ignore case by default: a pattern there matches names in any case. */
+const FOLD_CASE = process.platform === 'darwin' || process.platform === 'win32';
+const MAX_BRACE_EXPANSIONS = 64;
+
 /** A glob component (`token-*`, `ctty-control-????`) against one real name. */
 function componentMatches(pattern: string, name: string): boolean {
-  if (!GLOB_CHAR.test(pattern)) return pattern === name;
+  if (!GLOB_CHAR.test(pattern)) return FOLD_CASE ? pattern.toLowerCase() === name.toLowerCase() : pattern === name;
   let source = '';
   for (let i = 0; i < pattern.length; i++) {
     const char = pattern[i]!;
@@ -580,7 +600,80 @@ function componentMatches(pattern: string, name: string): boolean {
       i = close;
     } else source += char.replace(/[.+^${}()|\\\]]/gu, '\\$&');
   }
-  try { return new RegExp(`^${source}$`, 'u').test(name); } catch { return true; }
+  try { return new RegExp(`^${source}$`, FOLD_CASE ? 'iu' : 'u').test(name); } catch { return true; }
+}
+
+/**
+ * A glob's components against a real path's: `full` when the glob names the path or something inside it, `ancestor`
+ * when the whole glob already matched a folder above it. `**` matches zero or more components; a glob that only
+ * passes through the path on its way to other names (`~/**` then `*.ts`, past a private folder) does not name it.
+ */
+function globAgainst(pattern: readonly string[], target: readonly string[]): { full: boolean; ancestor: boolean } {
+  const close = (states: Set<number>): Set<number> => {
+    for (const state of [...states]) for (let i = state; i < pattern.length && pattern[i] === '**'; i++) states.add(i + 1);
+    return states;
+  };
+  let states = close(new Set([0]));
+  let named = new Set<number>();
+  let ancestor = false;
+  for (const name of target) {
+    if (states.has(pattern.length)) ancestor = true;
+    const matched = new Set<number>();
+    const within = new Set<number>();
+    for (const state of states) {
+      if (state >= pattern.length) continue;
+      if (pattern[state] === '**') within.add(state);
+      else if (componentMatches(pattern[state]!, name)) matched.add(state + 1);
+    }
+    named = close(matched);
+    states = close(new Set([...named, ...within]));
+    if (!states.size) return { full: false, ancestor };
+  }
+  // Named: the last name matched a component of the glob, or all that is left of the glob is `**`.
+  const full = [...states].some(state => named.has(state) || pattern.slice(state).every(part => part === '**'));
+  return { full, ancestor };
+}
+
+/**
+ * The words a shell's brace expansion makes of `text` (`a.{bin,json}` is `a.bin` and `a.json`); `text` itself when it
+ * has none. Sequences (`{1..3}`) are not expanded. Null when it makes more than MAX_BRACE_EXPANSIONS words: they are
+ * not checked, and the call is refused.
+ */
+function braceExpansions(text: string): string[] | null {
+  const out: string[] = [];
+  let over = false;
+  const walk = (value: string): void => {
+    if (over) return;
+    if (out.length >= MAX_BRACE_EXPANSIONS) { over = true; return; }
+    for (let open = value.indexOf('{'); open >= 0; open = value.indexOf('{', open + 1)) {
+      let depth = 0;
+      let end = -1;
+      const commas: number[] = [];
+      for (let i = open; i < value.length; i++) {
+        if (value[i] === '{') depth++;
+        else if (value[i] === '}' && --depth === 0) { end = i; break; }
+        else if (value[i] === ',' && depth === 1) commas.push(i);
+      }
+      if (end < 0) break;
+      if (!commas.length) continue;
+      const bounds = [open, ...commas, end];
+      for (let k = 0; k + 1 < bounds.length; k++) walk(value.slice(0, open) + value.slice(bounds[k]! + 1, bounds[k + 1]) + value.slice(end + 1));
+      return;
+    }
+    out.push(value);
+  };
+  walk(text);
+  return over ? null : out;
+}
+
+/** The gateway socket folder under a temporary folder that holds `abs` (`$TMPDIR/ctty-control-XXXX`), or null. */
+function socketFolder(abs: string, ctx: PathContext): string | null {
+  for (const temp of ctx.tempRoots) {
+    if (!isPathInside(temp, abs, { allowRoot: false })) continue;
+    const first = parts(relative(temp, abs))[0] ?? '';
+    if (SOCKET_DIR.test(first)) return join(temp, first);
+  }
+  return null;
 }
 
 /**
@@ -589,33 +682,31 @@ function componentMatches(pattern: string, name: string): boolean {
  */
 function privatePath(abs: string, glob: boolean, recursive: boolean, ctx: PathContext): boolean {
   if (!glob) {
-    // The project, and the agent's own config folder (an account home it was launched with), are its own.
-    if (isPathInside(ctx.rootReal, abs) || ctx.agentRoots.some(dir => isPathInside(dir, abs))) return false;
-    if (ctx.privatePaths.some(path => isPathInside(path, abs))) return true;
     if (recursive && ctx.privatePaths.some(path => isPathInside(abs, path)) && ctx.appRoots.some(root => isPathInside(root, abs))) return true;
-    return ctx.tempRoots.some(temp => isPathInside(temp, abs, { allowRoot: false }) && SOCKET_DIR.test(parts(relative(temp, abs))[0] ?? ''));
+    const socket = socketFolder(abs, ctx);
+    const holders = [...ctx.privatePaths.filter(path => isPathInside(path, abs)), ...(socket ? [socket] : [])];
+    if (!holders.length) return false;
+    // The project, and the agent's own config folder (an account home it was launched with), are its own, but only
+    // below the private data: a broad folder (HOME, or one that holds the app's data or a temporary folder) does not
+    // make the private data inside it the agent's. A folder inside a private path (that account home) stays its own.
+    const owns = (root: string): boolean => isPathInside(root, abs) && !holders.some(holder => isPathInside(root, holder));
+    return !(owns(ctx.rootReal) || ctx.agentRoots.some(owns));
   }
   // A glob: the folders before its first wildcard resolved, the rest matched name by name.
   const all = parts(abs);
   const first = all.findIndex(part => GLOB_CHAR.test(part));
   const prefix = realish((abs.startsWith('/') ? '/' : '') + all.slice(0, first).join('/'));
   const pattern = [...parts(prefix), ...all.slice(first)];
-  const matchesFrom = (target: string[]): number => {
-    let i = 0;
-    while (i < pattern.length && i < target.length && componentMatches(pattern[i]!, target[i]!)) i++;
-    return i;
-  };
   for (const path of ctx.privatePaths) {
-    const target = parts(path);
-    const matched = matchesFrom(target);
-    if (matched >= target.length) return true;
-    if (matched === pattern.length && recursive && ctx.appRoots.some(root => parts(root).length <= pattern.length)) return true;
+    const { full, ancestor } = globAgainst(pattern, parts(path));
+    if (full) return true;
+    if (ancestor && recursive && ctx.appRoots.some(root => parts(root).length <= pattern.length)) return true;
   }
   return ctx.tempRoots.some(temp => {
     const target = parts(temp);
-    if (matchesFrom(target) < target.length || pattern.length <= target.length) return false;
+    if (pattern.length <= target.length || !globAgainst(pattern.slice(0, target.length), target).full) return false;
     const next = pattern[target.length]!;
-    return SOCKET_DIR.test(next) || next.startsWith('ctty') && GLOB_CHAR.test(next);
+    return next === '**' || SOCKET_DIR.test(next) || next.startsWith('ctty') && GLOB_CHAR.test(next);
   });
 }
 
@@ -627,11 +718,19 @@ function codePath(text: string, ctx: PathContext): string | null {
   return isAbsolute(value) && value.length > 1 ? value : null;
 }
 
-/** Paths inside a word or a program text: after `=` or `:` (`--unix-socket=P`, `UNIX-CONNECT:P`), quoted strings, bare tokens. */
-function privateCandidates(text: string, ctx: PathContext): string[] {
-  if (text.length > MAX_SCANNED_TEXT) text = text.slice(0, MAX_SCANNED_TEXT);
+/**
+ * Paths inside a word or a program text: after `=` or `:` (`--unix-socket=P`, `UNIX-CONNECT:P`), quoted strings, bare
+ * tokens. Null when the text is longer, or holds more paths, than are checked.
+ */
+function privateCandidates(text: string, ctx: PathContext): string[] | null {
+  if (text.length > MAX_SCANNED_TEXT) return null;
   const found = new Set<string>();
-  const add = (value: string | undefined): void => { const path = value ? codePath(value, ctx) : null; if (path && found.size < 64) found.add(path); };
+  let over = false;
+  const add = (value: string | undefined): void => {
+    const path = value ? codePath(value, ctx) : null;
+    if (!path || found.has(path)) return;
+    if (found.size >= MAX_CANDIDATES) over = true; else found.add(path);
+  };
   for (const match of text.matchAll(/[=:]((?:~|\$\{?(?:HOME|TMPDIR)\}?|[A-Za-z]:[\\/]|\\\\|\/)[^\s,;'"`()<>|&]*)/gu)) {
     // An HTTP(S) authority is not a UNC path. Keep scanning other paths in the same text.
     if (match[0].startsWith('://') && /(?:^|[^A-Za-z0-9+.-])https?$/iu.test(text.slice(0, match.index))) continue;
@@ -639,7 +738,7 @@ function privateCandidates(text: string, ctx: PathContext): string[] {
   }
   for (const match of text.matchAll(/(['"`])([^'"`\n]{1,4096}?)\1/gu)) add(match[2]);
   for (const token of text.split(/[\s,;()[\]{}<>|&'"`=]+/u)) if (/^(?:~|\$\{?(?:HOME|TMPDIR)\}?|[A-Za-z]:[\\/]|\\\\|\/)/u.test(token)) add(token);
-  return [...found];
+  return over ? null : [...found];
 }
 
 /** Interpreter code that builds a private path from pieces: an app folder's name together with a private name. */
@@ -650,7 +749,8 @@ function codeNamesPrivate(code: string, ctx: PathContext): boolean {
 }
 
 function privateHit(text: string, cwd: string | null, acc: Acc, recursive: boolean, glob = GLOB_CHAR.test(text)): boolean {
-  if (--acc.privateBudget < 0) return false;
+  // More paths than are checked: the call is refused rather than checked in part.
+  if (--acc.privateBudget < 0) { acc.flags.uncheckable = true; return false; }
   if (!isAbsolute(text) && cwd === null) return false;
   return privatePath(glob ? resolve(cwd ?? acc.ctx.rootReal, text) : realish(resolve(cwd ?? acc.ctx.rootReal, text)), glob, recursive, acc.ctx);
 }
@@ -669,7 +769,8 @@ function runsControlCli(words: readonly Word[]): boolean {
  * the command uses them. CanvasTTY's own control CLI is the one program that may name its descriptor.
  */
 function checkPrivate(segment: Segment, words: Word[], cwd: string | null, acc: Acc): void {
-  if (acc.flags.appPrivate || acc.privateBudget <= 0) return;
+  if (acc.flags.appPrivate) return;
+  if (acc.privateBudget <= 0) { acc.flags.uncheckable = true; return; }
   if (runsControlCli(words)) return;
   const recursive = words.some(word => RECURSIVE.has(programName(word.text)) || /^(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive|--archive)$/u.test(word.text))
     || programName(words[0]?.text ?? '') === 'cp' && words.some(word => /^-[a-zA-Z]*a/u.test(word.text));
@@ -679,7 +780,11 @@ function checkPrivate(segment: Segment, words: Word[], cwd: string | null, acc: 
     if (word.substitution) continue;
     const text = expand(word, cwd, acc.ctx);
     if (text === null || text === '') continue;
-    const candidates = new Set([text, ...(text.length > 1 && /[=:'"\s]/u.test(text) ? privateCandidates(text, acc.ctx) : [])]);
+    // `provider-secrets.{bin,}`: the shell expands braces before the program sees the words.
+    const expanded = word.brace ? braceExpansions(text) : [];
+    const inner = text.length > 1 && /[=:'"\s]/u.test(text) ? privateCandidates(text, acc.ctx) : [];
+    if (expanded === null || inner === null) { acc.flags.uncheckable = true; return; }
+    const candidates = new Set([text, ...expanded, ...inner]);
     for (const candidate of candidates) {
       if (!privateHit(candidate, cwd, acc, recursive, candidate === text ? word.glob : GLOB_CHAR.test(candidate))) continue;
       acc.flags.appPrivate = true;
@@ -1118,13 +1223,22 @@ export function commandFromArgv(argv: readonly string[]): string { return argv.m
 export function analyzeAction(action: ToolAction, root: string, options: { home?: string; agentRoots?: readonly string[]; privateData?: PrivateData } = {}): HardFacts {
   const ctx = pathContext(root, options.home, options.agentRoots, options.privateData);
   const acc: Acc = { ctx, writes: [], deletes: [], depth: 0, budget: 64, argvDepth: 0, privateBudget: MAX_PRIVATE_CHECKS,
-    flags: { elevation: false, pipeToShell: false, downloadExec: false, disk: false, forkBomb: false, appPrivate: false, unknownTarget: false } };
+    flags: { elevation: false, pipeToShell: false, downloadExec: false, disk: false, forkBomb: false, appPrivate: false, unknownTarget: false, uncheckable: Boolean(action.uncheckable) } };
   const commandCwd = action.commandCwd ? resolveTarget(action.commandCwd, ctx.rootReal, ctx) : null;
   const cwd = commandCwd ? commandCwd.abs : ctx.rootReal;
   if (action.kind === 'shell' && action.command) analyzeText(action.command, cwd, acc);
   else if (action.kind === 'edit') {
     acc.writes.push(...action.paths.map(path => resolveTarget(path, cwd, ctx)));
     if (action.paths.some(path => { const text = codePath(path, ctx) ?? path; return privateHit(text, cwd, acc, false, false); })) acc.flags.appPrivate = true;
+  } else if (action.kind === 'read') {
+    // A read-only tool is only checked against CanvasTTY's private data: reading elsewhere is not "outside".
+    // Glob tools expand braces (`provider-secrets.{bin,json}`); a literal name is checked as written too.
+    const hit = (path: string, recursive: boolean): boolean => {
+      const expanded = braceExpansions(path);
+      if (expanded === null) { acc.flags.uncheckable = true; return false; }
+      return [...new Set([path, ...expanded])].some(item => privateHit(codePath(item, ctx) ?? item, cwd, acc, recursive));
+    };
+    if (action.paths.some(path => hit(path, false)) || (action.searched ?? []).some(path => hit(path, true))) acc.flags.appPrivate = true;
   }
   const outside = acc.writes.filter(t => t.where === 'outside' && !t.device && !(t.abs && isAgentServicePath(t.abs, ctx)));
   return {

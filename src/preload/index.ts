@@ -212,8 +212,8 @@ const api: CanvasTTYApi = {
     onCardDecorations: (listener: (decorations: PluginCardDecorations) => void) => (
       subscribe(IPC.pluginsCardDecorationsChanged, listener)
     ),
-    invokeCardAction: (pluginId: string, actionId: string, sessionId: string) => (
-      ipcRenderer.invoke(IPC.pluginsInvokeCardAction, pluginId, actionId, sessionId)
+    invokeCardAction: (pluginId: string, actionId: string, sessionId: string, input?: Record<string, unknown>) => (
+      ipcRenderer.invoke(IPC.pluginsInvokeCardAction, pluginId, actionId, sessionId, input)
     ),
     launchFieldOptions: (pluginId: string, provider: ProviderId) => (
       ipcRenderer.invoke(IPC.pluginsLaunchFieldOptions, pluginId, provider)
@@ -316,6 +316,9 @@ const api: CanvasTTYApi = {
     setBounds: (id: string, bounds: SessionBounds) => ipcRenderer.send(IPC.terminalBounds, id, bounds),
     rename: (id: string, title: string) => ipcRenderer.invoke(IPC.terminalRename, id, title),
     setRestore: (id: string, restore: boolean) => ipcRenderer.invoke(IPC.terminalSetRestore, id, restore),
+    checkpoints: (id: string) => ipcRenderer.invoke(IPC.terminalCheckpoints, id),
+    previewCheckpoint: (id: string, checkpointId: string) => ipcRenderer.invoke(IPC.terminalCheckpointPreview, id, checkpointId),
+    restoreCheckpoint: (id: string, checkpointId: string) => ipcRenderer.invoke(IPC.terminalCheckpointRestore, id, checkpointId),
     dispose: (id: string, options?: { keepEnvironmentData?: boolean }) => ipcRenderer.invoke(IPC.terminalDispose, id, options),
     setVisible: (id: string, visible: boolean) => ipcRenderer.send(IPC.terminalSetVisible, id, visible),
     onData: (listener: (event: TerminalDataEvent) => void, id?: string) => terminalData.subscribe(listener, id),

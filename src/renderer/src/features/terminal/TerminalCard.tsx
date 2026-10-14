@@ -28,6 +28,8 @@ import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 import { matchesShortcut } from "../../lib/shortcuts";
 import { GitRiskNotice } from "./GitRiskNotice";
+import { cardHasOptions, checkpointsItemShown } from "./cardOptions";
+import type { PluginReviewRequest } from "./pluginReviewUiState";
 import { isCustomTerminalBorderSkinId, terminalBorderSkinFallback } from "../../lib/skinStyles";
 import { sessionStatusLabel } from "../../lib/sessionStatus";
 import { attachTerminalMouseCoordinateAdapter, attachTerminalScrollbarCoordinateAdapter } from "./terminalMouseCoordinates";
@@ -52,6 +54,7 @@ import { createPinnedInputRefresh, limitPinnedTerminalInput, pinnedTerminalInput
 import { terminalLinkTarget } from "./terminalLinkTarget";
 import { terminalFileLinkProvider } from "./terminalFileLinks";
 import { parseTerminalFileLink } from "../../../../shared/terminalFileLink";
+import { cardActionTitle } from "../../../../shared/pluginCardActions";
 import {
   constrainResize,
   snapMove,
@@ -113,6 +116,10 @@ interface TerminalCardProps {
   /** Saving sessions is on, so the per-card "Don't restore" choice applies. */
   restoreEnabled?: boolean;
   onOpenUrl(url: string): void;
+  /** A card action answered with a change review (App shows it in the review dialog). */
+  onPluginReview(request: PluginReviewRequest): void;
+  /** The agent card's "Rollback points…" menu item (App shows the dialog). */
+  onOpenCheckpoints(sessionId: string, cardTitle: string): void;
 }
 
 interface DragState {
@@ -184,6 +191,8 @@ function TerminalCardView({
   onRestart,
   onDispose,
   onOpenUrl,
+  onPluginReview,
+  onOpenCheckpoints,
   restoreEnabled = false
 }: TerminalCardProps): React.JSX.Element {
   const borderSkin = terminalBorderSkinFallback(selectedBorderSkin);
@@ -241,12 +250,33 @@ function TerminalCardView({
   const pluginDecorations = usePluginCardDecorations(session);
   const [actionRunning, setActionRunning] = useState(false);
   const [actionToast, setActionToast] = useState<PluginCardActionResult | null>(null);
-  const hasOptions = restoreEnabled || pluginDecorations.actions.length > 0;
+  const isAgentCard = session.provider !== "terminal";
+  // Rollback points are taken for auto/YOLO agents at the top of a Git project: the item shows when the folder can
+  // have them or once some exist. Asked when the card mounts (so the options button never opens an empty menu) and
+  // again when the menu opens.
+  const [checkpointsShown, setCheckpointsShown] = useState(false);
+  const hasOptions = cardHasOptions({ restoreEnabled, checkpointsShown: isAgentCard && checkpointsShown,
+    pluginActions: pluginDecorations.actions.length });
+  useEffect(() => {
+    if (!isAgentCard) return;
+    let current = true;
+    window.canvasTTY.terminal.checkpoints(session.id)
+      .then((result) => { if (current) setCheckpointsShown(checkpointsItemShown(result, session.profile)); })
+      .catch(() => { if (current) setCheckpointsShown(false); });
+    return () => { current = false; };
+  }, [optionsOpen, isAgentCard, session.id, session.profile, session.cwd]);
   const runPluginAction = (action: PluginCardActionEntry): void => {
     setOptionsOpen(false);
     setActionRunning(true);
     void window.canvasTTY.plugins.invokeCardAction(action.pluginId, action.actionId, session.id)
-      .then((result) => setActionToast({ tone: result.tone, message: result.message ?? `${action.title}: ${t(locale, "cardActionDone")}` }))
+      .then((result) => {
+        if (result.review) {
+          onPluginReview({ pluginId: action.pluginId, actionId: action.actionId, sessionId: session.id,
+            cardTitle: session.title || session.cwd, review: result.review });
+          return;
+        }
+        setActionToast({ tone: result.tone, message: result.message ?? `${cardActionTitle(action, locale)}: ${t(locale, "cardActionDone")}` });
+      })
       .catch((error: unknown) => setActionToast({ tone: "error", message: error instanceof Error ? error.message : String(error) }))
       .finally(() => setActionRunning(false));
   };
@@ -1316,10 +1346,17 @@ function TerminalCardView({
               {t(locale, "cardSkipRestore")}
             </label>
           )}
+          {isAgentCard && checkpointsShown && (
+            <button className="terminal-card__menu-action" type="button" role="menuitem"
+              autoFocus={!restoreEnabled && pluginDecorations.actions.length === 0}
+              onClick={() => { setOptionsOpen(false); onOpenCheckpoints(session.id, session.title || session.cwd); }}>
+              {t(locale, "checkpointsMenu")}
+            </button>
+          )}
           {pluginDecorations.actions.map((action, index) => (
             <button key={`${action.pluginId}:${action.actionId}`} className="terminal-card__menu-action" type="button" role="menuitem"
               autoFocus={!restoreEnabled && index === 0} title={action.pluginName} onClick={() => runPluginAction(action)}>
-              {action.title}
+              {cardActionTitle(action, locale)}
             </button>
           ))}
         </div>

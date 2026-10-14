@@ -14,9 +14,9 @@ import { controlRequest } from "../scripts/canvastty-control.mjs";
 import { AgentControlService } from "../src/main/services/AgentControlService.ts";
 import { LaunchPipeline } from "../src/main/services/LaunchPipeline.ts";
 import { PluginSessions } from "../src/main/services/PluginSessions.ts";
-import { TerminalManager } from "../src/main/services/TerminalManager.ts";
+import { INPUT_READY_HOOK_GRACE_MS, TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { AgentControlGateway } from "../src/main/services/agent-control/AgentControlGateway.ts";
-import { ScopedOrchestrationHandler } from "../src/main/services/agent-browser/OrchestrationTools.ts";
+import { AGENT_TOOL_DELIVERY_MS, ScopedOrchestrationHandler } from "../src/main/services/agent-browser/OrchestrationTools.ts";
 
 const at = { x: 0, y: 0 };
 const cwd = process.cwd();
@@ -208,4 +208,237 @@ test("the control CLI says a starting session is not ready instead of claiming t
   for (let i = 0; i < 50 && f.calls.length < 2; i++) await tick();
   assert.equal(f.calls.length, 2);
   assert.deepEqual(f.calls[1].written, [], "the refused send was not queued");
+});
+
+// OpenCode drops every key that arrives while its full-screen view starts, so a prompt typed when its PTY exists is
+// lost and the agent sits at an empty prompt. Its prompt goes in only once its input field is up: a lifecycle hook,
+// or the control sequence that shows its text cursor on the alternate screen (never its human-readable screen text).
+
+const ALT_SCREEN_HIDDEN_CURSOR = "\x1b[?1049h\x1b[?2004h\x1b[?25l";
+const CURSOR_SHOWN = "\x1b[1 q\x1b[?25h";
+
+/**
+ * A slow-starting OpenCode stand-in: it draws its start-up for `startupMs` with the cursor hidden and drops every key
+ * written meanwhile (as OpenCode does), then shows its input field. `accepted` holds what reached that field.
+ */
+function slowOpenCode({ startupMs = 120, ready = true } = {}) {
+  const runs = [];
+  const spawn = () => {
+    let emit = () => undefined;
+    const exits = [];
+    const run = { written: [], accepted: [], dropped: [], ready: false, exit: (code) => exits.forEach((listener) => listener({ exitCode: code })) };
+    runs.push(run);
+    setTimeout(() => emit(ALT_SCREEN_HIDDEN_CURSOR), 5);
+    setTimeout(() => emit("  Ask anything… \"Fix broken tests\"   tab agents  ctrl+p commands"), startupMs / 2);
+    if (ready) setTimeout(() => { run.ready = true; emit(CURSOR_SHOWN); }, startupMs);
+    return {
+      pid: 70_000 + runs.length, process: "opencode", resize() {}, kill() {}, pause() {}, resume() {},
+      write(text) { run.written.push(text); (run.ready ? run.accepted : run.dropped).push(text); },
+      onData(listener) { emit = listener; return { dispose() {} }; },
+      onExit(listener) { exits.push(listener); return { dispose() {} }; }
+    };
+  };
+  return { runs, spawn };
+}
+
+function slowOpenCodeOrchestration(t, options) {
+  const cli = slowOpenCode(options);
+  let orchestratorStarted = false;
+  const terminals = new TerminalManager(() => {}, clis(), undefined, undefined, true, (...args) => {
+    if (!orchestratorStarted) { orchestratorStarted = true; return spawner([])(...args); }
+    return cli.spawn(...args);
+  });
+  t.after(() => terminals.disposeAll());
+  const control = new AgentControlService(terminals);
+  const handler = new ScopedOrchestrationHandler(control);
+  const orchestrator = terminals.create({ provider: "codex", profile: "normal", cwd, position: at, role: "orchestrator" });
+  return { cli, terminals, control, execute: (tool, args) => handler.execute(orchestrator.id, { tool, arguments: args }) };
+}
+
+test("spawn_agent: a slow-starting OpenCode gets its first prompt once its input field is up, exactly once", async (t) => {
+  const f = slowOpenCodeOrchestration(t, { startupMs: 150 });
+  const spawned = f.execute("spawn_agent", { provider: "opencode", cwd, prompt: "do part A" });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await state(spawned), "pending", "the PTY exists and the home screen text is drawn, but the field is not up");
+  assert.deepEqual(f.cli.runs[0].written, []);
+  const result = await spawned;
+  assert.equal(typeof result.sessionId, "string");
+  assert.deepEqual(f.cli.runs[0].accepted, ["do part A\r"], "the prompt reached the input field");
+  assert.deepEqual(f.cli.runs[0].dropped, [], "nothing was typed while OpenCode started");
+
+  // send_to_agent to the running card goes in at once.
+  assert.deepEqual(await f.execute("send_to_agent", { sessionId: result.sessionId, prompt: "now part B" }), { sessionId: result.sessionId, sent: true });
+  assert.deepEqual(f.cli.runs[0].accepted, ["do part A\r", "now part B\r"]);
+});
+
+test("spawn_agent: an OpenCode that exits before its input field is up fails the call with the reason", async (t) => {
+  const f = slowOpenCodeOrchestration(t, { ready: false });
+  const spawned = f.execute("spawn_agent", { provider: "opencode", cwd, prompt: "never typed" });
+  await tick();
+  f.cli.runs[0].exit(1);
+  await assert.rejects(spawned, (error) => {
+    assert.match(error.bridgeError?.message ?? "", /was not delivered: The session/u);
+    return true;
+  });
+  assert.deepEqual(f.cli.runs[0].written, []);
+});
+
+test("OpenCode that never shows its input field gets no prompt and a bounded reason", async (t) => {
+  const cli = slowOpenCode({ ready: false });
+  const terminals = new TerminalManager(() => {}, clis(), undefined, undefined, true, cli.spawn);
+  t.after(() => terminals.disposeAll());
+  const session = terminals.create({ provider: "opencode", profile: "normal", cwd, position: at });
+  const started = Date.now();
+  const result = await terminals.deliverInput(session.id, "never\r", 200);
+  assert.equal(result.delivered, false);
+  assert.match(result.reason, /did not show its input field within 200 ms; nothing was typed/u);
+  assert.ok(Date.now() - started < 1_000);
+  assert.deepEqual(cli.runs[0].written, [], "its home screen text alone is not readiness");
+});
+
+test("OpenCode readiness: a cursor shown before the alternate screen does not count; one cut across chunks does", async (t) => {
+  const calls = [];
+  const terminals = new TerminalManager(() => {}, clis(), undefined, undefined, true, (command, args, options) => {
+    const pty = spawner(calls)(command, args, options);
+    return { ...pty, onData(listener) { calls.at(-1).emit = listener; return { dispose() {} }; } };
+  });
+  t.after(() => terminals.disposeAll());
+  const session = terminals.create({ provider: "opencode", profile: "normal", cwd, position: at });
+  const pending = terminals.deliverInput(session.id, "split\r", 2_000);
+  calls[0].emit("\x1b[?25h");
+  calls[0].emit("\x1b[?104");
+  calls[0].emit("9h\x1b[?25l drawing");
+  await tick();
+  assert.deepEqual(calls[0].written, []);
+  calls[0].emit("\x1b[?2");
+  await tick();
+  assert.deepEqual(calls[0].written, []);
+  calls[0].emit("5h");
+  assert.deepEqual(await pending, { delivered: true });
+  assert.deepEqual(calls[0].written, ["split\r"]);
+});
+
+test("OpenCode readiness: a lifecycle hook counts only after a grace, and sends made while it starts arrive in order", async (t) => {
+  const calls = [];
+  const terminals = new TerminalManager(() => {}, clis(), undefined, undefined, true, spawner(calls));
+  t.after(() => terminals.disposeAll());
+  const session = terminals.create({ provider: "opencode", profile: "normal", cwd, position: at });
+  const first = terminals.deliverInput(session.id, "first\r", INPUT_READY_HOOK_GRACE_MS + 2_000);
+  const second = terminals.deliverInput(session.id, "second\r", INPUT_READY_HOOK_GRACE_MS + 2_000);
+  await tick();
+  assert.deepEqual(calls[0].written, []);
+  const hookAt = Date.now();
+  terminals.applyProviderSignal(session.id, { kind: "lifecycle", state: "idle", event: "session.created" });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(calls[0].written, [], "a hook alone is not the input field");
+  assert.deepEqual([await first, await second], [{ delivered: true }, { delivered: true }]);
+  assert.ok(Date.now() - hookAt >= INPUT_READY_HOOK_GRACE_MS - 20, "typed only after the grace");
+  assert.deepEqual(calls[0].written, ["first\r", "second\r"]);
+});
+
+test("OpenCode readiness: a resumed card whose plugin reports before its input field is up gets the text on the cursor signal", async (t) => {
+  const calls = [];
+  const terminals = new TerminalManager(() => {}, clis(), undefined, undefined, true, (command, args, options) => {
+    const pty = spawner(calls)(command, args, options);
+    return { ...pty, onData(listener) { calls.at(-1).emit = listener; return { dispose() {} }; } };
+  });
+  t.after(() => terminals.disposeAll());
+  const session = terminals.create({ provider: "opencode", profile: "normal", cwd, position: at });
+  calls[0].emit("\x1b[?1049h\x1b[?25l");
+  // The plugin reports idle on session.updated about 0.6 s before typed keys reach the prompt.
+  terminals.applyProviderSignal(session.id, { kind: "lifecycle", state: "idle", event: "session.updated" });
+  const sent = terminals.deliverInput(session.id, "resumed\r", 5_000);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(calls[0].written, [], "not typed on the hook");
+  const shownAt = Date.now();
+  calls[0].emit("\x1b[?25h");
+  assert.deepEqual(await sent, { delivered: true });
+  assert.ok(Date.now() - shownAt < INPUT_READY_HOOK_GRACE_MS / 2, "typed on the cursor signal, not after the grace");
+  assert.deepEqual(calls[0].written, ["resumed\r"]);
+});
+
+test("OpenCode readiness: a send cancelled while it waits behind another settles at once and is never typed", async (t) => {
+  const calls = [];
+  const terminals = new TerminalManager(() => {}, clis(), undefined, undefined, true, (command, args, options) => {
+    const pty = spawner(calls)(command, args, options);
+    return { ...pty, onData(listener) { calls.at(-1).emit = listener; return { dispose() {} }; } };
+  });
+  t.after(() => terminals.disposeAll());
+  const session = terminals.create({ provider: "opencode", profile: "normal", cwd, position: at });
+  const first = terminals.deliverInput(session.id, "first\r", 5_000);
+  const controller = new AbortController();
+  const queued = terminals.deliverInput(session.id, "queued\r", 5_000, controller.signal);
+  const third = terminals.deliverInput(session.id, "third\r", 5_000);
+  await tick();
+  const abortedAt = Date.now();
+  controller.abort();
+  assert.deepEqual(await queued, { delivered: false, reason: "The delivery was cancelled." });
+  assert.ok(Date.now() - abortedAt < 200, "settled without waiting for the send ahead of it");
+  calls[0].emit("\x1b[?1049h\x1b[?25h");
+  assert.deepEqual([await first, await third], [{ delivered: true }, { delivered: true }]);
+  assert.deepEqual(calls[0].written, ["first\r", "third\r"]);
+});
+
+test("OpenCode readiness is not awaited on Windows, whose pseudo console may not pass the cursor sequences", async (t) => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  const calls = [];
+  const terminals = new TerminalManager(() => {}, clis(), undefined, undefined, true, spawner(calls));
+  t.after(() => terminals.disposeAll());
+  const session = terminals.create({ provider: "opencode", profile: "normal", cwd, position: at });
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  try {
+    assert.deepEqual(await terminals.deliverInput(session.id, "windows\r", 200), { delivered: true });
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+  assert.deepEqual(calls[0].written, ["windows\r"]);
+});
+
+test("spawn_agent and send_to_agent wait for delivery within a budget under the MCP client's deadline", async (t) => {
+  assert.ok(AGENT_TOOL_DELIVERY_MS <= 45_000);
+  const f = slowOpenCodeOrchestration(t, { ready: false });
+  const waits = [];
+  const { control } = f;
+  const spawn = control.spawn.bind(control);
+  control.spawn = (request, signal, promptWaitMs) => { waits.push(["spawn", promptWaitMs]); return spawn(request, signal, 150); };
+  const send = control.send.bind(control);
+  control.send = (id, text, submit, signal, waitMs) => { waits.push(["send", waitMs]); return send(id, text, submit, signal, 150); };
+  await assert.rejects(f.execute("spawn_agent", { provider: "opencode", cwd, prompt: "late" }), (error) => {
+    assert.match(error.bridgeError?.message ?? "", /did not show its input field within 150 ms; nothing was typed/u);
+    return true;
+  });
+  const [child] = f.terminals.listMetadata().filter((session) => session.role === "subagent");
+  await assert.rejects(f.execute("send_to_agent", { sessionId: child.id, prompt: "again" }));
+  assert.equal(waits[0][0], "spawn");
+  assert.ok(waits[0][1] > 0 && waits[0][1] <= AGENT_TOOL_DELIVERY_MS, String(waits[0][1]));
+  assert.deepEqual(waits[1], ["send", AGENT_TOOL_DELIVERY_MS]);
+});
+
+test("OpenCode readiness: cancellation and a restart while it starts never deliver the queued text", async (t) => {
+  const cli = slowOpenCode({ startupMs: 80 });
+  const terminals = new TerminalManager(() => {}, clis(), undefined, undefined, true, cli.spawn);
+  t.after(() => terminals.disposeAll());
+  const session = terminals.create({ provider: "opencode", profile: "normal", cwd, position: at });
+  const controller = new AbortController();
+  const canceled = terminals.deliverInput(session.id, "cancel\r", 2_000, controller.signal);
+  const replaced = terminals.deliverInput(session.id, "old launch\r", 2_000);
+  controller.abort();
+  assert.deepEqual(await canceled, { delivered: false, reason: "The delivery was cancelled." });
+  cli.runs[0].exit(0);
+  terminals.restart(session.id);
+  assert.equal((await replaced).delivered, false);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.ok(cli.runs[1].ready, "the new launch became ready");
+  assert.ok(cli.runs.every((run) => run.written.length === 0), "neither launch got the text");
+});
+
+test("Claude and Codex still get input as soon as their PTY exists", async (t) => {
+  const calls = [];
+  const terminals = new TerminalManager(() => {}, clis(), undefined, undefined, true, spawner(calls));
+  t.after(() => terminals.disposeAll());
+  for (const provider of ["claude", "codex"]) {
+    const session = terminals.create({ provider, profile: "normal", cwd, position: at });
+    assert.deepEqual(await terminals.deliverInput(session.id, `${provider} task\r`, 200), { delivered: true });
+  }
+  assert.deepEqual(calls.map((call) => call.written), [["claude task\r"], ["codex task\r"]]);
 });

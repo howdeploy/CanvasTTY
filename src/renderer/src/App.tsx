@@ -71,6 +71,9 @@ import type { FileSessionOption } from "./features/files/FileBrowserCard";
 import { GitRiskNotice } from "./features/terminal/GitRiskNotice";
 import { UsageHistoryPanel } from "./features/usage/UsageHistoryPanel";
 import { WorkspaceCanvas } from "./features/workspace/WorkspaceCanvas";
+import type { PluginReviewRequest } from "./features/terminal/pluginReviewUiState";
+import { checkpointsHostSurface, pluginReviewHostSurface } from "./features/terminal/cardDialogSurfaces";
+import { preloadWhenIdle, usePreloadedSurface } from "./lib/preloadedSurface";
 import { createCameraStore } from "./features/workspace/cameraStore";
 import { isPixelSkinThemeId } from "./features/skins/skinCatalog";
 import { isPixelSkinPackId } from "./features/skins/SkinAssets";
@@ -366,6 +369,16 @@ export function App(): React.JSX.Element {
   const [usageHistoryOpen, setUsageHistoryOpen] = useState(false);
   /** App root outside the canvas transform; overlays portal here to inherit the theme tokens. */
   const [overlayHost, setOverlayHost] = useState<HTMLDivElement | null>(null);
+  // The change review a card action answered with (rendered here, inside the themed tree, as a modal dialog).
+  const [pluginReview, setPluginReview] = useState<PluginReviewRequest | null>(null);
+  // A card's rollback points dialog (its "Rollback points…" menu item).
+  const [checkpointsFor, setCheckpointsFor] = useState<{ sessionId: string; cardTitle: string } | null>(null);
+  // Out of the startup bundle, preloaded once the app is idle, rendered without a Suspense wait (see preloadedSurface).
+  const PluginReviewHost = usePreloadedSurface(pluginReviewHostSurface, pluginReview !== null);
+  const CheckpointsHost = usePreloadedSurface(checkpointsHostSurface, checkpointsFor !== null);
+  useEffect(() => preloadWhenIdle([pluginReviewHostSurface, checkpointsHostSurface]), []);
+  // A modal dialog owns the keyboard: no canvas shortcut fires underneath it and the native Browser is hidden.
+  const modalDialogOpen = shortcutReferenceOpen || pluginReview !== null || checkpointsFor !== null;
   const [homeEditDraft, setHomeEditDraft] = useState<HomeEditDraft | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [browserSelected, setBrowserSelected] = useState(false);
@@ -1881,7 +1894,7 @@ export function App(): React.JSX.Element {
       setRenamingSessionId(activeSessionId);
     };
     const handleShortcut = (event: KeyboardEvent): void => {
-      if (shortcutReferenceOpen) return;
+      if (modalDialogOpen) return;
       if (handleMacNativeSelectAll(event, window.canvasTTY.window.isMacOS)) return;
       if (handoffRemarkIds !== null) return;
       if (shouldKeepNativeKeyboardInput(event.target, window.canvasTTY.window.isMacOS, event)) return;
@@ -1907,7 +1920,7 @@ export function App(): React.JSX.Element {
     };
 
     const handlePointerShortcut = (event: PointerEvent): void => {
-      if (shortcutReferenceOpen || usageHistoryOpen || handoffRemarkIds !== null) return;
+      if (modalDialogOpen || usageHistoryOpen || handoffRemarkIds !== null) return;
       if (isShortcutCaptureTarget(event.target) || isRenameInputTarget(event.target)) return;
       const action = matchesPointerShortcut(event, settings.shortcuts.home)
         ? "home"
@@ -1932,7 +1945,7 @@ export function App(): React.JSX.Element {
       window.removeEventListener("pointerdown", handlePointerShortcut, true);
       stopTerminalFocus();
     };
-  }, [activeSessionId, fullscreenSessionId, goHome, handoffRemarkIds, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, shortcutReferenceOpen, showToast, usageHistoryOpen, toggleSessionFullscreen]);
+  }, [activeSessionId, fullscreenSessionId, goHome, handoffRemarkIds, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, modalDialogOpen, showToast, usageHistoryOpen, toggleSessionFullscreen]);
 
   const appearance = resolveAppearanceSettings(settings);
   const rootClasses = useMemo(
@@ -1988,7 +2001,7 @@ export function App(): React.JSX.Element {
           limitsLoadState={limitsLoadState}
           plugins={plugins}
           browser={browser}
-          browserViewVisible={!settingsOpen && !usageHistoryOpen && !shortcutReferenceOpen && launchProvider === null && pendingTerminalUrl === null && handoffRemarkIds === null}
+          browserViewVisible={!settingsOpen && !usageHistoryOpen && !modalDialogOpen && launchProvider === null && pendingTerminalUrl === null && handoffRemarkIds === null}
           homeEditing={homeEditDraft !== null}
           camera={cameraStore}
           onCameraChange={changeCamera}
@@ -1999,6 +2012,8 @@ export function App(): React.JSX.Element {
           onOpenTerminal={(position) => void openTerminal(position)}
           onOpenBrowser={openBrowserFromUi}
           onOpenTerminalUrl={(url) => void openTerminalUrl(url)}
+          onPluginReview={setPluginReview}
+          onOpenCheckpoints={(sessionId, cardTitle) => setCheckpointsFor({ sessionId, cardTitle })}
           onRequestMedia={requestMedia}
           onRemoveMedia={removeMedia}
           onHomeLayoutChange={changeHomeLayout}
@@ -2080,6 +2095,9 @@ export function App(): React.JSX.Element {
       <Suspense fallback={null}>
         {shortcutReferenceOpen && <ShortcutReference settings={settings}
           onClose={() => setShortcutReferenceOpen(false)} />}
+        {checkpointsFor && CheckpointsHost && <CheckpointsHost request={checkpointsFor} locale={settings.locale} onClose={() => setCheckpointsFor(null)} />}
+        {pluginReview && PluginReviewHost && <PluginReviewHost request={pluginReview} locale={settings.locale}
+          setRequest={setPluginReview} showToast={showToast} />}
         <AgentLaunchDialog
           provider={launchProvider}
           settings={settings}

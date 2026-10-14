@@ -654,6 +654,7 @@ export class PluginManager {
         pluginName: manifest.name,
         serviceId: service.id,
         launch: structuredClone(service.launch),
+        dataDir: join(this.dataRoot, plugin.manifest.id),
         secrets: manifest.permissions.includes("secrets")
       });
     }
@@ -1858,7 +1859,7 @@ function validateBrowserEngine(value: unknown): PluginBrowserEngine {
   return { id, title, ...(description ? { description } : {}), layout: value.layout === true };
 }
 
-const MAX_CARD_ACTIONS = 8;
+const MAX_CARD_ACTIONS = 16;
 
 function validateCardActions(value: unknown): PluginCardAction[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_CARD_ACTIONS) {
@@ -1866,11 +1867,19 @@ function validateCardActions(value: unknown): PluginCardAction[] {
   }
   return value.map((candidate): PluginCardAction => {
     if (!isRecord(candidate)) throw new Error("Every plugin card action must be an object.");
-    assertOnlyKeys(candidate, ["id", "title", "when"], "Plugin card action");
+    assertOnlyKeys(candidate, ["id", "title", "title.ru", "title.en", "when", "menu"], "Plugin card action");
     const id = requiredString(candidate.id, "card action id", 64);
     if (!isContributionId(id)) throw new Error(`Plugin card action id is invalid: ${id}.`);
-    const title = requiredString(candidate.title, "card action title", 40);
-    if (candidate.when === undefined) return { id, title };
+    const titleRu = optionalString(candidate["title.ru"], "card action title.ru", 40);
+    const titleEn = optionalString(candidate["title.en"], "card action title.en", 40);
+    const title = {
+      title: requiredString(candidate.title, "card action title", 40),
+      ...(titleRu ? { "title.ru": titleRu } : {}),
+      ...(titleEn ? { "title.en": titleEn } : {})
+    };
+    if (candidate.menu !== undefined && candidate.menu !== false) throw new Error(`Plugin card action ${id} menu must be false when present.`);
+    const menu = candidate.menu === false ? { menu: false as const } : {};
+    if (candidate.when === undefined) return { id, ...title, ...menu };
     if (!isRecord(candidate.when)) throw new Error(`Plugin card action ${id} when must be an object.`);
     assertOnlyKeys(candidate.when, ["providers", "environmentKinds", "roles"], "Plugin card action filter");
     const list = (key: string, valid: (item: unknown) => boolean): string[] | undefined => {
@@ -1889,7 +1898,7 @@ function validateCardActions(value: unknown): PluginCardAction[] {
       ...(environmentKinds ? { environmentKinds } : {}),
       ...(roles ? { roles: roles as PluginCardActionFilter["roles"] } : {})
     };
-    return { id, title, when };
+    return { id, ...title, when, ...menu };
   });
 }
 

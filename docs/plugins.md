@@ -91,6 +91,8 @@ Plugin and contribution IDs are stable persistence keys. Do not rename them afte
 
 `platforms` is optional; when present it must include `"canvastty"` or direct install/update is rejected. `minHostVersion` is informational: the showcase marks plugins that target a newer host, but it does not block installation. This lets separately packaged release builds keep using compatible source packages without treating older minimum versions as mismatches.
 
+Texts the person reads may come in the app's languages, like `description.ru`/`description.en`: the plugin `name` may add `"name.ru"` and `"name.en"`, a contribution's `title` (a canvas app, the settings page, a HOME widget, a window) may add `"title.ru"` and `"title.en"`, and a launch field's `label` may add `"label.ru"` and `"label.en"`. Each has the length limit of the text it translates (80 characters). CanvasTTY shows the one for its current language, and the plain text otherwise. Other suffixes are rejected.
+
 ### Optional modules
 
 A modular manifest declares integrity-checked coreFiles plus up to 16 optional modules. Every file entry contains path, exact bytes, and a SHA-256 digest. CanvasTTY downloads only the manifest for inspection, shows checkboxes, per-module size and permissions, then downloads only the core and selected module files. Changing the selection later replaces the installed package atomically and removes deselected files. A contribution may set module to disappear when that module is not installed.
@@ -192,7 +194,7 @@ One service per plugin may add a `launch` block. Its fields appear in the agent 
 }]
 ```
 
-Up to 8 fields; `kind` is `boolean`, `select` (1–16 options) or `text` (at most 200 characters, or `maxLength`). `appliesTo` lists agent providers; omitted means every agent. The chosen values are checked against the fields, saved in the card's session record (at most 4 KB per plugin), and reused on restart and restore. They are not secret: put keys in the plugin's `secrets`, never in a field.
+Up to 8 fields; `kind` is `boolean`, `select` (1–16 options) or `text` (at most 200 characters, or `maxLength`). `appliesTo` lists agent providers; omitted means every agent. The chosen values are checked against the fields, saved in the card's session record (at most 4 KB per plugin), and reused on restart and restore. They are not secret: put keys in the plugin's `secrets`, never in a field. A field's `label` may add `"label.ru"` and `"label.en"` (see the manifest above).
 
 A `select` with `"optionsFrom": "service"` also lists choices the service offers, such as its own accounts. When the launcher opens, CanvasTTY asks the service `canvastty.launch.options` `{ provider, fields: [keys] }` and waits at most 3 s; the answer `{ "<key>": [{ value, label }] }` adds up to 64 choices per field after the declared ones (which stay required and are all the launcher shows when the service does not answer). Because such a list can change after a card was saved, its value is accepted as any text up to 200 characters without control characters, and `canvastty.launch.prepare` must check it and refuse a value it no longer knows.
 
@@ -527,7 +529,7 @@ const current = host.visibility(); // "visible" | "hidden"
 
 Plain `document.addEventListener("visibilitychange", …)` works too, without the SDK. The host message behind it is `{ source: "canvastty-host", type: "visibility", state: "visible" | "hidden" }`; plugins do not need to handle it themselves.
 
-Context updates include the active CanvasTTY locale and palette. Plugins own their internal localization and styling; they should remain legible at the contribution's intended size and should not invent loading progress, sessions, status, limits, or telemetry.
+Context updates include the active CanvasTTY locale and palette. Plugins own their internal localization and styling; they should remain legible at the contribution's intended size and should not invent loading progress, sessions, status, limits, or telemetry. `appearance.uiScale` is the app's UI scale (Settings → Appearance; 1 is 100%, 0.85 to 1.25), the value CanvasTTY scales its own text and controls by; a page or canvas app that should match the app scales its text by it, for example `` document.documentElement.style.fontSize = `${13 * appearance.uiScale}px` ``. A new context arrives whenever the person changes the locale, the palette or the scale; a separate window reads it when it loads.
 
 ## Install and manage
 

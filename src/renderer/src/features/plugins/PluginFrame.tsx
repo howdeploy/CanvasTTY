@@ -17,6 +17,7 @@ import {
 import { createFrameReplyGate } from "./frameReplies";
 import { pluginVisibilityMessage } from "../../../../shared/pluginVisibility";
 import { isProviderId } from "../../../../shared/providerCatalog.ts";
+import { contributionTitle, pluginName } from "../../../../shared/pluginLocalizedText.ts";
 
 const storageListeners = new Map<string, Set<(key: string, value: unknown) => void>>();
 
@@ -25,6 +26,8 @@ interface PluginFrameProps {
   contribution: PluginContribution;
   locale: LocaleId;
   palette: PaletteId;
+  /** The root UI scale (Settings → Appearance), the value of the app's `--ui-scale`; sent to the page with the locale. */
+  uiScale: number;
   sessions: readonly SessionSnapshot[];
   limits: LimitsSnapshot | null;
   canvasInstanceId?: string;
@@ -61,6 +64,7 @@ export function PluginFrame({
   contribution,
   locale,
   palette,
+  uiScale,
   sessions,
   limits,
   canvasInstanceId,
@@ -101,8 +105,8 @@ export function PluginFrame({
       kind: contribution.kind,
       title: contribution.title
     },
-    appearance: { locale, palette }
-  }), [contribution.id, contribution.kind, contribution.title, locale, palette, plugin.manifest]);
+    appearance: { locale, palette, uiScale }
+  }), [contribution.id, contribution.kind, contribution.title, locale, palette, uiScale, plugin.manifest]);
 
   useEffect(() => {
     const receive = (event: MessageEvent): void => {
@@ -225,7 +229,7 @@ export function PluginFrame({
       ref={frame}
       className={className ? `plugin-frame ${className}` : "plugin-frame"}
       src={entryUrl}
-      title={`${plugin.manifest.name}: ${contribution.title}`}
+      title={`${pluginName(plugin.manifest, locale)}: ${contributionTitle(contribution, locale)}`}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
       inert={suspended}

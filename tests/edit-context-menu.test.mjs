@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import { attachEditContextMenu, editContextMenuTemplate } from "../src/main/editContextMenu.ts";
+import { contributionTitle } from "../src/shared/pluginLocalizedText.ts";
 
 const flags = { canCut: true, canCopy: true, canPaste: true, canSelectAll: true, canUndo: false, canRedo: false, canDelete: true, canEditRichly: false };
 
@@ -72,6 +73,7 @@ test("a standalone plugin window gets its native edit menu before loading and us
       entryUrl: () => "canvastty-plugin://test/window.html"
     },
     attachEditContextMenu,
+    contributionTitle,
     editMenuLocale: () => locale,
     Menu: { buildFromTemplate: template => ({ popup: options => shown.push({ template, window: options.window }) }) }
   });

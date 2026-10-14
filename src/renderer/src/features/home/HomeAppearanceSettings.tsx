@@ -43,7 +43,7 @@ export function HomeAppearanceSettings({
       description: widget.description ? t(locale, widget.description) : undefined,
       pluginEnabled: true
     })),
-    ...pluginHomeWidgetOptions(plugins)
+    ...pluginHomeWidgetOptions(plugins, locale)
   ];
 
   return (

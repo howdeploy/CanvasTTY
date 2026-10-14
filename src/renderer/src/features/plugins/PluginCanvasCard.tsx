@@ -17,6 +17,7 @@ import { t } from "../../lib/i18n";
 import { snapMove, snapResize, type ResizeDirection } from "../workspace/snap";
 import { constrainMascotResize, constrainPluginResize, fitMascotBounds } from "./pluginBounds";
 import { PluginFrame } from "./PluginFrame";
+import { contributionTitle, pluginName } from "../../../../shared/pluginLocalizedText.ts";
 import type { PluginCanvasWheelInput } from "./pluginInputBridge";
 import { pluginCanvasWidgetId } from "../workspace/canvasWidgetFocus";
 import { surfaceIsLive, surfaceLifecycle, useSurfaceOffscreen, useWindowHidden } from "../workspace/surfaceLifecycle";
@@ -27,6 +28,8 @@ interface PluginCanvasCardProps {
   contribution: PluginCanvasAppContribution;
   locale: LocaleId;
   palette: PaletteId;
+  /** The root UI scale, passed on to the plugin page. */
+  uiScale: number;
   /** The canvas camera: drags read its zoom when they move; rendering subscribes to what it needs. */
   camera: CameraStore;
   stackIndex: number;
@@ -70,6 +73,7 @@ export function PluginCanvasCard({
   contribution,
   locale,
   palette,
+  uiScale,
   camera,
   stackIndex,
   snapEnabled,
@@ -92,6 +96,9 @@ export function PluginCanvasCard({
   const mascotDragState = useRef<DragState | null>(null);
   const resizeState = useRef<ResizeState | null>(null);
   const isMascot = plugin.sourceUrl.startsWith("mascot:");
+  // The card was opened with the contribution's title; show it in the UI language (`title.ru`/`title.en`).
+  const title = instance.title === contribution.title ? contributionTitle(contribution, locale) : instance.title;
+  const name = pluginName(plugin.manifest, locale);
   const mascotAspectRatio = contribution.defaultSize.width / contribution.defaultSize.height;
   const initialBounds = isMascot
     ? fitMascotBounds({ position: instance.position, size: instance.size }, mascotAspectRatio)
@@ -278,7 +285,7 @@ export function PluginCanvasCard({
         onPointerCancel={endDrag}
         onLostPointerCapture={cancelDrag}
       >
-        <span><strong>{instance.title}</strong><small>{plugin.manifest.name}</small></span>
+        <span><strong>{title}</strong><small>{name}</small></span>
         <button type="button" onClick={() => onDispose(instance.id)} title={t(locale, "close")} aria-label={t(locale, "close")}>
           <UiIcon name="close" size="1.23em" />
         </button>
@@ -290,6 +297,7 @@ export function PluginCanvasCard({
         contribution={contribution}
         locale={locale}
         palette={palette}
+        uiScale={uiScale}
         sessions={sessions}
         limits={limits}
         captureCanvasWheelOverWidgets={captureCanvasWheelOverWidgets}
@@ -306,9 +314,9 @@ export function PluginCanvasCard({
         className="plugin-canvas-card__summary"
         type="button"
         onClick={() => onActivate(instance)}
-        aria-label={instance.title}
+        aria-label={title}
       >
-        <span><strong>{instance.title}</strong><small>{plugin.manifest.name}</small></span>
+        <span><strong>{title}</strong><small>{name}</small></span>
       </button>
       {RESIZE_DIRECTIONS.map((direction) => (
         <div

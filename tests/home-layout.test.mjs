@@ -49,7 +49,7 @@ test("lists enabled and disabled plugin Home widgets beside core options", () =>
     }
   }];
 
-  assert.deepEqual(pluginHomeWidgetOptions(plugins), [{
+  assert.deepEqual(pluginHomeWidgetOptions(plugins, "en"), [{
     widgetId: "plugin:com.example.music:player",
     label: "Music",
     description: "Music plugin · Compact player",

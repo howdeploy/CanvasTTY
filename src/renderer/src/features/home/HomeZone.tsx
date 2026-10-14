@@ -387,6 +387,7 @@ export function HomeZone({
             contribution={contribution}
             locale={locale}
             palette={settings.palette}
+            uiScale={settings.uiScale}
             sessions={sessions}
             limits={limits}
             captureCanvasWheelOverWidgets={captureCanvasWheelOverWidgets || focusedWidgetId !== canvasWidgetId}

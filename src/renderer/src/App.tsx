@@ -50,6 +50,7 @@ import {
   keyboardPresetShortcuts
 } from "../../shared/contracts";
 import { normalizeExternalUrl } from "../../shared/externalUrl";
+import { pluginName } from "../../shared/pluginLocalizedText.ts";
 import {
   createTerminalBorderSkinStyleController,
   type TerminalBorderSkinStyleController
@@ -1638,7 +1639,7 @@ export function App(): React.JSX.Element {
       homeLayout = [...homeLayout, result.placement];
     }
     if (homeLayout !== settings.homeLayout) await saveSettings({ homeGridSize, homeLayout });
-    showToast(`${t(settings.locale, "pluginInstalled")}: ${installed.manifest.name}`);
+    showToast(`${t(settings.locale, "pluginInstalled")}: ${pluginName(installed.manifest, settings.locale)}`);
   }, [saveSettings, settings.homeGridSize, settings.homeLayout, settings.locale, showToast]);
 
   const refreshPlugins = useCallback(async (): Promise<void> => {
@@ -1754,7 +1755,7 @@ export function App(): React.JSX.Element {
       throw error;
     }
     setPlugins((current) => current.map((plugin) => plugin.manifest.id === pluginId ? updated : plugin));
-    showToast(`${t(settings.locale, "pluginUpdated")}: ${updated.manifest.name}`);
+    showToast(`${t(settings.locale, "pluginUpdated")}: ${pluginName(updated.manifest, settings.locale)}`);
   }, [refreshPlugins, settings.locale, showToast]);
 
   const openPluginCanvasContribution = useCallback(async (

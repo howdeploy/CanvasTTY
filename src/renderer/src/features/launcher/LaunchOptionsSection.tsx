@@ -11,16 +11,23 @@ import type {
 } from "../../../../shared/contracts";
 import { t } from "../../lib/i18n";
 import { withServiceOptions } from "./launchFieldOptions";
+import { launchFieldLabel, pluginName } from "../../../../shared/pluginLocalizedText.ts";
 
-interface LaunchOptionPlugin {
+/** The plugin's name, with its `name.ru`/`name.en` for the UI language. */
+type PluginNames = Pick<InstalledPlugin["manifest"], "name" | "name.ru" | "name.en">;
+
+function names(plugin: InstalledPlugin): PluginNames {
+  const { name, "name.ru": ru, "name.en": en } = plugin.manifest;
+  return { name, ...(ru ? { "name.ru": ru } : {}), ...(en ? { "name.en": en } : {}) };
+}
+
+interface LaunchOptionPlugin extends PluginNames {
   pluginId: string;
-  name: string;
   fields: PluginLaunchField[];
 }
 
-interface EnvironmentOption {
+interface EnvironmentOption extends PluginNames {
   pluginId: string;
-  name: string;
   kind: PluginEnvironmentKind;
 }
 
@@ -34,7 +41,7 @@ function launchOptionPlugins(plugins: readonly InstalledPlugin[], provider: Prov
     if (launch.appliesTo && !launch.appliesTo.includes(provider)) return [];
     // A policy-only contributor has nothing to choose: it is asked on every launch anyway.
     if (launch.policy && launch.fields.length === 0) return [];
-    return [{ pluginId: plugin.manifest.id, name: plugin.manifest.name, fields: launch.fields }];
+    return [{ pluginId: plugin.manifest.id, ...names(plugin), fields: launch.fields }];
   }).sort((left, right) => left.pluginId.localeCompare(right.pluginId));
 }
 
@@ -46,7 +53,7 @@ export function environmentOptions(plugins: readonly InstalledPlugin[], provider
     if (!plugin.manifest.permissions.includes("environment:provide")) return [];
     return kinds
       .filter((kind) => !kind.appliesTo || kind.appliesTo.includes(provider))
-      .map((kind) => ({ pluginId: plugin.manifest.id, name: plugin.manifest.name, kind }));
+      .map((kind) => ({ pluginId: plugin.manifest.id, ...names(plugin), kind }));
   }).sort((left, right) => left.pluginId.localeCompare(right.pluginId));
 }
 
@@ -55,8 +62,9 @@ function defaults(fields: readonly PluginLaunchField[]): PluginLaunchValues {
     ?? (field.kind === "boolean" ? false : field.kind === "select" ? field.options?.[0]?.value ?? "" : "")]));
 }
 
-function FieldInputs({ fields, values, onChange }: {
+function FieldInputs({ fields, values, locale, onChange }: {
   fields: readonly PluginLaunchField[];
+  locale: LocaleId;
   values: PluginLaunchValues;
   onChange(values: PluginLaunchValues): void;
 }): React.JSX.Element {
@@ -68,7 +76,7 @@ function FieldInputs({ fields, values, onChange }: {
             <input type="checkbox" checked={values[field.key] === true}
               onChange={(event) => onChange({ ...values, [field.key]: event.target.checked })} />
           )}
-          <span>{field.label}</span>
+          <span>{launchFieldLabel(field, locale)}</span>
           {field.kind === "select" && (
             <select value={String(values[field.key])}
               onChange={(event) => onChange({ ...values, [field.key]: event.target.value })}>
@@ -165,13 +173,13 @@ export function LaunchOptionsSection({ provider, locale, onChange, onEnvironment
               <option value="-1">{t(locale, "launchWhereLocal")}</option>
               {environments.map((option, index) => (
                 <option key={`${option.pluginId}/${option.kind.kind}`} value={String(index)} title={option.kind.description}>
-                  {option.kind.label} · {option.name}
+                  {option.kind.label} · {pluginName(option, locale)}
                 </option>
               ))}
             </select>
           </label>
           {selected && where?.options && (
-            <FieldInputs fields={selected.kind.fields ?? []} values={where.options}
+            <FieldInputs fields={selected.kind.fields ?? []} values={where.options} locale={locale}
               onChange={(options) => setWhere({ ...where, options })} />
           )}
         </fieldset>
@@ -184,9 +192,9 @@ export function LaunchOptionsSection({ provider, locale, onChange, onEnvironment
             <label className="launch-advanced__use">
               <input type="checkbox" checked={Boolean(values)}
                 onChange={(event) => update(plugin.pluginId, event.target.checked ? defaults(fields) : null)} />
-              <span>{t(locale, "launchUsePlugin")} {plugin.name}</span>
+              <span>{t(locale, "launchUsePlugin")} {pluginName(plugin, locale)}</span>
             </label>
-            {values && <FieldInputs fields={fields} values={values} onChange={(next) => update(plugin.pluginId, next)} />}
+            {values && <FieldInputs fields={fields} values={values} locale={locale} onChange={(next) => update(plugin.pluginId, next)} />}
           </fieldset>
         );
       })}

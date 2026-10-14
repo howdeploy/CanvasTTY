@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   AppSettings,
   GithubAuthStatus,
+  GithubDeviceFlowState,
   GithubDeviceFlowStart,
   GithubPluginSearchResult,
   InstalledPlugin,
@@ -24,6 +25,7 @@ import {
   unresolvedPageUrls
 } from "./pluginPagination";
 import { compareSemver } from "../../../../shared/hostVersion";
+import { contributionTitle, pluginName } from "../../../../shared/pluginLocalizedText.ts";
 import { UiIcon } from "../../components/UiIcon";
 
 /** Plugin description limit when displayed (longer text is truncated). */
@@ -181,6 +183,7 @@ export function PluginSettingsSection({
   const [githubCode, setGithubCode] = useState<GithubDeviceFlowStart | null>(null);
   const [githubBusy, setGithubBusy] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
+  const githubFlowNotice = githubFlowNoticeKey(githubStatus?.deviceFlowState);
   const [showcasePreviews, setShowcasePreviews] = useState<Record<string, PluginInstallPreview>>({});
   const [showcaseManifests, setShowcaseManifests] = useState<Record<string, PluginManifest>>({});
   const [selectedShowcase, setSelectedShowcase] = useState<string | null>(null);
@@ -197,28 +200,27 @@ export function PluginSettingsSection({
     // The main process owns the device flow; this only reads its status, so it pauses while Settings is
     // closed and picks up (sign-in finished or code expired) as soon as Settings opens again.
     const stop = pollWhileOpen(open, githubCode.interval * 1000, async () => {
-      if (Date.now() >= githubCode.expiresAt) {
-        if (!cancelled) {
-          setGithubCode(null);
-          setError(t(locale, "githubAuthExpired"));
-        }
-        return STOP_POLLING;
-      }
       // A transient status read failure is retried on the next tick.
       const status = await window.canvasTTY.githubAuth.status();
       if (cancelled) return STOP_POLLING;
-      setGithubStatus(status);
-      if (status.authorized) {
+      if (status.authorized || isGithubFlowOutcome(status.deviceFlowState)) {
+        setGithubStatus(status);
         setGithubCode(null);
         return STOP_POLLING;
       }
+      if (Date.now() >= githubCode.expiresAt) {
+        setGithubStatus({ ...status, deviceFlowState: "expired" });
+        setGithubCode(null);
+        return STOP_POLLING;
+      }
+      setGithubStatus(status);
       return undefined;
     }, { immediate: false });
     return () => {
       cancelled = true;
       stop();
     };
-  }, [githubCode, locale, open]);
+  }, [githubCode, open]);
 
   const inspect = async (): Promise<void> => {
     if (busy || sourceUrl.trim().length === 0) return;
@@ -365,10 +367,22 @@ export function PluginSettingsSection({
     if (githubBusy) return;
     setGithubBusy(true);
     setError(null);
+    let flow: GithubDeviceFlowStart;
     try {
-      const flow = await window.canvasTTY.githubAuth.start();
+      flow = await window.canvasTTY.githubAuth.start();
+    } catch (reason) {
+      // The IPC error is main-process text ("Error invoking remote method …", HTTP codes): it goes to the log, and the
+      // GitHub section shows its own localized line (not configured, or sign-in failed).
+      console.warn("GitHub sign-in could not start.", reason);
+      const status = await window.canvasTTY.githubAuth.status().catch(() => null);
+      setGithubStatus(status && !status.configured ? status
+        : { configured: true, authorized: false, login: null, tokenExpiresAt: null, ...status, deviceFlowState: "failed" });
+      setGithubBusy(false);
+      return;
+    }
+    try {
       setGithubCode(flow);
-      setGithubStatus({ configured: true, authorized: false, login: null, tokenExpiresAt: null });
+      setGithubStatus({ configured: true, authorized: false, login: null, tokenExpiresAt: null, deviceFlowState: "pending" });
       await openGithubAuthorization(flow, target);
     } catch (reason) {
       setError(errorMessage(reason, t(locale, "githubAuthNotConfigured")));
@@ -387,9 +401,28 @@ export function PluginSettingsSection({
         configured: current?.configured ?? false,
         authorized: false,
         login: null,
-        tokenExpiresAt: null
+        tokenExpiresAt: null,
+        deviceFlowState: "idle"
       }));
       setGithubCode(null);
+    } finally {
+      setGithubBusy(false);
+    }
+  };
+
+  const runGithubCancel = async (): Promise<void> => {
+    if (githubBusy) return;
+    setGithubBusy(true);
+    setError(null);
+    try {
+      await window.canvasTTY.githubAuth.cancel();
+      // The poll may have finished first; the status says which outcome won.
+      setGithubStatus(await window.canvasTTY.githubAuth.status());
+      setGithubCode(null);
+      setCodeCopied(false);
+    } catch (reason) {
+      console.warn("GitHub sign-in could not be cancelled.", reason);
+      setError(t(locale, "githubAuthCancelFailed"));
     } finally {
       setGithubBusy(false);
     }
@@ -533,7 +566,7 @@ export function PluginSettingsSection({
             icon={showcaseIcons[key]}
           />
           <span className="plugin-showcase-tile__title">
-            <strong>{manifest ? manifest.name : showcaseName(result.fullName)}</strong>
+            <strong>{manifest ? pluginName(manifest, locale) : showcaseName(result.fullName)}</strong>
             <small className="plugin-showcase-tile__author">{showcaseAuthor(result.fullName)}</small>
             {renderHostTag(result.minHostVersion)}
           </span>
@@ -558,7 +591,7 @@ export function PluginSettingsSection({
             icon={showcaseIcons[selectedShowcase]}
           />
           <span className="plugin-showcase-tile__title">
-            <strong>{manifest ? manifest.name : showcaseName(result.fullName)}</strong>
+            <strong>{manifest ? pluginName(manifest, locale) : showcaseName(result.fullName)}</strong>
             <small className="plugin-showcase-tile__author">{showcaseAuthor(result.fullName)}</small>
           </span>
         </header>
@@ -642,8 +675,8 @@ export function PluginSettingsSection({
         {preview && (
           <article className="plugin-preview">
             <header>
-              <PluginIcon pluginId={preview.manifest.id} icon={preview.manifest.icon} name={preview.manifest.name} />
-              <span><strong>{preview.manifest.name}</strong><small>v{preview.manifest.version}</small></span>
+              <PluginIcon pluginId={preview.manifest.id} icon={preview.manifest.icon} name={pluginName(preview.manifest, locale)} />
+              <span><strong>{pluginName(preview.manifest, locale)}</strong><small>v{preview.manifest.version}</small></span>
             </header>
             <p>{manifestDescription(preview.manifest, locale)}</p>
             <PermissionList permissions={preview.manifest.permissions} locale={locale} />
@@ -685,9 +718,9 @@ export function PluginSettingsSection({
               <article className={`installed-plugin ${plugin.enabled ? "" : "installed-plugin--disabled"} ${expanded ? "installed-plugin--expanded" : ""}`} key={plugin.manifest.id}>
                 <header className="installed-plugin__header" onClick={() => setExpandedInstalled((current) => ({ ...current, [plugin.manifest.id]: !current[plugin.manifest.id] }))}>
                   <span className="installed-plugin__title">
-                    <PluginIcon pluginId={plugin.manifest.id} icon={plugin.manifest.icon} name={plugin.manifest.name} remoteIcon={remoteIcon} />
+                    <PluginIcon pluginId={plugin.manifest.id} icon={plugin.manifest.icon} name={pluginName(plugin.manifest, locale)} remoteIcon={remoteIcon} />
                     <span className="installed-plugin__version">
-                      <strong>{plugin.manifest.name}</strong>
+                      <strong>{pluginName(plugin.manifest, locale)}</strong>
                       <small>
                         v{plugin.manifest.version}
                         {update && (
@@ -789,7 +822,7 @@ export function PluginSettingsSection({
                       {plugin.manifest.contributions.map((contribution) => (
                         <div className="plugin-contribution" key={contribution.id}>
                           <span>
-                            <strong>{contribution.title}</strong>
+                            <strong>{contributionTitle(contribution, locale)}</strong>
                             <small>{t(locale, contributionKindKey(contribution.kind))}</small>
                           </span>
                           {contribution.kind !== "home-widget" && (
@@ -833,6 +866,12 @@ export function PluginSettingsSection({
             </span>
           )}
         </h3>
+        {!githubAuthorized && !githubCode && githubFlowNotice && (
+          // A cancelled sign-in is the person's own choice; a denied, expired or failed one is an error.
+          githubStatus?.deviceFlowState === "cancelled"
+            ? <p className="plugin-github-unavailable" role="status">{t(locale, githubFlowNotice)}</p>
+            : <p className="plugin-settings__error" role="alert">{t(locale, githubFlowNotice)}</p>
+        )}
         {!githubAuthorized && !githubCode && <p className="plugin-github-optional">{t(locale, "githubAuthOptional")}</p>}
         {githubStatus?.authorized ? (
           <div>
@@ -882,6 +921,9 @@ export function PluginSettingsSection({
                 {t(locale, "githubAuthOpenExternal")}
               </button>
             </div>
+            <button type="button" className="plugin-github-signout" disabled={githubBusy} onClick={() => void runGithubCancel()}>
+              {t(locale, "githubAuthCancel")}
+            </button>
           </div>
         ) : githubStatus && !githubConfigured ? (
           <p className="plugin-github-unavailable" role="status">{t(locale, "githubAuthNotConfigured")}</p>
@@ -1153,4 +1195,18 @@ function errorMessage(error: unknown, fallback: string): string {
   return (error instanceof Error ? error.message : fallback)
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .slice(0, 320);
+}
+
+function isGithubFlowOutcome(state: GithubDeviceFlowState | undefined): boolean {
+  return state === "denied" || state === "expired" || state === "failed" || state === "cancelled";
+}
+
+function githubFlowNoticeKey(state: GithubDeviceFlowState | undefined): TranslationKey | null {
+  switch (state) {
+    case "denied": return "githubAuthDenied";
+    case "expired": return "githubAuthExpired";
+    case "failed": return "githubAuthFailed";
+    case "cancelled": return "githubAuthCancelled";
+    default: return null;
+  }
 }

@@ -6,6 +6,7 @@ import type {
   PluginServiceState
 } from "../../../../shared/contracts";
 import { t, type TranslationKey } from "../../lib/i18n";
+import { pluginName } from "../../../../shared/pluginLocalizedText.ts";
 import { pollWhileOpen } from "./settingsPolling";
 
 interface PluginServicesSettingsProps {
@@ -91,7 +92,7 @@ export function PluginServicesSettings({
             <article className="agent-hooks__row" key={pluginId}>
               <div className="agent-hooks__row-main">
                 <span className="agent-hooks__copy">
-                  <strong>{plugin.manifest.name}</strong>
+                  <strong>{pluginName(plugin.manifest, locale)}</strong>
                   <small>{t(locale, "pluginNativeCodeServices")}</small>
                 </span>
                 <button
@@ -99,7 +100,7 @@ export function PluginServicesSettings({
                   type="button"
                   role="switch"
                   aria-checked={trusted}
-                  aria-label={`${t(locale, "pluginNativeCode")}: ${plugin.manifest.name}`}
+                  aria-label={`${t(locale, "pluginNativeCode")}: ${pluginName(plugin.manifest, locale)}`}
                   disabled={!plugin.enabled || busy !== null}
                   onClick={() => {
                     if (trusted) void setTrusted(plugin, false);
@@ -130,14 +131,14 @@ export function PluginServicesSettings({
                 <div className="agent-hooks__row-main">
                   <span className="agent-hooks__copy">
                     <strong>{t(locale, "pluginDecisionsMayAllow")}</strong>
-                    <small>{t(locale, "pluginDecisionsMayAllowDescription")}</small>
+                    <span>{t(locale, "pluginDecisionsMayAllowDescription")}</span>
                   </span>
                   <button
                     className={`agent-hooks__toggle${plugin.decisionsMayAllow ? " agent-hooks__toggle--on" : ""}`}
                     type="button"
                     role="switch"
                     aria-checked={plugin.decisionsMayAllow}
-                    aria-label={`${t(locale, "pluginDecisionsMayAllow")}: ${plugin.manifest.name}`}
+                    aria-label={`${t(locale, "pluginDecisionsMayAllow")}: ${pluginName(plugin.manifest, locale)}`}
                     disabled={busy !== null}
                     onClick={() => {
                       if (plugin.decisionsMayAllow) void setMayAllow(plugin, false);

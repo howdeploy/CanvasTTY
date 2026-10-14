@@ -16,6 +16,8 @@
     "apiVersion": { "enum": [1, 2] },
     "id": { "type": "string", "minLength": 3, "maxLength": 80, "pattern": "^(?!.*\\.\\.)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$" },
     "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "name.ru": { "description": "The name when the app is in Russian (like description.ru); name otherwise.", "type": "string", "minLength": 1, "maxLength": 80 },
+    "name.en": { "description": "The name when the app is in English (like description.en); name otherwise.", "type": "string", "minLength": 1, "maxLength": 80 },
     "version": { "type": "string", "maxLength": 40, "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$" },
     "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
     "description.ru": { "type": "string", "minLength": 1, "maxLength": 2000 },
@@ -261,6 +263,8 @@
       "properties": {
         "key": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,39}$" },
         "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "label.ru": { "description": "The label when the app is in Russian (like description.ru); label otherwise.", "type": "string", "minLength": 1, "maxLength": 80 },
+        "label.en": { "description": "The label when the app is in English (like description.en); label otherwise.", "type": "string", "minLength": 1, "maxLength": 80 },
         "kind": { "enum": ["boolean", "select", "text"] },
         "options": {
           "type": "array", "minItems": 1, "maxItems": 16,
@@ -285,6 +289,8 @@
         "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$" },
         "kind": { "enum": ["home-widget", "canvas-app", "window"] },
         "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "title.ru": { "description": "The title when the app is in Russian (like description.ru); title otherwise.", "type": "string", "minLength": 1, "maxLength": 80 },
+        "title.en": { "description": "The title when the app is in English (like description.en); title otherwise.", "type": "string", "minLength": 1, "maxLength": 80 },
         "description": { "type": "string", "minLength": 1, "maxLength": 240 },
         "entry": { "type": "string", "minLength": 1, "maxLength": 180, "pattern": "^(?!/)(?!.*\\\\)(?!\\.\\.?/)(?!.*(?:/\\.\\.?/|/\\.\\.?$|//)).+\\.html$" },
         "icon": { "type": "string", "minLength": 1, "maxLength": 180, "pattern": "^(?!/)(?!.*\\\\)(?!\\.\\.?/)(?!.*(?:/\\.\\.?/|/\\.\\.?$|//)).+$" },

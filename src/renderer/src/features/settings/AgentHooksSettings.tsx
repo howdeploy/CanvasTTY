@@ -8,6 +8,7 @@ import type {
 } from "../../../../shared/contracts";
 import { PROVIDERS } from "../../lib/providers";
 import { t, type TranslationKey } from "../../lib/i18n";
+import { pluginName } from "../../../../shared/pluginLocalizedText.ts";
 
 interface AgentHooksSettingsProps {
   settings: AppSettings;
@@ -98,7 +99,7 @@ export function AgentHooksSettings({
                 <div className="agent-hooks__row-main">
                   <span className="agent-hooks__copy">
                     <strong>{row.hook.title}</strong>
-                    <small>{row.plugin.manifest.name}</small>
+                    <small>{pluginName(row.plugin.manifest, locale)}</small>
                     {row.hook.description && <span>{row.hook.description}</span>}
                   </span>
                   <HookToggle

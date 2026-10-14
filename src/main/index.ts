@@ -58,6 +58,7 @@ import { MaterialService } from "./services/materials/MaterialService";
 import { HandoffService } from "./services/materials/HandoffService";
 import { electronImageOps } from "./services/materials/electronImageOps";
 import { MATERIAL_SCHEME } from "../shared/materials.ts";
+import { contributionTitle } from "../shared/pluginLocalizedText.ts";
 import { PluginSecretsService } from "./services/PluginSecretsService";
 import { ProviderSecretsService } from "./services/ProviderSecretsService";
 import { listProviderDirectory, type ProviderDirectorySources } from "./services/providerDirectory";
@@ -1315,7 +1316,7 @@ async function openPluginWindow(pluginId: string, contributionId: string): Promi
     height: contribution.defaultSize.height,
     minWidth: contribution.minSize?.width ?? 320,
     minHeight: contribution.minSize?.height ?? 220,
-    title: contribution.title,
+    title: contributionTitle(contribution, editMenuLocale()),
     backgroundColor: "#353442",
     webPreferences: {
       preload: join(__dirname, "../preload/plugin.cjs"),

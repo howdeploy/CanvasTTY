@@ -91,6 +91,8 @@ hooks/audit.mjs
 
 `platforms` 为可选字段；一旦声明，就必须包含 `"canvastty"`，否则直接安装或更新会被拒绝。`minHostVersion` 仅用于提示：展示页会标记需要更高宿主版本的插件，但不会阻止安装；较旧的最低版本不会被视为不兼容。
 
+面向用户的文字可以像 `description.ru`/`description.en` 一样提供应用语言版本：插件的 `name` 可加 `"name.ru"` 和 `"name.en"`，contribution 的 `title`（画布应用、设置页、HOME 小组件、窗口）可加 `"title.ru"` 和 `"title.en"`，启动字段的 `label` 可加 `"label.ru"` 和 `"label.en"`。长度限制与原文相同（80 个字符）。CanvasTTY 显示当前语言的版本，没有时显示原文。其他后缀会被拒绝。
+
 ### 可选模块
 
 模块化 manifest 可声明经过完整性校验的 coreFiles 和最多 16 个可选 modules。每个文件都包含 path、精确的 bytes 大小和 SHA-256。CanvasTTY 在预览时只下载 manifest，显示模块复选框、大小和权限，然后仅下载核心文件与用户选择的模块。之后更改选择时会原子替换插件包，并删除已取消模块的文件。Contribution 可以通过 module 字段在模块未安装时隐藏。
@@ -171,7 +173,7 @@ host.service.onEvent(({ serviceId, event, data }) => { /* … */ });
 }]
 ```
 
-最多 8 个字段；`kind` 为 `boolean`、`select`（1–16 个选项）或 `text`（最多 200 个字符或 `maxLength`）。`appliesTo` 列出适用的智能体服务商，省略表示所有智能体。所选值按字段校验，保存在卡片的会话记录中（每个插件最多 4 KB），并在重启和恢复时复用。它们不是机密：密钥应放在插件的 `secrets` 中，而不是字段里。
+最多 8 个字段；`kind` 为 `boolean`、`select`（1–16 个选项）或 `text`（最多 200 个字符或 `maxLength`）。`appliesTo` 列出适用的智能体服务商，省略表示所有智能体。所选值按字段校验，保存在卡片的会话记录中（每个插件最多 4 KB），并在重启和恢复时复用。它们不是机密：密钥应放在插件的 `secrets` 中，而不是字段里。 字段的 `label` 可加 `"label.ru"` 和 `"label.en"`（见上文清单）。
 
 带 `"optionsFrom": "service"` 的 `select` 还会列出服务提供的选项，例如插件自己的账户。启动器打开时，CanvasTTY 向服务发送 `canvastty.launch.options` `{ provider, fields: [键] }`，最多等待 3 秒；回答 `{ "<键>": [{ value, label }] }` 在声明的选项之后为每个字段追加最多 64 个选项（声明的选项仍然必需，服务未回答时启动器只显示它们）。由于此类列表可能在卡片保存后变化，其值接受为不含控制字符、最多 200 个字符的任意文本，`canvastty.launch.prepare` 必须检查该值，并拒绝已不存在的选项。
 
@@ -485,7 +487,7 @@ if (library) {
 
 推荐的启动流程：调用 `listLibraries()`；仅在没有已授权文件夹时才通过 `pickLibrary()` 请求选择文件夹；扫描所选音乐库；从 `storage` 恢复队列和偏好；然后列出并解析播放列表。把已撤销或已移动的文件夹当作明确的不可用状态处理，并让用户重新选择。
 
-上下文更新包含当前 CanvasTTY 的语言环境和配色方案。插件自行负责其内部本地化和样式；应在 contribution 的预期尺寸下保持可读，且不得虚构加载进度、会话、状态、限额或遥测。
+上下文更新包含当前 CanvasTTY 的语言环境和配色方案。插件自行负责其内部本地化和样式；应在 contribution 的预期尺寸下保持可读，且不得虚构加载进度、会话、状态、限额或遥测。 `appearance.uiScale` 是应用的界面缩放（设置 → 外观；1 表示 100%，范围 0.85 到 1.25），也是 CanvasTTY 缩放自身文字和控件所用的值；希望与应用一致的页面或画布应用按它缩放文字，例如 `` document.documentElement.style.fontSize = `${13 * appearance.uiScale}px` ``。每当用户更改语言、配色或缩放时都会发送新的上下文；独立窗口在加载时读取它。
 
 ### 可见性
 

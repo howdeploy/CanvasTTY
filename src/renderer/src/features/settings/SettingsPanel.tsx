@@ -628,7 +628,7 @@ export function SettingsPanel({
                 ))}
                 <SettingGroup label={t(locale, "canvasWheelCapture")} description={t(locale, "canvasWheelCaptureDescription")}>
                   <Segmented value={settings.canvasWheelCaptureMode}
-                    options={[["off", "Off"], ["always", "On"], ["key", "Key"]]}
+                    options={[["off", t(locale, "off")], ["always", t(locale, "on")], ["key", t(locale, "canvasWheelCaptureKey")]]}
                     onChange={(value) => changeCanvasWheelCaptureMode(value as CanvasWheelCaptureMode)} />
                   {settings.canvasWheelCaptureMode === "key" && (
                     <CanvasNavigationShortcutEditor open={open} locale={locale}

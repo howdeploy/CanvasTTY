@@ -706,7 +706,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
           modules: plugin.selectedModules
         },
         contribution: { id: contribution.id, kind: contribution.kind, title: contribution.title },
-        appearance: { locale: settings.get().locale, palette: settings.get().palette }
+        appearance: { locale: settings.get().locale, palette: settings.get().palette, uiScale: settings.get().uiScale }
       };
     }
     if (method === "storage.get") return plugins.storageGet(pluginId, stringValue(values.key, "key"));
@@ -918,6 +918,10 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   ipcMain.handle(IPC.githubAuthSignOut, (event) => {
     assertMainRenderer(event, getMainWindow);
     return githubAuth.signOut();
+  });
+  ipcMain.handle(IPC.githubAuthCancel, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    githubAuth.cancelDeviceFlow();
   });
   ipcMain.handle(IPC.githubAuthOpenUrl, (event, value: unknown) => {
     assertMainRenderer(event, getMainWindow);

@@ -90,6 +90,9 @@ export interface CanvasTTYPluginContext {
   appearance: {
     locale: "ru" | "en";
     palette: "sage" | "lilac" | "night";
+    /** The app's UI scale (Settings → Appearance; 1 is 100%, from 0.85 to 1.25), the value CanvasTTY scales its own
+     * text and controls by. Sent again whenever the person changes it. */
+    uiScale: number;
   };
 }
 
@@ -392,7 +395,11 @@ export interface CanvasTTYServiceLaunch {
   delegable?: boolean;
 }
 
-export type CanvasTTYLaunchField =
+export type CanvasTTYLaunchField = {
+  /** The label when the app is in Russian / English (up to 80 characters, like `description.ru`); `label` otherwise. */
+  "label.ru"?: string;
+  "label.en"?: string;
+} & (
   | { key: string; label: string; kind: "boolean"; default?: boolean }
   | {
     key: string; label: string; kind: "select"; options: Array<{ value: string; label: string }>; default?: string;
@@ -400,7 +407,8 @@ export type CanvasTTYLaunchField =
      * text up to 200 characters, which `canvastty.launch.prepare` must check. */
     optionsFrom?: "service";
   }
-  | { key: string; label: string; kind: "text"; maxLength?: number; default?: string };
+  | { key: string; label: string; kind: "text"; maxLength?: number; default?: string }
+);
 
 /** Params of the host request `canvastty.launch.prepare`: launches that chose this plugin, and with `policy` every agent launch. */
 export interface CanvasTTYLaunchContext {

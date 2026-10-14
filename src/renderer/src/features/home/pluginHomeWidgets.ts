@@ -1,4 +1,5 @@
-import type { InstalledPlugin, PluginGridSize } from "../../../../shared/contracts";
+import type { InstalledPlugin, LocaleId, PluginGridSize } from "../../../../shared/contracts";
+import { contributionTitle, pluginName } from "../../../../shared/pluginLocalizedText.ts";
 import { pluginWidgetId } from "./homeLayout.ts";
 
 export interface PluginHomeWidgetOption {
@@ -10,15 +11,15 @@ export interface PluginHomeWidgetOption {
   required?: false;
 }
 
-export function pluginHomeWidgetOptions(plugins: readonly InstalledPlugin[]): PluginHomeWidgetOption[] {
+export function pluginHomeWidgetOptions(plugins: readonly InstalledPlugin[], locale: LocaleId): PluginHomeWidgetOption[] {
   return plugins.flatMap((plugin) => plugin.manifest.contributions
     .filter((contribution) => contribution.kind === "home-widget")
     .map((contribution) => ({
       widgetId: pluginWidgetId(plugin.manifest.id, contribution.id),
-      label: contribution.title,
+      label: contributionTitle(contribution, locale),
       description: contribution.description
-        ? `${plugin.manifest.name} · ${contribution.description}`
-        : plugin.manifest.name,
+        ? `${pluginName(plugin.manifest, locale)} · ${contribution.description}`
+        : pluginName(plugin.manifest, locale),
       size: contribution.defaultSize,
       pluginEnabled: plugin.enabled
     })));

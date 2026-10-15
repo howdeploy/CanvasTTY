@@ -96,3 +96,75 @@ test("review quotas do not replace the Codex model quota on HOME", async () => {
   const row=selectHomeModel([],snapshot,"ready",now,["codex"]).limitRows[0];
   assert.equal(row.window.usedPercent,9);
 });
+
+
+async function quotaService(t) {
+  const root=await mkdtemp(join(tmpdir(),"canvas-quota-cache-"));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const state=join(root,"state.json"), config=join(root,"config.toml"), script=join(root,"cli.mjs");
+  const setState=(value)=>writeFile(state,JSON.stringify(value));
+  await setState({});await writeFile(config,'model_provider = "api"\n');
+  await writeFile(script,`#!${process.execPath}
+import {readFileSync} from "node:fs";
+import {createInterface} from "node:readline";
+const state=()=>JSON.parse(readFileSync(${JSON.stringify(state)},"utf8"));
+if(process.argv.includes("--base-url")) {
+ const s=state();
+ if(process.argv.includes("providers")) console.log(JSON.stringify(s.inactive ? [] : [${JSON.stringify(provider)}]));
+ else if(s.quota === "timeout") setTimeout(()=>{},30000);
+ else console.log(JSON.stringify(s.quota === "malformed" ? {} : ${JSON.stringify(USAGE)}));
+} else {
+ const api=readFileSync(${JSON.stringify(config)},"utf8").includes('"api"');
+ createInterface({input:process.stdin}).on("line",line=>{
+  const m=JSON.parse(line);if(m.id===undefined)return;
+  if(m.method === "account/rateLimits/read" && state().nativeError) return console.log(JSON.stringify({id:m.id,error:{code:-32603}}));
+  const result=m.method === "account/read" ? {account:api ? null : {type:"chatgpt"},requiresOpenaiAuth:!api}
+   : m.method === "account/rateLimits/read" ? {rateLimits:{limitId:"codex",primary:{usedPercent:35,windowDurationMins:300,resetsAt:1790000000}}} : {};
+  console.log(JSON.stringify({id:m.id,result}));
+ });
+}
+`,{mode:0o700});
+  let executable=script;
+  if(process.platform === "win32") {
+    executable=join(root,"cli.cmd");
+    await writeFile(executable,`@echo off\r\n"${process.execPath}" "${script}" %*\r\n`);
+  }
+  const registry={get:provider=>({state:"available",provider,executable,
+    launcher:process.platform === "win32" ? "batch" : "native",commandPrompt:process.env.ComSpec,environment:{},checked:[]})};
+  const service=new LimitsService(registry,"test",{cacheTtlMs:0,environment:{...ENV,CODEX_HOME:root,CANVASTTY_OMNIROUTE_BIN:executable}});
+  t.after(()=>service.dispose());
+  return {config,setState,read:async()=>(await service.getProviders(["codex"])).providers[0]};
+}
+
+for(const [failure,reason] of [["malformed","protocol-error"],["timeout","timeout"]]) {
+  test(`gateway quota remains stale after a ${failure} reply and recovers`,async t=>{
+    const f=await quotaService(t), first=await f.read();
+    assert.equal(first.state,"available");
+    await f.setState({quota:failure});
+    const stale=await f.read();
+    assert.equal(stale.state,"stale");assert.equal(stale.reason,reason);
+    assert.equal(stale.source,"omniroute-usage-api");assert.equal(stale.accountScope,null);
+    assert.equal(stale.fetchedAt,first.fetchedAt);assert.deepEqual(stale.windows,first.windows);
+    assert.ok(stale.failedAt >= first.fetchedAt);
+    await f.setState({});assert.equal((await f.read()).state,"available");
+  });
+}
+
+test("changing between native and API profiles never reuses the other source's quota",async t=>{
+  const f=await quotaService(t);
+  await writeFile(f.config,'model_provider = "native"\n');
+  assert.equal((await f.read()).source,"codex-app-server");
+  await writeFile(f.config,'model_provider = "api"\n');await f.setState({quota:"malformed"});
+  const missing=await f.read();assert.equal(missing.state,"unavailable");assert.equal(missing.source,"omniroute-usage-api");
+  await f.setState({});assert.equal((await f.read()).state,"available");
+  await writeFile(f.config,'model_provider = "native"\n');await f.setState({nativeError:true});
+  const native=await f.read();assert.equal(native.state,"unavailable");assert.equal(native.source,"codex-app-server");
+  await f.setState({});assert.equal((await f.read()).source,"codex-app-server");
+});
+
+test("revoking the bound connection discards its cached quota",async t=>{
+  const f=await quotaService(t);assert.equal((await f.read()).state,"available");
+  await f.setState({inactive:true});
+  const revoked=await f.read();assert.equal(revoked.state,"unavailable");assert.equal(revoked.reason,"not-authenticated");
+  await f.setState({quota:"malformed"});assert.equal((await f.read()).state,"unavailable");
+});

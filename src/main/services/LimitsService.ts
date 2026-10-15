@@ -242,16 +242,26 @@ export class LimitsService {
       this.lastGoodCodex = available;
       return available;
     } catch (error) {
-      const reason = adapterReason(error);
+      let reason = adapterReason(error);
+      let source: LimitSource = "codex-app-server";
       if (reason === "api-profile") {
-        this.lastGoodCodex = null;
+        // Retain gateway observations across transient polls, never native-account windows.
+        if (this.lastGoodCodex?.source !== "omniroute-usage-api") this.lastGoodCodex = null;
         try {
           const windows = await readOmniRouteCodexLimits(this.environment, undefined, availableCli(this.providerClis, "codex")?.environment);
-          if (windows) return { provider: "codex", state: "available", source: "omniroute-usage-api",
-            fetchedAt: Date.now(), windows, accountScope: null };
+          if (windows) {
+            const available: Extract<ProviderLimitsSnapshot, { state: "available" }> = {
+              provider: "codex", state: "available", source: "omniroute-usage-api",
+              fetchedAt: Date.now(), windows, accountScope: null
+            };
+            this.lastGoodCodex = available;
+            return available;
+          }
+          this.lastGoodCodex = null;
         } catch (quotaError) {
-          return unavailable("codex", "omniroute-usage-api", quotaError instanceof OmniRouteQuotaError
-            ? quotaError.reason : "protocol-error", checkedAt);
+          source = "omniroute-usage-api";
+          reason = quotaError instanceof OmniRouteQuotaError ? quotaError.reason : "protocol-error";
+          if (reason !== "timeout" && reason !== "protocol-error") this.lastGoodCodex = null;
         }
       }
       if (this.lastGoodCodex) {
@@ -262,7 +272,7 @@ export class LimitsService {
           reason
         };
       }
-      return unavailable("codex", "codex-app-server", reason, checkedAt);
+      return unavailable("codex", source, reason, checkedAt);
     }
   }
 

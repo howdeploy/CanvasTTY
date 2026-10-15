@@ -1,4 +1,5 @@
 import { realpath } from "node:fs/promises";
+import { join } from "node:path";
 import { app, BrowserWindow, clipboard, dialog, shell } from "electron";
 import type { IpcMainEvent, IpcMainInvokeEvent, OpenDialogOptions, WebContents } from "electron";
 import type {
@@ -50,6 +51,7 @@ import type { HermesHudService } from "../services/HermesHudService";
 import { normalizeExternalUrl } from "../../shared/externalUrl";
 import { readHomeMedia } from "../services/homeMedia";
 import { openTerminalFile } from "../services/terminalFileEditor";
+import { ensureCodexFolderTrust } from "../services/CodexFolderTrust";
 
 interface CriticalDependencies {
   settings: SettingsStore;
@@ -66,6 +68,7 @@ interface Dependencies {
   recheckProviderClis(): Promise<{ availability: AgentCliAvailability; settings: AppSettings }>;
   terminals: TerminalManager;
   agentChatHistory: AgentChatHistoryService;
+  providerClis: ProviderCliRegistry;
   limits: LimitsService;
   usageHistory: UsageHistoryService;
   plugins: PluginManager;
@@ -206,6 +209,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   recheckProviderClis,
   terminals,
   agentChatHistory,
+  providerClis,
   limits,
   usageHistory,
   plugins,
@@ -941,12 +945,44 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     if (typeof id !== "string") throw new Error("Terminal session ID is required.");
     return terminals.readBuffer(id);
   });
-  ipcMain.handle(IPC.terminalCreate, (event, request: CreateSessionRequest) => {
+  // Only the main renderer may ask the host to persist this narrow permission change. An agent's control,
+  // orchestration, plugin and terminal gateways cannot invoke it; config.toml remains read-only in isolation.
+  const trustCodexFolder = (cwd: string): Promise<void> => ensureCodexFolderTrust({
+    providerClis,
+    clientVersion: app.getVersion(),
+    cwd,
+    backupDirectory: join(app.getPath("userData"), "codex-config-backups"),
+    confirm: async (folder) => {
+      const owner = getMainWindow();
+      if (!owner || owner.isDestroyed()) return false;
+      const ru = settings.get().locale === "ru";
+      const { response } = await dialog.showMessageBox(owner, {
+        type: "warning",
+        title: ru ? "Доверие к папке Codex" : "Codex folder trust",
+        message: ru ? "Доверять этой папке?" : "Trust this folder?",
+        detail: `${folder}\n\n${ru
+          ? "Настройки этой папки могут автоматически запускать код. Продолжайте, только если доверяете её содержимому. Решение сохранится в профиле Codex."
+          : "Folder settings can run code automatically. Continue only if you trust its contents. Your decision will be saved in the Codex profile."}`,
+        buttons: ru ? ["Отмена", "Доверять и продолжить"] : ["Cancel", "Trust and continue"],
+        defaultId: 0, cancelId: 0, noLink: true
+      });
+      return response === 1;
+    }
+  });
+  ipcMain.handle(IPC.terminalCreate, async (event, request: CreateSessionRequest) => {
     assertMainRenderer(event, getMainWindow);
+    // Plugin environments/account homes own their configuration; never trust a different local profile for them.
+    if (request?.provider === "codex" && !request.environment && !request.parentSessionId
+      && request.role !== "subagent" && !Object.keys(request.launchOptions ?? {}).length) {
+      await trustCodexFolder(request.cwd);
+    }
     return terminals.create(request);
   });
-  ipcMain.handle(IPC.terminalRestart, (event, id: string, options?: { resume?: unknown }) => {
+  ipcMain.handle(IPC.terminalRestart, async (event, id: string, options?: { resume?: unknown }) => {
     assertMainRenderer(event, getMainWindow);
+    const metadata = terminals.getMetadata(id);
+    const folder = terminals.localCodexFolderForTrust(id);
+    if (metadata?.exitCode !== null && folder) await trustCodexFolder(folder);
     return terminals.restart(id, { resume: options?.resume === true });
   });
   ipcMain.on(IPC.terminalInput, (event, id: string, data: string) => {

@@ -852,6 +852,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       return { availability, settings: updatedSettings };
     },
     terminals: terminalManager,
+    providerClis,
     limits: limitsService,
     agentChatHistory,
     usageHistory,

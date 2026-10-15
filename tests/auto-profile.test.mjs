@@ -381,3 +381,15 @@ test("every open card is saved, not only the first 64; a broken record does not 
   const broken = [{ id: "nope" }, ...Array.from({ length: 64 }, (_, index) => record(index))];
   assert.equal(normalizePersistedTerminalSessions({ version: 2, sessions: broken }).sessions.length, 64);
 });
+
+test("only a builtin top-level Codex card may ask the host to persist profile trust", async (t) => {
+  const { pipeline } = await pipelineAnswering(t, null);
+  const { terminals } = manager(t, pipeline);
+  const person = terminals.create({provider:"codex",profile:"normal",cwd:process.cwd(),position:at});
+  const child = terminals.create({provider:"codex",profile:"plan",role:"subagent",parentSessionId:person.id,cwd:process.cwd(),position:at});
+  const plugin = terminals.create({provider:"codex",profile:"normal",cwd:process.cwd(),position:at,launchOptions:{"p.accounts":{on:true}}});
+  assert.equal(terminals.localCodexFolderForTrust(person.id),process.cwd());
+  assert.equal(terminals.localCodexFolderForTrust(child.id),null);
+  assert.equal(terminals.localCodexFolderForTrust(plugin.id),null,"a plugin may have selected another profile home");
+  assert.equal(terminals.localCodexFolderForTrust("missing"),null);
+});

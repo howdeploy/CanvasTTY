@@ -1,0 +1,60 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
+import { CodexAppServerClient } from "./CodexAppServerClient.ts";
+import type { ProviderCliRegistry } from "./providerCliRegistry.ts";
+
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Host-only, called from person-authenticated IPC, never a terminal or agent gateway. */
+export async function ensureCodexFolderTrust(options: {
+  providerClis: ProviderCliRegistry;
+  clientVersion: string;
+  cwd: string;
+  backupDirectory: string;
+  confirm(folder: string): Promise<boolean>;
+}): Promise<void> {
+  const folder = await realpath(options.cwd);
+  if (!(await stat(folder)).isDirectory()) throw new Error("Project folder is not a directory.");
+  const cli = options.providerClis.get("codex");
+  if (cli.state !== "available") throw new Error("Codex CLI is unavailable.");
+  const environment = { ...process.env, ...cli.environment };
+  const home = environment.CODEX_HOME || join(environment.HOME || homedir(), ".codex");
+  if (!isAbsolute(home)) throw new Error("Codex profile path must be absolute.");
+  const file = join(home, "config.toml");
+  const client = new CodexAppServerClient(cli, options.clientVersion, 1_000, environment.HOME || homedir());
+  try {
+    // Do not load the new project's settings before the person has trusted it.
+    const response = await client.call("config/read", { includeLayers: true });
+    if (!record(response) || !Array.isArray(response.layers)) throw new Error("Codex returned no configuration layers.");
+    const layer = response.layers.find((entry: unknown) => record(entry) && record(entry.name)
+      && entry.name.type === "user" && !entry.name.profile && entry.name.file === file);
+    if (!record(layer) || !record(layer.config) || typeof layer.version !== "string") {
+      throw new Error("Codex user configuration could not be identified safely.");
+    }
+    const projects = layer.config.projects;
+    // Exact folder only: a new folder is never silently trusted because a sibling was accepted.
+    if (record(projects) && record(projects[folder]) && projects[folder].trust_level === "trusted") return;
+    if (!await options.confirm(folder)) throw new Error("Folder trust was not granted. Session was not started.");
+    if (await realpath(options.cwd) !== folder) throw new Error("Project folder changed while awaiting trust.");
+    // Private, unique backup of the current file; Codex's version check refuses a concurrent edit.
+    let original: Buffer | null;
+    try { original = await readFile(file); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      original = null;
+    }
+    if (original !== null) {
+      await mkdir(options.backupDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(join(options.backupDirectory, `${randomUUID()}.toml`), original, { flag: "wx", mode: 0o600 });
+    }
+    await client.call("config/batchWrite", {
+      filePath: file,
+      expectedVersion: layer.version,
+      edits: [{ keyPath: `projects.${JSON.stringify(folder)}.trust_level`, value: "trusted", mergeStrategy: "upsert" }]
+    });
+  } finally {
+    client.dispose();
+  }
+}

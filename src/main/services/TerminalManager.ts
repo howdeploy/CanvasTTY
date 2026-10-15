@@ -373,6 +373,15 @@ export class TerminalManager {
     };
   }
 
+  /** The builtin local profile only; a plugin's launch may use a different account home. */
+  localCodexFolderForTrust(id: string): string | null {
+    const session = this.sessions.get(id);
+    if (!session || session.metadata.provider !== "codex" || session.metadata.parentSessionId
+      || session.metadata.role === "subagent" || session.extras.ownerPluginId || session.extras.options
+      || session.extras.environment || session.extras.environmentChoice) return null;
+    return session.metadata.cwd;
+  }
+
   /**
    * What plugins may know about a card (EP-4): its metadata, the folder it actually runs in (an environment may
    * move it) and its environment ref. No screen text.

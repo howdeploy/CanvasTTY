@@ -42,3 +42,16 @@ for (const [locale, label, errorLabel] of [
   assert.ok(!api.includes("limit-row__fill"), "unavailable subscription limits must not become a quota bar");
   assert.ok(render("protocol-error").includes(errorLabel));
 });
+
+test("HOME renders an available upstream Codex quota as a real percentage bar", () => {
+  const now = Date.parse("2030-01-09T12:00:00Z");
+  const snapshot = { fetchedAt: now, providers: [{ provider: "codex", source: "omniroute-usage-api",
+    state: "available", fetchedAt: now, accountScope: null,
+    windows: [{ id:"omniroute:session",bucketId:"omniroute:session",slot:"primary",isDefaultBucket:true,
+      label:"Weekly",usedPercent:9,used:9,limit:100,windowMinutes:10080,resetsAt:Date.parse("2030-01-10T12:00:00Z")/1000 }] }] };
+  const row = selectHomeModel([], snapshot, "ready", now, ["codex"]).limitRows[0];
+  const html = renderToStaticMarkup(createElement(LimitRow, { row, locale:"ru", now }));
+  assert.ok(html.includes("9%"));
+  assert.ok(html.includes("limit-row__fill"));
+  assert.ok(!html.includes("лимиты подписки недоступны"));
+});

@@ -27,6 +27,8 @@ The application interface currently supports English and Russian. This documenta
 
 Launch a shell or agent in a project directory, move and resize its live terminal, zoom out to navigate semantically, and return to Home for sessions, limits, media, and launch shortcuts. CanvasTTY keeps PTY state in the trusted main process and exposes only typed, allow-listed capabilities to the renderer.
 
+For Codex profiles routed through a local OmniRoute gateway, see [real upstream subscription limits](docs/codex-api-limits.md).
+
 ## Agents, orchestration and protection
 
 Agents start in **Auto** by default: the CLI's own auto mode (Claude Code, Codex, Grok), CanvasTTY's per-run rules for OpenCode, or, for a CLI without one, its approval bypass only inside agent isolation. Manual, Accept edits, Plan and Bypass are offered only where the CLI has them; Bypass is acknowledged once per CLI and never handed to a subagent. Around every mode sit layers the person controls in Settings → Agents: base protection (hooks that refuse elevation, `curl | sh`, disk commands and writes outside the project before the tool call runs), delegation rules (a subagent never gets more than its orchestrator and stays in its project; 2 levels and 8 live subagents by default), and an OS isolation layer (macOS `sandbox-exec`, Linux bubblewrap; none on Windows yet, where subagents run in Manual). When an isolated session ends, CanvasTTY checks the repositories it touched for git settings that would run programs outside isolation and offers to neutralize them.

@@ -1760,6 +1760,7 @@ export interface BrowserActivityStateEvent {
 
 export type LimitSource =
   | "codex-app-server"
+  | "omniroute-usage-api"
   | "claude-usage-api"
   | "qwen-cli"
   | "kimi-usage-api"

@@ -1,3 +1,4 @@
+import { readOmniRouteCodexLimits, OmniRouteQuotaError } from "./OmniRouteCodexLimits.ts";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -80,6 +81,7 @@ export class LimitsService {
   private readonly clientVersion: string;
   private readonly cacheTtlMs: number;
   private readonly codexHome: string;
+  private readonly environment: Readonly<Record<string, string | undefined>>;
   private readonly claudeOptions: Omit<ClaudeUsageReadOptions, "onScope">;
   private cache: CacheEntry | null = null;
   private inFlight: Promise<LimitsSnapshot> | null = null;
@@ -103,6 +105,7 @@ export class LimitsService {
     this.codexIdleMs = options.codexIdleMs ?? CODEX_IDLE_MS;
     this.cacheTtlMs = options.cacheTtlMs ?? CACHE_TTL_MS;
     const environment = options.environment ?? process.env;
+    this.environment = environment;
     this.codexHome = environment.CODEX_HOME || join(options.homeDirectory ?? homedir(), ".codex");
     this.claudeOptions = options.claude ?? {};
     this.codex = new CodexAppServerClient(availableCli(providerClis, "codex"), clientVersion, this.codexIdleMs);
@@ -252,7 +255,17 @@ export class LimitsService {
       return available;
     } catch (error) {
       const reason = adapterReason(error);
-      if (reason === "api-profile") this.lastGoodCodex = null;
+      if (reason === "api-profile") {
+        this.lastGoodCodex = null;
+        try {
+          const windows = await readOmniRouteCodexLimits(this.environment);
+          if (windows) return { provider: "codex", state: "available", source: "omniroute-usage-api",
+            fetchedAt: Date.now(), windows, accountScope: null };
+        } catch (quotaError) {
+          return unavailable("codex", "omniroute-usage-api", quotaError instanceof OmniRouteQuotaError
+            ? quotaError.reason : "protocol-error", checkedAt);
+        }
+      }
       if (this.lastGoodCodex) {
         return {
           ...this.lastGoodCodex,

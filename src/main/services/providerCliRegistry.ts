@@ -273,7 +273,7 @@ export interface ProviderChildProcessLaunch {
 }
 
 export function providerChildProcessLaunch(
-  resolution: AvailableProviderCli,
+  resolution: Pick<AvailableProviderCli, "executable" | "launcher" | "commandPrompt" | "environment">,
   args: string[]
 ): ProviderChildProcessLaunch {
   if (resolution.launcher === "native") {

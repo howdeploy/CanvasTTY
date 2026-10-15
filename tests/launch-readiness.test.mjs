@@ -40,7 +40,7 @@ function spawner(calls, readiness) {
       pid: 60_000 + calls.length, process: command, write(text) { call.written.push(text); }, resize() {}, kill() {}, pause() {}, resume() {},
       onData(listener) {
         call.data = listener;
-        if (command === "/resolved/codex" && readiness.auto) queueMicrotask(() => listener("\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› Ask Codex to do anything\r\n"));
+        if (command === "/resolved/codex" && readiness.auto) queueMicrotask(() => listener("\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n"));
         return { dispose() {} };
       },
       onExit(listener) { exits.push(listener); return { dispose() {} }; }
@@ -228,7 +228,7 @@ test("a prompt queued during a prepared restart cannot use the previous Codex co
   await f.answerNext(null);
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.deepEqual(f.calls.at(-1).written, [], "a ready screen from the old process cannot release new input");
-  f.calls.at(-1).data("\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› Ask Codex to do anything\r\n");
+  f.calls.at(-1).data("\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
   await sent;
   assert.deepEqual(f.calls.at(-1).written, ["\x1b[200~next task\x1b[201~\r"]);
 });

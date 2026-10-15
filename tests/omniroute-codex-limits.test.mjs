@@ -110,7 +110,7 @@ import {createInterface} from "node:readline";
 const state=()=>JSON.parse(readFileSync(${JSON.stringify(state)},"utf8"));
 if(process.argv.includes("--base-url")) {
  const s=state();
- if(process.argv.includes("providers")) console.log(JSON.stringify(s.inactive ? [] : [${JSON.stringify(provider)}]));
+ if(process.argv.includes("providers")) console.log(JSON.stringify(s.providers === "malformed" ? {} : s.inactive ? [] : [${JSON.stringify(provider)}]));
  else if(s.quota === "timeout") setTimeout(()=>{},30000);
  else console.log(JSON.stringify(s.quota === "malformed" ? {} : ${JSON.stringify(USAGE)}));
 } else {
@@ -136,11 +136,11 @@ if(process.argv.includes("--base-url")) {
   return {config,setState,read:async()=>(await service.getProviders(["codex"])).providers[0]};
 }
 
-for(const [failure,reason] of [["malformed","protocol-error"],["timeout","timeout"]]) {
+for(const [failure,reason] of [["malformed","protocol-error"],["timeout","timeout"],["malformed provider listing","protocol-error"]]) {
   test(`gateway quota remains stale after a ${failure} reply and recovers`,async t=>{
     const f=await quotaService(t), first=await f.read();
     assert.equal(first.state,"available");
-    await f.setState({quota:failure});
+    await f.setState(failure === "malformed provider listing" ? {providers:"malformed"} : {quota:failure});
     const stale=await f.read();
     assert.equal(stale.state,"stale");assert.equal(stale.reason,reason);
     assert.equal(stale.source,"omniroute-usage-api");assert.equal(stale.accountScope,null);
@@ -167,4 +167,15 @@ test("revoking the bound connection discards its cached quota",async t=>{
   await f.setState({inactive:true});
   const revoked=await f.read();assert.equal(revoked.state,"unavailable");assert.equal(revoked.reason,"not-authenticated");
   await f.setState({quota:"malformed"});assert.equal((await f.read()).state,"unavailable");
+});
+
+
+test("invalid provider listings are protocol failures; valid missing bindings are authentication failures",async()=>{
+  for(const [listing,reason] of [[{},"protocol-error"],[null,"protocol-error"],
+    [{connections:{}},"protocol-error"],[{providers:"invalid"},"protocol-error"],
+    [[],"not-authenticated"],[{connections:[]},"not-authenticated"]]) {
+    let calls=0;
+    await assert.rejects(readOmniRouteCodexLimits(ENV,async()=>{calls++;return listing;}),e=>e.reason === reason);
+    assert.equal(calls,1,"invalid or unauthenticated listings never query account usage");
+  }
 });

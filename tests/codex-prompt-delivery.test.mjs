@@ -5,7 +5,7 @@ import { AgentControlService } from "../src/main/services/AgentControlService.ts
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 
-const READY = "\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› Ask Codex to do anything\r\n";
+const READY = "\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n";
 
 function fixture(t, autoReady = true) {
   const writes = [];
@@ -193,7 +193,7 @@ test("narrow terminals accept wrapped and dim clipped placeholders without accep
       f.terminals.resize(child.id, 20, 24);
       const placeholder = "Check recently modified functions for compatibility";
       const text = mode === "wrapped" ? placeholder : placeholder.slice(0, 18);
-      f.calls.at(-1).process.emitData(`\x1b[2J\x1b[H› ${mode === "clipped" ? "\x1b[2m" : ""}${text}\x1b[0m\r\n`);
+      f.calls.at(-1).process.emitData(`\x1b[2J\x1b[H› ${mode !== "draft" ? "\x1b[2m" : ""}${text}\x1b[0m\r\n`);
       const result = await f.terminals.deliverInput(child.id, "task\r", 150, undefined, true);
       assert.equal(result.delivered, mode !== "draft", result.reason);
       assert.deepEqual(f.writes, mode === "draft" ? [] : ["task\r"]);
@@ -224,4 +224,18 @@ test("person input revokes automation ownership of a paste-only draft", async (t
   const count=f.writes.length;
   assert.equal((await f.terminals.deliverInput(child.id,"must not append\r",30,undefined,true)).delivered,false);
   assert.equal(f.writes.length,count);
+});
+
+
+test("unstyled text equal to a built-in suggestion never releases automated input", async t=>{
+  for(const placeholder of EMPTY_PLACEHOLDERS) {
+    assert.equal(codexComposerReady(`› ${placeholder}`,false),false,placeholder);
+    assert.equal(codexComposerReady(`› ${placeholder}`,true),true,placeholder);
+  }
+  assert.equal(codexComposerReady("›",false),true,"a genuinely blank composer needs no placeholder styling");
+  const f=fixture(t,false);
+  const child=await f.control.spawn({parentSessionId:f.parent.id,provider:"codex",cwd:process.cwd(),profile:"plan"});
+  f.calls.at(-1).process.emitData("\x1b[2J\x1b[H› Explain this codebase\r\n");
+  const result=await f.terminals.deliverInput(child.id,"automated task\r",100,undefined,true);
+  assert.equal(result.delivered,false);assert.deepEqual(f.writes,[]);
 });

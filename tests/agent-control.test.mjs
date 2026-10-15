@@ -30,7 +30,7 @@ import {
 import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 
 const localSocket = { skip: process.platform === "win32" ? "Unix socket tests; native Windows pipe relay has its own suite." : false };
-const PROMPT = "\x1b[2J\x1b[H>_ OpenAI Codex\r\nmodel: test\r\npermissions: YOLO mode\r\n\r\n› Ask Codex to do anything";
+const PROMPT = "\x1b[2J\x1b[H>_ OpenAI Codex\r\nmodel: test\r\npermissions: YOLO mode\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m";
 
 function registry() {
   return { get: (provider) => ({ state: "available", provider, executable: "/resolved/codex", launcher: "native",
@@ -73,7 +73,7 @@ async function fixture(t, gatewayOptions = {}) {
   const ready = async (id, pty = calls.at(-1).pty) => {
     pty.data(PROMPT);
     for (let i = 0; i < 30; i++) {
-      if (codexComposerReady((await request("screen", { sessionId: id })).text)) return;
+      if (codexComposerReady((await request("screen", { sessionId: id })).text, true)) return;
       await delay(5);
     }
     assert.fail("fixture composer not ready");
@@ -885,7 +885,7 @@ test("native control handles soft-wrapped and dim clipped placeholders", localSo
     const { session } = await f.create();
     f.terminals.resize(session.id, 20, 24);
     const suggestion = "Check recently modified functions for compatibility";
-    f.calls.at(-1).pty.data(`\x1b[2J\x1b[H› ${clipped ? "\x1b[2m" + suggestion.slice(0, 18) : suggestion}\x1b[0m\r\n`);
+    f.calls.at(-1).pty.data(`\x1b[2J\x1b[H› ${"\x1b[2m" + (clipped ? suggestion.slice(0, 18) : suggestion)}\x1b[0m\r\n`);
     for (let i = 0; i < 30; i++) {
       if ((await f.request("screen", { sessionId: session.id })).text.includes("Check recently")) break;
       await delay(5);
@@ -893,4 +893,17 @@ test("native control handles soft-wrapped and dim clipped placeholders", localSo
     await f.request("send", { sessionId: session.id, text: "task" });
     assert.deepEqual(f.calls.at(-1).pty.writes, ["\x1b[200~task\x1b[201~\r"]);
   }
+});
+
+
+test("native control refuses an unstyled draft even when it equals a built-in suggestion",localSocket,async t=>{
+  const f=await fixture(t),{session}=await f.create();
+  await f.ready(session.id);
+  f.calls[0].pty.data("\x1b[2J\x1b[H› Explain this codebase\r\n");
+  for(let i=0;i<30;i++) {
+    if((await f.request("screen",{sessionId:session.id})).text.includes("Explain this codebase"))break;
+    await delay(5);
+  }
+  await assert.rejects(f.request("send",{sessionId:session.id,text:"automated task"}),e=>e.code === "NOT_READY");
+  assert.deepEqual(f.calls[0].pty.writes,[]);
 });

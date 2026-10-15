@@ -1,4 +1,4 @@
-// Unstyled text must match exactly; clipped prefixes also require native placeholder styling.
+// Every nonempty suggestion needs native placeholder styling, including exact matches.
 const EMPTY_COMPOSER_PLACEHOLDERS = new Set([
   "", "Ask Codex to do anything", "Ask a follow-up question",
   "Find and fix a bug in @filename", "Implement {feature}", "Summarize recent commits",
@@ -14,7 +14,7 @@ export function codexComposerReady(screen: string, dimPlaceholder = false): bool
   // Transcript prompts can equal built-in suggestions; only the bottom composer counts.
   const prompt = screen.split("\n").reverse().find((line) => /^\s*›/.test(line))?.match(/^\s*›\s*(.*?)\s*$/);
   if (!prompt) return false;
-  if (EMPTY_COMPOSER_PLACEHOLDERS.has(prompt[1])) return true;
+  if (EMPTY_COMPOSER_PLACEHOLDERS.has(prompt[1])) return prompt[1].length === 0 || dimPlaceholder;
   return dimPlaceholder && prompt[1].length > 0
     && [...EMPTY_COMPOSER_PLACEHOLDERS].some((placeholder) => placeholder.startsWith(prompt[1]));
 }
@@ -34,7 +34,7 @@ export function codexPlaceholderIsDim(terminal: import("@xterm/headless").Termin
     let sawText = false;
     for (let col = match[0].length; col < line.length; col++) {
       const cell = line.getCell(col);
-      if (!cell?.getChars().trim()) continue;
+      if (!cell?.getChars().replace(/[\u2800-\u28ff]/g, "").trim()) continue;
       if (!cell.isDim()) return false;
       sawText = true;
     }

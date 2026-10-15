@@ -23,7 +23,7 @@ import type {
 import { IPC } from "../../../shared/contracts.ts";
 import { extensionForMime, materialType, HANDOFF_NOTE_LIMIT, handoffBlockFor } from "../../../shared/materials.ts";
 import { terminalFileQuotePath } from "../../../shared/terminalFileDrop.ts";
-import { codexComposerReady } from "../agent-control/AgentControlGateway.ts";
+import { codexComposerReady, codexPlaceholderIsDim } from "../codexInput.ts";
 import {
   handoffPointerText,
   handoffText,
@@ -37,7 +37,7 @@ import {
 import { anchorRect, cropRect, type PixelRect } from "./imageRegions.ts";
 import { HANDOFF_REMARK_LIMIT, isId, MAX_SESSION_ID } from "./materialState.ts";
 import type { MaterialService, MaterialVersionFile } from "./MaterialService.ts";
-import { imageMarkers, pasteMarkers, SessionScreen, withoutBraille, type ScreenPort } from "./sessionScreen.ts";
+import { imageMarkers, pasteMarkers, SessionScreen, terminalScreenText, withoutBraille, type ScreenPort } from "./sessionScreen.ts";
 
 const HANDOFF_FOLDER_LIMIT = 50;
 const HANDOFF_PACKAGE_LIMIT = 512 * 1024 * 1024;
@@ -300,7 +300,8 @@ export class HandoffService {
 
   private async composerBlock(plan: HandoffPlan, screen: SessionScreen | null): Promise<HandoffBlock | null> {
     if (!screen) return null;
-    if (!composerReady(plan.session.provider, await screen.text())) return "composer-not-ready";
+    if (!await screen.inspect((terminal) => composerReady(plan.session.provider,
+      terminalScreenText(terminal), codexPlaceholderIsDim(terminal)))) return "composer-not-ready";
     if (plan.session.provider === "claude" && await screen.typedAfter("❯")) return "composer-not-ready";
     return null;
   }
@@ -687,8 +688,8 @@ function occurrences(text: string, part: string): number {
   return count;
 }
 
-function composerReady(provider: SessionMetadata["provider"], screen: string): boolean {
-  if (provider === "codex") return codexComposerReady(withoutBraille(screen));
+function composerReady(provider: SessionMetadata["provider"], screen: string, dimPlaceholder: boolean): boolean {
+  if (provider === "codex") return codexComposerReady(withoutBraille(screen), dimPlaceholder);
   if (provider !== "claude") return true;
   const prompt = screen.split("\n").filter((line) => /^\s*❯/.test(line)).at(-1);
   return prompt !== undefined && !/\[(?:Pasted text|Image) #\d+/.test(prompt);

@@ -31,7 +31,8 @@ export async function readOmniRouteCodexLimits(environment: Environment, run: Ru
   const target = { executable, baseUrl: url.origin, connectionId, environment: childEnvironment };
   const providers = await run(target, ["api", "providers", "get-api-providers"]);
   const connections = Array.isArray(providers) ? providers : record(providers) ? providers.connections ?? providers.providers : null;
-  if (!Array.isArray(connections) || !connections.some((value) => record(value)
+  if (!Array.isArray(connections)) throw new OmniRouteQuotaError("protocol-error");
+  if (!connections.some((value) => record(value)
     && value.id === connectionId && value.provider === "codex" && value.isActive === true)) {
     throw new OmniRouteQuotaError("not-authenticated");
   }

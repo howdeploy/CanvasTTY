@@ -239,3 +239,17 @@ test("unstyled text equal to a built-in suggestion never releases automated inpu
   const result=await f.terminals.deliverInput(child.id,"automated task\r",100,undefined,true);
   assert.equal(result.delivered,false);assert.deepEqual(f.writes,[]);
 });
+
+
+test("startup phrases in completed transcript do not block the final ready composer", async (t) => {
+  const phrases = ["Starting MCP servers", "Booting MCP servers", "Do you trust the contents", "Press enter to confirm", "Update Model Permissions", "model: loading"];
+  for (const phrase of phrases) {
+    assert.equal(codexComposerReady(`› explain ${phrase}?\n• prior answer quotes ${phrase}.\n\n› Ask Codex to do anything`,true),true);
+    assert.equal(codexComposerReady(`› Ask Codex to do anything\n${phrase}`,true),false);
+  }
+  const f=fixture(t,false);
+  const child=await f.control.spawn({parentSessionId:f.parent.id,provider:"codex",cwd:process.cwd(),profile:"plan"});
+  f.calls.at(-1).process.emitData("\x1b[2J\x1b[H› explain Starting MCP servers?\r\n• prior answer\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
+  const result=await f.terminals.deliverInput(child.id,"follow-up\r",300,undefined,true);
+  assert.equal(result.delivered,true,result.reason);
+});

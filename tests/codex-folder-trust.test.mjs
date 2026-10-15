@@ -83,13 +83,13 @@ test("a fresh profile can persist trust without an existing config to back up", 
 
 test("the trust writer is reachable only from authenticated person IPC, never an agent gateway", async()=>{
   const source=await readFile(new URL("../src/main/ipc/registerIpc.ts",import.meta.url),"utf8");
-  for(const channel of ["terminalCreate","terminalRestart"]) {
+  for(const channel of ["terminalCreate","terminalRestart","agentChatHistoryResume"]) {
     const start=source.indexOf(`IPC.${channel},`),end=source.indexOf("ipcMain.",start);
     const handler=source.slice(start,end);
     assert.match(handler,/assertMainRenderer\(event, getMainWindow\)/);
-    assert.match(handler,/await trustCodexFolder/);
+    assert.match(handler,channel === "agentChatHistoryResume" ? /agentChatHistory\.resume\(provider, id, position, trustCodexFolder\)/ : /await trustCodexFolder/);
     if (channel === "terminalCreate") assert.match(handler,/!.*parentSessionId/);
-    else assert.match(handler,/localCodexFolderForTrust/);
+    else if (channel === "terminalRestart") assert.match(handler,/localCodexFolderForTrust/);
   }
   for(const name of ["services/AgentControlService.ts","services/agent-control/AgentControlGateway.ts","services/PluginSessions.ts"]) {
     assert.doesNotMatch(await readFile(new URL(`../src/main/${name}`,import.meta.url),"utf8"),/ensureCodexFolderTrust|trustCodexFolder/);

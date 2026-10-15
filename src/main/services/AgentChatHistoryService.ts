@@ -16,6 +16,7 @@ import { cursorHistory } from "./agent-history/cursorHistory.ts";
 import { resolveAgentHistoryPaths } from "./agent-history/historyPaths.ts";
 
 const PAGE_SIZE = 50;
+type CodexLaunchGuard = (cwd: string) => Promise<void>;
 type CachedHistory = HistoryRecords & { generation: number };
 
 export class AgentChatHistoryService {
@@ -92,8 +93,8 @@ export class AgentChatHistoryService {
     }
   }
 
-  async resume(provider: AgentChatHistoryProviderId, id: string, position: Point): Promise<AgentChatHistoryResumeResult> {
-    try { return await this.resumeConversation(provider, id, position); }
+  async resume(provider: AgentChatHistoryProviderId, id: string, position: Point, beforeCodexLaunch?: CodexLaunchGuard): Promise<AgentChatHistoryResumeResult> {
+    try { return await this.resumeConversation(provider, id, position, beforeCodexLaunch); }
     catch (error) {
       return { error: { code: "resume-failed", message: missing(error)
         ? "History store was not found. Refresh the list."
@@ -101,12 +102,12 @@ export class AgentChatHistoryService {
     }
   }
 
-  private async resumeConversation(provider: AgentChatHistoryProviderId, id: string, position: Point): Promise<AgentChatHistoryResumeResult> {
+  private async resumeConversation(provider: AgentChatHistoryProviderId, id: string, position: Point, beforeCodexLaunch?: CodexLaunchGuard): Promise<AgentChatHistoryResumeResult> {
     this.assertProvider(provider);
     const threadId = normalizeThreadId(provider, id);
     if (!threadId) return { error: { code: "invalid-id", message: "Invalid provider conversation ID." } };
     const existing = this.terminals.findLocalConversation(provider, threadId);
-    if (existing) return this.resumeExisting(existing);
+    if (existing) return this.resumeExisting(existing, beforeCodexLaunch);
     const cli = this.providerClis.get(provider);
     if (cli.state === "unavailable") return { error: { code: "cli-unavailable", message: cli.diagnostic } };
     // Reload before a launch: the entry may have been deleted or its recorded cwd changed.
@@ -124,12 +125,27 @@ export class AgentChatHistoryService {
     }
     signal.throwIfAborted();
     this.assertProvider(provider);
+    if (provider === "codex") await beforeCodexLaunch?.(item.cwd);
+    signal.throwIfAborted();
+    this.assertProvider(provider);
     const raced = this.terminals.findLocalConversation(provider, threadId);
-    if (raced) return this.resumeExisting(raced);
+    if (raced) return this.resumeExisting(raced, beforeCodexLaunch);
     return { session: this.terminals.create({ provider, cwd: item.cwd, profile: "normal", position, title: item.title, resumeThreadId: threadId }), reused: false };
   }
 
-  private resumeExisting(session: SessionSnapshot): AgentChatHistoryResumeResult {
+  private async resumeExisting(session: SessionSnapshot, beforeCodexLaunch?: CodexLaunchGuard): Promise<AgentChatHistoryResumeResult> {
+    if (session.exitCode !== null && beforeCodexLaunch) {
+      const folder = this.terminals.localCodexFolderForTrust(session.id);
+      if (folder) await beforeCodexLaunch(folder);
+      this.controller.signal.throwIfAborted();
+      this.assertProvider(session.provider as AgentChatHistoryProviderId);
+      const current = this.terminals.list().find((candidate) => candidate.id === session.id);
+      if (!current) throw new Error("The conversation was closed during confirmation.");
+      if (current.exitCode !== null && folder && this.terminals.localCodexFolderForTrust(session.id) !== folder) {
+        throw new Error("The conversation folder changed during confirmation.");
+      }
+      session = current;
+    }
     const resumed = session.exitCode === null ? session : this.terminals.restart(session.id, { resume: true });
     if (resumed.status === "failed") {
       return { error: { code: "resume-failed", message: resumed.failureDetails || "The conversation could not be resumed. Check the terminal card." } };

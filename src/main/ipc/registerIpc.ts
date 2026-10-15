@@ -289,7 +289,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   ipcMain.handle(IPC.agentChatHistoryResume, (event, provider: AgentChatHistoryProviderId, id: string, position: Point) => {
     assertMainRenderer(event, getMainWindow);
     if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.y)) throw new Error("Invalid history card position.");
-    return agentChatHistory.resume(provider, id, position);
+    return agentChatHistory.resume(provider, id, position, trustCodexFolder);
   });
   ipcMain.handle(IPC.settingsUpdate, async (event, patch: Partial<AppSettings>) => {
     assertMainRenderer(event, getMainWindow);

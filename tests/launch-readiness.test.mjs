@@ -232,3 +232,23 @@ test("a prompt queued during a prepared restart cannot use the previous Codex co
   await sent;
   assert.deepEqual(f.calls.at(-1).written, ["\x1b[200~next task\x1b[201~\r"]);
 });
+
+
+test("plugin Codex sends wait beyond PTY creation and bracket multiline tasks and drafts", async (t) => {
+  const f=await fixture(t);f.readiness.auto=false;
+  const sessions=new PluginSessions({terminals:f.terminals,notify:()=>true});f.attachSessions(sessions);
+  const permissions=["sessions:launch","sessions:control"];
+  const {sessionId}=sessions.handle("p.owner","svc","sessions.create",{provider:"codex",cwd},permissions);
+  const text="First line\nSecond line";
+  const sending=sessions.handle("p.owner","svc","sessions.send",{sessionId,text},permissions);
+  await f.answerNext(null);
+  for(let i=0;i<50&&f.calls.length<2;i++)await tick();
+  const call=f.calls[1];assert.ok(call);
+  call.data("Press enter to confirm trust\r\n");
+  assert.equal(await state(sending),"pending");assert.deepEqual(call.written,[]);
+  call.data("\x1b[2J\x1b[H› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
+  assert.deepEqual(await sending,{sessionId,sent:true});
+  assert.deepEqual(call.written,[`\x1b[200~${text}\x1b[201~\r`]);
+  await sessions.handle("p.owner","svc","sessions.send",{sessionId,text:"draft",submit:false},permissions);
+  assert.equal(call.written.at(-1),"\x1b[200~draft\x1b[201~");
+});

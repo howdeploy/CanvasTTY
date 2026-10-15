@@ -42,7 +42,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
   if (message.id === undefined) return;
   const result = message.method === "account/rateLimits/read"
     ? { rateLimits: { limitId: "codex", primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: 1786160179 } } }
-    : {};
+    : message.method === "account/read" ? { account: { type: "chatgpt" }, requiresOpenaiAuth: true } : {};
   process.stdout.write(JSON.stringify({ id: message.id, result }) + "\\n");
 });
 `, { mode: 0o700 });

@@ -244,6 +244,7 @@ export class LimitsService {
       return available;
     } catch (error) {
       const reason = adapterReason(error);
+      if (reason === "api-profile") this.lastGoodCodex = null;
       if (this.lastGoodCodex) {
         return {
           ...this.lastGoodCodex,
@@ -840,6 +841,15 @@ class CodexAppServerClient {
     this.clearIdleTimer();
     try {
       await this.ensureConnected();
+      const auth = await this.request("account/read", { refreshToken: false });
+      if (!isRecord(auth) || typeof auth.requiresOpenaiAuth !== "boolean"
+        || !(auth.account === null || isRecord(auth.account) && typeof auth.account.type === "string")) {
+        throw new LimitsAdapterError("protocol-error");
+      }
+      if (!auth.requiresOpenaiAuth || isRecord(auth.account) && auth.account.type === "apiKey") {
+        throw new LimitsAdapterError("api-profile");
+      }
+      if (auth.account === null) throw new LimitsAdapterError("not-authenticated");
       return await this.request("account/rateLimits/read");
     } finally {
       this.scheduleIdleStop();

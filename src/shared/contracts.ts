@@ -1766,6 +1766,7 @@ export type LimitSource =
   | "opencode-go-usage-api"
   | "grok-billing-api";
 export type LimitUnavailableReason =
+  | "api-profile"
   | "cli-not-found"
   | "not-authenticated"
   | "session-expired"

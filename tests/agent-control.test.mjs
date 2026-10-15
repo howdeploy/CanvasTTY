@@ -866,3 +866,31 @@ test("the control CLI reads a connection's scope as the person's only when there
     await chmod(path, 0o600);
   }
 });
+
+test("native control never sends into a draft after a historical suggestion", localSocket, async (t) => {
+  const f = await fixture(t);
+  const { session } = await f.create();
+  f.calls.at(-1).pty.data(PROMPT + "\r\n• reply\r\n\r\n› unfinished personal draft");
+  for (let i = 0; i < 30; i++) {
+    if ((await f.request("screen", { sessionId: session.id })).text.includes("unfinished personal draft")) break;
+    await delay(5);
+  }
+  await assert.rejects(f.request("send", { sessionId: session.id, text: "task" }), (e) => e.code === "NOT_READY");
+  assert.deepEqual(f.calls.at(-1).pty.writes, []);
+});
+
+test("native control handles soft-wrapped and dim clipped placeholders", localSocket, async (t) => {
+  const f = await fixture(t);
+  for (const clipped of [false, true]) {
+    const { session } = await f.create();
+    f.terminals.resize(session.id, 20, 24);
+    const suggestion = "Check recently modified functions for compatibility";
+    f.calls.at(-1).pty.data(`\x1b[2J\x1b[H› ${clipped ? "\x1b[2m" + suggestion.slice(0, 18) : suggestion}\x1b[0m\r\n`);
+    for (let i = 0; i < 30; i++) {
+      if ((await f.request("screen", { sessionId: session.id })).text.includes("Check recently")) break;
+      await delay(5);
+    }
+    await f.request("send", { sessionId: session.id, text: "task" });
+    assert.deepEqual(f.calls.at(-1).pty.writes, ["\x1b[200~task\x1b[201~\r"]);
+  }
+});

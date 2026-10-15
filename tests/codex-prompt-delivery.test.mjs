@@ -174,3 +174,29 @@ test("active MCP startup holds queued input but a final incomplete warning does 
     });
   }
 });
+
+test("transcript suggestions never make a person's current draft ready", async (t) => {
+  assert.equal(codexComposerReady("› Explain this codebase\n\n• reply\n\n› unfinished personal draft"), false);
+  const f = fixture(t, false);
+  const child = await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan" });
+  f.calls.at(-1).process.emitData(READY + "\r\n• reply\r\n\r\n› unfinished personal draft");
+  const result = await f.terminals.deliverInput(child.id, "must not append\r", 100, undefined, true);
+  assert.equal(result.delivered, false);
+  assert.deepEqual(f.writes, []);
+});
+
+test("narrow terminals accept wrapped and dim clipped placeholders without accepting clipped drafts", async (t) => {
+  for (const mode of ["wrapped", "clipped", "draft"]) {
+    await t.test(mode, async (t) => {
+      const f = fixture(t, false);
+      const child = await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan" });
+      f.terminals.resize(child.id, 20, 24);
+      const placeholder = "Check recently modified functions for compatibility";
+      const text = mode === "wrapped" ? placeholder : placeholder.slice(0, 18);
+      f.calls.at(-1).process.emitData(`\x1b[2J\x1b[H› ${mode === "clipped" ? "\x1b[2m" : ""}${text}\x1b[0m\r\n`);
+      const result = await f.terminals.deliverInput(child.id, "task\r", 150, undefined, true);
+      assert.equal(result.delivered, mode !== "draft", result.reason);
+      assert.deepEqual(f.writes, mode === "draft" ? [] : ["task\r"]);
+    });
+  }
+});

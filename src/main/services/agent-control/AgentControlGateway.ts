@@ -1,4 +1,5 @@
-import { codexComposerReady } from "../codexInput.ts";
+import { terminalScreenText } from "../materials/sessionScreen.ts";
+import { codexComposerReady, codexPlaceholderIsDim } from "../codexInput.ts";
 export { codexComposerReady } from "../codexInput.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -607,6 +608,8 @@ export class AgentControlGateway {
     }
     const capabilities = controlCapabilities(fresh.provider);
     const screen = viewport(owned.terminal, (text) => this.redact(text));
+    const composerReady = capabilities.menus && codexComposerReady(
+      this.redact(terminalScreenText(owned.terminal, true)), codexPlaceholderIsDim(owned.terminal));
     if (request.method === "screen") return { sessionId: id, text: screen, revision: hash(screen), outputOffset: owned.outputOffset,
       interaction: capabilities.menus ? codexChoices(screen) : null };
     if ((request.method === "choose" || request.method === "dismiss") && !capabilities.menus) {
@@ -621,7 +624,7 @@ export class AgentControlGateway {
     try {
       if (request.method === "dismiss") {
         if (hash(screen) !== params.revision) throw new ControlError("STALE_MENU", "Screen changed; inspect it again.");
-        if (metadata.status === "working" || codexComposerReady(screen) || !/Press[^\n]*(?:esc|escape)/i.test(screen)) {
+        if (metadata.status === "working" || composerReady || !/Press[^\n]*(?:esc|escape)/i.test(screen)) {
           throw new ControlError("NOT_MENU", "No dismissible idle menu is visible.");
         }
         if (!this.options.terminals.inputChecked(id, "\x1b")) throw new ControlError("SESSION_EXITED", "The terminal no longer accepts input.");
@@ -655,7 +658,7 @@ export class AgentControlGateway {
       // Only Codex's composer is recognised; for other providers the lifecycle
       // status is the sole readiness gate and the screen the only evidence.
       if (!["idle", "unavailable"].includes(fresh.status)) throw new ControlError("NOT_READY", "The session is not idle; inspect screen and wait for the current activity to finish.");
-      if (capabilities.menus && !codexComposerReady(screen)) throw new ControlError("NOT_READY", "Codex is not at an empty task composer; inspect screen and resolve startup or approvals without changing its sandbox.");
+      if (capabilities.menus && !composerReady) throw new ControlError("NOT_READY", "Codex is not at an empty task composer; inspect screen and resolve startup or approvals without changing its sandbox.");
       const previousTurn = owned.turn;
       owned.turn = { id: request.id, state: "queued", sawWorking: false, nativeTurnId: null, interruptRequested: false, result: null };
       if (!this.options.terminals.inputChecked(id, `\x1b[200~${text}\x1b[201~\r`)) {

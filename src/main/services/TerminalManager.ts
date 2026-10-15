@@ -60,8 +60,8 @@ import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from ".
 import { SecretRedactionRegistry } from "./safety/SecretRedaction.ts";
 import type { DecisionSession } from "./DecisionHooks.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
-import { SessionScreen, withoutBraille } from "./materials/sessionScreen.ts";
-import { codexComposerReady } from "./codexInput.ts";
+import { SessionScreen, terminalScreenText, withoutBraille } from "./materials/sessionScreen.ts";
+import { codexComposerReady, codexPlaceholderIsDim } from "./codexInput.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
 import { canResumeThreadById, resolveTerminalLaunch } from "./terminalLaunch.ts";
 import { isLaunchProfile, PROFILE_RANK, profileAvailable, profileCeiling, type LaunchProfile } from "../../shared/autoMode.ts";
@@ -931,7 +931,8 @@ export class TerminalManager {
           screen ??= new SessionScreen({ geometry: (id) => this.geometry(id), readBuffer: launchOutput }, id);
           const snapshot = launchOutput();
           screen.feed({ id, data: snapshot.buffer, outputOffset: snapshot.outputOffset });
-          if (codexComposerReady(withoutBraille(await screen.text()))) {
+          if (await screen.inspect((terminal) => codexComposerReady(
+            withoutBraille(terminalScreenText(terminal, true)), codexPlaceholderIsDim(terminal)))) {
             inputReady = true;
             session.codexInputReadyEpoch = epoch;
             break;

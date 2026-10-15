@@ -59,6 +59,8 @@ import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } f
 import { createInterface } from "node:readline";
 const root = ${JSON.stringify(root)};
 appendFileSync(root + "/spawns", "spawn\\n");
+const configAtStart = existsSync(root + "/capture-config")
+  ? readFileSync(root + "/codex-home/config.toml", "utf8") : null;
 const reply = (id, result) => process.stdout.write(JSON.stringify({ id, result }) + "\\n");
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
@@ -66,7 +68,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   if (message.method === "initialize") return reply(message.id, {});
   if (message.method === "account/read") {
     const file = root + "/account-state";
-    const auth = existsSync(file) ? JSON.parse(readFileSync(file, "utf8"))
+    const auth = configAtStart !== null
+      ? { account: configAtStart.includes("fixture-api") ? null : { type: "chatgpt" },
+          requiresOpenaiAuth: !configAtStart.includes("fixture-api") }
+      : existsSync(file) ? JSON.parse(readFileSync(file, "utf8"))
       : { account: { type: "chatgpt" }, requiresOpenaiAuth: true };
     if (auth.error) return process.stdout.write(JSON.stringify({ id: message.id, error: auth.error }) + "\\n");
     return reply(message.id, auth);
@@ -414,4 +419,32 @@ test("plugin and companion views omit account scope without mutating the source 
   assert.equal(view.providers[0].state, "available");
   assert.equal(view.providers[1].reason, "timeout");
   assert.equal(snapshot.providers[0].accountScope, "abc123");
+});
+
+test("Codex reloads provider configuration with unchanged login and still reuses an unchanged profile", async () => {
+  await withRoot(async (root) => {
+    const codex = await fakeCodex(root);
+    await writeFile(join(codex.codexHome, "auth.json"), codexAuth(ACCOUNT_A));
+    const config = join(codex.codexHome, "config.toml");
+    await writeFile(config, 'model_provider = "openai"\n');
+    await writeFile(join(root, "capture-config"), "");
+    const service = new LimitsService(registry({ codex: codex.script }), "test", {
+      environment: { CODEX_HOME: codex.codexHome }, cacheTtlMs: 0
+    });
+    try {
+      assert.equal((await service.getProviders(["codex"])).providers[0].state, "available");
+      await writeFile(config, 'model_provider = "fixture-api"\n');
+      const [api] = (await service.getProviders(["codex"])).providers;
+      assert.equal(api.reason, "api-profile");
+      assert.equal("windows" in api, false);
+      assert.equal(await codex.spawns(), 2);
+      await writeFile(config, 'model_provider = "openai"\n');
+      const [restored] = (await service.getProviders(["codex"])).providers;
+      assert.equal(restored.state, "available");
+      assert.equal(await codex.spawns(), 3);
+      await service.getProviders(["codex"]);
+      assert.equal(await codex.spawns(), 3, "unchanged configuration retains the existing app-server");
+      assertNoCodexSecrets([api, restored]);
+    } finally { service.dispose(); }
+  });
 });

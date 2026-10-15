@@ -87,6 +87,7 @@ export class LimitsService {
   private readonly providerLoads = new Map<LimitProviderId, Promise<ProviderLimitsSnapshot>>();
   // undefined until the first Codex read; null when that read found no account.
   private lastCodexScope: string | null | undefined = undefined;
+  private lastCodexConfiguration: string | null | undefined = undefined;
   private lastGoodCodex: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
   private lastGoodClaude: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
   private lastGoodKimi: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
@@ -164,6 +165,7 @@ export class LimitsService {
     this.cache = null;
     this.providerCache.clear();
     this.lastCodexScope = undefined;
+    this.lastCodexConfiguration = undefined;
     this.lastGoodCodex = null;
     this.lastGoodClaude = null;
     this.lastGoodKimi = null;
@@ -225,8 +227,14 @@ export class LimitsService {
       const before = await readCodexAccountScope(this.codexHome);
       const accountChanged = this.lastCodexScope !== undefined && before !== this.lastCodexScope;
       this.lastCodexScope = before;
-      // The long-lived app-server may still hold the previous login; start a fresh one.
-      if (accountChanged) this.codex.restart();
+      // The app-server captures the provider/profile configuration at startup too.
+      // Keep only a fingerprint: configuration can contain private provider settings.
+      const configuration = await readFile(join(this.codexHome, "config.toml"))
+        .then((contents) => createHash("sha256").update(contents).digest("hex")).catch(() => null);
+      const configurationChanged = this.lastCodexConfiguration !== undefined && configuration !== this.lastCodexConfiguration;
+      this.lastCodexConfiguration = configuration;
+      if (accountChanged || configurationChanged) this.codex.restart();
+      if (configurationChanged) this.lastGoodCodex = null;
       const raw = await this.codex.readRateLimits();
       const after = await readCodexAccountScope(this.codexHome);
       const windows = normalizeCodexLimits(raw);
@@ -856,7 +864,7 @@ class CodexAppServerClient {
     }
   }
 
-  /** Drops the current app-server so the next read starts one with the current login. */
+  /** Drops the current app-server so the next read starts one with the current login and configuration. */
   restart(): void {
     if (this.disposed) return;
     this.resetConnection();

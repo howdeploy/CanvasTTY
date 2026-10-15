@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { readOmniRouteCodexLimits } from "../src/main/services/OmniRouteCodexLimits.ts";
 import { LimitsService } from "../src/main/services/LimitsService.ts";
 import { selectHomeModel } from "../src/renderer/src/features/home/homeModel.ts";
@@ -51,7 +51,7 @@ test("an API-profile service displays real upstream quota through the installed 
   const root = await mkdtemp(join(tmpdir(), "canvastty-omni-quota-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const script = join(root, "cli.mjs");
-  await writeFile(script, `#!${process.execPath}
+  await writeFile(script, `#!${process.platform === "win32" ? process.execPath : "/usr/bin/env node"}
 import {createInterface} from "node:readline";
 if (process.argv.includes("--base-url")) {
   console.log("\\x1b[2mCLI diagnostics\\x1b[0m".replaceAll("\\x1b", "\x1b"));
@@ -68,10 +68,14 @@ if (process.argv.includes("--base-url")) {
     await writeFile(executable, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`);
   }
   const registry = { get(provider) { return { state:"available", provider, executable,
-    launcher:process.platform==="win32"?"batch":"native",commandPrompt:process.env.ComSpec,environment:{},checked:[] }; } };
+    launcher:process.platform==="win32"?"batch":"native",commandPrompt:process.env.ComSpec,environment:{ PATH:dirname(process.execPath) },checked:[] }; } };
   const service = new LimitsService(registry, "test", { environment: { ...ENV, CANVASTTY_OMNIROUTE_BIN:executable, CODEX_HOME:root } });
   t.after(() => service.dispose());
-  const snapshot = await service.getProviders(["codex"]);
+  const oldPath = process.env.PATH;
+  process.env.PATH = process.platform === "win32" ? process.env.SystemRoot + "\\System32" : "/usr/bin:/bin";
+  let snapshot;
+  try { snapshot = await service.getProviders(["codex"]); }
+  finally { if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; }
   const [limits] = snapshot.providers;
   assert.equal(limits.state, "available");
   assert.equal(limits.source, "omniroute-usage-api");

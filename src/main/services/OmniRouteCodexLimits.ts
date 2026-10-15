@@ -4,7 +4,7 @@ import type { LimitUnavailableReason, LimitWindow } from "../../shared/contracts
 import { providerChildProcessLaunch } from "./providerCliRegistry.ts";
 
 type Environment = Readonly<Record<string, string | undefined>>;
-interface Target { executable: string; baseUrl: string; connectionId: string }
+interface Target { executable: string; baseUrl: string; connectionId: string; environment: Readonly<Record<string, string>> }
 type Run = (target: Target, args: string[]) => Promise<unknown>;
 
 export class OmniRouteQuotaError extends Error {
@@ -13,7 +13,7 @@ export class OmniRouteQuotaError extends Error {
 }
 
 /** Explicit opt-in: the inference profile alone does not identify an upstream account. */
-export async function readOmniRouteCodexLimits(environment: Environment, run: Run = runJson): Promise<LimitWindow[] | null> {
+export async function readOmniRouteCodexLimits(environment: Environment, run: Run = runJson, childEnvironment: Readonly<Record<string, string>> = {}): Promise<LimitWindow[] | null> {
   const executable = environment.CANVASTTY_OMNIROUTE_BIN;
   const baseUrl = environment.CANVASTTY_OMNIROUTE_URL;
   const connectionId = environment.CANVASTTY_OMNIROUTE_CODEX_CONNECTION;
@@ -28,7 +28,7 @@ export async function readOmniRouteCodexLimits(environment: Environment, run: Ru
     || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
     throw new OmniRouteQuotaError("unsupported-protocol");
   }
-  const target = { executable, baseUrl: url.origin, connectionId };
+  const target = { executable, baseUrl: url.origin, connectionId, environment: childEnvironment };
   const providers = await run(target, ["api", "providers", "get-api-providers"]);
   const connections = Array.isArray(providers) ? providers : record(providers) ? providers.connections ?? providers.providers : null;
   if (!Array.isArray(connections) || !connections.some((value) => record(value)
@@ -62,7 +62,7 @@ function runJson(target: Target, args: string[]): Promise<unknown> {
     ["--base-url", target.baseUrl, "--output", "json", ...args]);
   return new Promise((resolve, reject) => {
     execFile(launch.command, launch.args, { encoding: "utf8", timeout: 15_000, maxBuffer: 1_048_576,
-      windowsHide: true, ...(launch.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) }, (error, stdout) => {
+      env: { ...process.env, ...target.environment }, windowsHide: true, ...(launch.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) }, (error, stdout) => {
       if (error) return reject(new OmniRouteQuotaError(error.killed ? "timeout" : error.code === "ENOENT" ? "cli-not-found" : "protocol-error"));
       // OmniRoute may print boot diagnostics before its JSON. Never log diagnostics or API error bodies.
       const text = stdout.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");

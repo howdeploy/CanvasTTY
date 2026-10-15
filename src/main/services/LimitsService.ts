@@ -258,7 +258,7 @@ export class LimitsService {
       if (reason === "api-profile") {
         this.lastGoodCodex = null;
         try {
-          const windows = await readOmniRouteCodexLimits(this.environment);
+          const windows = await readOmniRouteCodexLimits(this.environment, undefined, availableCli(this.providerClis, "codex")?.environment);
           if (windows) return { provider: "codex", state: "available", source: "omniroute-usage-api",
             fetchedAt: Date.now(), windows, accountScope: null };
         } catch (quotaError) {

@@ -128,6 +128,8 @@ const EMPTY_PLACEHOLDERS = [
   "Implement {feature}", "Summarize recent commits", "Explain this codebase",
   "Write tests for @filename", "Improve documentation in @filename",
   "Use /skills to list available skills", "Run /review on my current changes",
+  "Check recently modified functions for compatibility", "How many files have been modified?",
+  "Will this algorithm scale well?",
 ];
 
 test("all built-in empty composer placeholders release queued Codex input", async (t) => {
@@ -153,5 +155,22 @@ test("placeholder prefixes do not make human drafts or startup gates ready", () 
   for (const placeholder of EMPTY_PLACEHOLDERS) {
     assert.equal(codexComposerReady(`Press enter to confirm\n› ${placeholder}`), false);
     assert.equal(codexComposerReady(`model: loading\n› ${placeholder}`), false);
+  }
+});
+
+test("active MCP startup holds queued input but a final incomplete warning does not", async (t) => {
+  for (const startup of ["Starting MCP servers (0/3)", "Booting MCP servers (1/2)"]) {
+    await t.test(startup, async (t) => {
+      const f = fixture(t, false);
+      const child = await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan" });
+      f.calls.at(-1).process.emitData(READY + `• ${startup}\r\n`);
+      const result = await f.terminals.deliverInput(child.id, "must wait\r", 100, undefined, true);
+      assert.equal(result.delivered, false);
+      assert.deepEqual(f.writes, []);
+      f.calls.at(-1).process.emitData(READY + "⚠ MCP startup incomplete (1 failed)\r\n");
+      const resumed = await f.terminals.deliverInput(child.id, "task\r", 200, undefined, true);
+      assert.equal(resumed.delivered, true, resumed.reason);
+      assert.deepEqual(f.writes, ["task\r"]);
+    });
   }
 });

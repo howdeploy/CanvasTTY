@@ -4,11 +4,13 @@ const EMPTY_COMPOSER_PLACEHOLDERS = new Set([
   "Find and fix a bug in @filename", "Implement {feature}", "Summarize recent commits",
   "Explain this codebase", "Write tests for @filename", "Improve documentation in @filename",
   "Use /skills to list available skills", "Run /review on my current changes",
+  "Check recently modified functions for compatibility", "How many files have been modified?",
+  "Will this algorithm scale well?",
 ]);
 
 /** The Codex task composer, shared by automated delivery and the native control API. */
 export function codexComposerReady(screen: string): boolean {
-  if (/Do you trust the contents|Press enter to confirm|Update Model Permissions|model:\s+loading|MCP startup/i.test(screen)) return false;
+  if (/Do you trust the contents|Press enter to confirm|Update Model Permissions|model:\s+loading|(?:Starting|Booting)\s+MCP\b/i.test(screen)) return false;
   return screen.split("\n").some((line) => {
     const prompt = line.match(/^\s*›\s*(.*?)\s*$/);
     return prompt !== null && EMPTY_COMPOSER_PLACEHOLDERS.has(prompt[1]);

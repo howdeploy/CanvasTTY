@@ -47,7 +47,7 @@ export async function readOmniRouteCodexLimits(environment: Environment, run: Ru
       label: typeof value.displayName === "string" ? value.displayName.slice(0, 80) : null,
       usedPercent: Math.min(100, value.used / value.total * 100), used: value.used, limit: value.total,
       windowMinutes: finite(value.windowSeconds) && value.windowSeconds > 0 ? value.windowSeconds / 60 : null,
-      resetsAt: Number.isFinite(reset) ? Math.floor(reset / 1000) : null
+      resetsAt: Number.isFinite(reset) ? reset : null
     });
     if (windows.length === 12) break;
   }

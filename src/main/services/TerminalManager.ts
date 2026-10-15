@@ -143,8 +143,8 @@ interface ManagedSession {
   environmentReady: boolean;
   /** Bumped by every launch the person or the app asks for (create, restart, restore); input waits for one. */
   launchEpoch: number;
-  /** Codex's task composer was observed ready in this exact launch, not merely its PTY. */
-  codexInputReadyEpoch?: number;
+  /** An automation-owned paste-only draft may be extended in this launch; submit or person input clears it. */
+  codexDraftEpoch?: number;
   /** Output from an earlier launch or restored replay cannot prove this process is ready. */
   launchOutputOffset?: number;
   /** Input waiting for this launch to start (deliverInput): woken whenever the launch moves on. */
@@ -898,6 +898,8 @@ export class TerminalManager {
   }
 
   input(id: string, data: string): void {
+    const session = this.sessions.get(id);
+    if (session) delete session.codexDraftEpoch;
     this.inputChecked(id, data);
   }
 
@@ -931,7 +933,7 @@ export class TerminalManager {
     // Build the screen only after this launch has a PTY: a pending restart
     // still has its previous process's scrollback until bindProcess records the new offset.
     let screen: SessionScreen | null = null;
-    let inputReady = !waitForCodexComposer || session.codexInputReadyEpoch === epoch;
+    let inputReady = !waitForCodexComposer || session.codexDraftEpoch === epoch;
     try {
       const waiting = (): boolean => this.sessions.get(id) === session && session.launchEpoch === epoch
         && session.metadata.exitCode === null && (!session.process || !inputReady);
@@ -943,7 +945,6 @@ export class TerminalManager {
           if (await screen.inspect((terminal) => codexComposerReady(
             withoutBraille(terminalScreenText(terminal, true)), codexPlaceholderIsDim(terminal)))) {
             inputReady = true;
-            session.codexInputReadyEpoch = epoch;
             break;
           }
         }
@@ -975,6 +976,8 @@ export class TerminalManager {
       // A submitted prompt: the agent's next turn is the one that answers it (turnProgress).
       const mark = session.turnStarts ?? 0;
       if (!this.inputChecked(id, data)) return { delivered: false, reason: "The terminal no longer accepts input." };
+      if (waitForCodexComposer && !data.endsWith("\r")) session.codexDraftEpoch = epoch;
+      else delete session.codexDraftEpoch;
       if (data.endsWith("\r")) session.promptTurnMark = mark;
       return { delivered: true };
     } finally {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { readOmniRouteCodexLimits } from "../src/main/services/OmniRouteCodexLimits.ts";
 import { LimitsService } from "../src/main/services/LimitsService.ts";
-import { selectHomeModel } from "../src/renderer/src/features/home/homeModel.ts";
+import { selectHomeModel, formatResetCountdown } from "../src/renderer/src/features/home/homeModel.ts";
 
 const CONNECTION = "fixture-connection";
 const ENV = { CANVASTTY_OMNIROUTE_BIN: process.execPath, CANVASTTY_OMNIROUTE_URL: "http://127.0.0.1:20128",
@@ -26,7 +26,8 @@ test("quota source is opt-in, read-only and bound to the configured active Codex
   assert.equal(windows.length, 1);
   assert.equal(windows[0].usedPercent, 9);
   assert.equal(windows[0].windowMinutes, 10080, "source key session must not invent a 5h window");
-  assert.equal(windows[0].resetsAt, Date.parse(USAGE.quotas.session.resetAt) / 1000);
+  assert.equal(windows[0].resetsAt, Date.parse(USAGE.quotas.session.resetAt));
+  assert.equal(formatResetCountdown(windows[0].resetsAt, windows[0].resetsAt - 3_600_000, "en"), "01:00");
   for (const changed of [{ ...provider, provider: "other" }, { ...provider, isActive: false }, { ...provider, isActive: undefined }, { ...provider, id: "other" }]) {
     let count = 0;
     await assert.rejects(readOmniRouteCodexLimits(ENV, async () => { count++; return [changed]; }),

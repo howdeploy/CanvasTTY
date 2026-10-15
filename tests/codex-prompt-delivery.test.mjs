@@ -200,3 +200,28 @@ test("narrow terminals accept wrapped and dim clipped placeholders without accep
     });
   }
 });
+
+test("every submitted task rechecks the active composer; later drafts and menus receive no automated input", async (t) => {
+  for (const text of ["› unfinished personal draft", "Press enter to confirm trust"]) {
+    const f = fixture(t);
+    const child = await f.control.spawn({parentSessionId:f.parent.id,provider:"codex",cwd:process.cwd(),profile:"plan"});
+    await f.control.send(child.id,"first");
+    f.calls.at(-1).process.emitData("\x1b[2J\x1b[H"+text+"\r\n");
+    const result = await f.terminals.deliverInput(child.id,"second\r",30,undefined,true);
+    assert.equal(result.delivered,false);
+    assert.equal(f.writes.length,1,"a completed earlier turn is no proof of current readiness");
+    f.calls.at(-1).process.emitData(READY);
+    assert.equal((await f.terminals.deliverInput(child.id,"second\r",1000,undefined,true)).delivered,true);
+  }
+});
+
+test("person input revokes automation ownership of a paste-only draft", async (t) => {
+  const f = fixture(t);
+  const child = await f.control.spawn({parentSessionId:f.parent.id,provider:"codex",cwd:process.cwd(),profile:"plan"});
+  await f.control.send(child.id,"draft",false);
+  f.terminals.input(child.id,"person edits");
+  f.calls.at(-1).process.emitData("\x1b[2J\x1b[H› draft person edits\r\n");
+  const count=f.writes.length;
+  assert.equal((await f.terminals.deliverInput(child.id,"must not append\r",30,undefined,true)).delivered,false);
+  assert.equal(f.writes.length,count);
+});

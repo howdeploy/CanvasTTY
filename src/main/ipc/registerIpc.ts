@@ -971,19 +971,19 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   });
   ipcMain.handle(IPC.terminalCreate, async (event, request: CreateSessionRequest) => {
     assertMainRenderer(event, getMainWindow);
-    // Plugin environments/account homes own their configuration; never trust a different local profile for them.
+    // Without launch options the profile is known now; contributed launches check their resolved profile before spawning.
     if (request?.provider === "codex" && !request.environment && !request.parentSessionId
       && request.role !== "subagent" && !Object.keys(request.launchOptions ?? {}).length) {
       await trustCodexFolder(request.cwd);
     }
-    return terminals.create(request);
+    return terminals.create(request, { beforeLocalCodexLaunch: trustCodexFolder });
   });
   ipcMain.handle(IPC.terminalRestart, async (event, id: string, options?: { resume?: unknown }) => {
     assertMainRenderer(event, getMainWindow);
     const metadata = terminals.getMetadata(id);
     const folder = terminals.localCodexFolderForTrust(id);
     if (metadata?.exitCode !== null && folder) await trustCodexFolder(folder);
-    return terminals.restart(id, { resume: options?.resume === true });
+    return terminals.restart(id, { resume: options?.resume === true, beforeLocalCodexLaunch: trustCodexFolder });
   });
   ipcMain.on(IPC.terminalInput, (event, id: string, data: string) => {
     // Fire-and-forget: a foreign sender is dropped instead of throwing into the IPC layer.

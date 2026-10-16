@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { CodexAppServerClient } from "./CodexAppServerClient.ts";
 import type { ProviderCliRegistry } from "./providerCliRegistry.ts";
@@ -8,12 +8,35 @@ import type { ProviderCliRegistry } from "./providerCliRegistry.ts";
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-// A new profile may have no config yet; its existing parent still has a canonical path.
+// New plugin profiles may not exist yet; resolve through their nearest existing ancestor.
 async function canonicalConfigPath(file: string): Promise<string> {
   try { return await realpath(file); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return join(await realpath(dirname(file)), basename(file));
+    const parent = dirname(file);
+    if (parent === file) throw error;
+    return join(await canonicalConfigPath(parent), basename(file));
   }
+}
+
+function profileConfig(environment: Readonly<Record<string, string | undefined>>): string {
+  const value = (name: string): string | undefined => process.platform === "win32"
+    ? Object.entries(environment).reverse().find(([key]) => key.toUpperCase() === name)?.[1]
+    : environment[name];
+  // Codex's dirs::home_dir uses HOME on Unix and the OS account profile on Windows.
+  const home = value("CODEX_HOME") || join(
+    (process.platform === "win32" ? undefined : value("HOME")) || userInfo().homedir, ".codex"
+  );
+  if (!isAbsolute(home)) throw new Error("Codex profile path must be absolute.");
+  return join(home, "config.toml");
+}
+
+/** Compare the actual config file, including explicit overrides and symlink aliases. */
+export async function usesLocalCodexConfig(
+  baseEnvironment: Readonly<Record<string, string | undefined>>,
+  launchEnvironment: Readonly<Record<string, string | undefined>>
+): Promise<boolean> {
+  return await canonicalConfigPath(profileConfig(baseEnvironment))
+    === await canonicalConfigPath(profileConfig(launchEnvironment));
 }
 
 // Canonical profile paths also coalesce launches made through symlinked CODEX_HOME aliases.
@@ -41,9 +64,7 @@ export async function ensureCodexFolderTrust(options: {
   const cli = options.providerClis.get("codex");
   if (cli.state !== "available") throw new Error("Codex CLI is unavailable.");
   const environment = { ...process.env, ...cli.environment };
-  const home = environment.CODEX_HOME || join(environment.HOME || homedir(), ".codex");
-  if (!isAbsolute(home)) throw new Error("Codex profile path must be absolute.");
-  const requestedFile = join(home, "config.toml");
+  const requestedFile = profileConfig(environment);
   const file = await canonicalConfigPath(requestedFile);
   await serializeTrust(file, async () => {
     const client = new CodexAppServerClient(cli, options.clientVersion, 1_000, environment.HOME || homedir());

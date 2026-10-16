@@ -55,6 +55,7 @@ import {
 import { codexTrustArguments, mergeOpenCodeLaunchEnvironment } from "./agent-runtime/ProviderRuntimeLaunch.ts";
 import { openCodeProjectFolderEnvironment } from "./openCodeConfig.ts";
 import { onDiskPath } from "./onDiskPath.ts";
+import { usesLocalCodexConfig } from "./CodexFolderTrust.ts";
 import { RESULT_CAPTURE_PROVIDERS } from "./resultCapture.ts";
 import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from "../../shared/launchModel.ts";
 import { SecretRedactionRegistry } from "./safety/SecretRedaction.ts";
@@ -466,6 +467,7 @@ export class TerminalManager {
       launchOptionsAvailable: (options) => this.unavailableLaunchPlugins(options).length === 0
     });
     const held = new Map<string, string>();
+    const parents = new Set(steps.map(step => step.record.parentSessionId));
     for (const step of steps) {
       const record = step.record;
       let reason = record.parentSessionId ? held.get(record.parentSessionId) : undefined;
@@ -477,7 +479,15 @@ export class TerminalManager {
         }
       }
       if (reason) held.set(record.id, reason);
-      this.restorePersistedSession(reason ? { ...step, launch: "stopped" } : step, resumed.get(record.id), reason);
+      const pending = this.restorePersistedSession(reason ? { ...step, launch: "stopped" } : step, resumed.get(record.id), reason);
+      // A contributed parent's profile is known only after preparation; its children must not race the trust check.
+      if (this.codexRestoreTrust && record.provider === "codex" && parents.has(record.id)) {
+        await pending;
+        const parent = this.sessions.get(record.id);
+        if (parent?.metadata.status === "failed") {
+          held.set(record.id, parent.metadata.failureDetails ?? "Parent session could not be restored. Use Restart to review it.");
+        }
+      }
     }
     await this.persistSessions();
   }
@@ -640,7 +650,7 @@ export class TerminalManager {
 
   create(
     request: CreateSessionRequest,
-    control: { captureResult?: boolean; answerCaptureGrantExpiresAt?: number; origin?: LaunchOrigin; ownerPluginId?: string } = {}
+    control: { captureResult?: boolean; answerCaptureGrantExpiresAt?: number; origin?: LaunchOrigin; ownerPluginId?: string; beforeLocalCodexLaunch?: (cwd: string) => Promise<void> } = {}
   ): SessionSnapshot {
     assertCreateRequest(request, this.containment());
     const origin: LaunchOrigin = request.role === "subagent" ? "subagent" : control.origin ?? "person";
@@ -781,7 +791,8 @@ export class TerminalManager {
     this.sessions.set(id, session);
     this.adoptIsolationStart(id, session);
     if (launched.process) this.bindProcess(id, session, launched.process);
-    if (contributed) this.launchContributed(id, session, resume, null, control.answerCaptureGrantExpiresAt);
+    if (contributed) this.launchContributed(id, session, resume, null, control.answerCaptureGrantExpiresAt, false,
+      origin === "person" ? control.beforeLocalCodexLaunch : undefined);
     const runtimeStatus = this.agentRuntime?.currentStatus(id);
     if (runtimeStatus) session.metadata.status = runtimeStatus;
 
@@ -798,7 +809,7 @@ export class TerminalManager {
     return session ? snapshot(session) : null;
   }
 
-  restart(id: string, options: { resume?: boolean } = {}): SessionSnapshot {
+  restart(id: string, options: { resume?: boolean; beforeLocalCodexLaunch?: (cwd: string) => Promise<void> } = {}): SessionSnapshot {
     const session = this.sessions.get(id);
     if (!session) throw new Error("Terminal session does not exist.");
     if (session.metadata.exitCode === null) throw new Error("Terminal session is still running.");
@@ -870,7 +881,7 @@ export class TerminalManager {
       session.metadata.exitCode = null;
       session.metadata.failureDetails = null;
       this.emitSession(session.metadata);
-      this.launchContributed(id, session, resume, "user");
+      this.launchContributed(id, session, resume, "user", undefined, false, options.beforeLocalCodexLaunch);
       return snapshot(session);
     }
     const launched = this.spawnProcess(
@@ -1260,7 +1271,7 @@ export class TerminalManager {
     }
   }
 
-  private restorePersistedSession(step: RestoreStep, resumed?: { ok: true } | { ok: false; reason: string }, holdReason?: string): void {
+  private restorePersistedSession(step: RestoreStep, resumed?: { ok: true } | { ok: false; reason: string }, holdReason?: string): void | Promise<void> {
     let descriptor = step.record;
     if (this.sessions.has(descriptor.id)) return;
     // A saved subagent never comes back with more than its orchestrator may give (whatever its record says).
@@ -1432,7 +1443,7 @@ export class TerminalManager {
     this.sessions.set(descriptor.id, session);
     this.adoptIsolationStart(descriptor.id, session);
     if (process) this.bindProcess(descriptor.id, session, process);
-    if (contributed) this.launchContributed(descriptor.id, session, resume, "restore", undefined, true);
+    const pending = contributed ? this.launchContributed(descriptor.id, session, resume, "restore", undefined, true) : undefined;
     const runtimeStatus = this.agentRuntime?.currentStatus(descriptor.id);
     if (runtimeStatus) session.metadata.status = runtimeStatus;
     // Restoring re-derives a persisted session's status, so a failure here is
@@ -1441,6 +1452,7 @@ export class TerminalManager {
     // would notify about the same silent state again and again.
     this.emitSession(metadata, metadata.status === "failed" ? "restore" : null);
     if (extras.gitAuditSince !== undefined) void this.auditGit(descriptor.id, session);
+    return pending;
   }
 
   /**
@@ -1936,11 +1948,12 @@ export class TerminalManager {
     resume: ResumeRequest,
     failureOrigin: FailureOrigin | null,
     answerCaptureGrantExpiresAt?: number,
-    restoring = false
-  ): void {
+    restoring = false,
+    beforeLocalCodexLaunch?: (cwd: string) => Promise<void>
+  ): Promise<void> {
     const token = ++session.launchToken;
     const { metadata } = session;
-    void this.runContributedLaunch(id, session, token, resume, restoring, answerCaptureGrantExpiresAt)
+    return this.runContributedLaunch(id, session, token, resume, restoring, answerCaptureGrantExpiresAt, beforeLocalCodexLaunch)
       .catch((error: unknown): LaunchOutcome => {
         metadata.failureDetails = this.redactSecrets(`Launch refused: ${error instanceof Error ? error.message : String(error)}`);
         return "failed";
@@ -1963,7 +1976,8 @@ export class TerminalManager {
     token: number,
     resume: ResumeRequest,
     restoring: boolean,
-    answerCaptureGrantExpiresAt: number | undefined
+    answerCaptureGrantExpiresAt: number | undefined,
+    beforeLocalCodexLaunch?: (cwd: string) => Promise<void>
   ): Promise<LaunchOutcome> {
     const { metadata } = session;
     const live = (): boolean => this.sessions.get(id) === session && session.launchToken === token && !session.process;
@@ -2080,6 +2094,24 @@ export class TerminalManager {
       planned.cleanup();
       dropContribution();
     };
+    // Only an authenticated person launch carries an interactive guard. Restore may only read existing trust.
+    // Classify after contributions resolve: options can add args without selecting another account profile.
+    const trust = beforeLocalCodexLaunch ?? (restoring ? this.codexRestoreTrust : null);
+    if (trust && metadata.provider === "codex" && !metadata.parentSessionId && metadata.role !== "subagent"
+      && !session.extras.ownerPluginId && !environment) {
+      try {
+        const cli = this.providerClis.get("codex");
+        if (cli.state !== "available") throw new Error("Codex CLI is unavailable.");
+        if (await usesLocalCodexConfig({ ...terminalEnvironment(), ...cli.environment }, planned.env)) {
+          if (!live()) { abandon(); return "superseded"; }
+          await trust(planned.cwd);
+        }
+        if (!live()) { abandon(); return "superseded"; }
+      } catch (error) {
+        abandon();
+        return refuse(error instanceof Error ? error.message : String(error));
+      }
+    }
     this.noteConfiguredMode(id, metadata.provider, decision.profile, planned.env, planned.cwd);
     let spawn: { command: string; args: string[] | string; cwd: string; env: Record<string, string> } = planned;
     if (environment && environments) {

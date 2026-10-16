@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { canvasTtyPrivateData } from "../src/main/services/safety/baseProtection.ts";
 import { privateAppData } from "../src/main/services/isolation/isolationPaths.ts";
-import { ensureCodexFolderTrust } from "../src/main/services/CodexFolderTrust.ts";
+import { ensureCodexFolderTrust, usesLocalCodexConfig } from "../src/main/services/CodexFolderTrust.ts";
 
 async function fixture(t, { trusted = false, conflict = false, fresh = false, layerConfig, serialized = false, profileAlias = false } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-folder-trust-")));
@@ -91,8 +91,14 @@ test("the trust writer is reachable only from authenticated person IPC, never an
     const handler=source.slice(start,end);
     assert.match(handler,/assertMainRenderer\(event, getMainWindow\)/);
     assert.match(handler,channel === "agentChatHistoryResume" ? /agentChatHistory\.resume\(provider, id, position, trustCodexFolder\)/ : /await trustCodexFolder/);
-    if (channel === "terminalCreate") assert.match(handler,/!.*parentSessionId/);
-    else if (channel === "terminalRestart") assert.match(handler,/localCodexFolderForTrust/);
+    if (channel === "terminalCreate") {
+      assert.match(handler,/!.*parentSessionId/);
+      assert.match(handler,/terminals\.create\(request, \{ beforeLocalCodexLaunch: trustCodexFolder \}\)/);
+    }
+    else if (channel === "terminalRestart") {
+      assert.match(handler,/localCodexFolderForTrust/);
+      assert.match(handler,/terminals\.restart\(id, \{[^\n]*beforeLocalCodexLaunch: trustCodexFolder/);
+    }
   }
   for(const name of ["services/AgentControlService.ts","services/agent-control/AgentControlGateway.ts","services/PluginSessions.ts"]) {
     assert.doesNotMatch(await readFile(new URL(`../src/main/${name}`,import.meta.url),"utf8"),/ensureCodexFolderTrust|trustCodexFolder/);
@@ -189,4 +195,37 @@ test("a declined launch does not poison the next queued profile trust operation"
   const second = ensureCodexFolderTrust({ ...f.options, confirm: async () => true });
   await Promise.all([rejected, second]);
   assert.equal((await f.messages()).filter(m => m.method === "config/batchWrite").length, 1);
+});
+
+
+test("resolved Codex config identity follows the user home unless CODEX_HOME selects it", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-profile-identity-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home"), other = join(root, "other");
+  await mkdir(home); await mkdir(other);
+  const configHome = join(home, ".codex");
+  assert.equal(await usesLocalCodexConfig({ CODEX_HOME: configHome }, { CODEX_HOME: configHome, EXTRA: "yes" }), true);
+  assert.equal(await usesLocalCodexConfig({ CODEX_HOME: configHome }, { CODEX_HOME: configHome, HOME: other, USERPROFILE: other }), true);
+  assert.equal(await usesLocalCodexConfig({ CODEX_HOME: configHome }, { CODEX_HOME: join(other, "new", "profile") }), false);
+  await assert.rejects(usesLocalCodexConfig({ CODEX_HOME: configHome }, { CODEX_HOME: "relative-profile" }), /absolute/);
+  if (process.platform === "win32") {
+    assert.equal(await usesLocalCodexConfig({}, { HOME: home, USERPROFILE: other }), true, "Windows uses the OS account profile");
+    assert.equal(await usesLocalCodexConfig({}, { codex_home: join(userInfo().homedir, ".codex") }), true);
+  } else {
+    assert.equal(await usesLocalCodexConfig({ HOME: home }, { HOME: home, EXTRA: "yes" }), true);
+    assert.equal(await usesLocalCodexConfig({ HOME: home }, { HOME: other }), false);
+    assert.equal(await usesLocalCodexConfig({ HOME: home }, { HOME: other, CODEX_HOME: configHome }), true);
+    assert.equal(await usesLocalCodexConfig({ HOME: userInfo().homedir }, { HOME: "" }), true);
+  }
+});
+
+test("profile aliases and config-file aliases still identify the local Codex configuration", posix, async t => {
+  const f = await fixture(t);
+  const alias = join(f.root, "alias");
+  await symlink(join(f.root, "profile"), alias, "dir");
+  assert.equal(await usesLocalCodexConfig({ CODEX_HOME: join(f.root, "profile") }, { CODEX_HOME: alias }), true);
+  const other = join(f.root, "other-profile");
+  await mkdir(other);
+  await symlink(f.config, join(other, "config.toml"));
+  assert.equal(await usesLocalCodexConfig({ CODEX_HOME: alias }, { CODEX_HOME: other }), true);
 });

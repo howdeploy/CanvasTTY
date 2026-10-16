@@ -233,6 +233,10 @@ test("person history resumes await Codex trust for fresh and exited local sessio
   existing=active;
   await service.resume("codex",id,{x:0,y:0},guard);assert.deepEqual(calls,[]);
   existing={...active,exitCode:0};service.terminals.localCodexFolderForTrust=()=>null;
+  service.terminals.restart = (_id, options) => {
+    assert.equal(options.beforeLocalCodexLaunch, guard, "contributed history cards retain the authenticated guard until their profile resolves");
+    calls.push("restart"); return active;
+  };
   await service.resume("codex",id,{x:0,y:0},guard);assert.deepEqual(calls,["restart"]);
 });
 

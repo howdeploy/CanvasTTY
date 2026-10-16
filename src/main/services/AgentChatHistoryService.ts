@@ -146,7 +146,9 @@ export class AgentChatHistoryService {
       }
       session = current;
     }
-    const resumed = session.exitCode === null ? session : this.terminals.restart(session.id, { resume: true });
+    const resumed = session.exitCode === null ? session : this.terminals.restart(session.id, {
+      resume: true, ...(beforeCodexLaunch ? { beforeLocalCodexLaunch: beforeCodexLaunch } : {})
+    });
     if (resumed.status === "failed") {
       return { error: { code: "resume-failed", message: resumed.failureDetails || "The conversation could not be resumed. Check the terminal card." } };
     }

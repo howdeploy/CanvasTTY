@@ -126,6 +126,8 @@ Human changes to an owned window still matter. Do not submit work while someone 
 
 For a visible numbered menu, `screen` returns `interaction.options`, the selected option and a screen revision. After inspecting the choices and confirming the action is within the task's authorization, use `choose SESSION_ID --choice N --revision HASH`. To close an idle menu that explicitly offers Escape, use `dismiss SESSION_ID --revision HASH`. Both commands reject a changed screen, act only on the owned PTY and return delivery receipts; inspect the next screen to confirm the outcome. They do not automatically approve anything.
 
+Automatic restoration checks the saved trust for builtin local Codex cards before launch. If trust is absent or cannot be read, the card and its descendants remain stopped; use Restart to review the folder through the host. Restoration never grants new trust. Concurrent person-approved trust changes are serialized per canonical Codex profile and retain Codex's version guard against external edits.
+
 Codex may show **Hooks need review** on first launch or after the bundled lifecycle helpers change. Review the listed commands before trusting them through the observed menu. This is a separate startup step from selecting YOLO and is never dismissed by submitting a task. Controlled launches disable Codex's terminal animations for stable composer detection; ordinary sessions keep their configuration.
 
 ## Retry and ownership

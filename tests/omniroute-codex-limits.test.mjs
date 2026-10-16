@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { readOmniRouteCodexLimits } from "../src/main/services/OmniRouteCodexLimits.ts";
@@ -105,16 +105,20 @@ async function quotaService(t) {
   const setState=(value)=>writeFile(state,JSON.stringify(value));
   await setState({});await writeFile(config,'model_provider = "api"\n');
   await writeFile(script,`#!${process.execPath}
-import {readFileSync} from "node:fs";
+import {readFileSync,writeFileSync} from "node:fs";
 import {createInterface} from "node:readline";
 const state=()=>JSON.parse(readFileSync(${JSON.stringify(state)},"utf8"));
 if(process.argv.includes("--base-url")) {
  const s=state();
  if(process.argv.includes("providers")) console.log(JSON.stringify(s.providers === "malformed" ? {} : s.inactive ? [] : [${JSON.stringify(provider)}]));
+ else if(s.switchAccount) {
+  writeFileSync(${JSON.stringify(join(root,"auth.json"))},JSON.stringify({tokens:{account_id:s.switchAccount}}));
+  console.log(JSON.stringify(s.quota === "malformed" ? {} : ${JSON.stringify(USAGE)}));
+ }
  else if(s.quota === "timeout") setTimeout(()=>{},30000);
  else console.log(JSON.stringify(s.quota === "malformed" ? {} : ${JSON.stringify(USAGE)}));
 } else {
- const api=readFileSync(${JSON.stringify(config)},"utf8").includes('"api"');
+ const api=readFileSync(${JSON.stringify(config)},"utf8").includes('"api"') && !state().nativeAccount;
  createInterface({input:process.stdin}).on("line",line=>{
   const m=JSON.parse(line);if(m.id===undefined)return;
   if(m.method === "account/rateLimits/read" && state().nativeError) return console.log(JSON.stringify({id:m.id,error:{code:-32603}}));
@@ -133,7 +137,7 @@ if(process.argv.includes("--base-url")) {
     launcher:process.platform === "win32" ? "batch" : "native",commandPrompt:process.env.ComSpec,environment:{},checked:[]})};
   const service=new LimitsService(registry,"test",{cacheTtlMs:0,environment:{...ENV,CODEX_HOME:root,CANVASTTY_OMNIROUTE_BIN:executable}});
   t.after(()=>service.dispose());
-  return {config,setState,read:async()=>(await service.getProviders(["codex"])).providers[0]};
+  return {config,auth:join(root,"auth.json"),setState,read:async()=>(await service.getProviders(["codex"])).providers[0]};
 }
 
 for(const [failure,reason] of [["malformed","protocol-error"],["timeout","timeout"],["malformed provider listing","protocol-error"]]) {
@@ -179,3 +183,33 @@ test("invalid provider listings are protocol failures; valid missing bindings ar
     assert.equal(calls,1,"invalid or unauthenticated listings never query account usage");
   }
 });
+
+
+for (const initialAccount of [null, "previous-account"]) {
+  test(`an auth-only account transition drops cached gateway quota (${initialAccount ?? "API key"})`, async t => {
+    const f = await quotaService(t);
+    if (initialAccount) await writeFile(f.auth, JSON.stringify({ tokens: { account_id: initialAccount } }));
+    assert.equal((await f.read()).source, "omniroute-usage-api");
+    const config = await readFile(f.config, "utf8");
+    await writeFile(f.auth, JSON.stringify({ tokens: { account_id: "new-account" } }));
+    await f.setState({ nativeAccount: true, nativeError: true });
+    const failed = await f.read();
+    assert.equal(failed.state, "unavailable");
+    assert.equal(failed.source, "codex-app-server");
+    assert.equal(await readFile(f.config, "utf8"), config, "only auth changed");
+    await f.setState({ nativeAccount: true });
+    assert.equal((await f.read()).source, "codex-app-server");
+  });
+}
+
+
+for (const quota of [undefined, "malformed"]) {
+  test(`an account switch during gateway usage reading never restores old quotas (${quota ?? "success"})`, async t => {
+    const f = await quotaService(t);
+    assert.equal((await f.read()).state, "available");
+    await f.setState({ switchAccount: "changed-during-request", quota });
+    const result = await f.read();
+    assert.equal(result.state, "unavailable");
+    assert.equal(result.reason, "protocol-error");
+  });
+}

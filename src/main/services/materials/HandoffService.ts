@@ -301,7 +301,7 @@ export class HandoffService {
   private async composerBlock(plan: HandoffPlan, screen: SessionScreen | null): Promise<HandoffBlock | null> {
     if (!screen) return null;
     if (!await screen.inspect((terminal) => composerReady(plan.session.provider,
-      terminalScreenText(terminal), codexPlaceholderIsDim(terminal)))) return "composer-not-ready";
+      terminalScreenText(terminal, true), codexPlaceholderIsDim(terminal)))) return "composer-not-ready";
     if (plan.session.provider === "claude" && await screen.typedAfter("❯")) return "composer-not-ready";
     return null;
   }

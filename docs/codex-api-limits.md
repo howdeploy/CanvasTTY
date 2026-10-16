@@ -13,3 +13,5 @@ This is explicit opt-in. The connection must be active and belong to `codex`; up
 Only API-backed Codex profiles use this fallback. Native profiles retain their normal app-server source. The reader uses the connection-specific live usage endpoint, not the generic synthetic quota/queue signal. It shows only windows actually reported by the provider, including their real duration and reset time. A source key named `session` does not imply a five-hour window.
 
 Gateway observations carry an unknown local account scope and are not attributed to a different local ChatGPT login. Missing configuration keeps the API-profile explanation; unavailable or malformed upstream data never becomes a fabricated quota bar.
+
+Cached quotas are discarded when the local Codex account or provider configuration changes. A login change during a gateway read also discards that response, including transient-error fallback, so a previous connection's quota cannot appear under the new account.

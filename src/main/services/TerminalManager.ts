@@ -247,6 +247,7 @@ export class TerminalManager {
   private launchPipeline: (Pick<LaunchPipeline, "normalizeOptions" | "unavailable" | "prepare" | "forgetSession"> & Partial<Pick<LaunchPipeline, "hasPolicy">>) | null = null;
   private sessionStore: TerminalSessionStore | null = null;
   private sessionRestoreMode: SessionRestoreMode = "off";
+  private codexRestoreTrust: ((cwd: string) => Promise<void>) | null = null;
   // Without the registry a placed session can only come back stopped: it never runs locally.
   private environments: EnvironmentService | null = null;
   // Every text an agent reads from another card passes through it (EP-8).
@@ -422,6 +423,11 @@ export class TerminalManager {
     this.sessionRestoreMode = mode;
   }
 
+  /** Read-only host trust check; automatic restore must never grant new folder trust. */
+  configureCodexRestoreTrust(check: (cwd: string) => Promise<void>): void {
+    this.codexRestoreTrust = check;
+  }
+
   async restorePersistedSessions(): Promise<void> {
     const store = this.sessionStore;
     if (!store) return;
@@ -459,7 +465,20 @@ export class TerminalManager {
       environmentAvailable: (environment, record) => resumed.get(record.id)?.ok ?? this.environmentUsable(environment),
       launchOptionsAvailable: (options) => this.unavailableLaunchPlugins(options).length === 0
     });
-    for (const step of steps) this.restorePersistedSession(step, resumed.get(step.record.id));
+    const held = new Map<string, string>();
+    for (const step of steps) {
+      const record = step.record;
+      let reason = record.parentSessionId ? held.get(record.parentSessionId) : undefined;
+      if (!reason && step.launch !== "stopped" && this.codexRestoreTrust && record.provider === "codex"
+        && !record.parentSessionId && record.role !== "subagent" && !record.ownerPluginId
+        && !record.options && !record.environment && !record.environmentChoice) {
+        try { await this.codexRestoreTrust(record.cwd); } catch {
+          reason = "Codex folder trust could not be verified. Use Restart to review and trust the folder.";
+        }
+      }
+      if (reason) held.set(record.id, reason);
+      this.restorePersistedSession(reason ? { ...step, launch: "stopped" } : step, resumed.get(record.id), reason);
+    }
     await this.persistSessions();
   }
 
@@ -1241,7 +1260,7 @@ export class TerminalManager {
     }
   }
 
-  private restorePersistedSession(step: RestoreStep, resumed?: { ok: true } | { ok: false; reason: string }): void {
+  private restorePersistedSession(step: RestoreStep, resumed?: { ok: true } | { ok: false; reason: string }, holdReason?: string): void {
     let descriptor = step.record;
     if (this.sessions.has(descriptor.id)) return;
     // A saved subagent never comes back with more than its orchestrator may give (whatever its record says).
@@ -1287,7 +1306,12 @@ export class TerminalManager {
     if (step.launch === "stopped") {
       // A finished card comes back as it ended; a placed card whose environment
       // is unavailable is held with its reason and keeps its saved state.
-      if (step.note === "environment-unavailable" && descriptor.environment) {
+      if (holdReason) {
+        extras.heldState = descriptor.lastState;
+        metadata.status = "failed";
+        metadata.exitCode = 1;
+        metadata.failureDetails = holdReason;
+      } else if (step.note === "environment-unavailable" && descriptor.environment) {
         extras.heldState = descriptor.lastState;
         metadata.status = "failed";
         metadata.exitCode = descriptor.exitCode ?? 1;

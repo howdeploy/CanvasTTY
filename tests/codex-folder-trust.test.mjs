@@ -17,17 +17,20 @@ async function fixture(t, { trusted = false, conflict = false, fresh = false, la
   const projects = {projects: trusted ? {[cwd]: {trust_level:"trusted"}} : {}};
   const userConfig = layerConfig === undefined ? (fresh ? "{}" : serialized ? JSON.stringify(projects) : projects) : layerConfig;
   const config = join(home, "config.toml"), calls = join(root, "calls.jsonl"), cli = join(root, "codex");
+  const versionFile = join(root, "version");
+  await writeFile(versionFile, "1");
   if (!fresh) await writeFile(config, 'model = "existing-model"\napproval_policy = "never"\n');
   await writeFile(cli, `#!${process.execPath}
 const fs = require("node:fs"), readline = require("node:readline");
-const file = ${JSON.stringify(config)}, folder = ${JSON.stringify(cwd)};
+const file = ${JSON.stringify(config)}, folder = ${JSON.stringify(cwd)}, versionFile = ${JSON.stringify(versionFile)};
 readline.createInterface({input:process.stdin}).on("line",line=>{
  const m = JSON.parse(line); if(m.id === undefined) return;
  fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(m)+"\\n");
  let result = {};
- if(m.method === "config/read") result = {layers:[{name:{type:"user",file},version:"version-1",config:${JSON.stringify(userConfig)}}]};
+ if(m.method === "config/read") result = {layers:[{name:{type:"user",file},version:"version-"+fs.readFileSync(versionFile,"utf8"),config:${JSON.stringify(userConfig)}}]};
  if(m.method === "config/batchWrite") {
-  if(${conflict}) { process.stdout.write(JSON.stringify({id:m.id,error:{code:-32603,message:"version conflict"}})+"\\n"); return; }
+  if(${conflict} || m.params.expectedVersion !== "version-"+fs.readFileSync(versionFile,"utf8")) { process.stdout.write(JSON.stringify({id:m.id,error:{code:-32603,message:"version conflict"}})+"\\n"); return; }
+  fs.writeFileSync(versionFile,String(Number(fs.readFileSync(versionFile,"utf8"))+1));
   fs.appendFileSync(file, "# TRUST-SAVED\\n");
  }
  process.stdout.write(JSON.stringify({id:m.id,result})+"\\n");
@@ -154,4 +157,36 @@ test("a profile alias changed during confirmation cannot redirect a trust write"
     await rm(alias);await symlink(other,alias,"dir");return true;
   }}),/profile changed/);
   assert.equal((await f.messages()).some(m=>m.method === "config/batchWrite"),false);
+});
+
+
+test("concurrent person-approved launches reread the profile after each host trust write", posix, async t => {
+  const f = await fixture(t);
+  const other = join(f.root, "another-project");
+  await mkdir(other);
+  let release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  let entered;
+  const confirming = new Promise(resolve => { entered = resolve; });
+  const first = ensureCodexFolderTrust({ ...f.options, confirm: async () => { entered(); await waiting; return true; } });
+  await confirming;
+  const alias = join(f.root, "profile-alias");
+  await symlink(join(f.root, "profile"), alias, "dir");
+  const cli = f.options.providerClis.get();
+  const second = ensureCodexFolderTrust({ ...f.options, cwd: other,
+    providerClis: { get: () => ({ ...cli, environment: { CODEX_HOME: alias } }) }, confirm: async () => true });
+  release();
+  await Promise.all([first, second]);
+  const writes = (await f.messages()).filter(m => m.method === "config/batchWrite");
+  assert.deepEqual(writes.map(m => m.params.expectedVersion), ["version-1", "version-2"]);
+  assert.deepEqual(writes.map(m => m.params.edits[0].keyPath), [f.cwd, other].map(folder => `projects.${JSON.stringify(folder)}.trust_level`));
+});
+
+test("a declined launch does not poison the next queued profile trust operation", posix, async t => {
+  const f = await fixture(t);
+  const first = ensureCodexFolderTrust({ ...f.options, confirm: async () => false });
+  const rejected = assert.rejects(first, /not granted/);
+  const second = ensureCodexFolderTrust({ ...f.options, confirm: async () => true });
+  await Promise.all([rejected, second]);
+  assert.equal((await f.messages()).filter(m => m.method === "config/batchWrite").length, 1);
 });

@@ -991,3 +991,27 @@ test("material handoff preserves unstyled drafts that equal a Codex suggestion",
     assert.deepEqual(terminal.writes,[]);
   });
 });
+
+
+for (const footer of ["Press enter to confirm trust", "Press enter to confirm permissions"]) {
+  test(`narrow Codex material handoffs refuse a wrapped live confirmation: ${footer}`, async () => {
+    await withHandoffs(async ({ handoffs, terminal, draft }) => {
+      terminal.geometry = () => ({ cols: 20, rows: 30 });
+      terminal.add({ id: "c1", provider: "codex", cwd: "/work" });
+      terminal.emit("c1", `› \x1b[2mAsk Codex to do anything\x1b[22m\r\n${footer}\r\n`);
+      assert.deepEqual(await handoffs.send(draft("c1")), { ok: false, reason: "composer-not-ready" });
+      assert.deepEqual(terminal.writes, []);
+    });
+  });
+}
+
+test("a narrow ordinary Codex composer still receives a material handoff", async () => {
+  await withHandoffs(async ({ handoffs, terminal, draft }) => {
+    terminal.geometry = () => ({ cols: 20, rows: 30 });
+    terminal.add({ id: "c1", provider: "codex", cwd: "/work" });
+    terminal.tui = codexTui(terminal);
+    terminal.emit("c1", "› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
+    assert.equal((await handoffs.send(draft("c1"))).ok, true);
+    assert.ok(terminal.writes.length > 0);
+  });
+});

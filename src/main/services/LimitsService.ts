@@ -212,10 +212,12 @@ export class LimitsService {
       return unavailable("codex", "codex-app-server", "protocol-error", checkedAt);
     }
 
+    let requestScope: string | null | undefined;
     try {
       // The account is bound around the request: a login change before, during or since
       // the previous read cannot be attributed, so that observation stays account-unknown.
       const before = await readCodexAccountScope(this.codexHome);
+      requestScope = before;
       const accountChanged = this.lastCodexScope !== undefined && before !== this.lastCodexScope;
       this.lastCodexScope = before;
       // The app-server captures the provider/profile configuration at startup too.
@@ -225,7 +227,7 @@ export class LimitsService {
       const configurationChanged = this.lastCodexConfiguration !== undefined && configuration !== this.lastCodexConfiguration;
       this.lastCodexConfiguration = configuration;
       if (accountChanged || configurationChanged) this.codex.restart();
-      if (configurationChanged) this.lastGoodCodex = null;
+      if (accountChanged || configurationChanged) this.lastGoodCodex = null;
       const raw = await this.codex.readRateLimits();
       const after = await readCodexAccountScope(this.codexHome);
       const windows = normalizeCodexLimits(raw);
@@ -239,9 +241,14 @@ export class LimitsService {
         windows,
         accountScope: !accountChanged && before !== null && before === after ? before : null
       };
-      this.lastGoodCodex = available;
+      // A response spanning a login change is unscoped and cannot seed the stale cache.
+      this.lastGoodCodex = before === after ? available : null;
       return available;
     } catch (error) {
+      if (requestScope !== undefined && requestScope !== await readCodexAccountScope(this.codexHome)) {
+        this.lastGoodCodex = null;
+        return unavailable("codex", "codex-app-server", "protocol-error", checkedAt);
+      }
       let reason = adapterReason(error);
       let source: LimitSource = "codex-app-server";
       if (reason === "api-profile") {
@@ -249,6 +256,10 @@ export class LimitsService {
         if (this.lastGoodCodex?.source !== "omniroute-usage-api") this.lastGoodCodex = null;
         try {
           const windows = await readOmniRouteCodexLimits(this.environment, undefined, availableCli(this.providerClis, "codex")?.environment);
+          if (requestScope !== await readCodexAccountScope(this.codexHome)) {
+            this.lastGoodCodex = null;
+            throw new LimitsAdapterError("protocol-error");
+          }
           if (windows) {
             const available: Extract<ProviderLimitsSnapshot, { state: "available" }> = {
               provider: "codex", state: "available", source: "omniroute-usage-api",
@@ -263,6 +274,9 @@ export class LimitsService {
           reason = quotaError instanceof OmniRouteQuotaError ? quotaError.reason : "protocol-error";
           if (reason !== "timeout" && reason !== "protocol-error") this.lastGoodCodex = null;
         }
+      }
+      if (requestScope !== undefined && requestScope !== await readCodexAccountScope(this.codexHome)) {
+        this.lastGoodCodex = null;
       }
       if (this.lastGoodCodex) {
         return {

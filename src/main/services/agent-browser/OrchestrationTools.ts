@@ -28,7 +28,7 @@ const MAX_ANSWER_READS = 256;
  * orchestrator cannot probe sessions it does not own.
  */
 export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
-  private readonly answerReads = new Map<string, { signature: string; through: number }>();
+  private readonly answerReads = new Map<string, { signature: string; through: number; resultRead: boolean }>();
   private readonly control: AgentControlService;
   private readonly plugins: Pick<PluginAgentTools, "list" | "call"> | null;
   private readonly providers: ProviderDirectorySources;
@@ -204,6 +204,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       throw error;
     }
     if (signal?.aborted) throw canceledError();
+    this.answerReads.delete(args.sessionId as string);
     return { sessionId: args.sessionId as string, sent: true };
   }
 
@@ -235,17 +236,20 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       exitCode: result.exitCode,
       output: result.answer ? "" : result.output,
       ...(!result.answer && result.exitLines ? { exitLines: result.exitLines } : {}),
-      ...(result.answer ? { answer: this.readAnswer(result.sessionId, result.answer, (args.answerOffset as number | undefined) ?? 0) } : {})
+      ...(result.answer ? { answer: this.readAnswer(result.sessionId, result.answer, (args.answerOffset as number | undefined) ?? 0, true) } : {})
     };
   }
 
   private cancel(orchestratorId: string, args: Record<string, unknown>): Record<string, unknown> {
     this.requireOwned(orchestratorId, args.sessionId as string);
     const id = args.sessionId as string;
-    const answer = this.control.result(id).answer;
-    if (answer && answer.text.length > ANSWER_PAGE_CHARS) {
+    const result = this.control.result(id);
+    const answer = result.answer;
+    // A running child can always be interrupted. A completed reply must first
+    // be fetched explicitly, even when wait_for_agent returned it in one page.
+    if (answer && result.status !== "working") {
       const read = this.answerReads.get(id);
-      if (!read || read.signature !== answerSignature(answer) || read.through < answer.text.length) {
+      if (!read || !read.resultRead || read.signature !== answerSignature(answer) || read.through < answer.text.length) {
         throw orchestrationBridgeError("INVALID_REQUEST",
           "Read all final-answer pages with get_agent_result before closing this subagent; follow answer.nextOffset.", false);
       }
@@ -255,7 +259,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     return { sessionId: id, canceled: true };
   }
 
-  private readAnswer(sessionId: string, answer: AgentAnswer, offset: number): Record<string, unknown> {
+  private readAnswer(sessionId: string, answer: AgentAnswer, offset: number, resultRead = false): Record<string, unknown> {
     const signature = answerSignature(answer);
     const previous = this.answerReads.get(sessionId);
     const through = previous?.signature === signature ? previous.through : 0;
@@ -266,7 +270,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     // Offsets use UTF-16 code units, but a page must not split an astral character.
     if (end < answer.text.length && /[\uD800-\uDBFF]/u.test(answer.text[end - 1]!)) end -= 1;
     this.answerReads.delete(sessionId);
-    this.answerReads.set(sessionId, { signature, through: Math.max(through, end) });
+    this.answerReads.set(sessionId, { signature, through: Math.max(through, end), resultRead: resultRead || (previous?.signature === signature && previous.resultRead) === true });
     if (this.answerReads.size > MAX_ANSWER_READS) this.answerReads.delete(this.answerReads.keys().next().value!);
     if (offset === 0 && end === answer.text.length) return { ...answer };
     const nextOffset = end < answer.text.length ? end : null;

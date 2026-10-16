@@ -153,3 +153,47 @@ test("answer pages are masked before splitting, scoped, sequential and reset for
   assert.ok(!combined.includes(secret));
   assert.equal((await call("cancel_agent")).canceled, true);
 });
+
+
+test("completed short replies require an explicit result read before close; running children remain cancelable", async t => {
+  const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner([]));
+  t.after(() => terminals.disposeAll());
+  const parent = terminals.create({ provider: "codex", cwd: process.cwd(), profile: "normal", role: "orchestrator", position: { x: 0, y: 0 } });
+  const control = new AgentControlService(terminals, { waitTiming: { checkMs: 5, settleMs: 5, quietMs: 60_000 } });
+  const handler = new ScopedOrchestrationHandler(control);
+  const child = await control.spawn({ parentSessionId: parent.id, provider: "opencode", cwd: process.cwd() });
+  const call = (tool, args = {}) => handler.execute(parent.id, { id: "receipt", tool, arguments: { sessionId: child.id, ...args } });
+  terminals.applyProviderSignal(child.id, { kind: "lifecycle", state: "working" });
+  terminals.recordAnswer(child.id, { text: "Finished independently.", truncated: false });
+  terminals.applyProviderSignal(child.id, { kind: "lifecycle", state: "idle" });
+  const waited = await call("wait_for_agent", { timeoutSeconds: 1 });
+  assert.equal(waited.answer.text, "Finished independently.");
+  await assert.rejects(call("cancel_agent"), /get_agent_result/u);
+  assert.ok(terminals.getMetadata(child.id));
+  assert.equal((await call("get_agent_result")).answer.text, waited.answer.text);
+  assert.equal((await call("cancel_agent")).canceled, true);
+
+  const running = await control.spawn({ parentSessionId: parent.id, provider: "opencode", cwd: process.cwd() });
+  terminals.applyProviderSignal(running.id, { kind: "lifecycle", state: "working" });
+  assert.equal((await handler.execute(parent.id, { id: "stop", tool: "cancel_agent", arguments: { sessionId: running.id } })).canceled, true);
+});
+
+test("sending a new task invalidates the old result receipt even if the next answer is identical", async () => {
+  const reply = { sessionId: "child", status: "idle", state: "running", exitCode: null, output: "",
+    answer: { text: "Task completed.", truncated: false } };
+  let canceled = false;
+  const handler = new ScopedOrchestrationHandler({
+    status: () => ({ role: "orchestrator", provider: "codex" }),
+    isInSubtree: () => true,
+    result: () => reply,
+    send: async () => undefined,
+    cancel: () => { canceled = true; }
+  });
+  const call = (tool, args = {}) => handler.execute("parent", { id: "turn", tool, arguments: { sessionId: "child", ...args } });
+  await call("get_agent_result");
+  await call("send_to_agent", { prompt: "Run a separate task." });
+  await assert.rejects(call("cancel_agent"), /get_agent_result/u);
+  assert.equal(canceled, false);
+  await call("get_agent_result");
+  assert.equal((await call("cancel_agent")).canceled, true);
+});

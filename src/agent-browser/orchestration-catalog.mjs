@@ -85,19 +85,19 @@ export const ORCHESTRATION_TOOL_DEFINITIONS = Object.freeze([
   ),
   tool(
     "wait_for_agent",
-    `Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason "idle" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), "needs_approval" (its card shows a prompt only the person may answer; never answer it yourself), "done" or "failed" (its process exited), "quiet" (it reports no status or no turn start and its screen stopped changing, so judge from output), "closed" (its card was closed) or "timeout" after timeoutSeconds (default ${DEFAULT_AGENT_WAIT_SECONDS}, at most ${MAX_AGENT_WAIT_SECONDS}), with status, exitCode, waitedMs, the masked terminal tail as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. After a timeout, call it again. Then read get_agent_result.`,
+    `Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason "idle" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), "needs_approval" (its card shows a prompt only the person may answer; never answer it yourself), "done" or "failed" (its process exited), "quiet" (it reports no status or no turn start and its screen stopped changing, so judge from output), "closed" (its card was closed) or "timeout" after timeoutSeconds (default ${DEFAULT_AGENT_WAIT_SECONDS}, at most ${MAX_AGENT_WAIT_SECONDS}), with status, exitCode, waitedMs, the masked terminal tail as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. A timeout means only that this wait ended: inspect its output for a terminal error and stop on a reported failure; wait again only while the task is still progressing. Then read get_agent_result before cancel_agent, even for a short answer. If answer.nextOffset is non-null, read every page with get_agent_result(answerOffset=answer.nextOffset) before cancel_agent; pages contain consecutive UTF-16 text. A captured answer replaces the raw terminal tail (output is empty). After cancel_agent succeeds, do not wait again. A late wait for a recently closed child of this orchestrator returns closed immediately, with resultReadBeforeClose indicating whether its captured answer was read before cleanup; this does not invalidate earlier successful waits.`,
     { sessionId, timeoutSeconds: integer({ minimum: 1, maximum: MAX_AGENT_WAIT_SECONDS }) },
     ["sessionId"]
   ),
   tool(
     "get_agent_result",
-    "Get one of this session's subagents' result: answer (its last turn's final reply as the agent reported it, for Codex and OpenCode subagents; truncated:true when only the end was kept), status (idle once its turn ended), the exit state (running | done | failed; an interactive CLI stays running after a task) and the masked terminal tail as output. Prefer answer; the terminal tail is raw screen output.",
-    { sessionId },
+    "Get a subagent's final reply as answer, status and exit state. Captured replies up to 65,536 UTF-16 code units are retained in memory and returned in bounded pages. Start without answerOffset; if answer.nextOffset is non-null, pass it as answerOffset until nextOffset is null. Concatenate page text in order before closing the child. sourceTruncated:true means the capture itself exceeded its limit: ask the worker to save its full deliverable in a project file and read it. Prefer answer; output is empty when a captured reply is present, otherwise it is a raw terminal tail.",
+    { sessionId, answerOffset: integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }) },
     ["sessionId"]
   ),
   tool(
     "cancel_agent",
-    "Dispose one of this session's subagents, terminating its process.",
+    "Dispose one of this session's subagents, terminating its process. Call get_agent_result and read all final-answer pages first, even for a short reply returned by wait_for_agent; closing with an unread result is refused. To stop a working agent, call this directly. After success, use the results already received and do not call wait_for_agent again for this child.",
     { sessionId }
   ),
   tool(

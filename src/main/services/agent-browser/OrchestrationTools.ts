@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import type { OrchestrationCommandHandler, OrchestrationRequest } from "./orchestration-protocol.ts";
 import { orchestrationBridgeError } from "./orchestration-protocol.ts";
 import type { AgentProviderId, ProviderId, SessionRole } from "../../../shared/contracts.ts";
 import { launchEffortProblem, launchModelProblem } from "../../../shared/launchModel.ts";
-import { PromptNotDeliveredError, type AgentControlService, type SpawnAgentRequest } from "../AgentControlService.ts";
+import { PromptNotDeliveredError, type AgentAnswer, type AgentControlService, type SpawnAgentRequest } from "../AgentControlService.ts";
 import { LaunchRefusal } from "../launchRefusal.ts";
 import type { PluginAgentTools } from "../PluginAgentTools.ts";
 import {
@@ -16,6 +17,11 @@ import { AGENT_PROVIDERS } from "../../../shared/contracts.ts";
 import { listProviderDirectory, type ProviderDirectorySources } from "../providerDirectory.ts";
 import type { McpToolDefinition } from "../../../agent-browser/orchestration-catalog.mjs";
 
+// A page fits the MCP wire cap even after the helper embeds JSON inside JSON.
+const ANSWER_PAGE_CHARS = 16_384;
+const MAX_ANSWER_READS = 256;
+const MAX_CLOSED_CHILDREN = 256;
+
 /**
  * The only bridge between the orchestration MCP surface and session control.
  * Every tool call is scoped to the authenticated orchestrator's own subtree:
@@ -23,6 +29,10 @@ import type { McpToolDefinition } from "../../../agent-browser/orchestration-cat
  * orchestrator cannot probe sessions it does not own.
  */
 export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
+  private readonly answerReads = new Map<string, { signature: string; through: number; resultRead: boolean }>();
+  // Scoped tombstones retain no answer text or terminal output. They make a
+  // late wait truthful without reopening access to a disposed child.
+  private readonly closedChildren = new Map<string, { owner: string; resultReadBeforeClose: boolean }>();
   private readonly control: AgentControlService;
   private readonly plugins: Pick<PluginAgentTools, "list" | "call"> | null;
   private readonly providers: ProviderDirectorySources;
@@ -116,6 +126,12 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     if (target === orchestratorId) {
       throw orchestrationBridgeError("INVALID_REQUEST", "wait_for_agent waits for a subagent, not for this session.", false);
     }
+    const closed = this.closedChildren.get(target);
+    if (closed?.owner === orchestratorId) {
+      return { sessionId: target, reason: "closed", exitCode: null, waitedMs: 0, output: "",
+        resultReadBeforeClose: closed.resultReadBeforeClose,
+        note: "This subagent was already closed by this orchestrator; do not wait again. Use the result received before closing it." };
+    }
     this.requireOwned(orchestratorId, target);
     const seconds = typeof args.timeoutSeconds === "number" ? args.timeoutSeconds : DEFAULT_AGENT_WAIT_SECONDS;
     try {
@@ -123,7 +139,10 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
         timeoutMs: Math.min(MAX_AGENT_WAIT_SECONDS, Math.max(1, seconds)) * 1_000,
         ...(signal ? { signal } : {})
       });
-      return { ...result };
+      if (!result.answer) return { ...result };
+      const receipt = { ...result, output: "", answer: this.readAnswer(target, result.answer, 0) };
+      delete receipt.exitLines;
+      return receipt;
     } catch (error) {
       if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw canceledError();
       throw error;
@@ -195,6 +214,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       throw error;
     }
     if (signal?.aborted) throw canceledError();
+    this.answerReads.delete(args.sessionId as string);
     return { sessionId: args.sessionId as string, sent: true };
   }
 
@@ -216,21 +236,60 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
   private result(orchestratorId: string, args: Record<string, unknown>): Record<string, unknown> {
     this.requireOwned(orchestratorId, args.sessionId as string);
     const result = this.control.result(args.sessionId as string);
+    if (args.answerOffset && !result.answer) {
+      throw orchestrationBridgeError("INVALID_REQUEST", "The answer changed; read the current result from answerOffset=0.", false);
+    }
     return {
       sessionId: result.sessionId,
       state: result.state,
       status: result.status,
       exitCode: result.exitCode,
-      output: result.output,
-      ...(result.exitLines ? { exitLines: result.exitLines } : {}),
-      ...(result.answer ? { answer: result.answer } : {})
+      output: result.answer ? "" : result.output,
+      ...(!result.answer && result.exitLines ? { exitLines: result.exitLines } : {}),
+      ...(result.answer ? { answer: this.readAnswer(result.sessionId, result.answer, (args.answerOffset as number | undefined) ?? 0, true) } : {})
     };
   }
 
   private cancel(orchestratorId: string, args: Record<string, unknown>): Record<string, unknown> {
     this.requireOwned(orchestratorId, args.sessionId as string);
-    this.control.cancel(args.sessionId as string);
-    return { sessionId: args.sessionId as string, canceled: true };
+    const id = args.sessionId as string;
+    const result = this.control.result(id);
+    const answer = result.answer;
+    // A running child can always be interrupted. A completed reply must first
+    // be fetched explicitly, even when wait_for_agent returned it in one page.
+    if (answer && result.status !== "working") {
+      const read = this.answerReads.get(id);
+      if (!read || !read.resultRead || read.signature !== answerSignature(answer) || read.through < answer.text.length) {
+        throw orchestrationBridgeError("INVALID_REQUEST",
+          "Read all final-answer pages with get_agent_result before closing this subagent; follow answer.nextOffset.", false);
+      }
+    }
+    const read = this.answerReads.get(id);
+    this.control.cancel(id);
+    this.closedChildren.set(id, { owner: orchestratorId,
+      resultReadBeforeClose: Boolean(answer && read?.resultRead && read.signature === answerSignature(answer) && read.through >= answer.text.length) });
+    if (this.closedChildren.size > MAX_CLOSED_CHILDREN) this.closedChildren.delete(this.closedChildren.keys().next().value!);
+    this.answerReads.delete(id);
+    return { sessionId: id, canceled: true };
+  }
+
+  private readAnswer(sessionId: string, answer: AgentAnswer, offset: number, resultRead = false): Record<string, unknown> {
+    const signature = answerSignature(answer);
+    const previous = this.answerReads.get(sessionId);
+    const through = previous?.signature === signature ? previous.through : 0;
+    if (!Number.isInteger(offset) || offset < 0 || offset > answer.text.length || offset > through) {
+      throw orchestrationBridgeError("INVALID_REQUEST", `Read the current answer with answerOffset=${through}.`, false);
+    }
+    let end = Math.min(answer.text.length, offset + ANSWER_PAGE_CHARS);
+    // Offsets use UTF-16 code units, but a page must not split an astral character.
+    if (end < answer.text.length && /[\uD800-\uDBFF]/u.test(answer.text[end - 1]!)) end -= 1;
+    this.answerReads.delete(sessionId);
+    this.answerReads.set(sessionId, { signature, through: Math.max(through, end), resultRead: resultRead || (previous?.signature === signature && previous.resultRead) === true });
+    if (this.answerReads.size > MAX_ANSWER_READS) this.answerReads.delete(this.answerReads.keys().next().value!);
+    if (offset === 0 && end === answer.text.length) return { ...answer };
+    const nextOffset = end < answer.text.length ? end : null;
+    return { text: answer.text.slice(offset, end), truncated: answer.truncated || nextOffset !== null,
+      offset, nextOffset, totalChars: answer.text.length, sourceTruncated: answer.truncated };
   }
 
   private list(orchestratorId: string): Record<string, unknown> {
@@ -259,4 +318,8 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
 
 function canceledError(): Error {
   return orchestrationBridgeError("CANCELED", "Orchestration command was canceled.", true);
+}
+
+function answerSignature(answer: AgentAnswer): string {
+  return createHash("sha256").update(answer.text).update(String(answer.truncated)).digest("hex");
 }

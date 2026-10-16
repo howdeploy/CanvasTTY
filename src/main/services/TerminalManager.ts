@@ -1061,7 +1061,7 @@ export class TerminalManager {
   answer(id: string): { text: string; truncated: boolean; at: number } | null {
     const answer = this.sessions.get(id)?.answer;
     if (!answer) return null;
-    return { ...answer, text: this.redactSecretsTail(answer.text, answer.text.length + 1) };
+    return { ...answer, text: this.redactSecrets(answer.text) };
   }
 
   setLifecycleHooksEnabled(enabled: boolean): void {

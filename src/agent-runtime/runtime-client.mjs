@@ -6,6 +6,7 @@ import {
   CAPTURE_ANSWER_EXPIRES_AT_ENV,
   MAX_ANSWER_CHARS,
   MAX_RUNTIME_MESSAGE_BYTES,
+  MAX_RESULT_MESSAGE_BYTES,
   normalizeThreadId,
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_STATES
@@ -50,9 +51,10 @@ export async function reportLifecycle({ state, event, turnId = null, threadId, r
     message.lastAssistantMessage = lastAssistantMessage.slice(0, MAX_ANSWER_CHARS);
   }
   const payload = Buffer.from(`${JSON.stringify(message)}\n`, "utf8");
-  if (payload.length > MAX_RUNTIME_MESSAGE_BYTES) return false;
+  const maxBytes = result === undefined ? MAX_RUNTIME_MESSAGE_BYTES : MAX_RESULT_MESSAGE_BYTES;
+  if (payload.length > maxBytes) return false;
 
-  return sendMessage(address, payload, (parsed) => parsed?.type === "ack");
+  return sendMessage(address, payload, (parsed) => parsed?.type === "ack", maxBytes);
 }
 
 async function answerCaptureIsActive({ address, terminalSessionId, provider, capabilityToken }) {
@@ -67,8 +69,8 @@ async function answerCaptureIsActive({ address, terminalSessionId, provider, cap
     (parsed) => parsed?.type === "ack" && parsed?.answerCapture === true);
 }
 
-function sendMessage(address, payload, accepted) {
-  if (payload.length > MAX_RUNTIME_MESSAGE_BYTES) return Promise.resolve(false);
+function sendMessage(address, payload, accepted, maxBytes = MAX_RUNTIME_MESSAGE_BYTES) {
+  if (payload.length > maxBytes) return Promise.resolve(false);
   return new Promise((resolve) => {
     const socket = createConnection(address);
     let settled = false;

@@ -24,7 +24,7 @@ import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from ".
 const xterm = lazyRequire<typeof import("@xterm/headless")>("@xterm/headless");
 
 const MAX_REQUEST_BYTES = 128 * 1024;
-const MAX_RESPONSE_BYTES = 256 * 1024;
+const MAX_RESPONSE_BYTES = 512 * 1024;
 const BUILT_IN_PIXEL_SKINS = ["sakura", "matrix", "forest-cabin", "gold-black", "cat", "gothic-eclipse"];
 const MAX_RECEIPTS = 4096;
 // Refusals that happen before anything is written: a retry with the same

@@ -363,7 +363,7 @@ test("an exited PTY can restart in place without recreating its xterm card", asy
     readFile(terminalManagerPath, "utf8")
   ]);
 
-  assert.match(manager, /restart\(id: string, options: \{ resume\?: boolean \} = \{\}\): SessionSnapshot/);
+  assert.match(manager, /restart\(id: string, options: \{ resume\?: boolean[^\n]*\): SessionSnapshot/);
   assert.match(manager, /session\.metadata\.exitCode === null/);
   assert.match(manager, /session\.metadata\.status = initialSessionStatus\(session\.metadata\.provider\)/);
   assert.match(manager, /session\.metadata\.failureDetails = null/);

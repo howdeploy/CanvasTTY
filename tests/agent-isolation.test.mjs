@@ -378,6 +378,27 @@ test("seatbelt, for real: the launch writes the account home it was handed, not 
   assert.equal(await readFile(join(own, "auth.json"), "utf8"), "refreshed\n");
 });
 
+test("seatbelt, for real: saved folder trust stays readable but configuration and its backups stay protected", onMac, async (t) => {
+  const w = await world(t);
+  const own = join(w.home, ".custom-codex");
+  const backups = join(w.userData, "codex-config-backups");
+  await mkdir(own); await mkdir(backups);
+  const original = 'approval_policy = "never"\n';
+  // The host has saved the person's decision; this is what the next isolated CLI reads.
+  const saved = `${original}[projects.${JSON.stringify(w.project)}]\ntrust_level = "trusted"\n`;
+  await writeFile(join(own, "config.toml"), saved);
+  await writeFile(join(backups, "before.toml"), original);
+  const { lines } = run(w, [
+    'cat "$CODEX_HOME/config.toml" >/dev/null && echo TRUST-R-ok',
+    'echo changed > "$CODEX_HOME/config.toml" 2>/dev/null || echo CONFIG-W-denied',
+    `cat "${join(backups, "before.toml")}" 2>/dev/null || echo BACKUP-R-denied`,
+    `echo changed > "${join(backups, "before.toml")}" 2>/dev/null || echo BACKUP-W-denied`
+  ].join("; "), { env: { CODEX_HOME: own } });
+  assert.deepEqual(lines, ["TRUST-R-ok", "CONFIG-W-denied", "BACKUP-R-denied", "BACKUP-W-denied"]);
+  assert.equal(await readFile(join(own, "config.toml"), "utf8"), saved);
+  assert.equal(await readFile(join(backups, "before.toml"), "utf8"), original);
+});
+
 test("seatbelt, for real: git init works, but no repository in the project gets a hook or attributes from the agent", onMac, async (t) => {
   const w = await world(t);
   const { lines, env } = run(w, [

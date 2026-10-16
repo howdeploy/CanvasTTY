@@ -1,3 +1,4 @@
+import { readOmniRouteCodexLimits, OmniRouteQuotaError } from "./OmniRouteCodexLimits.ts";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -17,7 +18,7 @@ import {
   type AvailableProviderCli,
   type ProviderCliRegistry
 } from "./providerCliRegistry.ts";
-import { NdjsonLineReader } from "../../agent-runtime/ndjson.mjs";
+import { CodexAppServerClient, CodexAppServerError } from "./CodexAppServerClient.ts";
 
 const CACHE_TTL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -49,21 +50,9 @@ export interface LimitsServiceOptions {
   claude?: Omit<ClaudeUsageReadOptions, "onScope">;
 }
 
-interface JsonRpcResponse {
-  id?: unknown;
-  result?: unknown;
-  error?: unknown;
-}
-
 interface RawLimitBucket {
   snapshot: Record<string, unknown>;
   isDefaultBucket: boolean;
-}
-
-interface PendingRequest {
-  resolve(value: unknown): void;
-  reject(error: LimitsAdapterError): void;
-  timer: NodeJS.Timeout;
 }
 
 interface GrokCredential {
@@ -74,12 +63,13 @@ interface GrokCredential {
 }
 
 export class LimitsService {
-  private codex: CodexAppServerClient;
+  private codex: CodexLimitsClient;
   private kimi: KimiWebUsageClient;
   private readonly providerClis: ProviderCliRegistry;
   private readonly clientVersion: string;
   private readonly cacheTtlMs: number;
   private readonly codexHome: string;
+  private readonly environment: Readonly<Record<string, string | undefined>>;
   private readonly claudeOptions: Omit<ClaudeUsageReadOptions, "onScope">;
   private cache: CacheEntry | null = null;
   private inFlight: Promise<LimitsSnapshot> | null = null;
@@ -87,6 +77,7 @@ export class LimitsService {
   private readonly providerLoads = new Map<LimitProviderId, Promise<ProviderLimitsSnapshot>>();
   // undefined until the first Codex read; null when that read found no account.
   private lastCodexScope: string | null | undefined = undefined;
+  private lastCodexConfiguration: string | null | undefined = undefined;
   private lastGoodCodex: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
   private lastGoodClaude: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
   private lastGoodKimi: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
@@ -102,9 +93,10 @@ export class LimitsService {
     this.codexIdleMs = options.codexIdleMs ?? CODEX_IDLE_MS;
     this.cacheTtlMs = options.cacheTtlMs ?? CACHE_TTL_MS;
     const environment = options.environment ?? process.env;
+    this.environment = environment;
     this.codexHome = environment.CODEX_HOME || join(options.homeDirectory ?? homedir(), ".codex");
     this.claudeOptions = options.claude ?? {};
-    this.codex = new CodexAppServerClient(availableCli(providerClis, "codex"), clientVersion, this.codexIdleMs);
+    this.codex = new CodexLimitsClient(availableCli(providerClis, "codex"), clientVersion, this.codexIdleMs);
     this.kimi = new KimiWebUsageClient(availableCli(providerClis, "kimi"));
   }
 
@@ -159,11 +151,12 @@ export class LimitsService {
     if (this.disposed) return;
     this.codex.dispose();
     this.kimi.dispose();
-    this.codex = new CodexAppServerClient(availableCli(this.providerClis, "codex"), this.clientVersion, this.codexIdleMs);
+    this.codex = new CodexLimitsClient(availableCli(this.providerClis, "codex"), this.clientVersion, this.codexIdleMs);
     this.kimi = new KimiWebUsageClient(availableCli(this.providerClis, "kimi"));
     this.cache = null;
     this.providerCache.clear();
     this.lastCodexScope = undefined;
+    this.lastCodexConfiguration = undefined;
     this.lastGoodCodex = null;
     this.lastGoodClaude = null;
     this.lastGoodKimi = null;
@@ -219,14 +212,22 @@ export class LimitsService {
       return unavailable("codex", "codex-app-server", "protocol-error", checkedAt);
     }
 
+    let requestScope: string | null | undefined;
     try {
       // The account is bound around the request: a login change before, during or since
       // the previous read cannot be attributed, so that observation stays account-unknown.
       const before = await readCodexAccountScope(this.codexHome);
+      requestScope = before;
       const accountChanged = this.lastCodexScope !== undefined && before !== this.lastCodexScope;
       this.lastCodexScope = before;
-      // The long-lived app-server may still hold the previous login; start a fresh one.
-      if (accountChanged) this.codex.restart();
+      // The app-server captures the provider/profile configuration at startup too.
+      // Keep only a fingerprint: configuration can contain private provider settings.
+      const configuration = await readFile(join(this.codexHome, "config.toml"))
+        .then((contents) => createHash("sha256").update(contents).digest("hex")).catch(() => null);
+      const configurationChanged = this.lastCodexConfiguration !== undefined && configuration !== this.lastCodexConfiguration;
+      this.lastCodexConfiguration = configuration;
+      if (accountChanged || configurationChanged) this.codex.restart();
+      if (accountChanged || configurationChanged) this.lastGoodCodex = null;
       const raw = await this.codex.readRateLimits();
       const after = await readCodexAccountScope(this.codexHome);
       const windows = normalizeCodexLimits(raw);
@@ -240,10 +241,43 @@ export class LimitsService {
         windows,
         accountScope: !accountChanged && before !== null && before === after ? before : null
       };
-      this.lastGoodCodex = available;
+      // A response spanning a login change is unscoped and cannot seed the stale cache.
+      this.lastGoodCodex = before === after ? available : null;
       return available;
     } catch (error) {
-      const reason = adapterReason(error);
+      if (requestScope !== undefined && requestScope !== await readCodexAccountScope(this.codexHome)) {
+        this.lastGoodCodex = null;
+        return unavailable("codex", "codex-app-server", "protocol-error", checkedAt);
+      }
+      let reason = adapterReason(error);
+      let source: LimitSource = "codex-app-server";
+      if (reason === "api-profile") {
+        // Retain gateway observations across transient polls, never native-account windows.
+        if (this.lastGoodCodex?.source !== "omniroute-usage-api") this.lastGoodCodex = null;
+        try {
+          const windows = await readOmniRouteCodexLimits(this.environment, undefined, availableCli(this.providerClis, "codex")?.environment);
+          if (requestScope !== await readCodexAccountScope(this.codexHome)) {
+            this.lastGoodCodex = null;
+            throw new LimitsAdapterError("protocol-error");
+          }
+          if (windows) {
+            const available: Extract<ProviderLimitsSnapshot, { state: "available" }> = {
+              provider: "codex", state: "available", source: "omniroute-usage-api",
+              fetchedAt: Date.now(), windows, accountScope: null
+            };
+            this.lastGoodCodex = available;
+            return available;
+          }
+          this.lastGoodCodex = null;
+        } catch (quotaError) {
+          source = "omniroute-usage-api";
+          reason = quotaError instanceof OmniRouteQuotaError ? quotaError.reason : "protocol-error";
+          if (reason !== "timeout" && reason !== "protocol-error") this.lastGoodCodex = null;
+        }
+      }
+      if (requestScope !== undefined && requestScope !== await readCodexAccountScope(this.codexHome)) {
+        this.lastGoodCodex = null;
+      }
       if (this.lastGoodCodex) {
         return {
           ...this.lastGoodCodex,
@@ -252,7 +286,7 @@ export class LimitsService {
           reason
         };
       }
-      return unavailable("codex", "codex-app-server", reason, checkedAt);
+      return unavailable("codex", source, reason, checkedAt);
     }
   }
 
@@ -819,235 +853,18 @@ function reserveLoopbackPort(): Promise<number> {
   });
 }
 
-class CodexAppServerClient {
-  private child: ChildProcessWithoutNullStreams | null = null;
-  private ready: Promise<void> | null = null;
-  private pending = new Map<number, PendingRequest>();
-  private nextId = 1;
-  private disposed = false;
-  private idleTimer: NodeJS.Timeout | null = null;
-  private readonly cli: AvailableProviderCli | null;
-  private readonly clientVersion: string;
-  private readonly idleMs: number;
-
-  constructor(cli: AvailableProviderCli | null, clientVersion: string, idleMs: number) {
-    this.cli = cli;
-    this.clientVersion = clientVersion;
-    this.idleMs = idleMs;
-  }
-
+class CodexLimitsClient extends CodexAppServerClient {
   async readRateLimits(): Promise<unknown> {
-    this.clearIdleTimer();
-    try {
-      await this.ensureConnected();
-      return await this.request("account/rateLimits/read");
-    } finally {
-      this.scheduleIdleStop();
-    }
-  }
-
-  /** Drops the current app-server so the next read starts one with the current login. */
-  restart(): void {
-    if (this.disposed) return;
-    this.resetConnection();
-  }
-
-  dispose(): void {
-    if (this.disposed) return;
-    this.disposed = true;
-    this.clearIdleTimer();
-    this.rejectPending("protocol-error");
-    this.stopChild();
-  }
-
-  /** Stops the app-server once no read came for `idleMs`; the next read starts it again. */
-  private scheduleIdleStop(): void {
-    this.clearIdleTimer();
-    if (this.disposed || !this.child || this.pending.size > 0) return;
-    this.idleTimer = setTimeout(() => {
-      this.idleTimer = null;
-      if (this.pending.size === 0) this.resetConnection();
-    }, this.idleMs);
-    this.idleTimer.unref();
-  }
-
-  private clearIdleTimer(): void {
-    if (this.idleTimer) clearTimeout(this.idleTimer);
-    this.idleTimer = null;
-  }
-
-  private ensureConnected(): Promise<void> {
-    if (this.disposed) return Promise.reject(new LimitsAdapterError("protocol-error"));
-    if (this.ready) return this.ready;
-
-    this.startChild();
-    this.ready = this.request("initialize", {
-      clientInfo: { name: "canvastty", version: this.clientVersion }
-    }).then(() => {
-      this.notify("initialized", {});
-    }).catch((error: unknown) => {
-      this.resetConnection();
-      throw error;
-    });
-    return this.ready;
-  }
-
-  private startChild(): void {
-    if (!this.cli) throw new LimitsAdapterError("cli-not-found");
-    const launch = providerChildProcessLaunch(
-      this.cli,
-      ["app-server", "--listen", "stdio://"]
-    );
-    let child: ChildProcessWithoutNullStreams;
-    try {
-      child = spawn(launch.command, launch.args, {
-        shell: false,
-        env: { ...process.env, ...launch.environment },
-        stdio: ["pipe", "pipe", "pipe"],
-        ...(launch.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {})
-      });
-    } catch {
-      throw new LimitsAdapterError("cli-not-found");
-    }
-
-    this.child = child;
-    const lines = new NdjsonLineReader({ maxLineBytes: MAX_LINE_BYTES });
-    child.stdout.on("data", (chunk: Buffer) => this.consume(child, lines, chunk));
-    child.stdin.on("error", () => this.connectionFailed("protocol-error", child));
-    child.stderr.resume();
-    child.once("error", (error: NodeJS.ErrnoException) => {
-      this.connectionFailed(error.code === "ENOENT" ? "cli-not-found" : "protocol-error", child);
-    });
-    child.once("close", () => this.connectionFailed("protocol-error", child));
-  }
-
-  private request(method: string, params?: unknown): Promise<unknown> {
-    const child = this.child;
-    if (!child || !child.stdin.writable || this.disposed) {
-      return Promise.reject(new LimitsAdapterError("protocol-error"));
-    }
-
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new LimitsAdapterError("timeout"));
-        this.resetConnection();
-      }, REQUEST_TIMEOUT_MS);
-      timer.unref();
-      this.pending.set(id, { resolve, reject, timer });
-
-      if (!this.write({ id, method, ...(params === undefined ? {} : { params }) })) {
-        clearTimeout(timer);
-        this.pending.delete(id);
-        reject(new LimitsAdapterError("protocol-error"));
-        this.resetConnection();
-      }
-    });
-  }
-
-  private notify(method: string, params: unknown): void {
-    if (!this.write({ method, params })) {
+    const auth = await this.call("account/read", { refreshToken: false });
+    if (!isRecord(auth) || typeof auth.requiresOpenaiAuth !== "boolean"
+      || !(auth.account === null || isRecord(auth.account) && typeof auth.account.type === "string")) {
       throw new LimitsAdapterError("protocol-error");
     }
-  }
-
-  private write(message: object): boolean {
-    const child = this.child;
-    if (!child || !child.stdin.writable || this.disposed) return false;
-    const line = `${JSON.stringify(message)}\n`;
-    if (Buffer.byteLength(line) > MAX_LINE_BYTES) return false;
-    try {
-      child.stdin.write(line);
-      return true;
-    } catch {
-      return false;
+    if (!auth.requiresOpenaiAuth || isRecord(auth.account) && auth.account.type === "apiKey") {
+      throw new LimitsAdapterError("api-profile");
     }
-  }
-
-  private consume(child: ChildProcessWithoutNullStreams, lines: NdjsonLineReader, chunk: Buffer): void {
-    if (this.disposed || child !== this.child) return;
-    let complete: Buffer[];
-    try {
-      complete = lines.push(chunk);
-    } catch {
-      this.connectionFailed("protocol-error", child);
-      return;
-    }
-    for (const raw of complete) {
-      if (child !== this.child) return;
-      const line = raw.toString("utf8").trim();
-      if (line) this.consumeLine(line);
-    }
-  }
-
-  private consumeLine(line: string): void {
-    let message: JsonRpcResponse;
-    try {
-      message = JSON.parse(line) as JsonRpcResponse;
-    } catch {
-      this.connectionFailed("protocol-error", this.child);
-      return;
-    }
-
-    if (typeof message.id !== "number") return;
-    const pending = this.pending.get(message.id);
-    if (!pending) return;
-    clearTimeout(pending.timer);
-    this.pending.delete(message.id);
-
-    if (message.error !== undefined) {
-      pending.reject(new LimitsAdapterError("protocol-error"));
-      return;
-    }
-    pending.resolve(message.result);
-  }
-
-  private connectionFailed(reason: LimitUnavailableReason, child: ChildProcessWithoutNullStreams | null): void {
-    if (child && child !== this.child) return;
-    this.rejectPending(reason);
-    this.resetConnection();
-  }
-
-  private rejectPending(reason: LimitUnavailableReason): void {
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer);
-      pending.reject(new LimitsAdapterError(reason));
-    }
-    this.pending.clear();
-  }
-
-  private resetConnection(): void {
-    this.ready = null;
-    this.rejectPending("protocol-error");
-    this.stopChild();
-  }
-
-  private stopChild(): void {
-    const child = this.child;
-    this.child = null;
-    if (!child) return;
-
-    child.removeAllListeners("error");
-    child.removeAllListeners("close");
-    child.stdout.removeAllListeners("data");
-    try {
-      child.stdin.end();
-      child.kill();
-    } catch {
-      // The process may already be gone.
-    }
-
-    if (child.exitCode === null && child.signalCode === null) {
-      const hardKillTimer = setTimeout(() => {
-        try {
-          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-        } catch {
-          // Best-effort hardening during shutdown.
-        }
-      }, 500);
-      hardKillTimer.unref();
-    }
+    if (auth.account === null) throw new LimitsAdapterError("not-authenticated");
+    return await this.call("account/rateLimits/read");
   }
 }
 
@@ -1061,7 +878,7 @@ class LimitsAdapterError extends Error {
 }
 
 function adapterReason(error: unknown): LimitUnavailableReason {
-  return error instanceof LimitsAdapterError ? error.reason : "protocol-error";
+  return (error instanceof LimitsAdapterError || error instanceof CodexAppServerError) ? error.reason : "protocol-error";
 }
 
 function unavailable(

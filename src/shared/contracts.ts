@@ -1760,12 +1760,14 @@ export interface BrowserActivityStateEvent {
 
 export type LimitSource =
   | "codex-app-server"
+  | "omniroute-usage-api"
   | "claude-usage-api"
   | "qwen-cli"
   | "kimi-usage-api"
   | "opencode-go-usage-api"
   | "grok-billing-api";
 export type LimitUnavailableReason =
+  | "api-profile"
   | "cli-not-found"
   | "not-authenticated"
   | "session-expired"

@@ -45,15 +45,15 @@ export class SessionScreen {
     }));
   }
 
+  async inspect<T>(read: (terminal: import("@xterm/headless").Terminal) => T): Promise<T | null> {
+    await this.ready;
+    return this.disposed ? null : read(this.terminal);
+  }
+
   async text(): Promise<string> {
     await this.ready;
     if (this.disposed) return "";
-    const buffer = this.terminal.buffer.active;
-    const lines: string[] = [];
-    for (let row = buffer.baseY; row < buffer.baseY + this.terminal.rows; row += 1) {
-      lines.push(buffer.getLine(row)?.translateToString(true) ?? "");
-    }
-    return lines.join("\n");
+    return terminalScreenText(this.terminal);
   }
 
   async typedAfter(marker: string): Promise<string | null> {
@@ -111,4 +111,17 @@ export function imageMarkers(screen: string): number {
 
 export function pasteMarkers(screen: string): number {
   return (screen.match(/\[Pasted (?:text #\d+[^\]]*|Content[^\]]*)\]/g) ?? []).length;
+}
+
+/** Visible screen rows, optionally reconstructing xterm's soft-wrapped logical lines. */
+export function terminalScreenText(terminal: import("@xterm/headless").Terminal, unwrap = false): string {
+  const buffer = terminal.buffer.active;
+  const lines: string[] = [];
+  for (let row = buffer.baseY; row < buffer.baseY + terminal.rows; row++) {
+    const line = buffer.getLine(row);
+    const text = line?.translateToString(!unwrap) ?? "";
+    if (unwrap && line?.isWrapped && lines.length) lines[lines.length - 1] += text;
+    else lines.push(text);
+  }
+  return (unwrap ? lines.map((line) => line.trimEnd()) : lines).join("\n");
 }

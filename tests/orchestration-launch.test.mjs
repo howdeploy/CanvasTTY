@@ -83,3 +83,17 @@ test("the stdio helper advertises orchestration tools and forwards calls", async
   assert.equal(malformed.result.isError, true);
   assert.match(malformed.result.content[0].text, /INVALID_REQUEST.*Missing required argument: provider/u);
 });
+
+
+test("Codex orchestration is direct without broadening the allowlist or changing browser discovery", () => {
+  for (const tools of [["list_providers", "spawn_agent"], ["fixture-plugin__inspect"], []]) {
+    const args=codexMcpArgs(helper,orchestrationHelper,tools);
+    assert.match(args[3],/omit_tools_from=\["deferred"\]/u);
+    assert.ok(args[3].includes(`enabled_tools=${JSON.stringify(tools)}`));
+    assert.match(args[3],/disabled_tools=\[\]/u);
+    assert.doesNotMatch(args[1],/omit_tools_from/u,"browser tools keep their existing exposure");
+  }
+  const only=codexMcpArgs(null,orchestrationHelper);
+  assert.match(only[1],/omit_tools_from=\["deferred"\]/u);
+  assert.deepEqual(codexMcpArgs(null),[]);
+});

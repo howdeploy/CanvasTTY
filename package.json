@@ -28,6 +28,7 @@
     "smoke:browser:providers": "node scripts/smoke-browser-providers.mjs --deterministic",
     "smoke:browser:provider-helper": "node scripts/smoke-browser-providers.mjs --direct",
     "smoke:browser:providers:live": "node scripts/smoke-browser-providers.mjs --all",
+    "smoke:codex-mcp-discovery": "node scripts/smoke-codex-mcp-discovery.mjs",
     "smoke:cli-resolution:mac": "node scripts/smoke-packaged-cli-resolution.mjs",
     "smoke:appimage": "node scripts/smoke-appimage.mjs",
     "preview": "electron-vite preview",

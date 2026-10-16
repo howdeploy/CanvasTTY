@@ -66,7 +66,12 @@ The orchestration MCP is a **second tool surface on the agent-bridge architectur
    sessions. No tool ever names an unrelated session.
 3. Bootstrap capability injection happens at PTY launch exactly as the browser bridge does
    today (one-use, rotated to session-scoped, revoked at exit), but only for sessions whose
-   metadata role is `orchestrator`.
+   metadata role is `orchestrator`. A new CLI thread may start another MCP helper
+   with the same PTY environment: bootstrap authentication can join the same
+   launch while it has a healthy authenticated connection, even after the initial
+   bootstrap TTL. It cannot revive a disconnected, expired or revoked launch.
+   Helpers share a session-scoped reconnect capability so a new join does not
+   invalidate an earlier helper's reconnect path. PTY cleanup revokes them all.
 4. Per-provider MCP config injection follows `ProviderLaunch.ts`'s existing adapters
    (CLI args for Claude/Codex/Qwen, inline config for OpenCode, owned temp entries for
    Kimi/Hermes), gated on the same role.

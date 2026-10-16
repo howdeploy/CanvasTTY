@@ -230,7 +230,7 @@ test("Codex needs an empty prompt; then each image goes in its own paste before 
     assert.equal(terminal.writes.length, 0);
     assert.equal(materials.snapshot().handoffs.length, 0);
 
-    terminal.emit("c1", "\x1b[2J\x1b[H› Ask Codex to do anything\r\n");
+    terminal.emit("c1", "\x1b[2J\x1b[H› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
     const result = await handoffs.send(draft("c1"));
     assert.equal(result.ok, true);
     assert.deepEqual(terminal.writes.map((write) => write === "\r" ? "enter" : IMAGE_LINE.test(codexToken(write.slice(START.length, -END.length)) ?? "") ? "image" : "text"),
@@ -246,7 +246,7 @@ test("dots Codex animates around its prompt do not hide whether it is empty", as
     terminal.tui = codexTui(terminal);
     terminal.emit("c1", "\x1b[2J\x1b[H›⠁half-typed words   ⠈\r\n");
     assert.deepEqual(await handoffs.send(draft("c1")), { ok: false, reason: "composer-not-ready" });
-    terminal.emit("c1", "\x1b[2J\x1b[H   ⠁  ⠐\r\n›⠁Ask Codex to do anything   ⠈    ⠄\r\n");
+    terminal.emit("c1", "\x1b[2J\x1b[H   ⠁  ⠐\r\n›⠁\x1b[2mAsk Codex to do anything\x1b[22m   ⠈    ⠄\r\n");
     assert.equal((await handoffs.send(draft("c1"))).ok, true);
   });
 });
@@ -256,7 +256,7 @@ test("a Codex prompt drawn before the kept output was trimmed still counts as em
     terminal.add({ id: "c1", provider: "codex", cwd: "/work" });
     terminal.tui = codexTui(terminal);
     terminal.setStatus("c1", "unavailable");
-    terminal.emit("c1", "\x1b[2J\x1b[H› Ask Codex to do anything\r\n");
+    terminal.emit("c1", "\x1b[2J\x1b[H› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
     const drawn = terminal.readBuffer("c1").outputOffset;
     for (let frame = 0; frame < 400; frame += 1) terminal.emit("c1", `\x1b[${3 + (frame % 5)};${10 + (frame % 60)}H${frame % 2 ? "⠁" : " "}`);
     const kept = terminal.readBuffer("c1");
@@ -682,7 +682,7 @@ test("a status change after pasting blocks Enter", async () => {
 test("a status change between Codex images stops delivery", async () => {
   await withHandoffs(async ({ handoffs, terminal, draft }) => {
     terminal.add({ id: "c1", provider: "codex", cwd: "/work" });
-    terminal.emit("c1", "\x1b[2J\x1b[H› Ask Codex to do anything\r\n");
+    terminal.emit("c1", "\x1b[2J\x1b[H› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
     const render = codexTui(terminal);
     terminal.tui = (id, data) => {
       render(id, data);
@@ -704,7 +704,7 @@ test("a session restarted in the middle of a delivery gets nothing more, and the
       setTimeout(() => terminal.emit(id, `[Image #${++images}] `), 5);
       if (images === 0) terminal.sessions[0].startedAt = 200;
     };
-    terminal.emit("c1", "\x1b[2J\x1b[H› Ask Codex to do anything\r\n");
+    terminal.emit("c1", "\x1b[2J\x1b[H› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
     const result = await handoffs.send(draft("c1"));
     assert.deepEqual({ state: result.handoff.delivery.state, error: result.handoff.delivery.error },
       { state: "failed", error: "The session restarted or exited during delivery." });
@@ -722,7 +722,7 @@ test("Codex text counts as shown only when more of it appears than before the pa
       const inner = data.startsWith(START) ? data.slice(START.length, -END.length) : "";
       if (IMAGE_LINE.test(codexToken(inner) ?? "")) setTimeout(() => terminal.emit(id, `[Image #${++images}] `), 5);
     };
-    terminal.emit("c1", `\x1b[2J\x1b[H${preview.split("\n").at(-1)}\r\n› Ask Codex to do anything\r\n`);
+    terminal.emit("c1", `\x1b[2J\x1b[H${preview.split("\n").at(-1)}\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n`);
     const result = await handoffs.send(request);
     assert.deepEqual({ state: result.handoff.delivery.state, note: result.handoff.delivery.note }, { state: "pasted", note: "not-seen" });
     assert.equal(terminal.writes.includes("\r"), false);
@@ -775,7 +775,7 @@ test("sessions that were running before the service started are mirrored from wh
   await withHandoffs(async ({ materials, terminal, draft }) => {
     terminal.add({ id: "c1", provider: "codex", cwd: "/work" });
     terminal.tui = codexTui(terminal);
-    terminal.emit("c1", "\x1b[2J\x1b[H› Ask Codex to do anything\r\n");
+    terminal.emit("c1", "\x1b[2J\x1b[H› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
     const drawn = terminal.readBuffer("c1").outputOffset;
     const restored = new HandoffService({
       materials,
@@ -847,7 +847,7 @@ test("Codex text that never lands is not submitted even though its images did", 
       const inner = data.startsWith(START) ? data.slice(START.length, -END.length) : "";
       if (IMAGE_LINE.test(codexToken(inner) ?? "")) setTimeout(() => terminal.emit(id, `[Image #${++images}] `), 15);
     };
-    terminal.emit("c1", "\x1b[2J\x1b[H› Ask Codex to do anything\r\n");
+    terminal.emit("c1", "\x1b[2J\x1b[H› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
     const result = await handoffs.send(draft("c1"));
     assert.equal(result.handoff.delivery.state, "pasted");
     assert.equal(terminal.writes.includes("\r"), false);
@@ -883,7 +883,7 @@ test("Codex gets image paths it can read as one path even with spaces, and text 
         const lines = inner.split("\n");
         setTimeout(() => terminal.emit(id, `\x1b[2J\x1b[H› ${lines.slice(-3).join("\r\n  ")}\r\n`), 15);
       };
-      terminal.emit("c1", "\x1b[2J\x1b[H› Ask Codex to do anything\r\n");
+      terminal.emit("c1", "\x1b[2J\x1b[H› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
       const result = await handoffs.send(draft("c1"));
       assert.ok(result.handoff.folder.includes(" "));
       assert.deepEqual({ state: result.handoff.delivery.state, attached: result.handoff.delivery.imagesAttached }, { state: "submitted", attached: 2 });
@@ -977,5 +977,41 @@ test("a delivered handoff says when the outcome could not be saved", async () =>
     assert.equal(result.handoff.delivery.stateSaved, false);
     assert.equal(terminal.writes.length > 0, true, "the terminal did receive the package");
     await rm(blocked, { recursive: true });
+  });
+});
+
+test("material handoff preserves unstyled drafts that equal a Codex suggestion", async()=>{
+  await withHandoffs(async ({handoffs,terminal,draft})=>{
+    terminal.add({id:"c1",provider:"codex",cwd:"/work"});
+    terminal.tui=codexTui(terminal);
+    for(const suggestion of ["Ask Codex to do anything","Explain this codebase"]) {
+      terminal.emit("c1",`\x1b[0m\x1b[2J\x1b[H› ${suggestion}\r\n`);
+      assert.deepEqual(await handoffs.send(draft("c1")),{ok:false,reason:"composer-not-ready"});
+    }
+    assert.deepEqual(terminal.writes,[]);
+  });
+});
+
+
+for (const footer of ["Press enter to confirm trust", "Press enter to confirm permissions"]) {
+  test(`narrow Codex material handoffs refuse a wrapped live confirmation: ${footer}`, async () => {
+    await withHandoffs(async ({ handoffs, terminal, draft }) => {
+      terminal.geometry = () => ({ cols: 20, rows: 30 });
+      terminal.add({ id: "c1", provider: "codex", cwd: "/work" });
+      terminal.emit("c1", `› \x1b[2mAsk Codex to do anything\x1b[22m\r\n${footer}\r\n`);
+      assert.deepEqual(await handoffs.send(draft("c1")), { ok: false, reason: "composer-not-ready" });
+      assert.deepEqual(terminal.writes, []);
+    });
+  });
+}
+
+test("a narrow ordinary Codex composer still receives a material handoff", async () => {
+  await withHandoffs(async ({ handoffs, terminal, draft }) => {
+    terminal.geometry = () => ({ cols: 20, rows: 30 });
+    terminal.add({ id: "c1", provider: "codex", cwd: "/work" });
+    terminal.tui = codexTui(terminal);
+    terminal.emit("c1", "› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
+    assert.equal((await handoffs.send(draft("c1"))).ok, true);
+    assert.ok(terminal.writes.length > 0);
   });
 });

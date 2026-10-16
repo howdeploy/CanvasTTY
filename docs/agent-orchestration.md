@@ -114,6 +114,7 @@ The default private controller file is next to the connection descriptor. Use a 
 - `status` returns the native session state plus the controller-submitted turn, if any.
 - Before its first prompt a ready provider can still report `unavailable`; inspect `screen`. Startup/authentication/trust menus require resolution before tasks. Task delivery never doubles as menu confirmation.
 - `send` accepts at most 16,000 characters of task text. It rejects slash commands, terminal control sequences and input while a submitted turn is active. It does not offer automatic permission approval.
+- Automated Codex prompts wait for its empty task composer in the current launch, then use explicit bracketed paste followed by Enter. Startup menus are not task input; cancellation, timeout or restart drops the pending text. A screen from a previous launch cannot establish readiness, and paste-only sends do not submit the draft.
 - An accepted send means text was written to the PTY. It is not a completed task.
 - A result becomes fresh only after a corresponding working-to-idle lifecycle transition. Provider turn IDs, when present, reject stale completion signals.
 - `resultRevision` counts completed observations. A previous completed answer is kept separate from the active turn. `result --after N` returns `fresh: false` until a newer result exists.
@@ -153,3 +154,15 @@ node scripts/smoke-agent-control.mjs --live --cwd /already/trusted/test-director
 The opt-in live smoke uses the actual CLI client, native PTY, installed Codex and authenticated lifecycle/result hooks. It asks Codex to create and edit one uniquely named proof file, independently verifies its bytes, and retains evidence. It never launches or controls the user's desktop window. It uses the existing Codex authentication and consumes provider usage. Platform claims require a run on that platform; Unix unit tests do not prove Windows behavior.
 
 The smoke prints its session ID and private connection/client paths at startup. If a startup menu blocks it, inspect that session with the CLI using those paths and resolve only reviewed, authorized choices. The smoke waits up to two minutes for a ready composer; it does not silently trust hooks or approve permissions.
+
+
+Codex receives the enabled `canvastty_agents` tools directly through its supported
+per-server `omit_tools_from = ["deferred"]` setting. Coordination does not depend
+on ranked `tool_search` results. The launch allowlist, role checks, profile ceilings
+and project boundary are unchanged; browser tools retain their existing exposure.
+
+Verify the Codex exposure contract without credentials or real providers with
+`npm run smoke:codex-mcp-discovery -- /absolute/path/to/codex`
+(pass the native `codex.exe` on Windows). This uses temporary profiles, a synthetic
+model and loopback MCP/Responses servers. It checks both the deferred negative
+control and direct exposure of the exact enabled coordination catalog.

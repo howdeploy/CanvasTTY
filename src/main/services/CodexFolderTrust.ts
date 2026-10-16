@@ -67,6 +67,9 @@ export async function ensureCodexFolderTrust(options: {
   const requestedFile = profileConfig(environment);
   const file = await canonicalConfigPath(requestedFile);
   await serializeTrust(file, async () => {
+    // Codex requires an explicit CODEX_HOME to exist, including on the person's first launch.
+    await mkdir(dirname(requestedFile), { recursive: true, mode: 0o700 });
+    if (await canonicalConfigPath(requestedFile) !== file) throw new Error("Codex profile changed before trust could be read.");
     const client = new CodexAppServerClient(cli, options.clientVersion, 1_000, environment.HOME || homedir());
     try {
       // Do not load the new project's settings before the person has trusted it.

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,11 +7,12 @@ import { canvasTtyPrivateData } from "../src/main/services/safety/baseProtection
 import { privateAppData } from "../src/main/services/isolation/isolationPaths.ts";
 import { ensureCodexFolderTrust, usesLocalCodexConfig } from "../src/main/services/CodexFolderTrust.ts";
 
-async function fixture(t, { trusted = false, conflict = false, fresh = false, layerConfig, serialized = false, profileAlias = false } = {}) {
+async function fixture(t, { trusted = false, conflict = false, fresh = false, missingHome = false, layerConfig, serialized = false, profileAlias = false } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-folder-trust-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const home = join(root, "profile"), cwd = join(root, 'project.with dot " Ю');
-  await mkdir(home); await mkdir(cwd);
+  if (!missingHome) await mkdir(home);
+  await mkdir(cwd);
   const profile = profileAlias ? join(root, "profile-link") : home;
   if (profileAlias) await symlink(home, profile, "dir");
   const projects = {projects: trusted ? {[cwd]: {trust_level:"trusted"}} : {}};
@@ -229,3 +230,25 @@ test("profile aliases and config-file aliases still identify the local Codex con
   await symlink(f.config, join(other, "config.toml"));
   assert.equal(await usesLocalCodexConfig({ CODEX_HOME: alias }, { CODEX_HOME: other }), true);
 });
+
+
+for (const approve of [true, false]) {
+  test(`a missing Codex home supports the first person trust decision (${approve ? "approve" : "decline"})`, posix, async t => {
+    const f = await fixture(t, { fresh: true, missingHome: true });
+    const profile = join(f.root, "profile");
+    await assert.rejects(stat(profile), { code: "ENOENT" });
+    let confirmed = 0;
+    const launch = ensureCodexFolderTrust({ ...f.options, confirm: async () => { confirmed++; return approve; } });
+    if (approve) {
+      await launch;
+      assert.match(await readFile(f.config, "utf8"), /TRUST-SAVED/);
+    } else {
+      await assert.rejects(launch, /not granted/);
+      await assert.rejects(stat(f.config), { code: "ENOENT" });
+    }
+    assert.equal(confirmed, 1);
+    assert.equal((await stat(profile)).mode & 0o777, 0o700);
+    assert.equal((await f.messages()).filter(m => m.method === "config/batchWrite").length, approve ? 1 : 0);
+    await assert.rejects(stat(f.options.backupDirectory), { code: "ENOENT" });
+  });
+}

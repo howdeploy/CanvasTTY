@@ -154,3 +154,15 @@ node scripts/smoke-agent-control.mjs --live --cwd /already/trusted/test-director
 The opt-in live smoke uses the actual CLI client, native PTY, installed Codex and authenticated lifecycle/result hooks. It asks Codex to create and edit one uniquely named proof file, independently verifies its bytes, and retains evidence. It never launches or controls the user's desktop window. It uses the existing Codex authentication and consumes provider usage. Platform claims require a run on that platform; Unix unit tests do not prove Windows behavior.
 
 The smoke prints its session ID and private connection/client paths at startup. If a startup menu blocks it, inspect that session with the CLI using those paths and resolve only reviewed, authorized choices. The smoke waits up to two minutes for a ready composer; it does not silently trust hooks or approve permissions.
+
+
+Codex receives the enabled `canvastty_agents` tools directly through its supported
+per-server `omit_tools_from = ["deferred"]` setting. Coordination does not depend
+on ranked `tool_search` results. The launch allowlist, role checks, profile ceilings
+and project boundary are unchanged; browser tools retain their existing exposure.
+
+Verify the Codex exposure contract without credentials or real providers with
+`npm run smoke:codex-mcp-discovery -- /absolute/path/to/codex`
+(pass the native `codex.exe` on Windows). This uses temporary profiles, a synthetic
+model and loopback MCP/Responses servers. It checks both the deferred negative
+control and direct exposure of the exact enabled coordination catalog.

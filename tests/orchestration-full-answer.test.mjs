@@ -110,6 +110,12 @@ for (const implementation of IMPLEMENTATIONS) {
       assert.equal(reply.isError, false);
       assert.equal(canceled.canceled, true);
       assert.equal(terminals.getMetadata(child.sessionId), null);
+      const { reply: lateReply, value: lateWait } = await tool("wait_for_agent", { sessionId: child.sessionId, timeoutSeconds: 1 });
+      assert.equal(lateReply.isError, false);
+      assert.equal(lateWait.reason, "closed");
+      assert.equal(lateWait.resultReadBeforeClose, true);
+      assert.equal(lateWait.output, "");
+      assert.equal(lateWait.answer, undefined, "cleanup receipts never retain document text");
     }
   });
 }
@@ -196,4 +202,37 @@ test("sending a new task invalidates the old result receipt even if the next ans
   assert.equal(canceled, false);
   await call("get_agent_result");
   assert.equal((await call("cancel_agent")).canceled, true);
+});
+
+
+test("closed-child waits are scoped, immediate and bounded without retaining answers", async () => {
+  const live = new Set();
+  let waits = 0;
+  const handler = new ScopedOrchestrationHandler({
+    status: () => ({ role: "orchestrator", provider: "codex" }),
+    isInSubtree: (_owner, id) => live.has(id),
+    result: id => ({ sessionId: id, status: "working", answer: null }),
+    cancel: id => { live.delete(id); },
+    waitFor: () => { waits += 1; throw new Error("A disposed child must never reach the controller wait."); }
+  });
+  const call = (tool, id, owner = "parent") => handler.execute(owner, { id: "cleanup", tool, arguments: { sessionId: id } });
+  live.add("closed-first");
+  await call("cancel_agent", "closed-first");
+  const receipt = await call("wait_for_agent", "closed-first");
+  assert.equal(receipt.reason, "closed");
+  assert.equal(receipt.waitedMs, 0);
+  assert.equal(receipt.resultReadBeforeClose, false, "canceling active work does not claim a read result");
+  assert.equal(receipt.answer, undefined);
+  await assert.rejects(call("wait_for_agent", "closed-first", "foreign"), /subtree/u);
+  await assert.rejects(call("get_agent_result", "closed-first"), /subtree/u);
+  await assert.rejects(call("send_to_agent", "closed-first"), /subtree/u);
+  await assert.rejects(call("wait_for_agent", "unknown"), /subtree/u);
+  for (let index = 0; index < 256; index += 1) {
+    const id = `closed-${index}`;
+    live.add(id);
+    await call("cancel_agent", id);
+  }
+  await assert.rejects(call("wait_for_agent", "closed-first"), /subtree/u);
+  assert.equal((await call("wait_for_agent", "closed-255")).reason, "closed");
+  assert.equal(waits, 0);
 });

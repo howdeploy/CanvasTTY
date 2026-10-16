@@ -20,6 +20,7 @@ import type { McpToolDefinition } from "../../../agent-browser/orchestration-cat
 // A page fits the MCP wire cap even after the helper embeds JSON inside JSON.
 const ANSWER_PAGE_CHARS = 16_384;
 const MAX_ANSWER_READS = 256;
+const MAX_CLOSED_CHILDREN = 256;
 
 /**
  * The only bridge between the orchestration MCP surface and session control.
@@ -29,6 +30,9 @@ const MAX_ANSWER_READS = 256;
  */
 export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
   private readonly answerReads = new Map<string, { signature: string; through: number; resultRead: boolean }>();
+  // Scoped tombstones retain no answer text or terminal output. They make a
+  // late wait truthful without reopening access to a disposed child.
+  private readonly closedChildren = new Map<string, { owner: string; resultReadBeforeClose: boolean }>();
   private readonly control: AgentControlService;
   private readonly plugins: Pick<PluginAgentTools, "list" | "call"> | null;
   private readonly providers: ProviderDirectorySources;
@@ -121,6 +125,12 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     // Its own session is in its subtree, but waiting on itself would only ever time out.
     if (target === orchestratorId) {
       throw orchestrationBridgeError("INVALID_REQUEST", "wait_for_agent waits for a subagent, not for this session.", false);
+    }
+    const closed = this.closedChildren.get(target);
+    if (closed?.owner === orchestratorId) {
+      return { sessionId: target, reason: "closed", exitCode: null, waitedMs: 0, output: "",
+        resultReadBeforeClose: closed.resultReadBeforeClose,
+        note: "This subagent was already closed by this orchestrator; do not wait again. Use the result received before closing it." };
     }
     this.requireOwned(orchestratorId, target);
     const seconds = typeof args.timeoutSeconds === "number" ? args.timeoutSeconds : DEFAULT_AGENT_WAIT_SECONDS;
@@ -254,7 +264,11 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
           "Read all final-answer pages with get_agent_result before closing this subagent; follow answer.nextOffset.", false);
       }
     }
+    const read = this.answerReads.get(id);
     this.control.cancel(id);
+    this.closedChildren.set(id, { owner: orchestratorId,
+      resultReadBeforeClose: Boolean(answer && read?.resultRead && read.signature === answerSignature(answer) && read.through >= answer.text.length) });
+    if (this.closedChildren.size > MAX_CLOSED_CHILDREN) this.closedChildren.delete(this.closedChildren.keys().next().value!);
     this.answerReads.delete(id);
     return { sessionId: id, canceled: true };
   }

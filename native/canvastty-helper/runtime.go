@@ -13,8 +13,9 @@ import (
 const (
 	runtimeProtocolVersion = 1
 	maxRuntimeMessageBytes = 64 * 1024
+	maxResultMessageBytes  = 512 * 1024
 	maxHookInputBytes      = 512 * 1024
-	maxResultChars         = 4096
+	maxResultChars         = 65_536
 	maxAnswerChars         = 4000
 
 	envRuntimeAddress           = "CANVASTTY_RUNTIME_ADDRESS"

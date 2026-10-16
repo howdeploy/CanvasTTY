@@ -11,6 +11,7 @@ import {
   MAX_ANSWER_CHARS,
   MAX_HOOK_INPUT_BYTES,
   MAX_RUNTIME_MESSAGE_BYTES,
+  MAX_RESULT_MESSAGE_BYTES,
   MAX_RESULT_CHARS,
   normalizeThreadId,
   PERMISSION_GATE,
@@ -373,7 +374,7 @@ export class RuntimeGateway {
       return;
     }
     this.sockets.add(socket);
-    const lines = new NdjsonLineReader({ maxLineBytes: MAX_RUNTIME_MESSAGE_BYTES });
+    const lines = new NdjsonLineReader({ maxLineBytes: MAX_RESULT_MESSAGE_BYTES });
     let handled = false;
     const close = () => {
       clearTimeout(firstMessage);
@@ -396,6 +397,8 @@ export class RuntimeGateway {
       clearTimeout(firstMessage);
       try {
         const value: unknown = JSON.parse(line.toString("utf8"));
+        if (line.byteLength > MAX_RUNTIME_MESSAGE_BYTES && !(isRecord(value)
+          && value.type === "lifecycle" && value.result !== undefined)) return close();
         // Decision hooks keep the socket open for the answer; every other message is unchanged.
         if (isPermissionRequest(value)) return this.acceptPermission(socket, value, close);
         if (isAnswerCaptureCheck(value)) {

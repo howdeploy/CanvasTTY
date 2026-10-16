@@ -119,7 +119,11 @@ func reportLifecycle(state, event string, turnID, threadID any, result *jsObject
 		message.set("lastAssistantMessage", jsSlice(*lastAssistantMessage, maxAnswerChars))
 	}
 	payload := append([]byte(jsonStringify(message)), '\n')
-	if len(payload) > maxRuntimeMessageBytes {
+	maxBytes := maxRuntimeMessageBytes
+	if result != nil {
+		maxBytes = maxResultMessageBytes
+	}
+	if len(payload) > maxBytes {
 		return false
 	}
 	return sendRuntimeMessage(address, payload, func(reply any) bool {
@@ -141,7 +145,7 @@ func answerCaptureIsActive(address, terminalSessionID, provider, capability stri
 }
 
 func sendRuntimeMessage(address string, payload []byte, accepted func(any) bool) bool {
-	if len(payload) > maxRuntimeMessageBytes {
+	if len(payload) > maxResultMessageBytes {
 		return false
 	}
 	line, ok := exchangeLine(address, payload, runtimeConnectTimeoutMs*time.Millisecond)

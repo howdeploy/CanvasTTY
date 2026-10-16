@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
-const MAX_RESPONSE_BYTES = 256 * 1024;
+const MAX_RESPONSE_BYTES = 512 * 1024;
 const HEX_TOKEN = /^[a-f0-9]{64}$/;
 
 export function defaultConnectionPath(environment = process.env, platform = process.platform) {

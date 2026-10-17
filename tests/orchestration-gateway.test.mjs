@@ -65,7 +65,7 @@ class TestClient {
 
 }
 
-async function fixture(t) {
+async function fixture(t, gatewayOptions = {}) {
   const directory = await mkdtemp(join(tmpdir(), "canvastty-orchestration-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const calls = [];
@@ -74,7 +74,8 @@ async function fixture(t) {
   const gateway = new OrchestrationGateway({
     runtimeDirectory: join(directory, "runtime"),
     handler: new ScopedOrchestrationHandler(control),
-    windowsHostPath: WINDOWS_PIPE_HOST
+    windowsHostPath: WINDOWS_PIPE_HOST,
+    ...gatewayOptions
   });
   await gateway.start();
   t.after(() => gateway.stop());
@@ -261,6 +262,54 @@ test("unauthenticated commands and replayed bootstrap tokens are rejected", asyn
   assert.equal(rejoinAck.type, "authenticated");
   rejoined.socket.destroy();
   terminals.disposeAll();
+});
+
+test("additional helpers join only the same live launch and preserve its reconnect capability", async (t) => {
+  let now = Date.now();
+  const { gateway } = await fixture(t, { now: () => now, capabilityTtlMs: 10 });
+  const capability = gateway.registerOrchestrator({ terminalSessionId: "parent" });
+  const first = await authenticatedClient(gateway, capability);
+  t.after(() => first.client.socket.destroy());
+  now += 1_000; // Beyond bootstrap TTL, within the live connection's heartbeat window.
+  const second = await authenticatedClient(gateway, capability);
+  t.after(() => second.client.socket.destroy());
+  assert.equal(second.reconnectToken, first.reconnectToken);
+  for (const [identity, token] of [
+    [{ ...capability, terminalSessionId: "foreign-parent" }, capability.capabilityToken],
+    [{ ...capability, connectionId: "foreign-launch" }, capability.capabilityToken],
+    [capability, "invalid-capability"]
+  ]) {
+    const rejected = await TestClient.connectTo(gateway.address);
+    assert.equal((await authExpectingFailure(rejected, identity, token)).error.code, "AUTH_INVALID");
+    rejected.socket.destroy();
+  }
+  // An earlier helper still reconnects after a later helper joined.
+  const rejoined = await authenticatedClient(gateway, { ...capability, capabilityToken: first.reconnectToken });
+  t.after(() => rejoined.client.socket.destroy());
+  assert.equal(rejoined.reconnectToken, first.reconnectToken);
+  const closed = [first, second, rejoined].map(({ client }) => new Promise(resolve => client.socket.once("close", resolve)));
+  gateway.revokeTerminalSession(capability.terminalSessionId);
+  await Promise.all(closed);
+  for (const token of [capability.capabilityToken, first.reconnectToken]) {
+    const revoked = await TestClient.connectTo(gateway.address);
+    assert.equal((await authExpectingFailure(revoked, capability, token)).error.code, "AUTH_INVALID");
+    revoked.socket.destroy();
+  }
+});
+
+test("bootstrap cannot authenticate an expired launch or join a stale connection", async (t) => {
+  let now = Date.now();
+  const { gateway } = await fixture(t, { now: () => now, heartbeatIntervalMs: 60_000 });
+  const live = gateway.registerOrchestrator({ terminalSessionId: "live-parent" });
+  const first = await authenticatedClient(gateway, live);
+  t.after(() => first.client.socket.destroy());
+  const unused = gateway.registerOrchestrator({ terminalSessionId: "unused-parent" });
+  now += 65_000;
+  for (const capability of [live, unused]) {
+    const rejected = await TestClient.connectTo(gateway.address);
+    assert.equal((await authExpectingFailure(rejected, capability, capability.capabilityToken)).error.code, "AUTH_INVALID");
+    rejected.socket.destroy();
+  }
 });
 
 test("revoking the orchestrator session ends its connection and capability", async (t) => {

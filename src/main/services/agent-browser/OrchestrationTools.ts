@@ -169,10 +169,12 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       }
       throw canceledError();
     }
+    const starting = created.status === "unavailable" && created.exitCode === null;
     return {
       sessionId: created.id,
       provider: created.provider,
-      status: created.status,
+      status: starting ? "starting" : created.status,
+      ...(starting ? { note: "Subagent created; lifecycle status is not known yet. Call wait_for_agent to await its result." } : {}),
       title: created.title,
       profile: created.profile,
       ...(profile.inherited ? { profileInherited: true } : {}),

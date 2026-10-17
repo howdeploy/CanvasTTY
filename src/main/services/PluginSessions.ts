@@ -13,6 +13,7 @@ import type {
   TerminalDataEvent
 } from "../../shared/contracts.ts";
 import { IPC } from "../../shared/contracts.ts";
+import { codexPromptInput } from "./codexInput.ts";
 import type { PersistedEnvironmentRef } from "./TerminalSessionStore.ts";
 
 /** A card as plugin services see it (EP-4): metadata and where it runs, never screen text. */
@@ -57,7 +58,7 @@ interface TerminalPort {
   } | null;
   setPluginOwner(id: string, pluginId: string): void;
   readBuffer(id: string): TerminalBufferSnapshot;
-  deliverInput(id: string, text: string): Promise<{ delivered: boolean }>;
+  deliverInput(id: string, text: string, waitMs?: number, signal?: AbortSignal, waitForCodexComposer?: boolean): Promise<{ delivered: boolean }>;
   dispose(id: string, options?: { keepEnvironmentData?: boolean }): void;
   redactSecrets(text: string): string;
   redactSecretsTail(text: string, maxChars: number): string;
@@ -252,7 +253,9 @@ export class PluginSessions {
       throw new Error(`text must be 1 to ${MAX_SEND_CHARS} characters.`);
     }
     const submit = values.submit === undefined ? true : values.submit === true;
-    return this.deps.terminals.deliverInput(sessionId, submit ? `${values.text}\r` : values.text)
+    const codex = this.deps.terminals.pluginContext(sessionId)?.metadata.provider === "codex";
+    const data = codex ? codexPromptInput(values.text, submit) : submit ? `${values.text}\r` : values.text;
+    return this.deps.terminals.deliverInput(sessionId, data, undefined, undefined, codex)
       .then((delivery) => ({ sessionId, sent: delivery.delivered }));
   }
 

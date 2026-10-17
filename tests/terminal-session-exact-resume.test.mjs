@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { CodexAppServerError } from "../src/main/services/CodexAppServerClient.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { TerminalSessionStore } from "../src/main/services/TerminalSessionStore.ts";
 
@@ -223,3 +224,150 @@ test("local history reuses a running card before an exited card with the same co
   assert.equal(inst.findLocalConversation("codex", FIRST_THREAD).id, active.id);
   assert.equal(inst.findLocalConversation("hermes", FIRST_THREAD), null);
 });
+
+
+for (const trusted of [true, false]) {
+  test(`automatic local Codex restore checks trust before spawning (${trusted ? "trusted" : "missing trust"})`, async t => {
+    const directory = await mkdtemp(join(tmpdir(), "canvastty-restore-trust-"));
+    const initial = manager(directory, []);
+    const card = initial.create({ provider: "codex", profile: "auto", cwd: process.cwd(), position: { x: 0, y: 0 } });
+    initial.applyProviderSignal(card.id, { kind: "lifecycle", state: "idle", threadId: FIRST_THREAD });
+    await initial.shutdown();
+    const calls = [];
+    const restored = manager(directory, calls);
+    t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
+    let checked = 0;
+    restored.configureCodexRestoreTrust(async cwd => {
+      assert.equal(cwd, process.cwd());
+      assert.equal(calls.length, 0, "trust is checked before any process starts");
+      checked++;
+      if (!trusted) throw new Error("trust absent");
+    });
+    await restored.restorePersistedSessions();
+    assert.equal(checked, 1);
+    assert.equal(calls.length, trusted ? 1 : 0);
+    const session = restored.list().find(s => s.id === card.id);
+    if (!trusted) {
+      assert.equal(session.status, "failed");
+      assert.match(session.failureDetails, /Restart.*trust/);
+      assert.equal((await new TerminalSessionStore(directory).load())[0].threadId, FIRST_THREAD);
+      assert.equal(restored.localCodexFolderForTrust(card.id), process.cwd());
+    }
+  });
+}
+
+
+test("holding an untrusted restored parent also holds its descendants but leaves other providers running", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "canvastty-restore-family-trust-"));
+  const calls = [];
+  const restored = manager(directory, calls);
+  t.after(() => restored.shutdown());
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const base = { provider: "codex", profile: "auto", role: "orchestrator", title: "Saved",
+    titleCustomized: false, cwd: process.cwd(), position: { x: 0, y: 0 }, size: { width: 700, height: 430 },
+    lastState: "running", restore: true };
+  await new TerminalSessionStore(directory).replace([
+    { ...base, id: "parent" },
+    { ...base, id: "child", role: "subagent", parentSessionId: "parent" },
+    { ...base, id: "other-provider", provider: "claude", role: "agent" },
+    { ...base, id: "finished", lastState: "exited", exitCode: 0 }
+  ]);
+  let checks = 0;
+  restored.configureCodexRestoreTrust(async () => { checks++; throw new Error("trust absent"); });
+  await restored.restorePersistedSessions();
+  assert.equal(checks, 1, "children and finished cards do not request new trust");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "/resolved/claude");
+  for (const id of ["parent", "child"]) {
+    const session = restored.list().find(s => s.id === id);
+    assert.equal(session.status, "failed");
+    assert.match(session.failureDetails, /Restart/);
+  }
+  assert.equal(restored.list().find(s => s.id === "finished").status, "done");
+});
+
+
+for (const transportFails of [false, true]) {
+  test(`restore deduplicates local trust and stops repeating transport failure (${transportFails})`, async t => {
+    const directory = await mkdtemp(join(tmpdir(), "canvastty-restore-batch-"));
+    const store = new TerminalSessionStore(directory);
+    const records = Array.from({ length: 120 }, (_, index) => ({
+      id: `restored-${index}`, provider: "codex", profile: "normal", role: "agent", title: "Saved", titleCustomized: false,
+      cwd: index % 2 ? process.cwd() : tmpdir(), position: { x: 0, y: 0 }, size: { width: 700, height: 430 },
+      lastState: "running", restore: true
+    }));
+    await store.replace(records);
+    const calls = [];
+    const restored = manager(directory, calls);
+    t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
+    let checks = 0;
+    restored.configureCodexRestoreTrust(async () => {
+      checks++;
+      if (transportFails) throw new CodexAppServerError("timeout");
+    });
+    await restored.restorePersistedSessions();
+    assert.equal(checks, transportFails ? 1 : 2);
+    assert.equal(calls.length, transportFails ? 0 : 120);
+    assert.ok(restored.list().every(s => transportFails ? s.status === "failed" : s.exitCode === null));
+  });
+}
+
+test("held descendants cannot restart before their parent passes review and launches", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "canvastty-held-descendant-restart-"));
+  const calls = [], restored = manager(directory, calls);
+  t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
+  const base = { provider: "codex", profile: "auto", role: "orchestrator", title: "Saved",
+    titleCustomized: false, cwd: process.cwd(), position: { x: 0, y: 0 }, size: { width: 700, height: 430 },
+    lastState: "running", restore: true };
+  await new TerminalSessionStore(directory).replace([
+    { ...base, id: "parent" },
+    { ...base, id: "child", role: "subagent", parentSessionId: "parent" },
+    { ...base, id: "grandchild", role: "subagent", parentSessionId: "child" }
+  ]);
+  let trusted = false;
+  const check = async () => { if (!trusted) throw new Error("Trust not granted"); };
+  restored.configureCodexRestoreTrust(check);
+  await restored.restorePersistedSessions();
+  for (const id of ["child", "grandchild"]) {
+    const before = restored.getMetadata(id);
+    assert.match(before.failureDetails, /Restart the parent session first/);
+    assert.throws(() => restored.restart(id), /Restart the parent session successfully/);
+    assert.deepEqual(restored.getMetadata(id), before, "a refused restart keeps the held state");
+  }
+  assert.equal(calls.length, 0);
+  // Person IPC checks trust before restarting the top-level local Codex card.
+  await assert.rejects(check(process.cwd()), /Trust not granted/);
+  trusted = true;
+  await check(process.cwd());
+  restored.restart("parent");
+  assert.equal(calls.length, 1);
+  assert.throws(() => restored.restart("grandchild"), /Restart the parent session successfully/);
+  restored.restart("child");
+  restored.restart("grandchild");
+  assert.equal(calls.length, 3);
+});
+
+for (const trusted of [false, true]) {
+  test(`a stopped root's running descendant requires current folder trust (${trusted})`, async t => {
+    const directory = await mkdtemp(join(tmpdir(), "canvastty-stopped-parent-trust-"));
+    const calls = [], restored = manager(directory, calls);
+    t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
+    const base = { provider: "codex", profile: "auto", role: "orchestrator", title: "Saved",
+      titleCustomized: false, cwd: process.cwd(), position: { x: 0, y: 0 }, size: { width: 700, height: 430 }, restore: true };
+    await new TerminalSessionStore(directory).replace([
+      { ...base, id: "parent", lastState: "exited", exitCode: 0 },
+      { ...base, id: "child", role: "subagent", parentSessionId: "parent", lastState: "running" }
+    ]);
+    let checks = 0;
+    restored.configureCodexRestoreTrust(async () => {
+      checks++;
+      assert.equal(calls.length, 0);
+      if (!trusted) throw new Error("Trust absent");
+    });
+    await restored.restorePersistedSessions();
+    assert.equal(checks, 1);
+    assert.equal(calls.length, trusted ? 1 : 0);
+    if (!trusted) assert.throws(() => restored.restart("child"), /Restart the parent session successfully/);
+    else assert.equal(restored.getMetadata("parent").status, "done");
+  });
+}

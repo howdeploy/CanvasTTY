@@ -144,7 +144,7 @@ function sensitiveHomeFolders(home: string, xdgConfig: string): string[] {
  * token-authenticated sockets and per-run hook settings the CLI must read.
  */
 export function privateAppData(userDataPath: string): string[] {
-  return ["agent-control", "provider-secrets.bin", "plugin-secrets", "account-homes", "github-oauth.json", "launch-runs"]
+  return ["agent-control", "provider-secrets.bin", "plugin-secrets", "account-homes", "github-oauth.json", "launch-runs", "codex-config-backups"]
     .map((name) => join(userDataPath, name));
 }
 

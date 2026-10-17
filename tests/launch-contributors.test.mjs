@@ -430,3 +430,176 @@ test("end to end: the example service prepares a launch over JSON-RPC", async (t
   const empty = await pipeline.prepare(context({ greeting: "" }));
   assert.match(empty.reason, /Launch Env: Value is empty/u);
 });
+
+
+for (const answer of [{ args: ["--no-alt-screen"] }, { env: { EXAMPLE_LAUNCH_HINT: "yes" } }]) {
+  test(`local Codex launch options await person trust after preparation (${answer.args ? "args" : "environment"})`, { timeout: 5_000 }, async t => {
+    const { pipeline, requests } = await pipelineFixture(t, {
+      contributors: [contributor("p.local")], answers: { "p.local": answer }
+    });
+    const { manager, calls } = await managerFixture(t, pipeline);
+    let release, entered, trusted = false, wraps = 0;
+    manager.configureIsolation({
+      containment: () => true,
+      decide: ({ profile }) => ({ apply: true, profile }),
+      wrap: ({ command, args, env }) => {
+        assert.equal(trusted, true, "host trust precedes isolation and PTY creation");
+        wraps++;
+        return { command, args, env, cleanup() {} };
+      }
+    });
+    const waiting = new Promise(resolve => { release = resolve; });
+    const checking = new Promise(resolve => { entered = resolve; });
+    const created = manager.create({ provider: "codex", profile: "auto", cwd, position: at,
+      launchOptions: { "p.local": {} } }, { beforeLocalCodexLaunch: async folder => {
+        assert.equal(folder, cwd);
+        assert.equal(requests.length, 1, "plugin preparation finishes exactly once before trust");
+        assert.equal(calls.length, 0, "no process starts before the person's decision");
+        entered(); await waiting; trusted = true;
+      } });
+    await checking;
+    assert.equal(manager.launchPending(created.id), true);
+    release();
+    await waitFor(() => calls.length === 1);
+    if (answer.args) assert.ok(calls[0].args.includes("--no-alt-screen"));
+    else assert.equal(calls[0].options.env.EXAMPLE_LAUNCH_HINT, "yes");
+    assert.equal(requests.length, 1);
+    assert.equal(wraps, 1);
+  });
+}
+
+test("a plugin-owned Codex profile does not grant trust to the unrelated local profile", async t => {
+  const { pipeline } = await pipelineFixture(t, { contributors: [contributor("p.account")],
+    answers: { "p.account": { env: { CODEX_HOME: "{launchFiles}/account-profile" }, files: [{ relPath: "account-profile/config.toml", content: "" }] } } });
+  const { manager, calls } = await managerFixture(t, pipeline);
+  manager.create({ provider: "codex", profile: "normal", cwd, position: at, launchOptions: { "p.account": {} } },
+    { beforeLocalCodexLaunch: async () => assert.fail("foreign account must not trust the local profile") });
+  await waitFor(() => calls.length === 1);
+  assert.match(calls[0].options.env.CODEX_HOME, /account-profile$/);
+});
+
+test("declined contributed Codex trust starts no process and cleans generated launch files", async t => {
+  const { pipeline, runsRoot } = await pipelineFixture(t, { contributors: [contributor("p.local")],
+    answers: { "p.local": { env: { EXAMPLE_FILE: "{launchFiles}/hint.txt" }, files: [{ relPath: "hint.txt", content: "hint" }] } } });
+  const { manager, calls } = await managerFixture(t, pipeline);
+  const created = manager.create({ provider: "codex", profile: "normal", cwd, position: at,
+    launchOptions: { "p.local": {} } }, { beforeLocalCodexLaunch: async () => { throw new Error("Folder trust was not granted."); } });
+  await waitFor(() => card(manager, created.id).status === "failed");
+  assert.equal(calls.length, 0);
+  assert.match(card(manager, created.id).failureDetails, /trust was not granted/);
+  await waitFor(async () => (await readdir(join(runsRoot, created.id))).length === 0);
+});
+
+test("closing a contributed card during person trust cannot start its process later", { timeout: 5_000 }, async t => {
+  const { pipeline } = await pipelineFixture(t, { contributors: [contributor("p.local")], answers: { "p.local": {} } });
+  const { manager, calls } = await managerFixture(t, pipeline);
+  let release, entered;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const checking = new Promise(resolve => { entered = resolve; });
+  const created = manager.create({ provider: "codex", profile: "normal", cwd, position: at,
+    launchOptions: { "p.local": {} } }, { beforeLocalCodexLaunch: async () => { entered(); await waiting; } });
+  await checking;
+  manager.dispose(created.id);
+  release();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(calls.length, 0);
+  assert.equal(card(manager, created.id), undefined);
+});
+
+for (const control of [{ origin: "control" }, { origin: "plugin", ownerPluginId: "p.owner" }]) {
+  test(`non-person contributed launches cannot invoke interactive trust (${control.origin})`, async t => {
+    const { pipeline } = await pipelineFixture(t, { contributors: [contributor("p.local")], answers: { "p.local": {} } });
+    const { manager, calls } = await managerFixture(t, pipeline);
+    manager.create({ provider: "codex", profile: "normal", cwd, position: at, launchOptions: { "p.local": {} } },
+      { ...control, beforeLocalCodexLaunch: async () => assert.fail("not person-authenticated") });
+    await waitFor(() => calls.length === 1);
+  });
+}
+
+test("a contributed local Codex restart uses only that restart's person trust guard", async t => {
+  const { pipeline } = await pipelineFixture(t, { contributors: [contributor("p.local")], answers: { "p.local": {} } });
+  const { manager, calls } = await managerFixture(t, pipeline);
+  let checked = 0;
+  const created = manager.create({ provider: "codex", profile: "normal", cwd, position: at,
+    launchOptions: { "p.local": {} } }, { beforeLocalCodexLaunch: async () => { checked++; } });
+  await waitFor(() => calls.length === 1);
+  calls[0].exit(0);
+  await waitFor(() => card(manager, created.id).exitCode !== null);
+  manager.restart(created.id, { beforeLocalCodexLaunch: async () => { checked++; throw new Error("trust revoked"); } });
+  await waitFor(() => card(manager, created.id).status === "failed");
+  assert.equal(checked, 2);
+  assert.equal(calls.length, 1);
+  manager.restart(created.id);
+  await waitFor(() => calls.length === 2);
+  assert.equal(checked, 2, "person authority is never retained for subsequent launches");
+});
+
+for (const local of [true, false]) {
+  test(`restored contributed Codex checks existing trust only for the local config (${local})`, async t => {
+    const { pipeline } = await pipelineFixture(t, { contributors: [contributor("p.account")],
+      answers: { "p.account": local ? {} : { env: { CODEX_HOME: "{launchFiles}/account-profile" }, files: [{ relPath: "account-profile/config.toml", content: "" }] } } });
+    const storeDirectory = await mkdtemp(join(tmpdir(), "canvastty-contributed-trust-restore-"));
+    const { manager, calls } = await managerFixture(t, pipeline, { directory: storeDirectory });
+    const created = manager.create({ provider: "codex", profile: "normal", cwd, position: at,
+      launchOptions: { "p.account": {} } });
+    await waitFor(() => calls.length === 1);
+    await manager.shutdown();
+    const restoredCalls = [];
+    const restored = new TerminalManager(() => undefined, registry(), undefined, undefined, true, spawner(restoredCalls));
+    t.after(() => restored.shutdown());
+    t.after(() => rm(storeDirectory, { recursive: true, force: true }));
+    restored.configureLaunchPipeline(pipeline);
+    restored.configureSessionPersistence(new TerminalSessionStore(storeDirectory), "continue");
+    let checks = 0;
+    restored.configureCodexRestoreTrust(async () => { checks++; throw new Error("existing trust absent"); });
+    await restored.restorePersistedSessions();
+    await waitFor(() => local ? card(restored, created.id).status === "failed" : restoredCalls.length === 1);
+    assert.equal(checks, local ? 1 : 0);
+    assert.equal(restoredCalls.length, local ? 0 : 1);
+  });
+}
+
+
+test("a subagent cannot use its caller's interactive Codex trust guard", async t => {
+  const definition = contributor("p.local");
+  definition.launch.delegable = true;
+  const { pipeline } = await pipelineFixture(t, { contributors: [definition], answers: { "p.local": {} } });
+  const { manager, calls } = await managerFixture(t, pipeline);
+  const parent = manager.create({ provider: "codex", profile: "normal", cwd, position: at, role: "orchestrator" });
+  manager.create({ provider: "codex", profile: "normal", cwd, position: at, role: "subagent", parentSessionId: parent.id,
+    launchOptions: { "p.local": {} } }, { beforeLocalCodexLaunch: async () => assert.fail("delegated trust is forbidden") });
+  await waitFor(() => calls.length === 2);
+});
+
+test("restored descendants cannot race their contributed parent's pending trust check", { timeout: 5_000 }, async t => {
+  const { pipeline } = await pipelineFixture(t, { contributors: [contributor("p.local")], answers: { "p.local": {} } });
+  const storeDirectory = await mkdtemp(join(tmpdir(), "canvastty-contributed-family-trust-"));
+  const { manager, calls } = await managerFixture(t, pipeline, { directory: storeDirectory });
+  const parent = manager.create({ provider: "codex", profile: "normal", cwd, position: at,
+    role: "orchestrator", launchOptions: { "p.local": {} } });
+  await waitFor(() => calls.length === 1);
+  const child = manager.create({ provider: "codex", profile: "normal", cwd, position: at,
+    role: "subagent", parentSessionId: parent.id });
+  await manager.shutdown();
+  const restoredCalls = [];
+  const restored = new TerminalManager(() => undefined, registry(), undefined, undefined, true, spawner(restoredCalls));
+  t.after(() => restored.shutdown());
+  t.after(() => rm(storeDirectory, { recursive: true, force: true }));
+  restored.configureLaunchPipeline(pipeline);
+  restored.configureSessionPersistence(new TerminalSessionStore(storeDirectory), "continue");
+  let release, entered;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const checking = new Promise(resolve => { entered = resolve; });
+  restored.configureCodexRestoreTrust(async () => { entered(); await waiting; throw new Error("existing trust absent"); });
+  const restoration = restored.restorePersistedSessions();
+  await checking;
+  assert.equal(restoredCalls.length, 0);
+  assert.equal(card(restored, child.id), undefined, "the child waits for its parent's resolved launch");
+  release();
+  await restoration;
+  assert.equal(restoredCalls.length, 0);
+  for (const id of [parent.id, child.id]) {
+    assert.equal(card(restored, id).status, "failed");
+    assert.match(card(restored, id).failureDetails, /existing trust absent/);
+  }
+});

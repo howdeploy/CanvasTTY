@@ -146,6 +146,8 @@ interface ManagedSession {
   launchWaiters: Set<() => void>;
   /** Brought back from the saved sessions at startup (plugins see a "restored" event, not "created"). */
   restored?: boolean;
+  /** A held restored child may restart only after its parent has successfully launched. */
+  restoreParent?: string;
   /** What the CLI's own title last showed (Claude: spinner working, «✳» no turn running). */
   titleState?: "idle" | "working" | "needs_approval";
   /** How often the agent's lifecycle hooks reported; Claude's title defers to hooks once they have. */
@@ -466,6 +468,7 @@ export class TerminalManager {
     for (const step of steps) {
       const record = step.record;
       let reason = record.parentSessionId ? held.get(record.parentSessionId) : undefined;
+      const restoreParent = reason ? record.parentSessionId : undefined;
       if (!reason && step.launch !== "stopped" && restoreTrust && record.provider === "codex"
         && !record.parentSessionId && record.role !== "subagent" && !record.ownerPluginId
         && !record.options && !record.environment && !record.environmentChoice) {
@@ -474,7 +477,12 @@ export class TerminalManager {
         }
       }
       if (reason) held.set(record.id, reason);
-      const pending = this.restorePersistedSession(reason ? { ...step, launch: "stopped" } : step, resumed.get(record.id), reason, restoreTrust);
+      const pending = this.restorePersistedSession(reason ? { ...step, launch: "stopped" } : step, resumed.get(record.id),
+        restoreParent ? `Restart the parent session first to review its launch. ${reason}` : reason, restoreTrust);
+      if (restoreParent) {
+        const child = this.sessions.get(record.id);
+        if (child) child.restoreParent = restoreParent;
+      }
       // A contributed parent's profile is known only after preparation; its children must not race the trust check.
       if (this.codexRestoreTrust && record.provider === "codex" && parents.has(record.id)) {
         await pending;
@@ -808,6 +816,13 @@ export class TerminalManager {
     const session = this.sessions.get(id);
     if (!session) throw new Error("Terminal session does not exist.");
     if (session.metadata.exitCode === null) throw new Error("Terminal session is still running.");
+    if (session.restoreParent) {
+      const parent = this.sessions.get(session.restoreParent);
+      if (!parent?.process || parent.metadata.exitCode !== null) {
+        throw new Error("Restart the parent session successfully before restarting this held subagent.");
+      }
+      delete session.restoreParent;
+    }
     const environment = session.extras.environment;
     if (environment && !this.environmentUsable(environment)) {
       // Never run a placed session locally instead of where it belongs.

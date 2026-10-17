@@ -311,3 +311,38 @@ for (const transportFails of [false, true]) {
     assert.ok(restored.list().every(s => transportFails ? s.status === "failed" : s.exitCode === null));
   });
 }
+
+test("held descendants cannot restart before their parent passes review and launches", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "canvastty-held-descendant-restart-"));
+  const calls = [], restored = manager(directory, calls);
+  t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
+  const base = { provider: "codex", profile: "auto", role: "orchestrator", title: "Saved",
+    titleCustomized: false, cwd: process.cwd(), position: { x: 0, y: 0 }, size: { width: 700, height: 430 },
+    lastState: "running", restore: true };
+  await new TerminalSessionStore(directory).replace([
+    { ...base, id: "parent" },
+    { ...base, id: "child", role: "subagent", parentSessionId: "parent" },
+    { ...base, id: "grandchild", role: "subagent", parentSessionId: "child" }
+  ]);
+  let trusted = false;
+  const check = async () => { if (!trusted) throw new Error("Trust not granted"); };
+  restored.configureCodexRestoreTrust(check);
+  await restored.restorePersistedSessions();
+  for (const id of ["child", "grandchild"]) {
+    const before = restored.getMetadata(id);
+    assert.match(before.failureDetails, /Restart the parent session first/);
+    assert.throws(() => restored.restart(id), /Restart the parent session successfully/);
+    assert.deepEqual(restored.getMetadata(id), before, "a refused restart keeps the held state");
+  }
+  assert.equal(calls.length, 0);
+  // Person IPC checks trust before restarting the top-level local Codex card.
+  await assert.rejects(check(process.cwd()), /Trust not granted/);
+  trusted = true;
+  await check(process.cwd());
+  restored.restart("parent");
+  assert.equal(calls.length, 1);
+  assert.throws(() => restored.restart("grandchild"), /Restart the parent session successfully/);
+  restored.restart("child");
+  restored.restart("grandchild");
+  assert.equal(calls.length, 3);
+});

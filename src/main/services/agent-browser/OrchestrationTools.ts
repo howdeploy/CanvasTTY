@@ -256,17 +256,18 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     const id = args.sessionId as string;
     const closing = [id];
     const seen = new Set(closing);
+    const plainTerminals = new Set<string>();
     const receipts = new Map<string, boolean>();
     // Disposal cascades to subagents. Validate the entire branch before any
     // card is removed, including completed descendants of a working parent.
     for (const target of closing) {
-      const result = this.control.result(target);
-      const answer = result.answer;
+      const result = plainTerminals.has(target) ? undefined : this.control.result(target);
+      const answer = result?.answer;
       const read = this.answerReads.get(target);
       const complete = Boolean(answer && read
         && read.signature === answerSignature(answer, this.control.resultRevision?.(target, answer) ?? 0)
         && read.through >= answer.text.length);
-      if (answer && result.status !== "working" && !complete) {
+      if (answer && result?.status !== "working" && !complete) {
         throw orchestrationBridgeError("INVALID_REQUEST",
           `Read the current final answer before closing this subagent (${target}); wait_for_agent counts, and get_agent_result reads remaining answer.nextOffset pages.`, false);
       }
@@ -274,6 +275,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       for (const child of this.control.children(target)) {
         if (child.role !== "subagent" || seen.has(child.id)) continue;
         seen.add(child.id);
+        if (child.provider === "terminal") plainTerminals.add(child.id);
         closing.push(child.id);
       }
     }

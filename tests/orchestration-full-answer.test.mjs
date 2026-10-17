@@ -420,3 +420,15 @@ for (const text of ["Descendant final reply", "Descendant requirements. ".repeat
     }
   });
 }
+
+test("plain terminal descendants close with their parent without requiring an agent answer", async t => {
+  const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner([]));
+  t.after(() => terminals.disposeAll());
+  const root = terminals.create({ provider: "codex", cwd: process.cwd(), profile: "normal", role: "orchestrator", position: { x: 0, y: 0 } });
+  const control = new AgentControlService(terminals), handler = new ScopedOrchestrationHandler(control);
+  const parent = await control.spawn({ parentSessionId: root.id, provider: "opencode", cwd: process.cwd() });
+  const console = terminals.create({ provider: "terminal", cwd: process.cwd(), profile: "normal", role: "subagent", parentSessionId: parent.id, position: { x: 0, y: 0 } });
+  await assert.rejects(handler.execute(root.id, { id: "console", tool: "cancel_agent", arguments: { sessionId: console.id } }), /Plain terminals are not agents/);
+  assert.equal((await handler.execute(root.id, { id: "parent", tool: "cancel_agent", arguments: { sessionId: parent.id } })).canceled, true);
+  assert.equal(terminals.getMetadata(console.id), null);
+});

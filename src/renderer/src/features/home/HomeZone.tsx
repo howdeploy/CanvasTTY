@@ -579,6 +579,7 @@ function formatPercent(value: number, locale: LocaleId): string {
 }
 
 function limitReasonLabel(reason: HomeLimitReason | null, locale: LocaleId): string {
+  if (reason === "api-profile") return t(locale, "limitApiProfile");
   const key = reason === "cli-not-found"
     ? "limitCliNotFound"
     : reason === "not-authenticated"

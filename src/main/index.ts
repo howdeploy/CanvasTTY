@@ -31,6 +31,7 @@ import { PixelSkinPackRegistry } from "./services/PixelSkinPackRegistry";
 import { TerminalManager, reachesObservers, reachesRenderer } from "./services/TerminalManager";
 import { TerminalRendererOutbox } from "./services/TerminalRendererOutbox";
 import { AgentControlGateway } from "./services/agent-control/AgentControlGateway";
+import { ensureCodexFolderTrust } from "./services/CodexFolderTrust";
 import { TerminalSessionStore } from "./services/TerminalSessionStore";
 import { AgentChatHistoryService } from "./services/AgentChatHistoryService";
 import { LimitsService, withoutAccountScope } from "./services/LimitsService";
@@ -728,6 +729,15 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   // launch options or an environment ask their plugin's service, so start services first.
   pluginServices.hostReady();
   await pluginServicesStarted.catch(() => undefined);
+  const restoreTrustClis = providerClis;
+  terminalManager.configureCodexRestoreTrust((cwd) => ensureCodexFolderTrust({
+    providerClis: restoreTrustClis,
+    clientVersion: app.getVersion(),
+    cwd,
+    backupDirectory: join(userDataPath, "codex-config-backups"),
+    // Saved cards do not authorize a new trust decision; Restart uses authenticated person IPC.
+    confirm: async () => false
+  }));
   await terminalManager.restorePersistedSessions();
   // The agent-control endpoint follows Settings → Agents → "Agent orchestration
   // endpoint"; the start flag / env var force it on for one launch (CI smoke)
@@ -852,6 +862,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       return { availability, settings: updatedSettings };
     },
     terminals: terminalManager,
+    providerClis,
     limits: limitsService,
     agentChatHistory,
     usageHistory,

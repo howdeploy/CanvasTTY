@@ -59,12 +59,27 @@ import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } f
 import { createInterface } from "node:readline";
 const root = ${JSON.stringify(root)};
 appendFileSync(root + "/spawns", "spawn\\n");
+const configAtStart = existsSync(root + "/capture-config")
+  ? readFileSync(root + "/codex-home/config.toml", "utf8") : null;
 const reply = (id, result) => process.stdout.write(JSON.stringify({ id, result }) + "\\n");
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   if (typeof message.id !== "number") return;
   if (message.method === "initialize") return reply(message.id, {});
+  if (message.method === "account/read") {
+    const file = root + "/account-state";
+    const auth = configAtStart !== null
+      ? { account: configAtStart.includes("fixture-api") ? null : { type: "chatgpt" },
+          requiresOpenaiAuth: !configAtStart.includes("fixture-api") }
+      : existsSync(file) ? JSON.parse(readFileSync(file, "utf8"))
+      : { account: { type: "chatgpt" }, requiresOpenaiAuth: true };
+    if (auth.error) return process.stdout.write(JSON.stringify({ id: message.id, error: auth.error }) + "\\n");
+    return reply(message.id, auth);
+  }
   if (message.method !== "account/rateLimits/read") return process.stdout.write(JSON.stringify({ id: message.id, error: { code: -1 } }) + "\\n");
+  appendFileSync(root + "/limit-reads", "read\\n");
+  const failure = root + "/limits-error";
+  if (existsSync(failure)) return process.stdout.write(JSON.stringify({ id: message.id, error: { code: -32600, message: "Synthetic request failure" } }) + "\\n");
   const switchFile = root + "/switch-during-request";
   if (existsSync(switchFile)) {
     writeFileSync(root + "/codex-home/auth.json", readFileSync(switchFile));
@@ -105,6 +120,68 @@ function assertNoCodexSecrets(value) {
     assert.equal(text.includes(secret), false, "auth material must never leave the credential reader");
   }
 }
+
+test("Codex API profiles report unavailable subscription limits without requesting them", async () => {
+  for (const auth of [
+    { account: { type: "apiKey" }, requiresOpenaiAuth: true },
+    { account: null, requiresOpenaiAuth: false }
+  ]) await withRoot(async (root) => {
+    const codex = await fakeCodex(root);
+    await writeFile(join(root, "account-state"), JSON.stringify(auth));
+    const service = new LimitsService(registry({ codex: codex.script }), "test", {
+      environment: { CODEX_HOME: codex.codexHome }
+    });
+    try {
+      const [snapshot] = (await service.getProviders(["codex"])).providers;
+      assert.equal(snapshot.state, "unavailable");
+      assert.equal(snapshot.reason, "api-profile");
+      assert.equal("windows" in snapshot, false);
+      await assert.rejects(readFile(join(root, "limit-reads")), { code: "ENOENT" });
+    } finally { service.dispose(); }
+  });
+});
+
+test("Codex distinguishes signed-out, malformed and failed account responses from API profiles", async () => {
+  for (const [auth, reason] of [
+    [{ account: null, requiresOpenaiAuth: true }, "not-authenticated"],
+    [{}, "protocol-error"],
+    [{ account: "invalid", requiresOpenaiAuth: true }, "protocol-error"],
+    [{ error: { code: -32600, message: "Synthetic account failure" } }, "protocol-error"]
+  ]) await withRoot(async (root) => {
+    const codex = await fakeCodex(root);
+    await writeFile(join(root, "account-state"), JSON.stringify(auth));
+    const service = new LimitsService(registry({ codex: codex.script }), "test", {
+      environment: { CODEX_HOME: codex.codexHome }
+    });
+    try {
+      const [snapshot] = (await service.getProviders(["codex"])).providers;
+      assert.equal(snapshot.state, "unavailable");
+      assert.equal(snapshot.reason, reason);
+    } finally { service.dispose(); }
+  });
+});
+
+test("switching to an API profile clears previous subscription limits", async () => {
+  await withRoot(async (root) => {
+    const codex = await fakeCodex(root);
+    const service = new LimitsService(registry({ codex: codex.script }), "test", {
+      environment: { CODEX_HOME: codex.codexHome }, cacheTtlMs: 0
+    });
+    try {
+      assert.equal((await service.getProviders(["codex"])).providers[0].state, "available");
+      await writeFile(join(root, "account-state"), JSON.stringify({ account: null, requiresOpenaiAuth: false }));
+      const [api] = (await service.getProviders(["codex"])).providers;
+      assert.equal(api.state, "unavailable");
+      assert.equal(api.reason, "api-profile");
+      assert.equal("windows" in api, false);
+      await rm(join(root, "account-state"));
+      await writeFile(join(root, "limits-error"), "fail");
+      const [failed] = (await service.getProviders(["codex"])).providers;
+      assert.equal(failed.state, "unavailable", "old subscription windows must not reappear as stale");
+      assert.equal(failed.reason, "protocol-error");
+    } finally { service.dispose(); }
+  });
+});
 
 test("Codex scope is a one-way fingerprint of tokens.account_id and is stable per account", async () => {
   await withRoot(async (root) => {
@@ -342,4 +419,32 @@ test("plugin and companion views omit account scope without mutating the source 
   assert.equal(view.providers[0].state, "available");
   assert.equal(view.providers[1].reason, "timeout");
   assert.equal(snapshot.providers[0].accountScope, "abc123");
+});
+
+test("Codex reloads provider configuration with unchanged login and still reuses an unchanged profile", async () => {
+  await withRoot(async (root) => {
+    const codex = await fakeCodex(root);
+    await writeFile(join(codex.codexHome, "auth.json"), codexAuth(ACCOUNT_A));
+    const config = join(codex.codexHome, "config.toml");
+    await writeFile(config, 'model_provider = "openai"\n');
+    await writeFile(join(root, "capture-config"), "");
+    const service = new LimitsService(registry({ codex: codex.script }), "test", {
+      environment: { CODEX_HOME: codex.codexHome }, cacheTtlMs: 0
+    });
+    try {
+      assert.equal((await service.getProviders(["codex"])).providers[0].state, "available");
+      await writeFile(config, 'model_provider = "fixture-api"\n');
+      const [api] = (await service.getProviders(["codex"])).providers;
+      assert.equal(api.reason, "api-profile");
+      assert.equal("windows" in api, false);
+      assert.equal(await codex.spawns(), 2);
+      await writeFile(config, 'model_provider = "openai"\n');
+      const [restored] = (await service.getProviders(["codex"])).providers;
+      assert.equal(restored.state, "available");
+      assert.equal(await codex.spawns(), 3);
+      await service.getProviders(["codex"]);
+      assert.equal(await codex.spawns(), 3, "unchanged configuration retains the existing app-server");
+      assertNoCodexSecrets([api, restored]);
+    } finally { service.dispose(); }
+  });
 });

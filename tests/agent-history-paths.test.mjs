@@ -216,3 +216,40 @@ test("Cursor explicit config directory wins over XDG and MiniMax accepts its leg
   assert.equal(paths.cursor, "/cursor");
   assert.equal(paths.minimax, "/mavis");
 });
+
+
+test("person history resumes await Codex trust for fresh and exited local sessions only",async t=>{
+  const {root,service}=await setup(t,()=>({}));const calls=[];
+  service.adapters.codex={read:async()=>({items:[{id,cwd:root,title:"History",lastActivityAt:0}]})};
+  const active={id:"card",provider:"codex",cwd:root,exitCode:null,status:"idle"};let existing=null;
+  service.terminals={findLocalConversation:()=>existing,create:request=>{calls.push("create");return {...active,...request};},
+    restart:()=>{calls.push("restart");return active;},list:()=>[existing],localCodexFolderForTrust:()=>root};
+  const guard=async folder=>{assert.equal(folder,root);calls.push("trust");};
+  assert.equal((await service.resume("codex",id,{x:0,y:0},guard)).error,undefined);
+  assert.deepEqual(calls,["trust","create"]);calls.length=0;
+  existing={...active,exitCode:0};
+  assert.equal((await service.resume("codex",id,{x:0,y:0},guard)).reused,true);
+  assert.deepEqual(calls,["trust","restart"]);calls.length=0;
+  existing=active;
+  await service.resume("codex",id,{x:0,y:0},guard);assert.deepEqual(calls,[]);
+  existing={...active,exitCode:0};service.terminals.localCodexFolderForTrust=()=>null;
+  service.terminals.restart = (_id, options) => {
+    assert.equal(options.beforeLocalCodexLaunch, guard, "contributed history cards retain the authenticated guard until their profile resolves");
+    calls.push("restart"); return active;
+  };
+  await service.resume("codex",id,{x:0,y:0},guard);assert.deepEqual(calls,["restart"]);
+});
+
+test("history trust refusal or a concurrently closed card cannot launch a session",async t=>{
+  const {root,service}=await setup(t,()=>({}));let existing=null;let launches=0;
+  service.adapters.codex={read:async()=>({items:[{id,cwd:root,title:"History",lastActivityAt:0}]})};
+  service.terminals={findLocalConversation:()=>existing,create:()=>{launches++;},restart:()=>{launches++;},
+    list:()=>[],localCodexFolderForTrust:()=>root};
+  for(const card of [null,{id:"card",provider:"codex",cwd:root,exitCode:0}]){
+    existing=card;
+    const result=await service.resume("codex",id,{x:0,y:0},async()=>{throw new Error("Folder trust was not granted");});
+    assert.match(result.error.message,/not granted/);
+  }
+  const closed=await service.resume("codex",id,{x:0,y:0},async()=>{});
+  assert.match(closed.error.message,/closed during confirmation/);assert.equal(launches,0);
+});

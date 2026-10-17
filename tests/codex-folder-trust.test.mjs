@@ -7,7 +7,7 @@ import { canvasTtyPrivateData } from "../src/main/services/safety/baseProtection
 import { execFileSync } from "node:child_process";
 import { normalizeProcessEnvironment } from "../src/main/services/processEnvironment.ts";
 import { privateAppData } from "../src/main/services/isolation/isolationPaths.ts";
-import { ensureCodexFolderTrust, usesLocalCodexConfig, batchCodexRestoreTrust, directoryCaseInsensitive } from "../src/main/services/CodexFolderTrust.ts";
+import { ensureCodexFolderTrust, usesLocalCodexConfig, batchCodexRestoreTrust } from "../src/main/services/CodexFolderTrust.ts";
 
 async function fixture(t, { trusted = false, conflict = false, fresh = false, missingHome = false, layerConfig, serialized = false, profileAlias = false, profileName = "profile" } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-folder-trust-")));
@@ -44,6 +44,16 @@ readline.createInterface({input:process.stdin}).on("line",line=>{
     clientVersion:"test",cwd,backupDirectory:join(root,"backups")
   }, messages: async()=> (await readFile(calls,"utf8")).trim().split("\n").map(JSON.parse) };
 }
+// Independent observation used to set expectations on the real test filesystem.
+async function directoryCaseInsensitive(directory) {
+  const probe = await mkdtemp(join(directory, ".fixture-case-"));
+  try {
+    await writeFile(join(probe, "CaseProbe"), "");
+    try { await stat(join(probe, "caseprobe")); return true; }
+    catch (error) { assert.equal(error.code, "ENOENT"); return false; }
+  } finally { await rm(probe, { recursive: true, force: true }); }
+}
+
 const posix = { skip: process.platform === "win32" ? "native fixture launcher is POSIX" : false };
 
 test("the host saves exactly the person's folder trust, with a version guard and private backup", posix, async t=>{
@@ -360,7 +370,7 @@ test("missing profile suffixes use platform-specific case identity", async t => 
   assert.equal(await usesLocalCodexConfig(base, alias, "win32"), await directoryCaseInsensitive(root));
   assert.equal(await usesLocalCodexConfig(base, { CODEX_HOME: join(root, "different") }, "win32"), false);
   // These paths are still missing, so realpath cannot hide the spelling difference.
-  assert.equal(await usesLocalCodexConfig(base, alias, "linux"), false);
+  assert.equal(await usesLocalCodexConfig(base, alias, "linux"), await directoryCaseInsensitive(root));
   const probe = join(root, "CaseProbe");
   await writeFile(probe, "");
   let insensitive = false;
@@ -372,7 +382,7 @@ test("missing profile suffixes use platform-specific case identity", async t => 
 });
 
 
-test("volume case probes use the selected directory and leave its contents unchanged", async t => {
+test("profile-alias probes use the selected directory and leave its contents unchanged", async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-volume-case-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const profile = join(root, "config.toml");
@@ -384,7 +394,8 @@ test("volume case probes use the selected directory and leave its contents uncha
     assert.equal(error.code, "ENOENT");
   }
   const before = (await readdir(root)).sort();
-  assert.equal(await directoryCaseInsensitive(root), insensitive);
+  assert.equal(await usesLocalCodexConfig({ CODEX_HOME: join(root, "Profile") },
+    { CODEX_HOME: join(root, "profile") }, "darwin"), insensitive);
   assert.deepEqual((await readdir(root)).sort(), before);
   assert.equal(await readFile(profile, "utf8"), "unrelated profile data");
 });
@@ -452,3 +463,26 @@ test("renaming an aliased profile cannot redirect a queued trust write to its st
   assert.equal((await f.messages()).some(message => message.method === "config/batchWrite"), false);
   await assert.rejects(stat(f.config), { code: "ENOENT" });
 });
+
+
+for (const [firstName, secondName] of [["İ", "i\u0307"], ["Σ", "ς"], ["Profile", "profile"]]) {
+  test(`missing profile aliases follow native case mapping (${firstName})`, async t => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-native-alias-")));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const observation = join(root, "observation");
+    await mkdir(join(observation, firstName), { recursive: true });
+    let same = false;
+    try {
+      const a = await stat(join(observation, firstName), { bigint: true });
+      const b = await stat(join(observation, secondName), { bigint: true });
+      same = a.dev === b.dev && a.ino === b.ino;
+    } catch (error) { assert.equal(error.code, "ENOENT"); }
+    const first = { CODEX_HOME: join(root, "profiles", firstName) };
+    const second = { CODEX_HOME: join(root, "profiles", secondName) };
+    for (const platform of ["win32", "darwin", "linux"]) {
+      assert.equal(await usesLocalCodexConfig(first, second, platform), same);
+      assert.equal(await usesLocalCodexConfig(second, first, platform), same);
+    }
+    assert.deepEqual(await readdir(root), ["observation"]);
+  });
+}

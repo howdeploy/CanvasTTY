@@ -409,3 +409,32 @@ for (const options of [undefined, { "fixture.launch": {} }]) {
     assert.ok(calls[0].args.every(arg => !arg.startsWith("projects=")));
   });
 }
+
+
+for (const exitCode of [0, 7]) {
+  test(`held exited ancestors retain their saved exit code across another restore (${exitCode})`, async t => {
+    const directory = await mkdtemp(join(tmpdir(), "canvastty-held-exit-"));
+    const restored = manager(directory, []);
+    t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
+    const base = { provider: "codex", profile: "auto", role: "orchestrator", title: "Saved",
+      titleCustomized: false, cwd: process.cwd(), position: { x: 0, y: 0 }, size: { width: 700, height: 430 }, restore: true };
+    await new TerminalSessionStore(directory).replace([
+      { ...base, id: "root", lastState: "exited", exitCode: 0 },
+      { ...base, id: "middle", role: "subagent", parentSessionId: "root", lastState: "exited", exitCode },
+      { ...base, id: "child", role: "subagent", parentSessionId: "middle", lastState: "running" }
+    ]);
+    await restored.restorePersistedSessions();
+    assert.equal(restored.getMetadata("middle").status, "failed", "held cards cannot launch");
+    assert.equal(restored.getMetadata("middle").exitCode, exitCode);
+    restored.dispose("child");
+    await restored.shutdown();
+    const saved = await new TerminalSessionStore(directory).load();
+    assert.equal(saved.find(record => record.id === "middle").lastState, "exited");
+    assert.equal(saved.find(record => record.id === "middle").exitCode, exitCode);
+    const again = manager(directory, []);
+    t.after(() => again.shutdown());
+    await again.restorePersistedSessions();
+    assert.equal(again.getMetadata("middle").exitCode, exitCode);
+    assert.equal(again.getMetadata("middle").status, exitCode === 0 ? "done" : "failed");
+  });
+}

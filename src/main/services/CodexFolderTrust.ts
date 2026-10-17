@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { accessSync, constants, statSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rmdir, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
-import { basename, dirname, isAbsolute, join, sep } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { CodexAppServerClient, CodexAppServerError } from "./CodexAppServerClient.ts";
 import type { ProviderCliRegistry } from "./providerCliRegistry.ts";
 import { normalizeProcessEnvironment } from "./processEnvironment.ts";
@@ -44,67 +44,47 @@ async function canonicalConfigPath(file: string): Promise<string> {
   }
 }
 
-/** Query this directory's filesystem, never the filesystem containing its mount-point name. */
-export async function directoryCaseInsensitive(directory: string): Promise<boolean> {
-  const probe = await mkdtemp(join(directory, ".canvastty-case-"));
-  try {
-    const original = await lstat(probe);
-    try {
-      const alias = await lstat(join(directory, basename(probe).toUpperCase()));
-      return alias.isDirectory() && alias.dev === original.dev && alias.ino === original.ino;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      return false;
-    }
-  } finally { await rmdir(probe); }
-}
-
-/** Normalize a spelling only when this filesystem resolves both forms to the same directory. */
-async function canonicalUnicodePath(file: string, directory: string): Promise<string> {
-  const parts = file.split(sep);
-  const changed = parts.flatMap((part, index) => part === part.normalize("NFC") ? [] : [index]);
-  if (!changed.length) return file;
-  const probe = await mkdtemp(join(directory, ".canvastty-unicode-"));
-  try {
-    for (const index of changed) {
-      const path = join(probe, parts[index]);
-      await mkdir(path);
-      try {
-        const original = await lstat(path);
-        try {
-          const alias = await lstat(join(probe, parts[index].normalize("NFC")));
-          if (alias.isDirectory() && alias.dev === original.dev && alias.ino === original.ino) {
-            parts[index] = parts[index].normalize("NFC");
-          }
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
-      } finally { await rmdir(path); }
-    }
-    return parts.join(sep);
-  } finally { await rmdir(probe); }
-}
-
-async function configIdentity(file: string, platform: NodeJS.Platform = process.platform): Promise<string> {
+async function configLocation(file: string): Promise<{ directory: string; suffix: string; anchor: string }> {
   let directory = dirname(file), suffix = basename(file);
   for (;;) {
-    let entry;
-    try { entry = await stat(directory, { bigint: true }); } catch (error) {
+    try {
+      const entry = await stat(directory, { bigint: true });
+      return { directory, suffix, anchor: `${entry.dev}:${entry.ino}` };
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const parent = dirname(directory);
       if (parent === directory) throw error;
       suffix = join(basename(directory), suffix);
       directory = parent;
-      continue;
     }
-    // Existing directories identify themselves, including case-sensitive NTFS siblings.
-    // Only the unresolved suffix depends on this directory's name lookup semantics.
-    if (platform === "darwin" || platform === "win32") {
-      suffix = await canonicalUnicodePath(suffix, directory);
-      if (suffix !== suffix.toLowerCase() && await directoryCaseInsensitive(directory)) suffix = suffix.toLowerCase();
-    }
-    return `${entry.dev}:${entry.ino}:${suffix}`;
   }
+}
+
+/** Compare missing spellings by asking the same filesystem that will create the profile.
+ * A private temporary tree follows its actual case, Unicode and directory inheritance rules.
+ */
+async function sameConfigLocation(first: string, second: string): Promise<boolean> {
+  const left = await configLocation(first), right = await configLocation(second);
+  if (left.anchor !== right.anchor) return false;
+  if (left.suffix === right.suffix) return true;
+  const probe = await mkdtemp(join(left.directory, ".canvastty-profile-"));
+  try {
+    const originalPath = join(probe, left.suffix);
+    await mkdir(originalPath, { recursive: true });
+    const original = await lstat(originalPath, { bigint: true });
+    try {
+      const alias = await lstat(join(probe, right.suffix), { bigint: true });
+      return alias.isDirectory() && alias.dev === original.dev && alias.ino === original.ino;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return false;
+    }
+  } finally { await rm(probe, { recursive: true, force: true }); }
+}
+
+async function configIdentity(file: string): Promise<string> {
+  const { anchor, suffix } = await configLocation(file);
+  return `${anchor}:${suffix}`;
 }
 
 function profileConfig(environment: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform = process.platform): string {
@@ -124,8 +104,8 @@ export async function usesLocalCodexConfig(
   launchEnvironment: Readonly<Record<string, string | undefined>>,
   platform: NodeJS.Platform = process.platform
 ): Promise<boolean> {
-  return await configIdentity(await canonicalConfigPath(profileConfig(baseEnvironment, platform)), platform)
-    === await configIdentity(await canonicalConfigPath(profileConfig(launchEnvironment, platform)), platform);
+  return sameConfigLocation(await canonicalConfigPath(profileConfig(baseEnvironment, platform)),
+    await canonicalConfigPath(profileConfig(launchEnvironment, platform)));
 }
 
 /** One restore batch shares checks and stops retrying a broken local app-server. */

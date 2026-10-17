@@ -1321,7 +1321,7 @@ export class TerminalManager {
       if (holdReason) {
         extras.heldState = descriptor.lastState;
         metadata.status = "failed";
-        metadata.exitCode = 1;
+        metadata.exitCode = descriptor.exitCode ?? (descriptor.lastState === "exited" ? 0 : 1);
         metadata.failureDetails = holdReason;
       } else if (step.note === "environment-unavailable" && descriptor.environment) {
         extras.heldState = descriptor.lastState;

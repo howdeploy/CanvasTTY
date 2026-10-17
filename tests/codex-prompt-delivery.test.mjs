@@ -175,9 +175,9 @@ test("active MCP startup holds queued input but a final incomplete warning does 
   }
 });
 
-test("startup rows above the composer hold delivery until they disappear", async t => {
+test("startup and confirmation rows above the composer hold delivery until they disappear", async t => {
   for (const startup of ["• Starting MCP servers (0/3)", "◦ Booting MCP servers (1/2)",
-    "│ model: loading │\r\n╰────────────────╯"]) {
+    "│ model: loading │\r\n╰────────────────╯", "Press enter to confirm", "Do you trust the contents of this folder?", "Update Model Permissions"]) {
     await t.test(startup, async t => {
       assert.equal(codexComposerReady(`${startup}\n› Ask Codex to do anything`, true), false);
       assert.equal(codexComposerReady(`${startup}\n› `), false);

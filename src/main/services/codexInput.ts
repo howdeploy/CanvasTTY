@@ -20,7 +20,7 @@ export function codexComposerReady(screen: string, dimPlaceholder = false): bool
   let previous = index - 1;
   while (previous >= 0 && !/^\s*›/.test(lines[previous])) previous--;
   if (lines.slice(previous + 1, index).some((line) =>
-    /^\s*(?:[•◦*]\s*)?(?:(?:Starting|Booting)\s+MCP\b|[│|]?\s*model:\s*loading\b)/i.test(line))) return false;
+    /^\s*(?:[•◦*│|]\s*)?(?:(?:Starting|Booting)\s+MCP\b|model:\s*loading\b|Do you trust the contents\b|Press enter to confirm\b|Update Model Permissions\b)/i.test(line))) return false;
   if (/Do you trust the contents|Press enter to confirm|Update Model Permissions|model:\s+loading|(?:Starting|Booting)\s+MCP\b/i.test(lines.slice(index).join("\n"))) return false;
   if (EMPTY_COMPOSER_PLACEHOLDERS.has(prompt[1])) return prompt[1].length === 0 || dimPlaceholder;
   return dimPlaceholder && prompt[1].length > 0

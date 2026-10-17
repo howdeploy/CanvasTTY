@@ -603,3 +603,35 @@ test("restored descendants cannot race their contributed parent's pending trust 
     assert.match(card(restored, id).failureDetails, /existing trust absent/);
   }
 });
+
+test("a stopped contributed ancestor holds a running descendant until reviewed preparation succeeds", async t => {
+  const { pipeline } = await pipelineFixture(t, { contributors: [contributor("p.local")], answers: { "p.local": {} } });
+  const storeDirectory = await mkdtemp(join(tmpdir(), "canvastty-stopped-contributed-ancestor-"));
+  const { manager, calls } = await managerFixture(t, pipeline, { directory: storeDirectory });
+  const parent = manager.create({ provider: "codex", profile: "normal", cwd, position: at,
+    role: "orchestrator", launchOptions: { "p.local": {} } });
+  await waitFor(() => calls.length === 1);
+  const child = manager.create({ provider: "codex", profile: "normal", cwd, position: at, role: "subagent", parentSessionId: parent.id });
+  const grandchild = manager.create({ provider: "codex", profile: "normal", cwd, position: at, role: "subagent", parentSessionId: child.id });
+  calls[0].exit(0); calls[1].exit(0);
+  await manager.shutdown();
+  const restoredCalls = [];
+  const restored = new TerminalManager(() => undefined, registry(), undefined, undefined, true, spawner(restoredCalls));
+  t.after(() => restored.shutdown());
+  t.after(() => rm(storeDirectory, { recursive: true, force: true }));
+  restored.configureLaunchPipeline(pipeline);
+  restored.configureSessionPersistence(new TerminalSessionStore(storeDirectory), "continue");
+  restored.configureCodexRestoreTrust(async () => assert.fail("a stopped contributor has no prepared profile yet"));
+  await restored.restorePersistedSessions();
+  assert.equal(restoredCalls.length, 0);
+  for (const id of [child.id, grandchild.id]) assert.throws(() => restored.restart(id), /Restart the parent session successfully/);
+  restored.restart(parent.id, { beforeLocalCodexLaunch: async () => { throw new Error("trust absent"); } });
+  await waitFor(() => card(restored, parent.id).failureDetails?.includes("trust absent"));
+  assert.equal(restoredCalls.length, 0);
+  assert.throws(() => restored.restart(child.id), /Restart the parent session successfully/);
+  restored.restart(parent.id, { beforeLocalCodexLaunch: async () => {} });
+  await waitFor(() => restoredCalls.length === 1);
+  assert.throws(() => restored.restart(grandchild.id), /Restart the parent session successfully/);
+  restored.restart(child.id); restored.restart(grandchild.id);
+  assert.equal(restoredCalls.length, 3);
+});

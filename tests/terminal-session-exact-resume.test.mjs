@@ -371,3 +371,35 @@ for (const trusted of [false, true]) {
     else assert.equal(restored.getMetadata("parent").status, "done");
   });
 }
+
+for (const options of [undefined, { "fixture.launch": {} }]) {
+  test(`a wholly stopped restore tree keeps successful exits without trust work (${Boolean(options)})`, async t => {
+    const directory = await mkdtemp(join(tmpdir(), "canvastty-stopped-tree-"));
+    const calls = [], restored = manager(directory, calls);
+    t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
+    restored.configureLaunchPipeline({ unavailable: () => [], normalizeOptions: (_, options) => options,
+      prepare: async () => assert.fail("finished trees must not prepare a new launch"), forgetSession: async () => {} });
+    const base = { provider: "codex", profile: "auto", role: "orchestrator", title: "Saved", titleCustomized: false,
+      cwd: process.cwd(), position: { x: 0, y: 0 }, size: { width: 700, height: 430 },
+      restore: true, lastState: "exited", exitCode: 0 };
+    await new TerminalSessionStore(directory).replace([
+      { ...base, id: "parent", ...(options ? { options } : {}) },
+      { ...base, id: "child", role: "subagent", parentSessionId: "parent" },
+      { ...base, id: "grandchild", role: "subagent", parentSessionId: "child" }
+    ]);
+    restored.configureCodexRestoreTrust(async () => assert.fail("no trust check without a planned process"));
+    await restored.restorePersistedSessions();
+    assert.equal(calls.length, 0);
+    for (const id of ["parent", "child", "grandchild"]) {
+      assert.equal(restored.getMetadata(id).status, "done");
+      assert.equal(restored.getMetadata(id).exitCode, 0);
+    }
+    const saved = await new TerminalSessionStore(directory).load();
+    assert.ok(saved.every(record => record.lastState === "exited" && record.exitCode === 0));
+    // A later manual child restart cannot borrow folder authority from a
+    // stopped root whose profile has not been checked during this startup.
+    restored.restart("child");
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].args.every(arg => !arg.startsWith("projects=")));
+  });
+}

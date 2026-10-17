@@ -465,11 +465,27 @@ export class TerminalManager {
     });
     const restoreTrust = this.codexRestoreTrust ? batchCodexRestoreTrust(this.codexRestoreTrust) : undefined;
     const held = new Map<string, string>();
-    const parents = new Set(steps.map(step => step.record.parentSessionId));
+    const records = new Map(steps.map(({ record }) => [record.id, record] as const));
+    const parents = new Set<string>();
+    for (const step of steps) {
+      if (step.launch === "stopped") continue;
+      let parent = step.record.parentSessionId;
+      const seen = new Set<string>();
+      while (parent && !seen.has(parent)) {
+        seen.add(parent);
+        parents.add(parent);
+        parent = records.get(parent)?.parentSessionId;
+      }
+    }
     for (const step of steps) {
       const record = step.record;
       let reason = record.parentSessionId ? held.get(record.parentSessionId) : undefined;
       const restoreParent = reason ? record.parentSessionId : undefined;
+      if (!reason && restoreTrust && step.launch === "stopped" && parents.has(record.id)
+        && record.provider === "codex" && !record.parentSessionId && record.role !== "subagent"
+        && !record.ownerPluginId && !record.environment && (record.options || record.environmentChoice)) {
+        reason = "The stopped Codex parent's launch must be prepared before its profile can be verified. Use Restart to review its launch.";
+      }
       if (!reason && (step.launch !== "stopped" || parents.has(record.id)) && restoreTrust && record.provider === "codex"
         && !record.parentSessionId && record.role !== "subagent" && !record.ownerPluginId
         && !record.options && !record.environment && !record.environmentChoice) {
@@ -1887,7 +1903,7 @@ export class TerminalManager {
       if (!root) return undefined;
       next = root.metadata.parentSessionId;
     }
-    if (!root || root.extras.environment) return undefined;
+    if (!root?.process || root.metadata.exitCode !== null || root.extras.environment) return undefined;
     try {
       const folder = realpathSync(cwd);
       return isPathInside(realpathSync(root.metadata.cwd), folder) ? folder : undefined;

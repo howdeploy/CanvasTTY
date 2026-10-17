@@ -60,7 +60,7 @@ export async function directoryCaseInsensitive(directory: string): Promise<boole
 }
 
 /** Observe a directory entry on the actual volume, including a missing profile's existing ancestor. */
-async function macProfileCaseInsensitive(file: string): Promise<boolean> {
+async function macProfileCaseSemantics(file: string): Promise<{ insensitive: boolean; device: number }> {
   let directory = dirname(file);
   for (;;) {
     let entry;
@@ -75,7 +75,7 @@ async function macProfileCaseInsensitive(file: string): Promise<boolean> {
     if (parent === directory || (await stat(parent)).dev !== entry.dev) {
       // A mount root's own name belongs to its parent volume. An empty temporary
       // directory inside this volume provides an unambiguous entry without touching config.
-      return directoryCaseInsensitive(directory);
+      return { insensitive: await directoryCaseInsensitive(directory), device: entry.dev };
     }
     const name = basename(directory);
     const variant = name.replace(/[a-zA-Z]/, char => char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase());
@@ -83,10 +83,10 @@ async function macProfileCaseInsensitive(file: string): Promise<boolean> {
       try {
         const alias = await lstat(join(parent, variant));
         // A symlink with different spelling on a case-sensitive volume is not evidence of case folding.
-        return alias.isDirectory() && alias.dev === entry.dev && alias.ino === entry.ino;
+        return { insensitive: alias.isDirectory() && alias.dev === entry.dev && alias.ino === entry.ino, device: entry.dev };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        return false;
+        return { insensitive: false, device: entry.dev };
       }
     }
     directory = parent;
@@ -94,8 +94,12 @@ async function macProfileCaseInsensitive(file: string): Promise<boolean> {
 }
 
 async function configIdentity(file: string, platform: NodeJS.Platform = process.platform): Promise<string> {
-  const insensitive = platform === "win32" || (platform === "darwin" && await macProfileCaseInsensitive(file));
-  return insensitive ? file.toLowerCase() : file;
+  if (platform === "darwin") {
+    const { insensitive, device } = await macProfileCaseSemantics(file);
+    // Distinct mounted volumes may have names differing only by case on their parent filesystem.
+    return `${device}:${insensitive ? file.toLowerCase() : file}`;
+  }
+  return platform === "win32" ? file.toLowerCase() : file;
 }
 
 function profileConfig(environment: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform = process.platform): string {

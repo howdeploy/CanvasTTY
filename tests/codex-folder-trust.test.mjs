@@ -357,7 +357,7 @@ test("missing profile suffixes use platform-specific case identity", async t => 
   t.after(() => rm(root, { recursive: true, force: true }));
   const base = { CODEX_HOME: join(root, "NewProfile", "Account") };
   const alias = { CODEX_HOME: join(root, "newprofile", "account") };
-  assert.equal(await usesLocalCodexConfig(base, alias, "win32"), true);
+  assert.equal(await usesLocalCodexConfig(base, alias, "win32"), await directoryCaseInsensitive(root));
   assert.equal(await usesLocalCodexConfig(base, { CODEX_HOME: join(root, "different") }, "win32"), false);
   // These paths are still missing, so realpath cannot hide the spelling difference.
   assert.equal(await usesLocalCodexConfig(base, alias, "linux"), false);
@@ -417,3 +417,38 @@ for (const form of ["NFC", "NFD"]) {
     assert.ok((await readdir(f.root)).every(name => !name.startsWith(".canvastty-")));
   });
 }
+
+
+test("Windows profile identity keeps case-sensitive sibling directories distinct", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-directory-case-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  if (process.platform === "win32") {
+    try { execFileSync("fsutil.exe", ["file", "setCaseSensitiveInfo", root, "enable"], { stdio: "pipe" }); }
+    catch { t.skip("NTFS per-directory case sensitivity is unavailable"); return; }
+  }
+  const first = { CODEX_HOME: join(root, "Profile") }, second = { CODEX_HOME: join(root, "profile") };
+  const insensitive = await directoryCaseInsensitive(root);
+  // Missing suffixes follow the chosen directory, rather than an OS-wide assumption.
+  assert.equal(await usesLocalCodexConfig(first, second, "win32"), insensitive);
+  await mkdir(first.CODEX_HOME, { recursive: true });
+  await mkdir(second.CODEX_HOME, { recursive: true });
+  // Existing directories retain their own identity even when their path spelling differs only by case.
+  assert.equal(await usesLocalCodexConfig(first, second, "win32"), insensitive);
+  assert.equal(await usesLocalCodexConfig(first, first, "win32"), true);
+});
+
+
+test("renaming an aliased profile cannot redirect a queued trust write to its stale path", posix, async t => {
+  const f = await fixture(t, { profileAlias: true });
+  const moved = join(f.root, "moved-profile");
+  const original = await readFile(f.config);
+  await assert.rejects(ensureCodexFolderTrust({ ...f.options, confirm: async () => {
+    await rename(join(f.root, "profile"), moved);
+    await rm(join(f.root, "profile-link"));
+    await symlink(moved, join(f.root, "profile-link"), "dir");
+    return true;
+  } }), /profile changed/);
+  assert.deepEqual(await readFile(join(moved, "config.toml")), original);
+  assert.equal((await f.messages()).some(message => message.method === "config/batchWrite"), false);
+  await assert.rejects(stat(f.config), { code: "ENOENT" });
+});

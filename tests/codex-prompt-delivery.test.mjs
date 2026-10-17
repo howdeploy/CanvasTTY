@@ -176,7 +176,7 @@ test("active MCP startup holds queued input but a final incomplete warning does 
 });
 
 test("startup and confirmation rows above the composer hold delivery until they disappear", async t => {
-  for (const startup of ["• Starting MCP servers (0/3)", "◦ Booting MCP servers (1/2)",
+  for (const startup of ["• Starting MCP servers (0/3)", "● Starting MCP servers (0/3)", "◦ Booting MCP servers (1/2)",
     "│ model: loading │\r\n╰────────────────╯", "Press enter to confirm", "Do you trust the contents of this folder?", "Update Model Permissions"]) {
     await t.test(startup, async t => {
       assert.equal(codexComposerReady(`${startup}\n› Ask Codex to do anything`, true), false);
@@ -191,6 +191,15 @@ test("startup and confirmation rows above the composer hold delivery until they 
     });
   }
   assert.equal(codexComposerReady("• Starting MCP servers (0/3)\n› previous task\n• complete\n› "), true);
+});
+
+test("all supported Codex bullet markers distinguish progress from answer text", () => {
+  for (const marker of ["•", "●", "◦", "*"]) {
+    for (const history of ["", "› previous task\n• Previous answer.\n\n"]) {
+      assert.equal(codexComposerReady(`${history}${marker} Starting MCP servers (0/3)\n› Ask Codex to do anything`, true), false);
+      assert.equal(codexComposerReady(`${history}${marker} Instructions:\n  Press enter to confirm the documented operation.\n› Ask Codex to do anything`, true), true);
+    }
+  }
 });
 
 test("transcript suggestions never make a person's current draft ready", async (t) => {

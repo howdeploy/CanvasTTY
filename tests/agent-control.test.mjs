@@ -913,6 +913,7 @@ test("screen readiness retains native placeholder styling for plain-text clients
   const pty = f.calls.at(-1).pty;
   for (const [before, dim, expected] of [["", true, true], ["", false, false],
     ["• Starting MCP servers (0/3)\r\n", true, false], ["│ model: loading │\r\n", true, false],
+    ["● Starting MCP servers (0/3)\r\n", true, false],
     ["Press enter to confirm\r\n", true, false], ["Do you trust the contents of this folder?\r\n", true, false],
     ["Update Model Permissions\r\n", true, false],
     ["› previous task\r\n• Press enter to confirm the documented operation.\r\n\r\n", true, true],

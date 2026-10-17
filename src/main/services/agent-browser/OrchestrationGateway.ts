@@ -347,7 +347,7 @@ export class OrchestrationGateway {
     this.recovering = false;
   }
 
-  /** Called at orchestrator PTY launch; the token is one-use with a short TTL. */
+  /** Called at PTY launch; bootstrap may join an already-live launch, never revive a disconnected one. */
   registerOrchestrator(input: { terminalSessionId: string }): OrchestrationCapability {
     if (!this.enabled || !this.running || this.socketEndpoint === null) {
       throw new Error("The orchestration bridge is not running.");
@@ -467,6 +467,12 @@ export class OrchestrationGateway {
     if (!lease.used && this.now() <= lease.expiresAt && tokenMatches(message.capabilityToken, lease.tokenDigest)) {
       lease.used = true;
       accepted = true;
+    } else if (lease.used && tokenMatches(message.capabilityToken, lease.tokenDigest)) {
+      // New CLI threads can start another MCP helper with the same PTY environment.
+      // Match the browser bridge: bootstrap can join this live launch, but cannot
+      // revive it after every authenticated connection has gone away.
+      accepted = [...this.connections].some(active => active.lease === lease && active.authenticated
+        && !active.closed && active.lastHeartbeatAt >= this.now() - this.heartbeatExpiryMs);
     } else if (lease.reconnectToken !== null && tokenMatches(message.capabilityToken, lease.reconnectTokenDigest)) {
       accepted = true;
     }
@@ -477,9 +483,13 @@ export class OrchestrationGateway {
     connection.authenticated = true;
     connection.lease = lease;
     connection.lastHeartbeatAt = this.now();
-    const reconnectToken = randomBytes(32).toString("base64url");
-    lease.reconnectToken = reconnectToken;
-    lease.reconnectTokenDigest = tokenDigest(reconnectToken);
+    // All helpers of a launch share its reconnect capability. Rotating it on
+    // every join would strand earlier helpers after their next socket drop.
+    if (lease.reconnectToken === null) {
+      lease.reconnectToken = randomBytes(32).toString("base64url");
+      lease.reconnectTokenDigest = tokenDigest(lease.reconnectToken);
+    }
+    const reconnectToken = lease.reconnectToken;
     lease.resolveAuthenticated();
     this.send(connection, {
       v: ORCHESTRATION_BRIDGE_PROTOCOL_VERSION,

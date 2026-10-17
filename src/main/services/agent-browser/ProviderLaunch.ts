@@ -365,6 +365,8 @@ export function codexMcpArgs(
       "enabled=true",
       "required=false",
       'default_tools_approval_mode="approve"',
+      // Coordination must be callable upfront; ranked discovery can omit an enabled tool even by exact name.
+      'omit_tools_from=["deferred"]',
       `enabled_tools=${tomlStringArray([...orchestrationTools])}`,
       "disabled_tools=[]"
     ].join(",");

@@ -479,7 +479,8 @@ export class TerminalManager {
     }
     for (const step of steps) {
       const record = step.record;
-      let reason = record.parentSessionId ? held.get(record.parentSessionId) : undefined;
+      const participates = step.launch !== "stopped" || parents.has(record.id);
+      let reason = participates && record.parentSessionId ? held.get(record.parentSessionId) : undefined;
       let restoreParent = reason ? record.parentSessionId : undefined;
       if (!reason && (step.launch !== "stopped" || parents.has(record.id)) && record.provider === "codex" && record.parentSessionId
         && !record.environment && !record.environmentChoice) {
@@ -507,7 +508,7 @@ export class TerminalManager {
       if (parents.has(record.id)) {
         await pending;
         const parent = this.sessions.get(record.id);
-        if (parent?.metadata.status === "failed") {
+        if (parent?.metadata.status === "failed" && (step.launch !== "stopped" || reason)) {
           held.set(record.id, parent.metadata.failureDetails ?? "Parent session could not be restored. Use Restart to review it.");
         }
       }

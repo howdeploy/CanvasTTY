@@ -438,3 +438,51 @@ for (const exitCode of [0, 7]) {
     assert.equal(again.getMetadata("middle").status, exitCode === 0 ? "done" : "failed");
   });
 }
+
+
+for (const exitCode of [0, 7]) {
+  test(`completed leaf descendants keep their history under a held running root (${exitCode})`, async t => {
+    const directory = await mkdtemp(join(tmpdir(), "canvastty-finished-leaf-"));
+    const calls = [], restored = manager(directory, calls);
+    t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
+    const base = { provider: "codex", profile: "auto", role: "orchestrator", title: "Saved", titleCustomized: false,
+      cwd: process.cwd(), position: { x: 0, y: 0 }, size: { width: 700, height: 430 }, restore: true };
+    await new TerminalSessionStore(directory).replace([
+      { ...base, id: "root", lastState: "running" },
+      { ...base, id: "child", role: "subagent", parentSessionId: "root", lastState: "exited", exitCode },
+      { ...base, id: "leaf", role: "subagent", parentSessionId: "child", lastState: "exited", exitCode: 0 }
+    ]);
+    restored.configureCodexRestoreTrust(async () => { throw new Error("trust absent"); });
+    await restored.restorePersistedSessions();
+    assert.equal(restored.getMetadata("root").status, "failed");
+    assert.equal(calls.length, 0);
+    for (const [id, code] of [["child", exitCode], ["leaf", 0]]) {
+      const metadata = restored.getMetadata(id);
+      assert.equal(metadata.status, code === 0 ? "done" : "failed");
+      assert.equal(metadata.exitCode, code);
+      assert.equal(metadata.failureDetails, null, "a completed leaf does not inherit a new trust error");
+    }
+    const saved = await new TerminalSessionStore(directory).load();
+    assert.equal(saved.find(record => record.id === "leaf").lastState, "exited");
+    assert.equal(saved.find(record => record.id === "leaf").exitCode, 0);
+  });
+}
+
+test("a historical failed intermediate is not a new admission refusal when the root is live", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "canvastty-past-parent-exit-"));
+  const calls = [], restored = manager(directory, calls);
+  t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
+  const base = { provider: "codex", profile: "auto", role: "orchestrator", title: "Saved", titleCustomized: false,
+    cwd: process.cwd(), position: { x: 0, y: 0 }, size: { width: 700, height: 430 }, restore: true };
+  await new TerminalSessionStore(directory).replace([
+    { ...base, id: "root", lastState: "running" },
+    { ...base, id: "middle", provider: "claude", role: "subagent", parentSessionId: "root", lastState: "exited", exitCode: 7 },
+    { ...base, id: "child", role: "subagent", parentSessionId: "middle", lastState: "running" }
+  ]);
+  restored.configureCodexRestoreTrust(async () => {});
+  await restored.restorePersistedSessions();
+  assert.equal(restored.getMetadata("middle").exitCode, 7);
+  assert.equal(restored.getMetadata("child").exitCode, null);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].args.join(" "), /projects=.*trust_level.*trusted/);
+});

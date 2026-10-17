@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -18,7 +18,11 @@ export function codexAppServerCwd(
     : [environment.HOME, environment.CODEX_HOME, homedir(), userInfo().homedir];
   for (const directory of candidates) {
     if (!directory || !isAbsolute(directory)) continue;
-    try { if (statSync(directory).isDirectory()) return directory; } catch { /* Try another verified directory. */ }
+    try {
+      if (!statSync(directory).isDirectory()) continue;
+      accessSync(directory, constants.X_OK);
+      return directory;
+    } catch { /* Try another verified directory. */ }
   }
   throw new Error("Codex app-server working directory is unavailable.");
 }

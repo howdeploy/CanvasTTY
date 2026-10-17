@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -283,6 +283,18 @@ test("app-server cwd uses existing absolute homes and falls back to the prepared
       assert.equal(codexAppServerCwd({ HOME }, platform), userInfo().homedir);
     }
   }
+});
+
+test("an unsearchable Unix HOME falls back to the accessible profile", {
+  skip: process.platform === "win32" || process.getuid?.() === 0 ? "requires unprivileged Unix directory permissions" : false
+}, async t => {
+  const { codexAppServerCwd } = await import("../src/main/services/CodexFolderTrust.ts");
+  const root = await mkdtemp(join(tmpdir(), "canvas-unsearchable-home-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const HOME = join(root, "unsearchable"), CODEX_HOME = join(root, "profile");
+  await mkdir(HOME, { mode: 0o600 }); await mkdir(CODEX_HOME);
+  try { assert.equal(codexAppServerCwd({ HOME, CODEX_HOME }), CODEX_HOME); }
+  finally { await chmod(HOME, 0o700); }
 });
 
 test("a usable explicit profile persists trust even when HOME cannot be a working directory", posix, async t => {

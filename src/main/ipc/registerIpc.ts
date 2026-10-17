@@ -971,9 +971,10 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   });
   ipcMain.handle(IPC.terminalCreate, async (event, request: CreateSessionRequest) => {
     assertMainRenderer(event, getMainWindow);
-    // Without launch options the profile is known now; contributed launches check their resolved profile before spawning.
+    // Direct launches have no pending admission policy; contributed launches check trust after preparation.
     if (request?.provider === "codex" && !request.environment && !request.parentSessionId
-      && request.role !== "subagent" && !Object.keys(request.launchOptions ?? {}).length) {
+      && request.role !== "subagent" && !Object.keys(request.launchOptions ?? {}).length
+      && !terminals.hasLaunchPolicy(request.provider)) {
       await trustCodexFolder(request.cwd);
     }
     return terminals.create(request, { beforeLocalCodexLaunch: trustCodexFolder });

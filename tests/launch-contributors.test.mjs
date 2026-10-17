@@ -5,6 +5,7 @@ import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { transform } from "esbuild";
 import { AgentControlService } from "../src/main/services/AgentControlService.ts";
 import { LaunchPipeline, envKey } from "../src/main/services/LaunchPipeline.ts";
 import { validatePluginManifest } from "../src/main/services/PluginManager.ts";
@@ -680,4 +681,51 @@ for (const succeeds of [true, false]) {
       }
     }
   });
+}
+
+
+async function personTerminalHandlers(manager, trust) {
+  const source = await readFile(new URL("../src/main/ipc/registerIpc.ts", import.meta.url), "utf8");
+  const start = source.indexOf("  ipcMain.handle(IPC.terminalCreate,");
+  const end = source.indexOf("  ipcMain.on(IPC.terminalInput,", start);
+  const { code } = await transform(source.slice(start, end), { loader: "ts", format: "cjs" });
+  const handlers = new Map();
+  new Function("ipcMain", "IPC", "assertMainRenderer", "getMainWindow", "terminals", "trustCodexFolder", code)(
+    { handle: (channel, handler) => handlers.set(channel, handler) },
+    { terminalCreate: "create", terminalRestart: "restart" }, () => {}, () => null, manager, trust);
+  return handlers;
+}
+
+for (const action of ["create", "restart"]) {
+  for (const outcome of ["allow", "refuse", "timeout"]) {
+    test(`person ${action} defers Codex trust until policy admission (${outcome})`, async t => {
+      const order = [];
+      let answer = {};
+      const definition = contributor("p.policy", { launch: { policy: true, appliesTo: ["codex"], fields: [] } });
+      const { pipeline } = await pipelineFixture(t, { contributors: [definition], timeoutMs: 50,
+        answers: { "p.policy": () => { order.push("policy"); return answer; } } });
+      const { manager, calls } = await managerFixture(t, pipeline);
+      const handlers = await personTerminalHandlers(manager, async folder => {
+        assert.equal(folder, cwd); order.push("trust");
+      });
+      const request = { provider: "codex", profile: "normal", cwd, position: at };
+      let id, previous = 0;
+      if (action === "restart") {
+        id = (await handlers.get("create")({}, request)).id;
+        await waitFor(() => calls.length === 1);
+        calls[0].exit(0);
+        previous = 1;
+        order.length = 0;
+        assert.equal(manager.localCodexFolderForTrust(id), null, "the policy, not explicit options, makes this launch contributed");
+      }
+      answer = outcome === "allow" ? {} : outcome === "refuse" ? { refuse: { reason: "Admission refused" } }
+        : new Promise(() => {});
+      const result = action === "create" ? await handlers.get("create")({}, request) : await handlers.get("restart")({}, id);
+      id = result.id;
+      await waitFor(() => outcome === "allow" ? calls.length === previous + 1 : card(manager, id).status === "failed");
+      assert.deepEqual(order, outcome === "allow" ? ["policy", "trust"] : ["policy"]);
+      assert.equal(calls.length, previous + (outcome === "allow" ? 1 : 0));
+      if (outcome !== "allow") assert.match(card(manager, id).failureDetails, outcome === "refuse" ? /Admission refused/ : /did not answer its launch policy/);
+    });
+  }
 }

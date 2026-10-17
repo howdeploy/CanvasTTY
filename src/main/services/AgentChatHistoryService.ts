@@ -125,12 +125,13 @@ export class AgentChatHistoryService {
     }
     signal.throwIfAborted();
     this.assertProvider(provider);
-    if (provider === "codex") await beforeCodexLaunch?.(item.cwd);
+    if (provider === "codex" && !this.terminals.hasLaunchPolicy(provider)) await beforeCodexLaunch?.(item.cwd);
     signal.throwIfAborted();
     this.assertProvider(provider);
     const raced = this.terminals.findLocalConversation(provider, threadId);
     if (raced) return this.resumeExisting(raced, beforeCodexLaunch);
-    return { session: this.terminals.create({ provider, cwd: item.cwd, profile: "normal", position, title: item.title, resumeThreadId: threadId }), reused: false };
+    return { session: this.terminals.create({ provider, cwd: item.cwd, profile: "normal", position, title: item.title, resumeThreadId: threadId },
+      beforeCodexLaunch ? { beforeLocalCodexLaunch: beforeCodexLaunch } : {}), reused: false };
   }
 
   private async resumeExisting(session: SessionSnapshot, beforeCodexLaunch?: CodexLaunchGuard): Promise<AgentChatHistoryResumeResult> {

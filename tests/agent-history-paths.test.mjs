@@ -222,7 +222,7 @@ test("person history resumes await Codex trust for fresh and exited local sessio
   const {root,service}=await setup(t,()=>({}));const calls=[];
   service.adapters.codex={read:async()=>({items:[{id,cwd:root,title:"History",lastActivityAt:0}]})};
   const active={id:"card",provider:"codex",cwd:root,exitCode:null,status:"idle"};let existing=null;
-  service.terminals={findLocalConversation:()=>existing,create:request=>{calls.push("create");return {...active,...request};},
+  service.terminals={hasLaunchPolicy:()=>false,findLocalConversation:()=>existing,create:request=>{calls.push("create");return {...active,...request};},
     restart:()=>{calls.push("restart");return active;},list:()=>[existing],localCodexFolderForTrust:()=>root};
   const guard=async folder=>{assert.equal(folder,root);calls.push("trust");};
   assert.equal((await service.resume("codex",id,{x:0,y:0},guard)).error,undefined);
@@ -243,7 +243,7 @@ test("person history resumes await Codex trust for fresh and exited local sessio
 test("history trust refusal or a concurrently closed card cannot launch a session",async t=>{
   const {root,service}=await setup(t,()=>({}));let existing=null;let launches=0;
   service.adapters.codex={read:async()=>({items:[{id,cwd:root,title:"History",lastActivityAt:0}]})};
-  service.terminals={findLocalConversation:()=>existing,create:()=>{launches++;},restart:()=>{launches++;},
+  service.terminals={hasLaunchPolicy:()=>false,findLocalConversation:()=>existing,create:()=>{launches++;},restart:()=>{launches++;},
     list:()=>[],localCodexFolderForTrust:()=>root};
   for(const card of [null,{id:"card",provider:"codex",cwd:root,exitCode:0}]){
     existing=card;
@@ -252,4 +252,26 @@ test("history trust refusal or a concurrently closed card cannot launch a sessio
   }
   const closed=await service.resume("codex",id,{x:0,y:0},async()=>{});
   assert.match(closed.error.message,/closed during confirmation/);assert.equal(launches,0);
+});
+
+
+test("fresh policy-controlled Codex history forwards trust without persisting it eagerly", async t => {
+  const { root, service } = await setup(t, () => ({}));
+  const order = [];
+  service.adapters.codex = { read: async () => ({ items: [{ id, cwd: root, title: "History", lastActivityAt: 0 }] }) };
+  let forwarded;
+  service.terminals = {
+    findLocalConversation: () => null,
+    hasLaunchPolicy: provider => { assert.equal(provider, "codex"); return true; },
+    create: (_request, control) => {
+      order.push("create"); forwarded = control.beforeLocalCodexLaunch;
+      return { id: "card", provider: "codex", cwd: root, exitCode: null, status: "starting" };
+    }
+  };
+  const guard = async () => { order.push("trust"); };
+  assert.equal((await service.resume("codex", id, { x: 0, y: 0 }, guard)).error, undefined);
+  assert.deepEqual(order, ["create"]);
+  assert.equal(forwarded, guard);
+  await forwarded(root);
+  assert.deepEqual(order, ["create", "trust"]);
 });

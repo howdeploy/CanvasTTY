@@ -377,7 +377,7 @@ export class TerminalManager {
     const session = this.sessions.get(id);
     if (!session || session.metadata.provider !== "codex" || session.metadata.parentSessionId
       || session.metadata.role === "subagent" || session.extras.ownerPluginId || session.extras.options
-      || session.extras.environment || session.extras.environmentChoice) return null;
+      || session.extras.environment || session.extras.environmentChoice || this.hasLaunchPolicy("codex")) return null;
     return session.metadata.cwd;
   }
 
@@ -491,7 +491,7 @@ export class TerminalManager {
       }
       if (!reason && step.launch !== "stopped" && restoreTrust && record.provider === "codex"
         && !record.parentSessionId && record.role !== "subagent" && !record.ownerPluginId
-        && !record.options && !record.environment && !record.environmentChoice) {
+        && !record.options && !record.environment && !record.environmentChoice && !this.hasLaunchPolicy(record.provider)) {
         try { await restoreTrust(record.cwd); } catch {
           reason = "Codex folder trust could not be verified. Use Restart to review and trust the folder.";
         }
@@ -756,7 +756,7 @@ export class TerminalManager {
     const awaitMeasuredGrid = request.provider === "grok"
       && this.providerClis.get(request.provider).state === "available";
     // With launch options, an environment or a launch policy the plugins answer first; the card waits and launches when they do.
-    const contributed = (Boolean(launchOptions) || Boolean(environmentChoice) || this.policyApplies(request.provider)) && !awaitMeasuredGrid;
+    const contributed = (Boolean(launchOptions) || Boolean(environmentChoice) || this.hasLaunchPolicy(request.provider)) && !awaitMeasuredGrid;
     this.startingModels.set(id, modelChoice);
     if (request.initialPrompt && request.initialImagePath) {
       this.initialCodexInputs.set(id, { prompt: request.initialPrompt, imagePath: request.initialImagePath });
@@ -1370,7 +1370,7 @@ export class TerminalManager {
       && this.providerClis.get(descriptor.provider).state === "available";
 
     const contributed = directoryReady && !awaitMeasuredGrid
-      && (Boolean(extras.options) || Boolean(extras.environment) || this.policyApplies(descriptor.provider));
+      && (Boolean(extras.options) || Boolean(extras.environment) || this.hasLaunchPolicy(descriptor.provider));
     if (directoryReady && !awaitMeasuredGrid && !contributed) {
       try {
         this.startingModels.set(descriptor.id, { ...(metadata.model !== undefined ? { model: metadata.model } : {}),
@@ -1922,11 +1922,11 @@ export class TerminalManager {
 
   private contributed(session: ManagedSession): boolean {
     return Boolean(session.extras.options) || Boolean(session.extras.environment) || Boolean(session.extras.environmentChoice)
-      || this.policyApplies(session.metadata.provider);
+      || this.hasLaunchPolicy(session.metadata.provider);
   }
 
   /** A trusted plugin's launch policy applies to this agent: its launches wait for the policy's answer. */
-  private policyApplies(provider: ProviderId): boolean {
+  hasLaunchPolicy(provider: ProviderId): boolean {
     try { return this.launchPipeline?.hasPolicy?.(provider) === true; } catch { return false; }
   }
 
@@ -2035,7 +2035,7 @@ export class TerminalManager {
     // 3. Chosen launch contributors, and the launch policies that apply.
     let contribution: LaunchContribution | null = null;
     const trustedFolder = session.extras.environment ? undefined : this.personTrustedFolder(metadata.parentSessionId, metadata.cwd);
-    if (session.extras.options || this.policyApplies(metadata.provider)) {
+    if (session.extras.options || this.hasLaunchPolicy(metadata.provider)) {
       const pipeline = this.launchPipeline;
       if (!pipeline) return refuse(missingLaunchPlugins(Object.keys(session.extras.options ?? {})));
       const placedIn = session.extras.environment;

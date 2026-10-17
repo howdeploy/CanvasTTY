@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { accessSync, constants, statSync } from "node:fs";
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rmdir, stat, writeFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { CodexAppServerClient, CodexAppServerError } from "./CodexAppServerClient.ts";
@@ -44,8 +44,58 @@ async function canonicalConfigPath(file: string): Promise<string> {
   }
 }
 
-function configIdentity(file: string, platform: NodeJS.Platform = process.platform): string {
-  return platform === "win32" ? file.toLowerCase() : file;
+/** Query this directory's filesystem, never the filesystem containing its mount-point name. */
+export async function directoryCaseInsensitive(directory: string): Promise<boolean> {
+  const probe = await mkdtemp(join(directory, ".canvastty-case-"));
+  try {
+    const original = await lstat(probe);
+    try {
+      const alias = await lstat(join(directory, basename(probe).toUpperCase()));
+      return alias.isDirectory() && alias.dev === original.dev && alias.ino === original.ino;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return false;
+    }
+  } finally { await rmdir(probe); }
+}
+
+/** Observe a directory entry on the actual volume, including a missing profile's existing ancestor. */
+async function macProfileCaseInsensitive(file: string): Promise<boolean> {
+  let directory = dirname(file);
+  for (;;) {
+    let entry;
+    try { entry = await stat(directory); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = dirname(directory);
+      if (parent === directory) throw error;
+      directory = parent;
+      continue;
+    }
+    const parent = dirname(directory);
+    if (parent === directory || (await stat(parent)).dev !== entry.dev) {
+      // A mount root's own name belongs to its parent volume. An empty temporary
+      // directory inside this volume provides an unambiguous entry without touching config.
+      return directoryCaseInsensitive(directory);
+    }
+    const name = basename(directory);
+    const variant = name.replace(/[a-zA-Z]/, char => char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase());
+    if (variant !== name) {
+      try {
+        const alias = await lstat(join(parent, variant));
+        // A symlink with different spelling on a case-sensitive volume is not evidence of case folding.
+        return alias.isDirectory() && alias.dev === entry.dev && alias.ino === entry.ino;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        return false;
+      }
+    }
+    directory = parent;
+  }
+}
+
+async function configIdentity(file: string, platform: NodeJS.Platform = process.platform): Promise<string> {
+  const insensitive = platform === "win32" || (platform === "darwin" && await macProfileCaseInsensitive(file));
+  return insensitive ? file.toLowerCase() : file;
 }
 
 function profileConfig(environment: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform = process.platform): string {
@@ -65,8 +115,8 @@ export async function usesLocalCodexConfig(
   launchEnvironment: Readonly<Record<string, string | undefined>>,
   platform: NodeJS.Platform = process.platform
 ): Promise<boolean> {
-  return configIdentity(await canonicalConfigPath(profileConfig(baseEnvironment, platform)), platform)
-    === configIdentity(await canonicalConfigPath(profileConfig(launchEnvironment, platform)), platform);
+  return await configIdentity(await canonicalConfigPath(profileConfig(baseEnvironment, platform)), platform)
+    === await configIdentity(await canonicalConfigPath(profileConfig(launchEnvironment, platform)), platform);
 }
 
 /** One restore batch shares checks and stops retrying a broken local app-server. */
@@ -116,11 +166,11 @@ export async function ensureCodexFolderTrust(options: {
   const environment = normalizeProcessEnvironment({ ...process.env, ...cli.environment });
   const requestedFile = profileConfig(environment);
   const file = await canonicalConfigPath(requestedFile);
-  const identity = configIdentity(file);
+  const identity = await configIdentity(file);
   await serializeTrust(identity, async () => {
     // Codex requires an explicit CODEX_HOME to exist, including on the person's first launch.
     await mkdir(dirname(requestedFile), { recursive: true, mode: 0o700 });
-    if (configIdentity(await canonicalConfigPath(requestedFile)) !== identity) throw new Error("Codex profile changed before trust could be read.");
+    if (await configIdentity(await canonicalConfigPath(requestedFile)) !== identity) throw new Error("Codex profile changed before trust could be read.");
     const client = new CodexAppServerClient(cli, options.clientVersion, 1_000, codexAppServerCwd(environment));
     try {
       // Do not load the new project's settings before the person has trusted it.
@@ -130,7 +180,7 @@ export async function ensureCodexFolderTrust(options: {
       for (const entry of response.layers) {
         if (record(entry) && record(entry.name) && entry.name.type === "user" && !entry.name.profile
           && typeof entry.name.file === "string" && isAbsolute(entry.name.file)
-          && configIdentity(await canonicalConfigPath(entry.name.file)) === identity) {
+          && await configIdentity(await canonicalConfigPath(entry.name.file)) === identity) {
           layer = entry;
           break;
         }
@@ -148,7 +198,7 @@ export async function ensureCodexFolderTrust(options: {
       if (record(projects) && record(projects[folder]) && projects[folder].trust_level === "trusted") return;
       if (!await options.confirm(folder)) throw new Error("Folder trust was not granted. Session was not started.");
       if (await realpath(options.cwd) !== folder) throw new Error("Project folder changed while awaiting trust.");
-      if (configIdentity(await canonicalConfigPath(requestedFile)) !== identity) throw new Error("Codex profile changed while awaiting trust.");
+      if (await configIdentity(await canonicalConfigPath(requestedFile)) !== identity) throw new Error("Codex profile changed while awaiting trust.");
       // Private, unique backup of the current file; Codex's version check refuses a concurrent edit.
       let original: Buffer | null;
       try { original = await readFile(file); } catch (error) {

@@ -7,7 +7,7 @@ import { canvasTtyPrivateData } from "../src/main/services/safety/baseProtection
 import { execFileSync } from "node:child_process";
 import { normalizeProcessEnvironment } from "../src/main/services/processEnvironment.ts";
 import { privateAppData } from "../src/main/services/isolation/isolationPaths.ts";
-import { ensureCodexFolderTrust, usesLocalCodexConfig, batchCodexRestoreTrust } from "../src/main/services/CodexFolderTrust.ts";
+import { ensureCodexFolderTrust, usesLocalCodexConfig, batchCodexRestoreTrust, directoryCaseInsensitive } from "../src/main/services/CodexFolderTrust.ts";
 
 async function fixture(t, { trusted = false, conflict = false, fresh = false, missingHome = false, layerConfig, serialized = false, profileAlias = false } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-folder-trust-")));
@@ -360,7 +360,31 @@ test("missing profile suffixes use platform-specific case identity", async t => 
   assert.equal(await usesLocalCodexConfig(base, alias, "win32"), true);
   assert.equal(await usesLocalCodexConfig(base, { CODEX_HOME: join(root, "different") }, "win32"), false);
   // These paths are still missing, so realpath cannot hide the spelling difference.
-  for (const platform of ["darwin", "linux"]) {
-    assert.equal(await usesLocalCodexConfig(base, alias, platform), false);
+  assert.equal(await usesLocalCodexConfig(base, alias, "linux"), false);
+  const probe = join(root, "CaseProbe");
+  await writeFile(probe, "");
+  let insensitive = false;
+  try { await stat(join(root, "caseProbe")); insensitive = true; } catch (error) {
+    assert.equal(error.code, "ENOENT");
   }
+  assert.equal(await usesLocalCodexConfig(base, alias, "darwin"), insensitive);
+  assert.equal(await usesLocalCodexConfig(base, { CODEX_HOME: join(root, "different") }, "darwin"), false);
+});
+
+
+test("volume case probes use the selected directory and leave its contents unchanged", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-volume-case-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profile = join(root, "config.toml");
+  await writeFile(profile, "unrelated profile data");
+  const probe = join(root, "ProbeCase");
+  await writeFile(probe, "");
+  let insensitive = false;
+  try { await stat(join(root, "probeCase")); insensitive = true; } catch (error) {
+    assert.equal(error.code, "ENOENT");
+  }
+  const before = (await readdir(root)).sort();
+  assert.equal(await directoryCaseInsensitive(root), insensitive);
+  assert.deepEqual((await readdir(root)).sort(), before);
+  assert.equal(await readFile(profile, "utf8"), "unrelated profile data");
 });

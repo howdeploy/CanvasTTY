@@ -264,3 +264,36 @@ test("restore trust batches coalesce canonical folder aliases without caching pe
   await batchCodexRestoreTrust(check)(folder);
   assert.equal(calls, 2, "a later restoration gets a fresh check");
 });
+
+test("app-server cwd ignores Unix HOME on Windows and preserves it on Unix", async () => {
+  const { codexAppServerCwd } = await import("../src/main/services/CodexFolderTrust.ts");
+  for (const HOME of ["/nonexistent/posix-home", "relative-home", ""]) {
+    assert.equal(codexAppServerCwd({ HOME }, "win32"), userInfo().homedir);
+  }
+  assert.equal(codexAppServerCwd({ HOME: "/home/synthetic" }, "linux"), "/home/synthetic");
+  assert.equal(codexAppServerCwd({ HOME: "/Users/synthetic" }, "darwin"), "/Users/synthetic");
+});
+
+test("private trust backup storage exists before isolation and remains masked after writes", async t => {
+  const { prepareCodexTrustBackups } = await import("../src/main/services/CodexFolderTrust.ts");
+  const { bubblewrapArguments } = await import("../src/main/services/isolation/bubblewrap.ts");
+  const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-backup-isolation-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = await prepareCodexTrustBackups(root);
+  assert.ok((await stat(directory)).isDirectory());
+  if (process.platform !== "win32") assert.equal((await stat(directory)).mode & 0o777, 0o700);
+  const paths = { writable: [], writableFiles: [], unreadable: privateAppData(root),
+    readableAgain: [], gitHooks: [], protectedWrites: [], socketFolders: [] };
+  const args = bubblewrapArguments(paths, { command: "synthetic-cli", args: [], cwd: root },
+    path => path === directory ? "directory" : null);
+  assert.ok(args.some((value, index) => value === "--tmpfs" && args[index + 1] === directory));
+  const backup = join(directory, "synthetic.toml");
+  await writeFile(backup, 'model = "synthetic"\n', { mode: 0o600 });
+  assert.equal(await prepareCodexTrustBackups(root), directory);
+  assert.equal(await readFile(backup, "utf8"), 'model = "synthetic"\n');
+  const source = await readFile(new URL("../src/main/index.ts", import.meta.url), "utf8");
+  const start = source.indexOf("await prepareCodexTrustBackups(userDataPath)");
+  assert.ok(start > 0 && start < source.indexOf("new PluginManager(userDataPath)"));
+  assert.ok(start < source.indexOf("new AgentIsolation("));
+  assert.ok(start < source.indexOf("restorePersistedSessions()"));
+});

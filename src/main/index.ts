@@ -31,7 +31,7 @@ import { PixelSkinPackRegistry } from "./services/PixelSkinPackRegistry";
 import { TerminalManager, reachesObservers, reachesRenderer } from "./services/TerminalManager";
 import { TerminalRendererOutbox } from "./services/TerminalRendererOutbox";
 import { AgentControlGateway } from "./services/agent-control/AgentControlGateway";
-import { ensureCodexFolderTrust } from "./services/CodexFolderTrust";
+import { ensureCodexFolderTrust, prepareCodexTrustBackups } from "./services/CodexFolderTrust";
 import { TerminalSessionStore } from "./services/TerminalSessionStore";
 import { AgentChatHistoryService } from "./services/AgentChatHistoryService";
 import { LimitsService, withoutAccountScope } from "./services/LimitsService";
@@ -342,6 +342,9 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   const kimiHomeDirectory = resolveKimiHomeDirectory();
   recoverKimiConfigurationOnStartup(kimiHomeDirectory);
   const userDataPath = app.getPath("userData");
+  // Agents and plugin services may start before session restoration. Reserve
+  // private backup storage before any of them can construct an isolation layer.
+  await prepareCodexTrustBackups(userDataPath);
   const settings = new SettingsStore(userDataPath, app.getLocale(), process.platform, providerCliAvailability(providerClis));
   editMenuLocale = () => settings.get().locale;
   const terminalBorderSkins = new SkinRegistry(userDataPath);

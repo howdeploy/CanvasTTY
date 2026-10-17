@@ -8,6 +8,20 @@ import type { ProviderCliRegistry } from "./providerCliRegistry.ts";
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** Windows Codex uses the OS account home even when a Unix-like shell exports HOME. */
+export function codexAppServerCwd(
+  environment: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform = process.platform
+): string {
+  return platform === "win32" ? userInfo().homedir : environment.HOME || homedir();
+}
+
+/** Create before any sandbox starts so Linux can mount an unreadable directory over it. */
+export async function prepareCodexTrustBackups(userDataPath: string): Promise<string> {
+  const directory = join(userDataPath, "codex-config-backups");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  return directory;
+}
+
 // New plugin profiles may not exist yet; resolve through their nearest existing ancestor.
 async function canonicalConfigPath(file: string): Promise<string> {
   try { return await realpath(file); } catch (error) {
@@ -90,7 +104,7 @@ export async function ensureCodexFolderTrust(options: {
     // Codex requires an explicit CODEX_HOME to exist, including on the person's first launch.
     await mkdir(dirname(requestedFile), { recursive: true, mode: 0o700 });
     if (await canonicalConfigPath(requestedFile) !== file) throw new Error("Codex profile changed before trust could be read.");
-    const client = new CodexAppServerClient(cli, options.clientVersion, 1_000, environment.HOME || homedir());
+    const client = new CodexAppServerClient(cli, options.clientVersion, 1_000, codexAppServerCwd(environment));
     try {
       // Do not load the new project's settings before the person has trusted it.
       const response = await client.call("config/read", { includeLayers: true });

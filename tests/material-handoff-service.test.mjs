@@ -256,6 +256,20 @@ test("dots Codex animates around its prompt do not hide whether it is empty", as
   });
 });
 
+test("material handoffs preserve multiline drafts with an empty first row", async () => {
+  await withHandoffs(async ({ handoffs, terminal, draft }) => {
+    terminal.add({ id: "c1", provider: "codex", cwd: "/work" });
+    terminal.tui = codexTui(terminal);
+    for (const tail of ["  personal draft", "\r\n  personal draft", "\r\n  GPT-6 Sol medium · /fixture"]) {
+      terminal.emit("c1", `\x1b[2J\x1b[H› \r\n${tail}\r\n`);
+      assert.deepEqual(await handoffs.send(draft("c1")), { ok: false, reason: "composer-not-ready" });
+      assert.equal(terminal.writes.length, 0);
+    }
+    terminal.emit("c1", "\x1b[2J\x1b[H› \r\n\r\n  \x1b[33mGPT-6 Sol medium\x1b[0m · \x1b[32m/fixture\x1b[0m\r\n");
+    assert.equal((await handoffs.send(draft("c1"))).ok, true);
+  });
+});
+
 test("a Codex prompt drawn before the kept output was trimmed still counts as empty", async () => {
   await withHandoffs(async ({ handoffs, terminal, draft }) => {
     terminal.add({ id: "c1", provider: "codex", cwd: "/work" });

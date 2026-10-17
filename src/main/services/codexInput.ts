@@ -9,7 +9,7 @@ const EMPTY_COMPOSER_PLACEHOLDERS = new Set([
 ]);
 
 /** The Codex task composer, shared by automated delivery and the native control API. */
-export function codexComposerReady(screen: string, dimPlaceholder = false): boolean {
+export function codexComposerReady(screen: string, dimPlaceholder = false, emptyContinuation?: boolean): boolean {
   // Transcript prose can quote startup text. Standalone startup rows in the
   // current composer block, including the model banner above it, still gate input.
   const lines = screen.split("\n");
@@ -35,9 +35,36 @@ export function codexComposerReady(screen: string, dimPlaceholder = false): bool
   // Only native dim placeholder cells may contain disposable animation. Never
   // erase Braille from a person's draft and turn it into a blank composer.
   const text = dimPlaceholder ? prompt[1].replace(/[\u2800-\u28ff]/g, " ").trim() : prompt[1];
-  if (EMPTY_COMPOSER_PLACEHOLDERS.has(text)) return text.length === 0 || dimPlaceholder;
+  if (EMPTY_COMPOSER_PLACEHOLDERS.has(text)) return text.length === 0
+    ? emptyContinuation ?? lines.slice(index + 1).every(line => !line.trim()) : dimPlaceholder;
   return dimPlaceholder && text.length > 0
     && [...EMPTY_COMPOSER_PLACEHOLDERS].some((placeholder) => placeholder.startsWith(text));
+}
+
+/** A blank first row may still own a multiline draft. Footer prose alone is
+ * insufficient: native footer styling must distinguish it from typed input.
+ */
+export function codexContinuationIsEmpty(terminal: import("@xterm/headless").Terminal): boolean {
+  const buffer = terminal.buffer.active;
+  let prompt = buffer.baseY + terminal.rows - 1;
+  while (prompt >= buffer.baseY && !/^\s*›/.test(buffer.getLine(prompt)?.translateToString(true) ?? "")) prompt--;
+  if (prompt < buffer.baseY) return false;
+  for (let row = prompt + 1; row < buffer.baseY + terminal.rows; row++) {
+    const line = buffer.getLine(row), text = line?.translateToString(true) ?? "";
+    if (!text.trim()) continue;
+    const footer = /^\s*(?:\? for shortcuts\b|.+\s+(?:low|medium|high|xhigh|max|ultra|default|none)\s*·\s+\S)/i.test(text);
+    if (!footer || !line) return false;
+    const styles = new Set<string>();
+    let allDim = true;
+    for (let col = 0; col < line.length; col++) {
+      const cell = line.getCell(col);
+      if (!cell?.getChars().trim()) continue;
+      allDim &&= Boolean(cell.isDim());
+      styles.add(`${cell.getFgColorMode()}:${cell.getFgColor()}:${cell.isDim()}`);
+    }
+    return allDim || styles.size > 1;
+  }
+  return true;
 }
 
 /** Explicit paste boundaries keep Codex's paste-burst detector from swallowing the submit key. */

@@ -61,7 +61,7 @@ import { SecretRedactionRegistry } from "./safety/SecretRedaction.ts";
 import type { DecisionSession } from "./DecisionHooks.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
 import { SessionScreen, terminalScreenText } from "./materials/sessionScreen.ts";
-import { codexComposerReady, codexPlaceholderIsDim } from "./codexInput.ts";
+import { codexComposerReady, codexContinuationIsEmpty, codexPlaceholderIsDim } from "./codexInput.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
 import { canResumeThreadById, resolveTerminalLaunch } from "./terminalLaunch.ts";
 import { isLaunchProfile, PROFILE_RANK, profileAvailable, profileCeiling, type LaunchProfile } from "../../shared/autoMode.ts";
@@ -932,7 +932,7 @@ export class TerminalManager {
           const snapshot = launchOutput();
           screen.feed({ id, data: snapshot.buffer, outputOffset: snapshot.outputOffset });
           if (await screen.inspect((terminal) => codexComposerReady(
-            terminalScreenText(terminal, true), codexPlaceholderIsDim(terminal)))) {
+            terminalScreenText(terminal, true), codexPlaceholderIsDim(terminal), codexContinuationIsEmpty(terminal)))) {
             inputReady = true;
             break;
           }

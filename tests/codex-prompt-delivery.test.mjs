@@ -322,6 +322,24 @@ test("unstyled Braille is a draft even without other text", async t => {
   }
 });
 
+test("a blank first composer row does not hide a multiline draft", async t => {
+  for (const tail of ["  personal draft", "\r\n  personal draft", "\r\n\r\n  personal draft",
+    "\r\n  GPT-6 Sol medium · /fixture"]) {
+    await t.test(JSON.stringify(tail), async t => {
+      assert.equal(codexComposerReady(`› \n${tail.replaceAll("\r", "")}`), false);
+      const f = fixture(t, false);
+      const child = await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan" });
+      f.calls.at(-1).process.emitData(`\x1b[2J\x1b[H› \r\n${tail}\r\n`);
+      assert.equal((await f.terminals.deliverInput(child.id, "must not append\r", 50, undefined, true)).delivered, false);
+      assert.deepEqual(f.writes, []);
+    });
+  }
+  const f = fixture(t, false);
+  const child = await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan" });
+  f.calls.at(-1).process.emitData("\x1b[2J\x1b[H› \r\n\r\n  \x1b[33mGPT-6 Sol medium\x1b[0m · \x1b[32m/fixture\x1b[0m\r\n");
+  assert.equal((await f.terminals.deliverInput(child.id, "task\r", 200, undefined, true)).delivered, true);
+});
+
 for (const humanInput of ["typed amendment", "\r", "\x1b[200~spoken task\x1b[201~\r"]) {
   test(`checked human input revokes automation draft ownership (${JSON.stringify(humanInput)})`, async t => {
     const f = fixture(t, false);

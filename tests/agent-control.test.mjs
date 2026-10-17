@@ -947,6 +947,23 @@ test("native control preserves unstyled Braille drafts", localSocket, async t =>
   }
 });
 
+test("native control rejects multiline drafts below a blank first composer row", localSocket, async t => {
+  const f = await fixture(t), { session } = await f.create();
+  const pty = f.calls.at(-1).pty;
+  for (const tail of ["  personal draft", "\r\n  personal draft", "\r\n  GPT-6 Sol medium · /fixture"]) {
+    pty.data(`\x1b[2J\x1b[H› \r\n${tail}\r\n`);
+    await delay(20);
+    assert.equal((await f.request("screen", { sessionId: session.id })).composerReady, false);
+    await assert.rejects(f.request("send", { sessionId: session.id, text: "task" }), e => e.code === "NOT_READY");
+    assert.deepEqual(pty.writes, []);
+  }
+  pty.data("\x1b[2J\x1b[H› \r\n\r\n  \x1b[33mGPT-6 Sol medium\x1b[0m · \x1b[32m/fixture\x1b[0m\r\n");
+  await delay(20);
+  assert.equal((await f.request("screen", { sessionId: session.id })).composerReady, true);
+  await f.request("send", { sessionId: session.id, text: "task" });
+  assert.deepEqual(pty.writes, ["\x1b[200~task\x1b[201~\r"]);
+});
+
 test("native control recognizes animated placeholders without accepting animated drafts", localSocket, async t => {
   const f = await fixture(t), { session } = await f.create();
   const pty = f.calls.at(-1).pty;

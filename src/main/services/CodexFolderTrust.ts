@@ -89,7 +89,7 @@ async function configIdentity(file: string, platform: NodeJS.Platform = process.
   let directory = dirname(file), suffix = basename(file);
   for (;;) {
     let entry;
-    try { entry = await stat(directory); } catch (error) {
+    try { entry = await stat(directory, { bigint: true }); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const parent = dirname(directory);
       if (parent === directory) throw error;

@@ -141,7 +141,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       });
       if (!result.answer) return { ...result };
       const receipt = { ...result, output: "", answer: this.readAnswer(target, result.answer, 0) };
-      delete receipt.exitLines;
+      if (result.reason !== "failed") delete receipt.exitLines;
       return receipt;
     } catch (error) {
       if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw canceledError();
@@ -202,11 +202,12 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
 
   private async send(orchestratorId: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     this.requireOwned(orchestratorId, args.sessionId as string);
+    const submit = args.submit === undefined ? true : Boolean(args.submit);
     try {
       await this.control.send(
         args.sessionId as string,
         args.prompt as string,
-        args.submit === undefined ? true : Boolean(args.submit),
+        submit,
         signal
       );
     } catch (error) {
@@ -214,7 +215,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       throw error;
     }
     if (signal?.aborted) throw canceledError();
-    this.answerReads.delete(args.sessionId as string);
+    if (submit) this.answerReads.delete(args.sessionId as string);
     return { sessionId: args.sessionId as string, sent: true };
   }
 
@@ -245,7 +246,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       status: result.status,
       exitCode: result.exitCode,
       output: result.answer ? "" : result.output,
-      ...(!result.answer && result.exitLines ? { exitLines: result.exitLines } : {}),
+      ...((!result.answer || result.state === "failed") && result.exitLines ? { exitLines: result.exitLines } : {}),
       ...(result.answer ? { answer: this.readAnswer(result.sessionId, result.answer, (args.answerOffset as number | undefined) ?? 0) } : {})
     };
   }

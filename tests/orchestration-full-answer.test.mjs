@@ -332,3 +332,55 @@ for (const text of ["Repeated short acknowledgement", "Identical long requiremen
     assert.equal((await call("cancel_agent")).canceled, true);
   });
 }
+
+for (const exitCode of [0, 1]) {
+  test(`retained answers preserve failed exit diagnostics only (exit ${exitCode})`, async t => {
+    const ptys = [];
+    const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner(ptys));
+    t.after(() => terminals.disposeAll());
+    const parent = terminals.create({ provider: "codex", cwd: process.cwd(), profile: "normal", role: "orchestrator", position: { x: 0, y: 0 } });
+    const control = new AgentControlService(terminals);
+    const handler = new ScopedOrchestrationHandler(control);
+    const child = await control.spawn({ parentSessionId: parent.id, provider: "opencode", cwd: process.cwd() });
+    terminals.recordAnswer(child.id, { text: "Retained final reply", truncated: false });
+    ptys.at(-1).process.emitData("Error: synthetic process failure\r\n");
+    ptys.at(-1).process.emitExit(exitCode);
+    const call = tool => handler.execute(parent.id, { id: "exit", tool, arguments: { sessionId: child.id } });
+    for (const tool of ["wait_for_agent", "get_agent_result"]) {
+      const result = await call(tool);
+      assert.equal(result.exitCode, exitCode);
+      assert.equal(result.answer.text, "Retained final reply");
+      assert.equal(result.output, "");
+      if (exitCode) assert.match(result.exitLines, /synthetic process failure/);
+      else assert.equal(result.exitLines, undefined);
+    }
+  });
+}
+
+for (const text of ["Short final reply", "Long final requirements. ".repeat(1700)]) {
+  test(`draft delivery preserves receipts without granting unread answer access (${text.length})`, async t => {
+    const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner([]));
+    t.after(() => terminals.disposeAll());
+    const parent = terminals.create({ provider: "codex", cwd: process.cwd(), profile: "normal", role: "orchestrator", position: { x: 0, y: 0 } });
+    const control = new AgentControlService(terminals);
+    const handler = new ScopedOrchestrationHandler(control);
+    for (const read of [false, true]) {
+      const child = await control.spawn({ parentSessionId: parent.id, provider: "opencode", cwd: process.cwd() });
+      const call = (tool, args = {}) => handler.execute(parent.id, { id: "draft", tool, arguments: { sessionId: child.id, ...args } });
+      terminals.recordAnswer(child.id, { text, truncated: false });
+      terminals.applyProviderSignal(child.id, { kind: "lifecycle", state: "idle" });
+      const readAll = async () => {
+        let result = await call("get_agent_result");
+        while (result.answer.nextOffset != null) result = await call("get_agent_result", { answerOffset: result.answer.nextOffset });
+      };
+      if (read) await readAll();
+      await call("send_to_agent", { prompt: "Unsubmitted follow-up draft", submit: false });
+      assert.equal(control.result(child.id).answer.text, text);
+      if (!read) {
+        await assert.rejects(call("cancel_agent"), /Read the current final answer/);
+        await readAll();
+      }
+      assert.equal((await call("cancel_agent")).canceled, true);
+    }
+  });
+}

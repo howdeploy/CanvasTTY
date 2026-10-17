@@ -10,12 +10,17 @@ const EMPTY_COMPOSER_PLACEHOLDERS = new Set([
 
 /** The Codex task composer, shared by automated delivery and the native control API. */
 export function codexComposerReady(screen: string, dimPlaceholder = false): boolean {
-  // A completed transcript can quote any startup text; only the final composer and its live footer gate input.
+  // Transcript prose can quote startup text. Standalone startup rows in the
+  // current composer block, including the model banner above it, still gate input.
   const lines = screen.split("\n");
   let index = lines.length - 1;
   while (index >= 0 && !/^\s*›/.test(lines[index])) index--;
   if (index < 0) return false;
   const prompt = lines[index].match(/^\s*›\s*(.*?)\s*$/)!;
+  let previous = index - 1;
+  while (previous >= 0 && !/^\s*›/.test(lines[previous])) previous--;
+  if (lines.slice(previous + 1, index).some((line) =>
+    /^\s*(?:[•◦*]\s*)?(?:(?:Starting|Booting)\s+MCP\b|[│|]?\s*model:\s*loading\b)/i.test(line))) return false;
   if (/Do you trust the contents|Press enter to confirm|Update Model Permissions|model:\s+loading|(?:Starting|Booting)\s+MCP\b/i.test(lines.slice(index).join("\n"))) return false;
   if (EMPTY_COMPOSER_PLACEHOLDERS.has(prompt[1])) return prompt[1].length === 0 || dimPlaceholder;
   return dimPlaceholder && prompt[1].length > 0

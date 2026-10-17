@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { runCli } from "./canvastty-control.mjs";
-import { AgentControlGateway, codexComposerReady } from "../src/main/services/agent-control/AgentControlGateway.ts";
+import { AgentControlGateway } from "../src/main/services/agent-control/AgentControlGateway.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { createProviderCliRegistry } from "../src/main/services/providerCliRegistry.ts";
 import { AgentRuntimeBridge } from "../src/main/services/agent-runtime/AgentRuntimeBridge.ts";
@@ -56,14 +56,17 @@ if (!args.includes("--live") || !option("--cwd")) {
     assert.equal(session.cwd, cwd);
     console.log(JSON.stringify({ stage: "session-created", sessionId: session.id, connection, clientFile: join(root, "controller.json") }));
     const readyDeadline = Date.now() + 120_000;
+    let composerReady = false;
     while (Date.now() < readyDeadline) {
-      lastScreen = (await call("screen", session.id)).text;
-      if (codexComposerReady(lastScreen)) break;
+      const screen = await call("screen", session.id);
+      lastScreen = screen.text;
+      composerReady = screen.composerReady === true;
+      if (composerReady) break;
       if (/Do you trust the contents/.test(lastScreen)) throw new Error("The supplied test directory needs trust review; use an already trusted test directory.");
       if (["failed", "done"].includes((await call("status", session.id)).session.status)) throw new Error("Codex exited during startup.");
       await delay(250);
     }
-    assert.ok(codexComposerReady(lastScreen), "Codex did not reach an empty composer.");
+    assert.ok(composerReady, "Codex did not reach an empty composer.");
     const proof = join(cwd, `canvastty-control-proof-${randomUUID()}.txt`);
     const prompt = `This is an authorized live acceptance test. Only write the new file ${JSON.stringify(proof)}. First create it with exactly "created\\n", then append "edited\\n" in a separate write. Read it back and verify exactly two lines, created and edited. Keep the file. Do not delete files, change system settings, use browsers or network tools, or start agents. Your launch is YOLO; do not change permissions. Return CONTROL_LIVE_OK and CODEX_THREAD_ID.`;
     const promptFile = join(root, "prompt.txt");

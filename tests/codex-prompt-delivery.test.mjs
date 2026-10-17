@@ -175,6 +175,24 @@ test("active MCP startup holds queued input but a final incomplete warning does 
   }
 });
 
+test("startup rows above the composer hold delivery until they disappear", async t => {
+  for (const startup of ["• Starting MCP servers (0/3)", "◦ Booting MCP servers (1/2)",
+    "│ model: loading │\r\n╰────────────────╯"]) {
+    await t.test(startup, async t => {
+      assert.equal(codexComposerReady(`${startup}\n› Ask Codex to do anything`, true), false);
+      assert.equal(codexComposerReady(`${startup}\n› `), false);
+      const f = fixture(t, false);
+      const child = await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan" });
+      f.calls.at(-1).process.emitData(`\x1b[2J\x1b[H${startup}\r\n› \x1b[2mAsk Codex to do anything\x1b[0m\r\n`);
+      assert.equal((await f.terminals.deliverInput(child.id, "task\r", 100, undefined, true)).delivered, false);
+      assert.deepEqual(f.writes, []);
+      f.calls.at(-1).process.emitData(READY);
+      assert.equal((await f.terminals.deliverInput(child.id, "task\r", 200, undefined, true)).delivered, true);
+    });
+  }
+  assert.equal(codexComposerReady("• Starting MCP servers (0/3)\n› previous task\n• complete\n› "), true);
+});
+
 test("transcript suggestions never make a person's current draft ready", async (t) => {
   assert.equal(codexComposerReady("› Explain this codebase\n\n• reply\n\n› unfinished personal draft"), false);
   const f = fixture(t, false);

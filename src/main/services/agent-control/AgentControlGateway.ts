@@ -611,7 +611,7 @@ export class AgentControlGateway {
     const composerReady = capabilities.menus && codexComposerReady(
       this.redact(terminalScreenText(owned.terminal, true)), codexPlaceholderIsDim(owned.terminal));
     if (request.method === "screen") return { sessionId: id, text: screen, revision: hash(screen), outputOffset: owned.outputOffset,
-      interaction: capabilities.menus ? codexChoices(screen) : null };
+      interaction: capabilities.menus ? codexChoices(screen) : null, composerReady };
     if ((request.method === "choose" || request.method === "dismiss") && !capabilities.menus) {
       throw new ControlError("NOT_SUPPORTED", `Menus are parsed for Codex only; resolve ${fresh.provider} prompts from the desktop and treat screen as the only evidence.`);
     }

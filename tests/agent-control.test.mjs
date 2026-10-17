@@ -907,3 +907,18 @@ test("native control refuses an unstyled draft even when it equals a built-in su
   await assert.rejects(f.request("send",{sessionId:session.id,text:"automated task"}),e=>e.code === "NOT_READY");
   assert.deepEqual(f.calls[0].pty.writes,[]);
 });
+
+test("screen readiness retains native placeholder styling for plain-text clients", localSocket, async t => {
+  const f = await fixture(t), { session } = await f.create();
+  const pty = f.calls.at(-1).pty;
+  for (const [before, dim, expected] of [["", true, true], ["", false, false],
+    ["• Starting MCP servers (0/3)\r\n", true, false], ["│ model: loading │\r\n", true, false]]) {
+    pty.data(`\x1b[2J\x1b[H${before}› ${dim ? "\x1b[2m" : ""}Ask Codex to do anything\x1b[0m\r\n`);
+    await delay(20); // The gateway's headless terminal consumes PTY writes asynchronously.
+    const screen = await f.request("screen", { sessionId: session.id });
+    assert.equal(screen.composerReady, expected, JSON.stringify({ before, dim }));
+    assert.match(screen.text, /Ask Codex to do anything/);
+    const cli = await runCli(["--connection", f.connectionPath, "--client-file", f.clientPath, "screen", session.id]);
+    assert.equal(cli.result.composerReady, expected);
+  }
+});

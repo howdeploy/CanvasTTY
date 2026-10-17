@@ -112,6 +112,7 @@ The default private controller file is next to the connection descriptor. Use a 
 ## States and results
 
 - `status` returns the native session state plus the controller-submitted turn, if any.
+- `screen.composerReady` reports Codex composer readiness from the terminal, including placeholder styling and active startup rows. Plain-text clients should use this flag rather than infer readiness from `screen.text`.
 - Before its first prompt a ready provider can still report `unavailable`; inspect `screen`. Startup/authentication/trust menus require resolution before tasks. Task delivery never doubles as menu confirmation.
 - `send` accepts at most 16,000 characters of task text. It rejects slash commands, terminal control sequences and input while a submitted turn is active. It does not offer automatic permission approval.
 - Automated Codex prompts wait for its empty task composer in the current launch, then use explicit bracketed paste followed by Enter. Startup menus are not task input; cancellation, timeout or restart drops the pending text. A screen from a previous launch cannot establish readiness, and paste-only sends do not submit the draft.

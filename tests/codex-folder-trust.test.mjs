@@ -4,6 +4,8 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { canvasTtyPrivateData } from "../src/main/services/safety/baseProtection.ts";
+import { execFileSync } from "node:child_process";
+import { normalizeProcessEnvironment } from "../src/main/services/processEnvironment.ts";
 import { privateAppData } from "../src/main/services/isolation/isolationPaths.ts";
 import { ensureCodexFolderTrust, usesLocalCodexConfig, batchCodexRestoreTrust } from "../src/main/services/CodexFolderTrust.ts";
 
@@ -267,21 +269,23 @@ test("restore trust batches coalesce canonical folder aliases without caching pe
 
 test("app-server cwd uses existing absolute homes and falls back to the prepared profile", async t => {
   const { codexAppServerCwd } = await import("../src/main/services/CodexFolderTrust.ts");
-  const f = await fixture(t);
+  const root = await mkdtemp(join(tmpdir(), "canvas-server-cwd-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profile = join(root, "profile"), config = join(root, "file");
+  await mkdir(profile); await writeFile(config, "fixture");
   for (const HOME of ["/nonexistent/posix-home", "relative-home", ""]) {
     assert.equal(codexAppServerCwd({ HOME }, "win32"), userInfo().homedir);
   }
   for (const platform of ["linux", "darwin"]) {
-    const profile = f.options.providerClis.get("codex").environment.CODEX_HOME;
-    assert.equal(codexAppServerCwd({ HOME: f.root }, platform), f.root);
-    for (const HOME of [join(f.root, "missing"), f.config, "relative-home"]) {
+    assert.equal(codexAppServerCwd({ HOME: root }, platform), root);
+    for (const HOME of [join(root, "missing"), config, "relative-home"]) {
       assert.equal(codexAppServerCwd({ HOME, CODEX_HOME: profile }, platform), profile);
       assert.equal(codexAppServerCwd({ HOME }, platform), userInfo().homedir);
     }
   }
 });
 
-test("a usable explicit profile persists trust even when HOME cannot be a working directory", async t => {
+test("a usable explicit profile persists trust even when HOME cannot be a working directory", posix, async t => {
   for (const home of ["missing", "file", "relative"]) {
     await t.test(home, async t => {
       const f = await fixture(t);
@@ -292,6 +296,23 @@ test("a usable explicit profile persists trust even when HOME cannot be a workin
       assert.equal((await f.messages()).filter(m => m.method === "config/batchWrite").length, 1);
     });
   }
+});
+
+test("Windows profile identity matches the deduplicated environment actually spawned", async t => {
+  const root = await mkdtemp(join(tmpdir(), "canvas-profile-env-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const local = join(root, "local"), foreign = join(root, "foreign");
+  await mkdir(local); await mkdir(foreign);
+  for (const selected of [local, foreign]) {
+    for (const key of ["CODEX_HOME", "codex_home", "Codex_Home"]) {
+      const planned = normalizeProcessEnvironment({ ...process.env, CODEX_HOME: local, [key]: selected }, "win32");
+      assert.equal(Object.keys(planned).filter(key => key.toUpperCase() === "CODEX_HOME").length, 1);
+      const actual = execFileSync(process.execPath, ["-p", "process.env.CODEX_HOME"], { env: planned, encoding: "utf8" }).trim();
+      assert.equal(actual, selected);
+      assert.equal(await usesLocalCodexConfig({ CODEX_HOME: local }, planned, "win32"), selected === local);
+    }
+  }
+  assert.deepEqual(normalizeProcessEnvironment({ Mixed: "first", MIXED: "last" }, "darwin"), { Mixed: "first", MIXED: "last" });
 });
 
 test("private trust backup storage exists before isolation and remains masked after writes", async t => {

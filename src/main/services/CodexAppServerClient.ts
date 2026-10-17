@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { providerChildProcessLaunch, type AvailableProviderCli } from "./providerCliRegistry.ts";
 import { NdjsonLineReader } from "../../agent-runtime/ndjson.mjs";
+import { normalizeProcessEnvironment } from "./processEnvironment.ts";
 
 const MAX_LINE_BYTES = 1_048_576;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -103,7 +104,7 @@ export class CodexAppServerClient {
       child = spawn(launch.command, launch.args, {
         shell: false,
         ...(this.cwd ? { cwd: this.cwd } : {}),
-        env: { ...process.env, ...launch.environment },
+        env: normalizeProcessEnvironment({ ...process.env, ...launch.environment }),
         stdio: ["pipe", "pipe", "pipe"],
         ...(launch.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {})
       });

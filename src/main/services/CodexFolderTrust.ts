@@ -5,6 +5,7 @@ import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { CodexAppServerClient, CodexAppServerError } from "./CodexAppServerClient.ts";
 import type { ProviderCliRegistry } from "./providerCliRegistry.ts";
+import { normalizeProcessEnvironment } from "./processEnvironment.ts";
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -39,13 +40,12 @@ async function canonicalConfigPath(file: string): Promise<string> {
   }
 }
 
-function profileConfig(environment: Readonly<Record<string, string | undefined>>): string {
-  const value = (name: string): string | undefined => process.platform === "win32"
-    ? Object.entries(environment).reverse().find(([key]) => key.toUpperCase() === name)?.[1]
-    : environment[name];
+function profileConfig(environment: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform = process.platform): string {
+  const normalized = normalizeProcessEnvironment(environment, platform);
+  const value = (name: string): string | undefined => normalized[name];
   // Codex's dirs::home_dir uses HOME on Unix and the OS account profile on Windows.
   const home = value("CODEX_HOME") || join(
-    (process.platform === "win32" ? undefined : value("HOME")) || userInfo().homedir, ".codex"
+    (platform === "win32" ? undefined : value("HOME")) || userInfo().homedir, ".codex"
   );
   if (!isAbsolute(home)) throw new Error("Codex profile path must be absolute.");
   return join(home, "config.toml");
@@ -54,10 +54,11 @@ function profileConfig(environment: Readonly<Record<string, string | undefined>>
 /** Compare the actual config file, including explicit overrides and symlink aliases. */
 export async function usesLocalCodexConfig(
   baseEnvironment: Readonly<Record<string, string | undefined>>,
-  launchEnvironment: Readonly<Record<string, string | undefined>>
+  launchEnvironment: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform = process.platform
 ): Promise<boolean> {
-  return await canonicalConfigPath(profileConfig(baseEnvironment))
-    === await canonicalConfigPath(profileConfig(launchEnvironment));
+  return await canonicalConfigPath(profileConfig(baseEnvironment, platform))
+    === await canonicalConfigPath(profileConfig(launchEnvironment, platform));
 }
 
 /** One restore batch shares checks and stops retrying a broken local app-server. */
@@ -104,7 +105,7 @@ export async function ensureCodexFolderTrust(options: {
   if (!(await stat(folder)).isDirectory()) throw new Error("Project folder is not a directory.");
   const cli = options.providerClis.get("codex");
   if (cli.state !== "available") throw new Error("Codex CLI is unavailable.");
-  const environment = { ...process.env, ...cli.environment };
+  const environment = normalizeProcessEnvironment({ ...process.env, ...cli.environment });
   const requestedFile = profileConfig(environment);
   const file = await canonicalConfigPath(requestedFile);
   await serializeTrust(file, async () => {

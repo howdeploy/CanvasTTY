@@ -56,6 +56,7 @@ import { codexTrustArguments, mergeOpenCodeLaunchEnvironment } from "./agent-run
 import { openCodeProjectFolderEnvironment } from "./openCodeConfig.ts";
 import { onDiskPath } from "./onDiskPath.ts";
 import { usesLocalCodexConfig, batchCodexRestoreTrust } from "./CodexFolderTrust.ts";
+import { normalizeProcessEnvironment } from "./processEnvironment.ts";
 import { RESULT_CAPTURE_PROVIDERS } from "./resultCapture.ts";
 import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from "../../shared/launchModel.ts";
 import { SecretRedactionRegistry } from "./safety/SecretRedaction.ts";
@@ -1850,7 +1851,7 @@ export class TerminalManager {
         args: launch.args,
         cwd,
         // The app's own PWD names another folder; a CLI that reads PWD must see where it runs.
-        env: { ...baseEnvironment, ...launchEnvironment, PWD: cwd },
+        env: normalizeProcessEnvironment({ ...baseEnvironment, ...launchEnvironment, PWD: cwd }),
         launchEnvironment,
         agentBrowser,
         agentRuntime,

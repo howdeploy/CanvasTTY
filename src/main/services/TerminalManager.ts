@@ -480,13 +480,16 @@ export class TerminalManager {
     for (const step of steps) {
       const record = step.record;
       let reason = record.parentSessionId ? held.get(record.parentSessionId) : undefined;
-      const restoreParent = reason ? record.parentSessionId : undefined;
-      if (!reason && restoreTrust && step.launch === "stopped" && parents.has(record.id)
-        && record.provider === "codex" && !record.parentSessionId && record.role !== "subagent"
-        && !record.ownerPluginId && !record.environment && (record.options || record.environmentChoice)) {
-        reason = "The stopped Codex parent's launch must be prepared before its profile can be verified. Use Restart to review its launch.";
+      let restoreParent = reason ? record.parentSessionId : undefined;
+      if (!reason && (step.launch !== "stopped" || parents.has(record.id)) && record.provider === "codex" && record.parentSessionId
+        && !record.environment && !record.environmentChoice) {
+        const root = this.rootSession(record.parentSessionId);
+        if (root && (!root.process || root.metadata.exitCode !== null)) {
+          reason = "The root session is stopped and cannot grant folder trust. Use Restart to review its launch.";
+          restoreParent = root.metadata.id;
+        }
       }
-      if (!reason && (step.launch !== "stopped" || parents.has(record.id)) && restoreTrust && record.provider === "codex"
+      if (!reason && step.launch !== "stopped" && restoreTrust && record.provider === "codex"
         && !record.parentSessionId && record.role !== "subagent" && !record.ownerPluginId
         && !record.options && !record.environment && !record.environmentChoice) {
         try { await restoreTrust(record.cwd); } catch {
@@ -1891,18 +1894,23 @@ export class TerminalManager {
     };
   }
 
+  private rootSession(parentSessionId: string | undefined): ManagedSession | undefined {
+    for (let depth = 0, next = parentSessionId; next !== undefined && depth < 64; depth++) {
+      const session = this.sessions.get(next);
+      if (!session) return undefined;
+      next = session.metadata.parentSessionId;
+      if (next === undefined) return session;
+    }
+    return undefined;
+  }
+
   /**
    * For a subagent: the folder the person chose for the top-level agent it descends from, when that agent runs on this
    * computer, and this subagent's folder is it or inside it. The subagent's own real folder then needs no trust answer
    * of the person again; unreadable counts as outside.
    */
   private personTrustedFolder(parentSessionId: string | undefined, cwd: string): string | undefined {
-    let root: ManagedSession | undefined;
-    for (let depth = 0, next = parentSessionId; next !== undefined && depth < 64; depth++) {
-      root = this.sessions.get(next);
-      if (!root) return undefined;
-      next = root.metadata.parentSessionId;
-    }
+    const root = this.rootSession(parentSessionId);
     if (!root?.process || root.metadata.exitCode !== null || root.extras.environment) return undefined;
     try {
       const folder = realpathSync(cwd);

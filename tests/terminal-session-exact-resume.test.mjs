@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -347,29 +347,35 @@ test("held descendants cannot restart before their parent passes review and laun
   assert.equal(calls.length, 3);
 });
 
-for (const trusted of [false, true]) {
-  test(`a stopped root's running descendant requires current folder trust (${trusted})`, async t => {
-    const directory = await mkdtemp(join(tmpdir(), "canvastty-stopped-parent-trust-"));
-    const calls = [], restored = manager(directory, calls);
-    t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
-    const base = { provider: "codex", profile: "auto", role: "orchestrator", title: "Saved",
-      titleCustomized: false, cwd: process.cwd(), position: { x: 0, y: 0 }, size: { width: 700, height: 430 }, restore: true };
-    await new TerminalSessionStore(directory).replace([
-      { ...base, id: "parent", lastState: "exited", exitCode: 0 },
-      { ...base, id: "child", role: "subagent", parentSessionId: "parent", lastState: "running" }
-    ]);
-    let checks = 0;
-    restored.configureCodexRestoreTrust(async () => {
-      checks++;
-      assert.equal(calls.length, 0);
-      if (!trusted) throw new Error("Trust absent");
+for (const provider of ["codex", "claude"]) {
+  for (const intermediate of [false, true]) {
+    test(`a stopped ${provider} root holds a running nested Codex descendant (${intermediate})`, async t => {
+      const directory = await mkdtemp(join(tmpdir(), "canvastty-stopped-parent-trust-"));
+      const calls = [], restored = manager(directory, calls);
+      t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
+      const project = join(directory, "project"), nested = join(project, "nested");
+      await mkdir(nested, { recursive: true });
+      const base = { provider, profile: "auto", role: "orchestrator", title: "Saved",
+        titleCustomized: false, cwd: project, position: { x: 0, y: 0 }, size: { width: 700, height: 430 }, restore: true };
+      await new TerminalSessionStore(directory).replace([
+        { ...base, id: "parent", lastState: "exited", exitCode: 0 },
+        ...(intermediate ? [{ ...base, id: "middle", provider: "claude", role: "subagent", parentSessionId: "parent", lastState: "running" }] : []),
+        { ...base, id: "child", provider: "codex", cwd: nested, role: "subagent",
+          parentSessionId: intermediate ? "middle" : "parent", lastState: "running" }
+      ]);
+      restored.configureCodexRestoreTrust(async () => assert.fail("a stopped root is not a planned process"));
+      await restored.restorePersistedSessions();
+      assert.equal(calls.length, intermediate ? 1 : 0);
+      assert.equal(restored.getMetadata("parent").status, "done");
+      assert.match(restored.getMetadata("child").failureDetails, /root session is stopped/);
+      assert.throws(() => restored.restart("child"), /Restart the parent session successfully/);
+      // Person-authenticated Restart performs any required root trust check first.
+      restored.restart("parent");
+      restored.restart("child");
+      assert.equal(calls.length, intermediate ? 3 : 2);
+      assert.match(calls.at(-1).args.join(" "), /projects=.*nested.*trust_level.*trusted/);
     });
-    await restored.restorePersistedSessions();
-    assert.equal(checks, 1);
-    assert.equal(calls.length, trusted ? 1 : 0);
-    if (!trusted) assert.throws(() => restored.restart("child"), /Restart the parent session successfully/);
-    else assert.equal(restored.getMetadata("parent").status, "done");
-  });
+  }
 }
 
 for (const options of [undefined, { "fixture.launch": {} }]) {

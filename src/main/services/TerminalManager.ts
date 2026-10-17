@@ -469,7 +469,7 @@ export class TerminalManager {
       const record = step.record;
       let reason = record.parentSessionId ? held.get(record.parentSessionId) : undefined;
       const restoreParent = reason ? record.parentSessionId : undefined;
-      if (!reason && step.launch !== "stopped" && restoreTrust && record.provider === "codex"
+      if (!reason && (step.launch !== "stopped" || parents.has(record.id)) && restoreTrust && record.provider === "codex"
         && !record.parentSessionId && record.role !== "subagent" && !record.ownerPluginId
         && !record.options && !record.environment && !record.environmentChoice) {
         try { await restoreTrust(record.cwd); } catch {

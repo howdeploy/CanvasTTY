@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -12,7 +13,13 @@ const record = (value: unknown): value is Record<string, unknown> =>
 export function codexAppServerCwd(
   environment: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform = process.platform
 ): string {
-  return platform === "win32" ? userInfo().homedir : environment.HOME || homedir();
+  const candidates = platform === "win32" ? [userInfo().homedir]
+    : [environment.HOME, environment.CODEX_HOME, homedir(), userInfo().homedir];
+  for (const directory of candidates) {
+    if (!directory || !isAbsolute(directory)) continue;
+    try { if (statSync(directory).isDirectory()) return directory; } catch { /* Try another verified directory. */ }
+  }
+  throw new Error("Codex app-server working directory is unavailable.");
 }
 
 /** Create before any sandbox starts so Linux can mount an unreadable directory over it. */

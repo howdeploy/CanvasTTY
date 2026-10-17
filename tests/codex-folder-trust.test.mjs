@@ -265,13 +265,33 @@ test("restore trust batches coalesce canonical folder aliases without caching pe
   assert.equal(calls, 2, "a later restoration gets a fresh check");
 });
 
-test("app-server cwd ignores Unix HOME on Windows and preserves it on Unix", async () => {
+test("app-server cwd uses existing absolute homes and falls back to the prepared profile", async t => {
   const { codexAppServerCwd } = await import("../src/main/services/CodexFolderTrust.ts");
+  const f = await fixture(t);
   for (const HOME of ["/nonexistent/posix-home", "relative-home", ""]) {
     assert.equal(codexAppServerCwd({ HOME }, "win32"), userInfo().homedir);
   }
-  assert.equal(codexAppServerCwd({ HOME: "/home/synthetic" }, "linux"), "/home/synthetic");
-  assert.equal(codexAppServerCwd({ HOME: "/Users/synthetic" }, "darwin"), "/Users/synthetic");
+  for (const platform of ["linux", "darwin"]) {
+    const profile = f.options.providerClis.get("codex").environment.CODEX_HOME;
+    assert.equal(codexAppServerCwd({ HOME: f.root }, platform), f.root);
+    for (const HOME of [join(f.root, "missing"), f.config, "relative-home"]) {
+      assert.equal(codexAppServerCwd({ HOME, CODEX_HOME: profile }, platform), profile);
+      assert.equal(codexAppServerCwd({ HOME }, platform), userInfo().homedir);
+    }
+  }
+});
+
+test("a usable explicit profile persists trust even when HOME cannot be a working directory", async t => {
+  for (const home of ["missing", "file", "relative"]) {
+    await t.test(home, async t => {
+      const f = await fixture(t);
+      const cli = f.options.providerClis.get("codex");
+      const HOME = home === "missing" ? join(f.root, "missing") : home === "file" ? f.config : "relative-home";
+      await ensureCodexFolderTrust({ ...f.options,
+        providerClis: { get: () => ({ ...cli, environment: { ...cli.environment, HOME } }) }, confirm: async () => true });
+      assert.equal((await f.messages()).filter(m => m.method === "config/batchWrite").length, 1);
+    });
+  }
 });
 
 test("private trust backup storage exists before isolation and remains masked after writes", async t => {

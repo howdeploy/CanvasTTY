@@ -346,3 +346,28 @@ test("held descendants cannot restart before their parent passes review and laun
   restored.restart("grandchild");
   assert.equal(calls.length, 3);
 });
+
+for (const trusted of [false, true]) {
+  test(`a stopped root's running descendant requires current folder trust (${trusted})`, async t => {
+    const directory = await mkdtemp(join(tmpdir(), "canvastty-stopped-parent-trust-"));
+    const calls = [], restored = manager(directory, calls);
+    t.after(async () => { await restored.shutdown(); await rm(directory, { recursive: true, force: true }); });
+    const base = { provider: "codex", profile: "auto", role: "orchestrator", title: "Saved",
+      titleCustomized: false, cwd: process.cwd(), position: { x: 0, y: 0 }, size: { width: 700, height: 430 }, restore: true };
+    await new TerminalSessionStore(directory).replace([
+      { ...base, id: "parent", lastState: "exited", exitCode: 0 },
+      { ...base, id: "child", role: "subagent", parentSessionId: "parent", lastState: "running" }
+    ]);
+    let checks = 0;
+    restored.configureCodexRestoreTrust(async () => {
+      checks++;
+      assert.equal(calls.length, 0);
+      if (!trusted) throw new Error("Trust absent");
+    });
+    await restored.restorePersistedSessions();
+    assert.equal(checks, 1);
+    assert.equal(calls.length, trusted ? 1 : 0);
+    if (!trusted) assert.throws(() => restored.restart("child"), /Restart the parent session successfully/);
+    else assert.equal(restored.getMetadata("parent").status, "done");
+  });
+}

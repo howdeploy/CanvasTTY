@@ -44,6 +44,10 @@ async function canonicalConfigPath(file: string): Promise<string> {
   }
 }
 
+function configIdentity(file: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? file.toLowerCase() : file;
+}
+
 function profileConfig(environment: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform = process.platform): string {
   const normalized = normalizeProcessEnvironment(environment, platform);
   const value = (name: string): string | undefined => normalized[name];
@@ -61,8 +65,8 @@ export async function usesLocalCodexConfig(
   launchEnvironment: Readonly<Record<string, string | undefined>>,
   platform: NodeJS.Platform = process.platform
 ): Promise<boolean> {
-  return await canonicalConfigPath(profileConfig(baseEnvironment, platform))
-    === await canonicalConfigPath(profileConfig(launchEnvironment, platform));
+  return configIdentity(await canonicalConfigPath(profileConfig(baseEnvironment, platform)), platform)
+    === configIdentity(await canonicalConfigPath(profileConfig(launchEnvironment, platform)), platform);
 }
 
 /** One restore batch shares checks and stops retrying a broken local app-server. */
@@ -112,10 +116,11 @@ export async function ensureCodexFolderTrust(options: {
   const environment = normalizeProcessEnvironment({ ...process.env, ...cli.environment });
   const requestedFile = profileConfig(environment);
   const file = await canonicalConfigPath(requestedFile);
-  await serializeTrust(file, async () => {
+  const identity = configIdentity(file);
+  await serializeTrust(identity, async () => {
     // Codex requires an explicit CODEX_HOME to exist, including on the person's first launch.
     await mkdir(dirname(requestedFile), { recursive: true, mode: 0o700 });
-    if (await canonicalConfigPath(requestedFile) !== file) throw new Error("Codex profile changed before trust could be read.");
+    if (configIdentity(await canonicalConfigPath(requestedFile)) !== identity) throw new Error("Codex profile changed before trust could be read.");
     const client = new CodexAppServerClient(cli, options.clientVersion, 1_000, codexAppServerCwd(environment));
     try {
       // Do not load the new project's settings before the person has trusted it.
@@ -125,7 +130,7 @@ export async function ensureCodexFolderTrust(options: {
       for (const entry of response.layers) {
         if (record(entry) && record(entry.name) && entry.name.type === "user" && !entry.name.profile
           && typeof entry.name.file === "string" && isAbsolute(entry.name.file)
-          && await canonicalConfigPath(entry.name.file) === file) {
+          && configIdentity(await canonicalConfigPath(entry.name.file)) === identity) {
           layer = entry;
           break;
         }
@@ -143,7 +148,7 @@ export async function ensureCodexFolderTrust(options: {
       if (record(projects) && record(projects[folder]) && projects[folder].trust_level === "trusted") return;
       if (!await options.confirm(folder)) throw new Error("Folder trust was not granted. Session was not started.");
       if (await realpath(options.cwd) !== folder) throw new Error("Project folder changed while awaiting trust.");
-      if (await canonicalConfigPath(requestedFile) !== file) throw new Error("Codex profile changed while awaiting trust.");
+      if (configIdentity(await canonicalConfigPath(requestedFile)) !== identity) throw new Error("Codex profile changed while awaiting trust.");
       // Private, unique backup of the current file; Codex's version check refuses a concurrent edit.
       let original: Buffer | null;
       try { original = await readFile(file); } catch (error) {

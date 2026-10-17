@@ -500,8 +500,8 @@ export class TerminalManager {
         const child = this.sessions.get(record.id);
         if (child) child.restoreParent = restoreParent;
       }
-      // A contributed parent's profile is known only after preparation; its children must not race the trust check.
-      if (this.codexRestoreTrust && record.provider === "codex" && parents.has(record.id)) {
+      // Descendants may borrow a live root's folder authority only after its contributed launch finishes.
+      if (parents.has(record.id)) {
         await pending;
         const parent = this.sessions.get(record.id);
         if (parent?.metadata.status === "failed") {

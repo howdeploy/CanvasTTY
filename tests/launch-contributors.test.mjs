@@ -635,3 +635,49 @@ test("a stopped contributed ancestor holds a running descendant until reviewed p
   restored.restart(child.id); restored.restart(grandchild.id);
   assert.equal(restoredCalls.length, 3);
 });
+
+
+for (const succeeds of [true, false]) {
+  test(`restored non-Codex ancestors finish preparation before Codex children (${succeeds})`, { timeout: 5_000 }, async t => {
+    const answers = { "p.local": {} };
+    const { pipeline } = await pipelineFixture(t, { contributors: [contributor("p.local")], answers, timeoutMs: 2_000 });
+    const directory = await mkdtemp(join(tmpdir(), "canvastty-other-parent-restore-"));
+    const { manager, calls } = await managerFixture(t, pipeline, { directory });
+    const parent = manager.create({ provider: "claude", profile: "normal", cwd, position: at,
+      role: "orchestrator", launchOptions: { "p.local": {} } });
+    await waitFor(() => calls.length === 1);
+    const child = manager.create({ provider: "codex", profile: "normal", cwd, position: at,
+      role: "subagent", parentSessionId: parent.id });
+    await manager.shutdown();
+    const restoredCalls = [];
+    const restored = new TerminalManager(() => undefined, registry(), undefined, undefined, true, spawner(restoredCalls));
+    t.after(() => restored.shutdown());
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    restored.configureLaunchPipeline(pipeline);
+    restored.configureSessionPersistence(new TerminalSessionStore(directory), "continue");
+    let release, entered;
+    const waiting = new Promise(resolve => { release = resolve; });
+    const checking = new Promise(resolve => { entered = resolve; });
+    answers["p.local"] = async () => {
+      entered(); await waiting;
+      if (!succeeds) throw new Error("parent preparation failed");
+      return {};
+    };
+    const restoration = restored.restorePersistedSessions();
+    await checking;
+    assert.equal(restoredCalls.length, 0);
+    assert.equal(card(restored, child.id), undefined, "the child waits for every provider's contributed parent");
+    release();
+    await restoration;
+    if (succeeds) {
+      assert.equal(restoredCalls.length, 2);
+      assert.match(restoredCalls[1].args.join(" "), /projects=.*trust_level.*trusted/);
+    } else {
+      assert.equal(restoredCalls.length, 0);
+      for (const id of [parent.id, child.id]) {
+        assert.equal(card(restored, id).status, "failed");
+        assert.match(card(restored, id).failureDetails, /parent preparation failed/);
+      }
+    }
+  });
+}

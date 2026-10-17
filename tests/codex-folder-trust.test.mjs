@@ -350,3 +350,17 @@ test("private trust backup storage exists before isolation and remains masked af
   assert.ok(start < source.indexOf("new AgentIsolation("));
   assert.ok(start < source.indexOf("restorePersistedSessions()"));
 });
+
+
+test("missing profile suffixes use platform-specific case identity", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-missing-profile-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const base = { CODEX_HOME: join(root, "NewProfile", "Account") };
+  const alias = { CODEX_HOME: join(root, "newprofile", "account") };
+  assert.equal(await usesLocalCodexConfig(base, alias, "win32"), true);
+  assert.equal(await usesLocalCodexConfig(base, { CODEX_HOME: join(root, "different") }, "win32"), false);
+  // These paths are still missing, so realpath cannot hide the spelling difference.
+  for (const platform of ["darwin", "linux"]) {
+    assert.equal(await usesLocalCodexConfig(base, alias, platform), false);
+  }
+});

@@ -266,6 +266,8 @@ test("startup phrases in completed transcript do not block the final ready compo
     assert.equal(codexComposerReady(`› previous task\n• ${phrase} in the documented workflow.\n\n› Ask Codex to do anything`, true), true);
     assert.equal(codexComposerReady(`› previous task\n• Instructions:\n  ${phrase} in the documented workflow.\n\n› Ask Codex to do anything`, true), true);
     assert.equal(codexComposerReady(`› previous task\n• Instructions:\n  ${phrase}\n\n› Ask Codex to do anything`, true), true);
+    assert.equal(codexComposerReady(`• ${phrase} in the documented workflow.\n\n› Ask Codex to do anything`, true), true);
+    assert.equal(codexComposerReady(`• Instructions:\n  ${phrase}\n\n› Ask Codex to do anything`, true), true);
     assert.equal(codexComposerReady(`› Ask Codex to do anything\n${phrase}`,true),false);
   }
   const f=fixture(t,false);
@@ -273,6 +275,15 @@ test("startup phrases in completed transcript do not block the final ready compo
   f.calls.at(-1).process.emitData("\x1b[2J\x1b[H› previous task\r\n• Press enter to confirm the documented operation.\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
   const result=await f.terminals.deliverInput(child.id,"follow-up\r",300,undefined,true);
   assert.equal(result.delivered,true,result.reason);
+});
+
+test("completed answers remain transcript after their original prompt leaves the viewport", async t => {
+  const f = fixture(t, false);
+  const child = await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan" });
+  f.calls.at(-1).process.emitData("\x1b[2J\x1b[H› previous task\r\n" + "earlier output\r\n".repeat(30)
+    + "• Instructions:\r\n  Press enter to confirm the documented operation.\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
+  assert.equal((await f.terminals.deliverInput(child.id, "follow-up\r", 200, undefined, true)).delivered, true);
+  assert.deepEqual(f.writes, ["follow-up\r"]);
 });
 
 test("post-turn MCP progress blocks delivery while transcript continuations do not", async t => {

@@ -27,7 +27,7 @@ export function codexComposerReady(screen: string, dimPlaceholder = false): bool
       && line.match(/^\s*/u)![0].length > answerIndent && !/^\s*[│|]/.test(line)) continue;
     // Live MCP progress has a structured counter, even after an earlier answer.
     if (/^\s*(?:[•◦*]\s*)?(?:Starting|Booting)\s+MCP(?:\s+servers?)?\s*\(\d+\/\d+\)(?::[^\n]*)?\s*$/i.test(line)) return false;
-    if (previous >= 0 && bullet) { answerIndent = bullet[1].length; continue; }
+    if (bullet) { answerIndent = bullet[1].length; continue; }
     if (line.trim()) answerIndent = null;
     if (/^\s*(?:[•◦*│|]\s*)?(?:(?:Starting|Booting)\s+MCP\b|model:\s*loading\b|Do you trust the contents\b|Press enter to confirm\b|Update Model Permissions\b)/i.test(line)) return false;
   }

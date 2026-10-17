@@ -917,6 +917,8 @@ test("screen readiness retains native placeholder styling for plain-text clients
     ["Update Model Permissions\r\n", true, false],
     ["› previous task\r\n• Press enter to confirm the documented operation.\r\n\r\n", true, true],
     ["› previous task\r\n• Instructions:\r\n  Press enter to confirm the documented operation.\r\n\r\n", true, true],
+    ["• Press enter to confirm the documented operation.\r\n\r\n", true, true],
+    ["• Instructions:\r\n  Press enter to confirm the documented operation.\r\n\r\n", true, true],
     ["› previous task\r\n• Answer.\r\n\r\n• Starting MCP servers (1/2): service-a (0s)\r\n", true, false]]) {
     pty.data(`\x1b[2J\x1b[H${before}› ${dim ? "\x1b[2m" : ""}Ask Codex to do anything\x1b[0m\r\n`);
     await delay(20); // The gateway's headless terminal consumes PTY writes asynchronously.

@@ -130,6 +130,9 @@ export class PromptNotDeliveredError extends Error {
 }
 
 export class AgentControlService {
+  // A waited answer can cross an async boundary before its pages are read.
+  // Keep its capture identity without adding internal metadata to the wire.
+  private readonly answerRevisions = new WeakMap<AgentAnswer, number>();
   private readonly terminals: TerminalManager;
   private readonly options: AgentControlOptions;
 
@@ -405,10 +408,18 @@ export class AgentControlService {
     try { return typeof this.terminals.turnProgress === "function" ? this.terminals.turnProgress(sessionId) : null; } catch { return null; }
   }
 
+  /** Capture identity for internal result-read receipts; never inferred from answer text. */
+  resultRevision(sessionId: string, answer?: AgentAnswer): number {
+    return (answer ? this.answerRevisions.get(answer) : undefined) ?? this.terminals.answerRevision(sessionId);
+  }
+
   private answer(sessionId: string): AgentAnswer | null {
     try {
       const answer = typeof this.terminals.answer === "function" ? this.terminals.answer(sessionId) : null;
-      return answer ? { text: answer.text, truncated: answer.truncated } : null;
+      if (!answer) return null;
+      const snapshot = { text: answer.text, truncated: answer.truncated };
+      this.answerRevisions.set(snapshot, this.terminals.answerRevision(sessionId));
+      return snapshot;
     } catch { return null; }
   }
 

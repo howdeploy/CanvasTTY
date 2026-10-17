@@ -315,6 +315,19 @@ test("controller cannot list, read, interrupt or send to other controllers or UI
   await assert.rejects(f.request("status", { sessionId: ui.id }), (e) => e.code === "SESSION_NOT_FOUND");
 });
 
+test("control client and gateway carry the full bounded escaped result", localSocket, async t => {
+  const f = await fixture(t);
+  const { session } = await f.create();
+  await f.ready(session.id);
+  await f.request("send", { sessionId: session.id, text: "prepare a document" });
+  f.signal(session.id, "working", "document-turn");
+  const text = "\u0001".repeat(MAX_RESULT_CHARS);
+  f.signal(session.id, "idle", "document-turn", { text, truncated: false });
+  const result = await f.request("result", { sessionId: session.id, after: 0 });
+  assert.equal(result.turn.result.text, text);
+  assert.equal(result.turn.result.truncated, false);
+});
+
 test("literal prompt delivery, busy guard, result revisions and stale-result separation", localSocket, async (t) => {
   const f = await fixture(t);
   const { session } = await f.create();
@@ -631,6 +644,9 @@ test("opt-in hook result capture is authenticated, bounded and absent for ordina
   assert.equal(signals.length, 5);
   assert.equal(signals[4].signal.lastAssistantMessage, undefined);
   assert.equal(JSON.stringify(signals[4]).includes("must not arrive either"), false);
+  // Larger result frames still need the exact session's result-capture grant.
+  await hook("large-unauthorized", true, false, "\u0001".repeat(MAX_RESULT_CHARS));
+  assert.equal(signals.length, 5);
 });
 
 const writes = new Map();

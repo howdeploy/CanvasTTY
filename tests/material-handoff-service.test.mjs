@@ -260,7 +260,7 @@ test("material handoffs preserve multiline drafts with an empty first row", asyn
   await withHandoffs(async ({ handoffs, terminal, draft }) => {
     terminal.add({ id: "c1", provider: "codex", cwd: "/work" });
     terminal.tui = codexTui(terminal);
-    for (const tail of ["  personal draft", "\r\n  personal draft", "\r\n  GPT-6 Sol medium · /fixture"]) {
+    for (const tail of ["  personal draft", "\r\n  personal draft", "\r\n  GPT-6 Sol medium · /fixture", "  ›", "  › Ask Codex to do anything"]) {
       terminal.emit("c1", `\x1b[2J\x1b[H› \r\n${tail}\r\n`);
       assert.deepEqual(await handoffs.send(draft("c1")), { ok: false, reason: "composer-not-ready" });
       assert.equal(terminal.writes.length, 0);

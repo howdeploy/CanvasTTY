@@ -950,7 +950,8 @@ test("native control preserves unstyled Braille drafts", localSocket, async t =>
 test("native control rejects multiline drafts below a blank first composer row", localSocket, async t => {
   const f = await fixture(t), { session } = await f.create();
   const pty = f.calls.at(-1).pty;
-  for (const tail of ["  personal draft", "\r\n  personal draft", "\r\n  GPT-6 Sol medium · /fixture"]) {
+  f.terminals.resize(session.id, 20, 24);
+  for (const tail of ["  personal draft", "\r\n  personal draft", "\r\n  GPT-6 Sol medium · /fixture", "  ›", "  › Ask Codex to do anything", "  " + "x".repeat(18) + "›"]) {
     pty.data(`\x1b[2J\x1b[H› \r\n${tail}\r\n`);
     await delay(20);
     assert.equal((await f.request("screen", { sessionId: session.id })).composerReady, false);

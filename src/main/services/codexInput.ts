@@ -8,17 +8,33 @@ const EMPTY_COMPOSER_PLACEHOLDERS = new Set([
   "Will this algorithm scale well?",
 ]);
 
+function composerIndex(lines: readonly string[]): number {
+  let index = -1, indent = Infinity;
+  for (let row = 0; row < lines.length; row++) {
+    const match = lines[row].match(/^(\s*)›/);
+    if (match && match[1].length <= indent) { index = row; indent = match[1].length; }
+  }
+  return index;
+}
+
+function composerRow(terminal: import("@xterm/headless").Terminal): number {
+  const buffer = terminal.buffer.active;
+  const index = composerIndex(Array.from({ length: terminal.rows }, (_, row) => {
+    const line = buffer.getLine(buffer.baseY + row);
+    return line && !line.isWrapped ? line.translateToString(true) : "";
+  }));
+  return index < 0 ? -1 : buffer.baseY + index;
+}
+
 /** The Codex task composer, shared by automated delivery and the native control API. */
 export function codexComposerReady(screen: string, dimPlaceholder = false, emptyContinuation?: boolean): boolean {
   // Transcript prose can quote startup text. Standalone startup rows in the
   // current composer block, including the model banner above it, still gate input.
   const lines = screen.split("\n");
-  let index = lines.length - 1;
-  while (index >= 0 && !/^\s*›/.test(lines[index])) index--;
+  const index = composerIndex(lines);
   if (index < 0) return false;
   const prompt = lines[index].match(/^\s*›\s*(.*?)\s*$/)!;
-  let previous = index - 1;
-  while (previous >= 0 && !/^\s*›/.test(lines[previous])) previous--;
+  const previous = composerIndex(lines.slice(0, index));
   let answerIndent: number | null = null;
   for (const line of lines.slice(previous + 1, index)) {
     const bullet = line.match(/^(\s*)[•●◦*]\s+/);
@@ -46,21 +62,27 @@ export function codexComposerReady(screen: string, dimPlaceholder = false, empty
  */
 export function codexContinuationIsEmpty(terminal: import("@xterm/headless").Terminal): boolean {
   const buffer = terminal.buffer.active;
-  let prompt = buffer.baseY + terminal.rows - 1;
-  while (prompt >= buffer.baseY && !/^\s*›/.test(buffer.getLine(prompt)?.translateToString(true) ?? "")) prompt--;
+  const prompt = composerRow(terminal);
   if (prompt < buffer.baseY) return false;
   for (let row = prompt + 1; row < buffer.baseY + terminal.rows; row++) {
-    const line = buffer.getLine(row), text = line?.translateToString(true) ?? "";
+    const line = buffer.getLine(row);
+    let end = row, text = line?.translateToString(false) ?? "";
+    while (end + 1 < buffer.baseY + terminal.rows && buffer.getLine(end + 1)?.isWrapped) {
+      text += buffer.getLine(++end)?.translateToString(false) ?? "";
+    }
     if (!text.trim()) continue;
     const footer = /^\s*(?:\? for shortcuts\b|.+\s+(?:low|medium|high|xhigh|max|ultra|default|none)\s*·\s+\S)/i.test(text);
     if (!footer || !line) return false;
     const styles = new Set<string>();
     let allDim = true;
-    for (let col = 0; col < line.length; col++) {
-      const cell = line.getCell(col);
-      if (!cell?.getChars().trim()) continue;
-      allDim &&= Boolean(cell.isDim());
-      styles.add(`${cell.getFgColorMode()}:${cell.getFgColor()}:${cell.isDim()}`);
+    for (let part = row; part <= end; part++) {
+      const cells = buffer.getLine(part)!;
+      for (let col = 0; col < cells.length; col++) {
+        const cell = cells.getCell(col);
+        if (!cell?.getChars().trim()) continue;
+        allDim &&= Boolean(cell.isDim());
+        styles.add(`${cell.getFgColorMode()}:${cell.getFgColor()}:${cell.isDim()}`);
+      }
     }
     return allDim || styles.size > 1;
   }
@@ -75,18 +97,15 @@ export function codexPromptInput(text: string, submit = true): string {
 /** Codex draws placeholders dim; never accept a clipped human draft as a suggestion. */
 export function codexPlaceholderIsDim(terminal: import("@xterm/headless").Terminal): boolean {
   const buffer = terminal.buffer.active;
-  for (let row = buffer.baseY + terminal.rows - 1; row >= buffer.baseY; row--) {
-    const line = buffer.getLine(row);
-    const match = line?.translateToString(true).match(/^\s*›\s*/);
-    if (!line || !match) continue;
-    let sawText = false;
-    for (let col = match[0].length; col < line.length; col++) {
-      const cell = line.getCell(col);
-      if (!cell?.getChars().trim()) continue;
-      if (!cell.isDim()) return false;
-      sawText = true;
-    }
-    return sawText;
+  const line = buffer.getLine(composerRow(terminal));
+  const match = line?.translateToString(true).match(/^\s*›\s*/);
+  if (!line || !match) return false;
+  let sawText = false;
+  for (let col = match[0].length; col < line.length; col++) {
+    const cell = line.getCell(col);
+    if (!cell?.getChars().trim()) continue;
+    if (!cell.isDim()) return false;
+    sawText = true;
   }
-  return false;
+  return sawText;
 }

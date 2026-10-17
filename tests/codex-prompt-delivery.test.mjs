@@ -263,13 +263,27 @@ test("startup phrases in completed transcript do not block the final ready compo
   const phrases = ["Starting MCP servers", "Booting MCP servers", "Do you trust the contents", "Press enter to confirm", "Update Model Permissions", "model: loading"];
   for (const phrase of phrases) {
     assert.equal(codexComposerReady(`› explain ${phrase}?\n• prior answer quotes ${phrase}.\n\n› Ask Codex to do anything`,true),true);
+    assert.equal(codexComposerReady(`› previous task\n• ${phrase} in the documented workflow.\n\n› Ask Codex to do anything`, true), true);
     assert.equal(codexComposerReady(`› Ask Codex to do anything\n${phrase}`,true),false);
   }
   const f=fixture(t,false);
   const child=await f.control.spawn({parentSessionId:f.parent.id,provider:"codex",cwd:process.cwd(),profile:"plan"});
-  f.calls.at(-1).process.emitData("\x1b[2J\x1b[H› explain Starting MCP servers?\r\n• prior answer\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
+  f.calls.at(-1).process.emitData("\x1b[2J\x1b[H› previous task\r\n• Press enter to confirm the documented operation.\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
   const result=await f.terminals.deliverInput(child.id,"follow-up\r",300,undefined,true);
   assert.equal(result.delivered,true,result.reason);
+});
+
+test("unstyled Braille is a draft even without other text", async t => {
+  for (const draft of ["⠁⠃", "⣿⠿", "⠁\x1b[2mAsk Codex to do anything\x1b[22m"]) {
+    await t.test(draft, async t => {
+      const f = fixture(t, false);
+      const child = await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan" });
+      f.calls.at(-1).process.emitData(`\x1b[2J\x1b[H› ${draft}\r\n`);
+      const result = await f.terminals.deliverInput(child.id, "must not submit\r", 50, undefined, true);
+      assert.equal(result.delivered, false);
+      assert.deepEqual(f.writes, []);
+    });
+  }
 });
 
 for (const humanInput of ["typed amendment", "\r", "\x1b[200~spoken task\x1b[201~\r"]) {

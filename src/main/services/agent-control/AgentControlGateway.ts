@@ -1,4 +1,4 @@
-import { terminalScreenText, withoutBraille } from "../materials/sessionScreen.ts";
+import { terminalScreenText } from "../materials/sessionScreen.ts";
 import { codexComposerReady, codexPlaceholderIsDim } from "../codexInput.ts";
 export { codexComposerReady } from "../codexInput.ts";
 import { createHash, randomBytes } from "node:crypto";
@@ -609,7 +609,7 @@ export class AgentControlGateway {
     const capabilities = controlCapabilities(fresh.provider);
     const screen = viewport(owned.terminal, (text) => this.redact(text));
     const composerReady = capabilities.menus && codexComposerReady(
-      withoutBraille(this.redact(terminalScreenText(owned.terminal, true))), codexPlaceholderIsDim(owned.terminal));
+      this.redact(terminalScreenText(owned.terminal, true)), codexPlaceholderIsDim(owned.terminal));
     if (request.method === "screen") return { sessionId: id, text: screen, revision: hash(screen), outputOffset: owned.outputOffset,
       interaction: capabilities.menus ? codexChoices(screen) : null, composerReady };
     if ((request.method === "choose" || request.method === "dismiss") && !capabilities.menus) {

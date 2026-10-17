@@ -914,7 +914,8 @@ test("screen readiness retains native placeholder styling for plain-text clients
   for (const [before, dim, expected] of [["", true, true], ["", false, false],
     ["• Starting MCP servers (0/3)\r\n", true, false], ["│ model: loading │\r\n", true, false],
     ["Press enter to confirm\r\n", true, false], ["Do you trust the contents of this folder?\r\n", true, false],
-    ["Update Model Permissions\r\n", true, false]]) {
+    ["Update Model Permissions\r\n", true, false],
+    ["› previous task\r\n• Press enter to confirm the documented operation.\r\n\r\n", true, true]]) {
     pty.data(`\x1b[2J\x1b[H${before}› ${dim ? "\x1b[2m" : ""}Ask Codex to do anything\x1b[0m\r\n`);
     await delay(20); // The gateway's headless terminal consumes PTY writes asynchronously.
     const screen = await f.request("screen", { sessionId: session.id });
@@ -929,11 +930,23 @@ test("screen readiness retains native placeholder styling for plain-text clients
   }
 });
 
+test("native control preserves unstyled Braille drafts", localSocket, async t => {
+  const f = await fixture(t), { session } = await f.create();
+  const pty = f.calls.at(-1).pty;
+  for (const draft of ["⠁⠃", "⣿⠿", "⠁\x1b[2mAsk Codex to do anything\x1b[22m"]) {
+    pty.data(`\x1b[2J\x1b[H› ${draft}\r\n`);
+    await delay(20);
+    assert.equal((await f.request("screen", { sessionId: session.id })).composerReady, false);
+    await assert.rejects(f.request("send", { sessionId: session.id, text: "task" }), e => e.code === "NOT_READY");
+    assert.deepEqual(pty.writes, []);
+  }
+});
+
 test("native control recognizes animated placeholders without accepting animated drafts", localSocket, async t => {
   const f = await fixture(t), { session } = await f.create();
   const pty = f.calls.at(-1).pty;
   for (const dim of [false, true]) {
-    pty.data(`\x1b[2J\x1b[H›⠁${dim ? "\x1b[2m" : ""}Ask Codex to do anything ⠈\x1b[0m\r\n`);
+    pty.data(`\x1b[2J\x1b[H›${dim ? "\x1b[2m" : ""}⠁Ask Codex to do anything ⠈\x1b[0m\r\n`);
     await delay(20);
     const screen = await f.request("screen", { sessionId: session.id });
     assert.equal(screen.composerReady, dim);

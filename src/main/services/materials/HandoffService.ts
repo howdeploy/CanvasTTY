@@ -689,7 +689,7 @@ function occurrences(text: string, part: string): number {
 }
 
 function composerReady(provider: SessionMetadata["provider"], screen: string, dimPlaceholder: boolean): boolean {
-  if (provider === "codex") return codexComposerReady(withoutBraille(screen), dimPlaceholder);
+  if (provider === "codex") return codexComposerReady(screen, dimPlaceholder);
   if (provider !== "claude") return true;
   const prompt = screen.split("\n").filter((line) => /^\s*❯/.test(line)).at(-1);
   return prompt !== undefined && !/\[(?:Pasted text|Image) #\d+/.test(prompt);

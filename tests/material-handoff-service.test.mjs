@@ -246,7 +246,12 @@ test("dots Codex animates around its prompt do not hide whether it is empty", as
     terminal.tui = codexTui(terminal);
     terminal.emit("c1", "\x1b[2J\x1b[H›⠁half-typed words   ⠈\r\n");
     assert.deepEqual(await handoffs.send(draft("c1")), { ok: false, reason: "composer-not-ready" });
-    terminal.emit("c1", "\x1b[2J\x1b[H   ⠁  ⠐\r\n›⠁\x1b[2mAsk Codex to do anything\x1b[22m   ⠈    ⠄\r\n");
+    for (const input of ["⠁⠃", "⣿⠿", "⠁\x1b[2mAsk Codex to do anything\x1b[22m"]) {
+      terminal.emit("c1", `\x1b[2J\x1b[H› ${input}\r\n`);
+      assert.deepEqual(await handoffs.send(draft("c1")), { ok: false, reason: "composer-not-ready" });
+      assert.equal(terminal.writes.length, 0);
+    }
+    terminal.emit("c1", "\x1b[2J\x1b[H   ⠁  ⠐\r\n›\x1b[2m⠁Ask Codex to do anything   ⠈    ⠄\x1b[22m\r\n");
     assert.equal((await handoffs.send(draft("c1"))).ok, true);
   });
 });

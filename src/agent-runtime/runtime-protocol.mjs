@@ -1,7 +1,9 @@
 export const RUNTIME_PROTOCOL_VERSION = 1;
 export const MAX_RUNTIME_MESSAGE_BYTES = 64 * 1024;
+// Only captured final replies use the larger frame; decision/status limits stay unchanged.
+export const MAX_RESULT_MESSAGE_BYTES = 512 * 1024;
 export const CAPTURE_RESULT_ENV = "CANVASTTY_RUNTIME_CAPTURE_RESULT";
-export const MAX_RESULT_CHARS = 4096;
+export const MAX_RESULT_CHARS = 65_536;
 // Final-answer capture requires an explicit, expiring grant for one Codex session.
 export const CAPTURE_ANSWER_ENV = "CANVASTTY_RUNTIME_CAPTURE_ANSWER";
 export const CAPTURE_ANSWER_EXPIRES_AT_ENV = "CANVASTTY_RUNTIME_CAPTURE_ANSWER_EXPIRES_AT";

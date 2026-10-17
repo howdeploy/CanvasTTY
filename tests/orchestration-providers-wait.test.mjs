@@ -53,7 +53,7 @@ test("the stdio helper answers an unknown provider itself instead of dropping th
   assert.match(payload.error.message, /list_providers/u);
   assert.deepEqual(calls, []);
   const initialized = await dispatch({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-  assert.match(initialized.result.instructions, /list_providers .*spawn_agent .*wait_for_agent .*get_agent_result/u);
+  assert.match(initialized.result.instructions, /list_providers .*spawn_agent .*wait_for_agent.*get_agent_result/u);
   assert.match(initialized.result.instructions, /Do not explore the filesystem/u);
 });
 
@@ -253,7 +253,10 @@ test("the orchestrator skill and docs give the list_providers workflow and forbi
     for (const tool of ["list_providers", "spawn_agent", "wait_for_agent", "get_agent_result"]) assert.ok(text.includes(`\`${tool}\``), tool);
     assert.match(text, /not explore the filesystem/u);
   }
-  assert.match(docs, /`list_providers` → `spawn_agent` \(one per part\) → `wait_for_agent` → `get_agent_result`/u);
+  assert.match(docs, /`list_providers` → `spawn_agent` \(one per part\) → `wait_for_agent`/u);
+  assert.match(docs, /already counts as read/u);
+  assert.match(docs, /read only remaining pages/u);
+  assert.doesNotMatch(docs, /Call `get_agent_result` after waiting/u);
 });
 
 test("after a prompt, an idle before the turn starts does not end wait_for_agent; the turn's own end does", async (t) => {

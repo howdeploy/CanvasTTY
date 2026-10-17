@@ -126,6 +126,8 @@ interface ManagedSession {
   promptTurnMark?: number;
   /** The last turn's final answer its hook or plugin reported (captureResult only); cleared when a turn starts. */
   answer?: { text: string; truncated: boolean; at: number };
+  /** Monotonic capture identity, including identical text and captures within one clock tick. */
+  answerRevision?: number;
   /**
    * Plugin options, environment ref (or, until the plugin has prepared it, the launcher's environment choice)
    * and owning plugin carried into the saved record.
@@ -937,7 +939,10 @@ export class TerminalManager {
     // A submitted prompt: the agent's next turn is the one that answers it (turnProgress).
     const mark = session.turnStarts ?? 0;
     if (!this.inputChecked(id, data)) return { delivered: false, reason: "The terminal no longer accepts input." };
-    if (data.endsWith("\r")) session.promptTurnMark = mark;
+    if (data.endsWith("\r")) {
+      session.answer = undefined;
+      session.promptTurnMark = mark;
+    }
     return { delivered: true };
   }
 
@@ -1054,14 +1059,19 @@ export class TerminalManager {
   recordAnswer(id: string, result: { text: string; truncated: boolean }): void {
     const session = this.sessions.get(id);
     if (!session?.captureResult || typeof result?.text !== "string") return;
+    session.answerRevision = (session.answerRevision ?? 0) + 1;
     session.answer = { text: result.text, truncated: result.truncated === true, at: Date.now() };
+  }
+
+  answerRevision(id: string): number {
+    return this.sessions.get(id)?.answerRevision ?? 0;
   }
 
   /** The last final answer (masked), or null when none was reported since the current turn started. */
   answer(id: string): { text: string; truncated: boolean; at: number } | null {
     const answer = this.sessions.get(id)?.answer;
     if (!answer) return null;
-    return { ...answer, text: this.redactSecretsTail(answer.text, answer.text.length + 1) };
+    return { ...answer, text: this.redactSecrets(answer.text) };
   }
 
   setLifecycleHooksEnabled(enabled: boolean): void {

@@ -189,6 +189,7 @@ test("a wait without an answer cannot authorize discarding a completed reply", a
   const handler = new ScopedOrchestrationHandler({
     status: () => ({ role: "orchestrator", provider: "codex" }),
     isInSubtree: () => true,
+    children: () => [],
     result: () => reply,
     waitFor: async () => visible ? { ...reply, reason: "idle" }
       : { sessionId: "child", status: "working", reason: "timeout", output: "" },
@@ -239,6 +240,7 @@ test("sending a new task invalidates the old result receipt even if the next ans
   const handler = new ScopedOrchestrationHandler({
     status: () => ({ role: "orchestrator", provider: "codex" }),
     isInSubtree: () => true,
+    children: () => [],
     result: () => reply,
     send: async () => undefined,
     cancel: () => { canceled = true; }
@@ -259,6 +261,7 @@ test("closed-child waits are scoped, immediate and bounded without retaining ans
   const handler = new ScopedOrchestrationHandler({
     status: () => ({ role: "orchestrator", provider: "codex" }),
     isInSubtree: (_owner, id) => live.has(id),
+    children: () => [],
     result: id => ({ sessionId: id, status: "working", answer: null }),
     cancel: id => { live.delete(id); },
     waitFor: () => { waits += 1; throw new Error("A disposed child must never reach the controller wait."); }
@@ -381,6 +384,39 @@ for (const text of ["Short final reply", "Long final requirements. ".repeat(1700
         await readAll();
       }
       assert.equal((await call("cancel_agent")).canceled, true);
+    }
+  });
+}
+
+for (const text of ["Descendant final reply", "Descendant requirements. ".repeat(1700)]) {
+  test(`cascading cleanup preserves every descendant answer until completely read (${text.length})`, async t => {
+    const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner([]));
+    t.after(() => terminals.disposeAll());
+    const root = terminals.create({ provider: "codex", cwd: process.cwd(), profile: "normal", role: "orchestrator", position: { x: 0, y: 0 } });
+    const foreign = terminals.create({ provider: "codex", cwd: process.cwd(), profile: "normal", role: "orchestrator", position: { x: 100, y: 0 } });
+    const control = new AgentControlService(terminals);
+    const handler = new ScopedOrchestrationHandler(control);
+    const parent = await control.spawn({ parentSessionId: root.id, provider: "opencode", cwd: process.cwd() });
+    const child = await control.spawn({ parentSessionId: parent.id, provider: "opencode", cwd: process.cwd() });
+    const call = (tool, id, args = {}, owner = root.id) => handler.execute(owner, { id: "tree", tool, arguments: { sessionId: id, ...args } });
+    terminals.recordAnswer(parent.id, { text: "Parent final reply", truncated: false });
+    terminals.applyProviderSignal(parent.id, { kind: "lifecycle", state: "idle" });
+    terminals.recordAnswer(child.id, { text, truncated: false });
+    terminals.applyProviderSignal(child.id, { kind: "lifecycle", state: "idle" });
+    await call("get_agent_result", parent.id);
+    await assert.rejects(call("cancel_agent", parent.id), error => error.message.includes(child.id));
+    assert.ok(terminals.getMetadata(parent.id));
+    assert.ok(terminals.getMetadata(child.id));
+    let result = await call("get_agent_result", child.id);
+    if (result.answer.nextOffset != null) await assert.rejects(call("cancel_agent", parent.id), /Read the current final answer/);
+    while (result.answer.nextOffset != null) result = await call("get_agent_result", child.id, { answerOffset: result.answer.nextOffset });
+    assert.equal((await call("cancel_agent", parent.id)).canceled, true);
+    for (const id of [parent.id, child.id]) {
+      assert.equal(terminals.getMetadata(id), null);
+      const receipt = await call("wait_for_agent", id);
+      assert.equal(receipt.reason, "closed");
+      assert.equal(receipt.resultReadBeforeClose, true);
+      await assert.rejects(call("wait_for_agent", id, {}, foreign.id), /subtree/);
     }
   });
 }

@@ -254,24 +254,35 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
   private cancel(orchestratorId: string, args: Record<string, unknown>): Record<string, unknown> {
     this.requireOwned(orchestratorId, args.sessionId as string);
     const id = args.sessionId as string;
-    const result = this.control.result(id);
-    const answer = result.answer;
-    // A running child can always be interrupted. Every page of the current
-    // completed reply must have reached the parent through wait or result.
-    if (answer && result.status !== "working") {
-      const read = this.answerReads.get(id);
-      if (!read || read.signature !== answerSignature(answer, this.control.resultRevision?.(id, answer) ?? 0) || read.through < answer.text.length) {
+    const closing = [id];
+    const seen = new Set(closing);
+    const receipts = new Map<string, boolean>();
+    // Disposal cascades to subagents. Validate the entire branch before any
+    // card is removed, including completed descendants of a working parent.
+    for (const target of closing) {
+      const result = this.control.result(target);
+      const answer = result.answer;
+      const read = this.answerReads.get(target);
+      const complete = Boolean(answer && read
+        && read.signature === answerSignature(answer, this.control.resultRevision?.(target, answer) ?? 0)
+        && read.through >= answer.text.length);
+      if (answer && result.status !== "working" && !complete) {
         throw orchestrationBridgeError("INVALID_REQUEST",
-          "Read the current final answer before closing this subagent; wait_for_agent counts, and get_agent_result reads remaining answer.nextOffset pages.", false);
+          `Read the current final answer before closing this subagent (${target}); wait_for_agent counts, and get_agent_result reads remaining answer.nextOffset pages.`, false);
+      }
+      receipts.set(target, complete);
+      for (const child of this.control.children(target)) {
+        if (child.role !== "subagent" || seen.has(child.id)) continue;
+        seen.add(child.id);
+        closing.push(child.id);
       }
     }
-    const read = this.answerReads.get(id);
-    const resultReadBeforeClose = Boolean(answer && read
-      && read.signature === answerSignature(answer, this.control.resultRevision?.(id, answer) ?? 0) && read.through >= answer.text.length);
     this.control.cancel(id);
-    this.closedChildren.set(id, { owner: orchestratorId, resultReadBeforeClose });
-    if (this.closedChildren.size > MAX_CLOSED_CHILDREN) this.closedChildren.delete(this.closedChildren.keys().next().value!);
-    this.answerReads.delete(id);
+    for (const [target, resultReadBeforeClose] of receipts) {
+      this.closedChildren.set(target, { owner: orchestratorId, resultReadBeforeClose });
+      if (this.closedChildren.size > MAX_CLOSED_CHILDREN) this.closedChildren.delete(this.closedChildren.keys().next().value!);
+      this.answerReads.delete(target);
+    }
     return { sessionId: id, canceled: true };
   }
 

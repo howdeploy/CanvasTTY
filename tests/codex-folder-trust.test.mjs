@@ -9,10 +9,10 @@ import { normalizeProcessEnvironment } from "../src/main/services/processEnviron
 import { privateAppData } from "../src/main/services/isolation/isolationPaths.ts";
 import { ensureCodexFolderTrust, usesLocalCodexConfig, batchCodexRestoreTrust, directoryCaseInsensitive } from "../src/main/services/CodexFolderTrust.ts";
 
-async function fixture(t, { trusted = false, conflict = false, fresh = false, missingHome = false, layerConfig, serialized = false, profileAlias = false } = {}) {
+async function fixture(t, { trusted = false, conflict = false, fresh = false, missingHome = false, layerConfig, serialized = false, profileAlias = false, profileName = "profile" } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-folder-trust-")));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const home = join(root, "profile"), cwd = join(root, 'project.with dot " Ю');
+  const home = join(root, profileName), cwd = join(root, 'project.with dot " Ю');
   if (!missingHome) await mkdir(home);
   await mkdir(cwd);
   const profile = profileAlias ? join(root, "profile-link") : home;
@@ -388,3 +388,32 @@ test("volume case probes use the selected directory and leave its contents uncha
   assert.deepEqual((await readdir(root)).sort(), before);
   assert.equal(await readFile(profile, "utf8"), "unrelated profile data");
 });
+
+
+test("missing Unicode profiles follow the actual volume normalization semantics", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "canvas-unicode-profile-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const composed = "Profile-Café", decomposed = composed.normalize("NFD");
+  await mkdir(join(root, "Probe-" + decomposed));
+  let insensitive = false;
+  try { await stat(join(root, "Probe-" + composed)); insensitive = true; } catch (error) {
+    assert.equal(error.code, "ENOENT");
+  }
+  const before = (await readdir(root)).sort();
+  const first = { CODEX_HOME: join(root, composed) }, second = { CODEX_HOME: join(root, decomposed) };
+  assert.equal(await usesLocalCodexConfig(first, second, "darwin"), insensitive);
+  assert.equal(await usesLocalCodexConfig(second, first, "darwin"), insensitive);
+  assert.equal(await usesLocalCodexConfig(first, { CODEX_HOME: join(root, "different") }, "darwin"), false);
+  assert.deepEqual((await readdir(root)).sort(), before, "normalization checks leave no profile or probe behind");
+});
+
+
+for (const form of ["NFC", "NFD"]) {
+  test(`first trust persists for a fresh Unicode profile (${form})`, posix, async t => {
+    const f = await fixture(t, { fresh: true, missingHome: true, profileName: "Profile-Café".normalize(form) });
+    await ensureCodexFolderTrust({ ...f.options, confirm: async () => true });
+    assert.match(await readFile(f.config, "utf8"), /TRUST-SAVED/);
+    assert.equal((await f.messages()).filter(message => message.method === "config/batchWrite").length, 1);
+    assert.ok((await readdir(f.root)).every(name => !name.startsWith(".canvastty-")));
+  });
+}

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { accessSync, constants, statSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rmdir, stat, writeFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { CodexAppServerClient, CodexAppServerError } from "./CodexAppServerClient.ts";
 import type { ProviderCliRegistry } from "./providerCliRegistry.ts";
 import { normalizeProcessEnvironment } from "./processEnvironment.ts";
@@ -60,7 +60,7 @@ export async function directoryCaseInsensitive(directory: string): Promise<boole
 }
 
 /** Observe a directory entry on the actual volume, including a missing profile's existing ancestor. */
-async function macProfileCaseSemantics(file: string): Promise<{ insensitive: boolean; device: number }> {
+async function macProfileCaseSemantics(file: string): Promise<{ insensitive: boolean; device: number; directory: string }> {
   let directory = dirname(file);
   for (;;) {
     let entry;
@@ -75,7 +75,7 @@ async function macProfileCaseSemantics(file: string): Promise<{ insensitive: boo
     if (parent === directory || (await stat(parent)).dev !== entry.dev) {
       // A mount root's own name belongs to its parent volume. An empty temporary
       // directory inside this volume provides an unambiguous entry without touching config.
-      return { insensitive: await directoryCaseInsensitive(directory), device: entry.dev };
+      return { insensitive: await directoryCaseInsensitive(directory), device: entry.dev, directory };
     }
     const name = basename(directory);
     const variant = name.replace(/[a-zA-Z]/, char => char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase());
@@ -83,21 +83,48 @@ async function macProfileCaseSemantics(file: string): Promise<{ insensitive: boo
       try {
         const alias = await lstat(join(parent, variant));
         // A symlink with different spelling on a case-sensitive volume is not evidence of case folding.
-        return { insensitive: alias.isDirectory() && alias.dev === entry.dev && alias.ino === entry.ino, device: entry.dev };
+        return { insensitive: alias.isDirectory() && alias.dev === entry.dev && alias.ino === entry.ino, device: entry.dev, directory };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        return { insensitive: false, device: entry.dev };
+        return { insensitive: false, device: entry.dev, directory };
       }
     }
     directory = parent;
   }
 }
 
+/** Normalize a spelling only when this filesystem resolves both forms to the same directory. */
+async function canonicalUnicodePath(file: string, directory: string): Promise<string> {
+  const parts = file.split(sep);
+  const changed = parts.flatMap((part, index) => part === part.normalize("NFC") ? [] : [index]);
+  if (!changed.length) return file;
+  const probe = await mkdtemp(join(directory, ".canvastty-unicode-"));
+  try {
+    for (const index of changed) {
+      const path = join(probe, parts[index]);
+      await mkdir(path);
+      try {
+        const original = await lstat(path);
+        try {
+          const alias = await lstat(join(probe, parts[index].normalize("NFC")));
+          if (alias.isDirectory() && alias.dev === original.dev && alias.ino === original.ino) {
+            parts[index] = parts[index].normalize("NFC");
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      } finally { await rmdir(path); }
+    }
+    return parts.join(sep);
+  } finally { await rmdir(probe); }
+}
+
 async function configIdentity(file: string, platform: NodeJS.Platform = process.platform): Promise<string> {
   if (platform === "darwin") {
-    const { insensitive, device } = await macProfileCaseSemantics(file);
+    const { insensitive, device, directory } = await macProfileCaseSemantics(file);
+    const canonical = await canonicalUnicodePath(file, directory);
     // Distinct mounted volumes may have names differing only by case on their parent filesystem.
-    return `${device}:${insensitive ? file.toLowerCase() : file}`;
+    return `${device}:${insensitive ? canonical.toLowerCase() : canonical}`;
   }
   return platform === "win32" ? file.toLowerCase() : file;
 }

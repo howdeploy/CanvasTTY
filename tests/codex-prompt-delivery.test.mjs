@@ -359,3 +359,22 @@ for (const humanInput of ["typed amendment", "\r", "\x1b[200~spoken task\x1b[201
     assert.equal((await f.terminals.deliverInput(child.id, codexPromptInput(" continued"), 200, undefined, true)).delivered, true);
   });
 }
+
+
+test("clipped transcript continuations remain deliverable without a visible prompt or bullet", async t => {
+  for (const prefix of ["", "› old task\r\n"]) {
+    const f = fixture(t, false);
+    const child = await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan" });
+    f.calls.at(-1).process.emitData("\x1b[2J\x1b[H" + prefix + "• Instructions:\r\n"
+      + "  prior transcript paragraph\r\n".repeat(35)
+      + "  Press enter to confirm the documented operation.\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
+    assert.equal((await f.terminals.deliverInput(child.id, "follow-up\r", 200, undefined, true)).delivered, true);
+    assert.deepEqual(f.writes, ["follow-up\r"]);
+  }
+  for (const phrase of ["Press enter to confirm", "Do you trust the contents", "Update Model Permissions", "model: loading"]) {
+    assert.equal(codexComposerReady(`  ${phrase} in a historical paragraph.\n› Ask Codex to do anything`, true), true);
+    assert.equal(codexComposerReady(`${phrase}\n› Ask Codex to do anything`, true), false);
+    assert.equal(codexComposerReady(`  │ ${phrase}\n› Ask Codex to do anything`, true), false);
+  }
+  assert.equal(codexComposerReady("  Starting MCP servers (1/2)\n› Ask Codex to do anything", true), false);
+});

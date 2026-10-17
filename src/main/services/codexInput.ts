@@ -35,12 +35,15 @@ export function codexComposerReady(screen: string, dimPlaceholder = false, empty
   if (index < 0) return false;
   const prompt = lines[index].match(/^\s*›\s*(.*?)\s*$/)!;
   const previous = composerIndex(lines.slice(0, index));
+  const promptIndent = lines[index].match(/^\s*/u)![0].length;
   let answerIndent: number | null = null;
   for (const line of lines.slice(previous + 1, index)) {
     const bullet = line.match(/^(\s*)[•●◦*]\s+/);
-    // Codex indents wrapped lines and paragraphs under the answer's bullet.
-    if (!bullet && answerIndent !== null && /^\s*\S/.test(line)
-      && line.match(/^\s*/u)![0].length > answerIndent && !/^\s*[│|]/.test(line)) continue;
+    // Wrapped transcript may survive after its prompt and answer bullet scroll away.
+    const indentedTranscript = !bullet && /^\s*\S/.test(line)
+      && line.match(/^\s*/u)![0].length > (answerIndent ?? promptIndent) && !/^\s*[│|]/.test(line);
+    const structuredProgress = /^\s*(?:Starting|Booting)\s+MCP(?:\s+servers?)?\s*\(\d+\/\d+\)(?::[^\n]*)?\s*$/i.test(line);
+    if (indentedTranscript && (answerIndent !== null || !structuredProgress)) continue;
     // Live MCP progress has a structured counter, even after an earlier answer.
     if (/^\s*(?:[•●◦*]\s*)?(?:Starting|Booting)\s+MCP(?:\s+servers?)?\s*\(\d+\/\d+\)(?::[^\n]*)?\s*$/i.test(line)) return false;
     if (bullet) { answerIndent = bullet[1].length; continue; }

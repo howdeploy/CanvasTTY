@@ -260,11 +260,12 @@ test("unstyled text equal to a built-in suggestion never releases automated inpu
 
 
 test("startup phrases in completed transcript do not block the final ready composer", async (t) => {
-  const phrases = ["Starting MCP servers", "Booting MCP servers", "Do you trust the contents", "Press enter to confirm", "Update Model Permissions", "model: loading"];
+  const phrases = ["Starting MCP servers", "Booting MCP servers", "Starting MCP servers (1/2)", "Booting MCP servers (1/2)", "Do you trust the contents", "Press enter to confirm", "Update Model Permissions", "model: loading"];
   for (const phrase of phrases) {
     assert.equal(codexComposerReady(`› explain ${phrase}?\n• prior answer quotes ${phrase}.\n\n› Ask Codex to do anything`,true),true);
     assert.equal(codexComposerReady(`› previous task\n• ${phrase} in the documented workflow.\n\n› Ask Codex to do anything`, true), true);
     assert.equal(codexComposerReady(`› previous task\n• Instructions:\n  ${phrase} in the documented workflow.\n\n› Ask Codex to do anything`, true), true);
+    assert.equal(codexComposerReady(`› previous task\n• Instructions:\n  ${phrase}\n\n› Ask Codex to do anything`, true), true);
     assert.equal(codexComposerReady(`› Ask Codex to do anything\n${phrase}`,true),false);
   }
   const f=fixture(t,false);

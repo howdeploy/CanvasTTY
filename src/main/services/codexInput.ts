@@ -21,13 +21,13 @@ export function codexComposerReady(screen: string, dimPlaceholder = false): bool
   while (previous >= 0 && !/^\s*›/.test(lines[previous])) previous--;
   let answerIndent: number | null = null;
   for (const line of lines.slice(previous + 1, index)) {
-    // Live MCP progress has a structured counter, even after an earlier answer.
-    if (/^\s*(?:[•◦*]\s*)?(?:Starting|Booting)\s+MCP\s+servers?\s*\(\d+\/\d+\)/i.test(line)) return false;
     const bullet = line.match(/^(\s*)[•◦*]\s+/);
-    if (previous >= 0 && bullet) { answerIndent = bullet[1].length; continue; }
     // Codex indents wrapped lines and paragraphs under the answer's bullet.
-    if (answerIndent !== null && /^\s*\S/.test(line)
+    if (!bullet && answerIndent !== null && /^\s*\S/.test(line)
       && line.match(/^\s*/u)![0].length > answerIndent && !/^\s*[│|]/.test(line)) continue;
+    // Live MCP progress has a structured counter, even after an earlier answer.
+    if (/^\s*(?:[•◦*]\s*)?(?:Starting|Booting)\s+MCP(?:\s+servers?)?\s*\(\d+\/\d+\)(?::[^\n]*)?\s*$/i.test(line)) return false;
+    if (previous >= 0 && bullet) { answerIndent = bullet[1].length; continue; }
     if (line.trim()) answerIndent = null;
     if (/^\s*(?:[•◦*│|]\s*)?(?:(?:Starting|Booting)\s+MCP\b|model:\s*loading\b|Do you trust the contents\b|Press enter to confirm\b|Update Model Permissions\b)/i.test(line)) return false;
   }

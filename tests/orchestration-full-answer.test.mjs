@@ -64,12 +64,15 @@ for (const implementation of IMPLEMENTATIONS) {
     }
     await rpc("initialize", {});
     // Documents, multi-page Unicode, and worst-case JSON escaping exercise different wire sizes.
-    for (const document of [
+    for (const { document, failed = false } of [
       "Requirements\n" + "Section: behaviour and acceptance.\n".repeat(280) + "END OF DOCUMENT",
       "Начало 🧪\n" + "Требование: проверяемое поведение. 🧪\n".repeat(1100) + "КОНЕЦ",
       "\u0001".repeat(65_536),
       "fixture1 ".repeat(7_000) // Masking expands this reply beyond the source capture's character limit.
-    ]) {
+    ].map(document => ({ document })).concat([
+      { document: "\u0001".repeat(16_384), failed: true },
+      { document: "Unicode 🧪\n".repeat(4_000), failed: true }
+    ])) {
       const { value: child } = await tool("spawn_agent", { provider: "codex", cwd: root, profile: "normal" });
       const cap = runtime.registerSession(child.sessionId, "codex", true);
       ptys.at(-1).process.emitData("terminal redraw noise\n".repeat(500));
@@ -84,8 +87,13 @@ for (const implementation of IMPLEMENTATIONS) {
         }), input: JSON.stringify({ last_assistant_message: document, turn_id: "completed-turn" })
       });
       assert.equal(hook.code, 0);
+      if (failed) {
+        ptys.at(-1).process.emitData('"\\'.repeat(4_000));
+        ptys.at(-1).process.emitExit(1);
+      }
       const { value: waited } = await tool("wait_for_agent", { sessionId: child.sessionId, timeoutSeconds: 1 });
       assert.ok(waited.answer, "the Stop result reaches orchestration");
+      if (failed) assert.ok(waited.exitLines.length >= 7_000, "failed replies retain escaped exit diagnostics within the same wire budget");
       assert.equal(waited.output, "", "the complete answer is not duplicated with terminal redraws");
       const expected = redaction.redact(document);
       assert.ok(expected.startsWith(waited.answer.text), "the beginning is preserved");

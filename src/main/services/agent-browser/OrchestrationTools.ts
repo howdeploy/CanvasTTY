@@ -9,6 +9,8 @@ import type { PluginAgentTools } from "../PluginAgentTools.ts";
 import {
   DEFAULT_AGENT_WAIT_SECONDS,
   MAX_AGENT_WAIT_SECONDS,
+  MAX_ORCHESTRATION_PAYLOAD_BYTES,
+  canonicalStringify,
   ORCHESTRATION_TOOL_DEFINITIONS,
   isPluginOrchestrationTool,
   unknownProviderMessage
@@ -17,7 +19,7 @@ import { AGENT_PROVIDERS } from "../../../shared/contracts.ts";
 import { listProviderDirectory, type ProviderDirectorySources } from "../providerDirectory.ts";
 import type { McpToolDefinition } from "../../../agent-browser/orchestration-catalog.mjs";
 
-// A page fits the MCP wire cap even after the helper embeds JSON inside JSON.
+// Maximum page length; the encoded answer and co-returned diagnostics must also fit.
 const ANSWER_PAGE_CHARS = 16_384;
 const MAX_ANSWER_READS = 256;
 const MAX_CLOSED_CHILDREN = 256;
@@ -140,8 +142,9 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
         ...(signal ? { signal } : {})
       });
       if (!result.answer) return { ...result };
-      const receipt = { ...result, output: "", answer: this.readAnswer(target, result.answer, 0) };
+      const receipt = { ...result, output: "" };
       if (result.reason !== "failed") delete receipt.exitLines;
+      receipt.answer = this.readAnswer(target, result.answer, 0, receipt);
       return receipt;
     } catch (error) {
       if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw canceledError();
@@ -240,15 +243,16 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     if (args.answerOffset && !result.answer) {
       throw orchestrationBridgeError("INVALID_REQUEST", "The answer changed; read the current result from answerOffset=0.", false);
     }
-    return {
+    const receipt: Record<string, unknown> = {
       sessionId: result.sessionId,
       state: result.state,
       status: result.status,
       exitCode: result.exitCode,
       output: result.answer ? "" : result.output,
-      ...((!result.answer || result.state === "failed") && result.exitLines ? { exitLines: result.exitLines } : {}),
-      ...(result.answer ? { answer: this.readAnswer(result.sessionId, result.answer, (args.answerOffset as number | undefined) ?? 0) } : {})
+      ...((!result.answer || result.state === "failed") && result.exitLines ? { exitLines: result.exitLines } : {})
     };
+    if (result.answer) receipt.answer = this.readAnswer(result.sessionId, result.answer, (args.answerOffset as number | undefined) ?? 0, receipt);
+    return receipt;
   }
 
   private cancel(orchestratorId: string, args: Record<string, unknown>): Record<string, unknown> {
@@ -288,7 +292,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     return { sessionId: id, canceled: true };
   }
 
-  private readAnswer(sessionId: string, answer: AgentAnswer, offset: number): Record<string, unknown> {
+  private readAnswer(sessionId: string, answer: AgentAnswer, offset: number, receipt: Record<string, unknown>): AgentAnswer & Record<string, unknown> {
     const signature = answerSignature(answer, this.control.resultRevision?.(sessionId, answer) ?? 0);
     const previous = this.answerReads.get(sessionId);
     const through = previous?.signature === signature ? previous.through : 0;
@@ -296,15 +300,34 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       throw orchestrationBridgeError("INVALID_REQUEST", `Read the current answer with answerOffset=${through}.`, false);
     }
     let end = Math.min(answer.text.length, offset + ANSWER_PAGE_CHARS);
+    const page = (end: number): AgentAnswer & Record<string, unknown> => {
+      if (offset === 0 && end === answer.text.length) return { ...answer };
+      const nextOffset = end < answer.text.length ? end : null;
+      return { text: answer.text.slice(offset, end), truncated: answer.truncated || nextOffset !== null,
+        offset, nextOffset, totalChars: answer.text.length, sourceTruncated: answer.truncated };
+    };
+    // The MCP helper encodes the bridge result as a JSON text block, inside
+    // another JSON envelope. Include every field and reserve envelope/id space.
+    const fits = (end: number): boolean => Buffer.byteLength(canonicalStringify(canonicalStringify({ ...receipt, answer: page(end) })))
+      <= MAX_ORCHESTRATION_PAYLOAD_BYTES - 1_024;
+    if (!fits(end)) {
+      let low = offset, high = end;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (fits(middle)) low = middle;
+        else high = middle - 1;
+      }
+      end = low;
+    }
     // Offsets use UTF-16 code units, but a page must not split an astral character.
     if (end < answer.text.length && /[\uD800-\uDBFF]/u.test(answer.text[end - 1]!)) end -= 1;
+    if (!fits(end) || (end === offset && offset < answer.text.length)) {
+      throw orchestrationBridgeError("PAYLOAD_TOO_LARGE", "Answer diagnostics exceed the response budget.", false);
+    }
     this.answerReads.delete(sessionId);
     this.answerReads.set(sessionId, { signature, through: Math.max(through, end) });
     if (this.answerReads.size > MAX_ANSWER_READS) this.answerReads.delete(this.answerReads.keys().next().value!);
-    if (offset === 0 && end === answer.text.length) return { ...answer };
-    const nextOffset = end < answer.text.length ? end : null;
-    return { text: answer.text.slice(offset, end), truncated: answer.truncated || nextOffset !== null,
-      offset, nextOffset, totalChars: answer.text.length, sourceTruncated: answer.truncated };
+    return page(end);
   }
 
   private list(orchestratorId: string): Record<string, unknown> {

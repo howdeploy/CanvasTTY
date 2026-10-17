@@ -19,12 +19,18 @@ export function codexComposerReady(screen: string, dimPlaceholder = false): bool
   const prompt = lines[index].match(/^\s*›\s*(.*?)\s*$/)!;
   let previous = index - 1;
   while (previous >= 0 && !/^\s*›/.test(lines[previous])) previous--;
-  if (lines.slice(previous + 1, index).some((line) => {
-    // After a submitted prompt these markers introduce assistant transcript.
-    // Initial startup rows can use the same markers before any submitted task.
-    if (previous >= 0 && /^\s*[•◦*]/.test(line)) return false;
-    return /^\s*(?:[•◦*│|]\s*)?(?:(?:Starting|Booting)\s+MCP\b|model:\s*loading\b|Do you trust the contents\b|Press enter to confirm\b|Update Model Permissions\b)/i.test(line);
-  })) return false;
+  let answerIndent: number | null = null;
+  for (const line of lines.slice(previous + 1, index)) {
+    // Live MCP progress has a structured counter, even after an earlier answer.
+    if (/^\s*(?:[•◦*]\s*)?(?:Starting|Booting)\s+MCP\s+servers?\s*\(\d+\/\d+\)/i.test(line)) return false;
+    const bullet = line.match(/^(\s*)[•◦*]\s+/);
+    if (previous >= 0 && bullet) { answerIndent = bullet[1].length; continue; }
+    // Codex indents wrapped lines and paragraphs under the answer's bullet.
+    if (answerIndent !== null && /^\s*\S/.test(line)
+      && line.match(/^\s*/u)![0].length > answerIndent && !/^\s*[│|]/.test(line)) continue;
+    if (line.trim()) answerIndent = null;
+    if (/^\s*(?:[•◦*│|]\s*)?(?:(?:Starting|Booting)\s+MCP\b|model:\s*loading\b|Do you trust the contents\b|Press enter to confirm\b|Update Model Permissions\b)/i.test(line)) return false;
+  }
   if (/Do you trust the contents|Press enter to confirm|Update Model Permissions|model:\s+loading|(?:Starting|Booting)\s+MCP\b/i.test(lines.slice(index).join("\n"))) return false;
   // Only native dim placeholder cells may contain disposable animation. Never
   // erase Braille from a person's draft and turn it into a blank composer.

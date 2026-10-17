@@ -264,6 +264,7 @@ test("startup phrases in completed transcript do not block the final ready compo
   for (const phrase of phrases) {
     assert.equal(codexComposerReady(`› explain ${phrase}?\n• prior answer quotes ${phrase}.\n\n› Ask Codex to do anything`,true),true);
     assert.equal(codexComposerReady(`› previous task\n• ${phrase} in the documented workflow.\n\n› Ask Codex to do anything`, true), true);
+    assert.equal(codexComposerReady(`› previous task\n• Instructions:\n  ${phrase} in the documented workflow.\n\n› Ask Codex to do anything`, true), true);
     assert.equal(codexComposerReady(`› Ask Codex to do anything\n${phrase}`,true),false);
   }
   const f=fixture(t,false);
@@ -271,6 +272,20 @@ test("startup phrases in completed transcript do not block the final ready compo
   f.calls.at(-1).process.emitData("\x1b[2J\x1b[H› previous task\r\n• Press enter to confirm the documented operation.\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
   const result=await f.terminals.deliverInput(child.id,"follow-up\r",300,undefined,true);
   assert.equal(result.delivered,true,result.reason);
+});
+
+test("post-turn MCP progress blocks delivery while transcript continuations do not", async t => {
+  for (const live of [false, true]) {
+    await t.test(live ? "live progress" : "completed multiline answer", async t => {
+      const f = fixture(t, false);
+      const child = await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan" });
+      const rows = "› old task\r\n• Instructions:\r\n  Press enter to confirm the documented operation.\r\n\r\n"
+        + (live ? "• Starting MCP servers (2/4): service-a, service-b (0s)\r\n" : "");
+      f.calls.at(-1).process.emitData(`\x1b[2J\x1b[H${rows}› \x1b[2mAsk Codex to do anything\x1b[22m\r\n`);
+      assert.equal((await f.terminals.deliverInput(child.id, "next task\r", 100, undefined, true)).delivered, !live);
+      assert.deepEqual(f.writes, live ? [] : ["next task\r"]);
+    });
+  }
 });
 
 test("unstyled Braille is a draft even without other text", async t => {

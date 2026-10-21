@@ -12,6 +12,7 @@ import type {
   CanvasNavigationOverrideStateEvent,
   CanvasNavigationPointerBindingInput,
   CanvasTTYApi,
+  ClaudeDraftAction,
   CustomTerminalBorderSkinId,
   CreateSessionRequest,
   FileRootReference,
@@ -312,6 +313,8 @@ const api: CanvasTTYApi = {
     create: (request: CreateSessionRequest) => ipcRenderer.invoke(IPC.terminalCreate, request),
     restart: (id: string, options?: { resume?: boolean }) => ipcRenderer.invoke(IPC.terminalRestart, id, options),
     input: (id: string, data: string) => ipcRenderer.send(IPC.terminalInput, id, data),
+    draftAction: (id: string, action: ClaudeDraftAction, followUp?: string, paste?: "plain" | "bracketed") =>
+      ipcRenderer.invoke(IPC.terminalDraftAction, id, action, followUp ?? "", paste ?? null),
     resize: (id: string, cols: number, rows: number) => ipcRenderer.send(IPC.terminalResize, id, cols, rows),
     setBounds: (id: string, bounds: SessionBounds) => ipcRenderer.send(IPC.terminalBounds, id, bounds),
     rename: (id: string, title: string) => ipcRenderer.invoke(IPC.terminalRename, id, title),

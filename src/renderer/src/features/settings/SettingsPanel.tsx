@@ -52,6 +52,7 @@ import type {
 import {
   BROWSER_PROVIDER_COLORS,
   keyboardPresetShortcuts,
+  REQUIRED_SHORTCUTS,
   shortcutsShareContext,
   BUNDLED_CANVAS_BACKGROUND_IDS,
   CANVAS_LAUNCHER_ITEMS,
@@ -130,7 +131,11 @@ const SHORTCUT_LABELS = {
   terminalCopy: "shortcutCopySelection", terminalPaste: "shortcutPaste", terminalSearch: "terminalSearch",
   terminalRestart: "shortcutRestartExited", terminalPageUp: "keyboardPageUp", terminalPageDown: "keyboardPageDown",
   codexSubmit: "keyboardSubmit", codexSubmitAlternate: "keyboardSubmitAlternate", codexSubmitSuper: "keyboardSubmitSuper",
-  codexNewline: "shortcutLineBreak", codexSelectAll: "keyboardSelectAll"
+  codexNewline: "shortcutLineBreak", codexNewlineAlternate: "keyboardNewlineAlternate", codexSelectAll: "keyboardSelectAll",
+  codexCopy: "keyboardClaudeCopy", codexCut: "keyboardClaudeCut", codexClear: "keyboardClaudeClear",
+  claudeSubmit: "keyboardSubmit", claudeNewline: "keyboardNewline", claudeNewlineAlternate: "keyboardNewlineAlternate",
+  claudeSelectAll: "keyboardSelectDraft",
+  claudeCopy: "keyboardClaudeCopy", claudeCut: "keyboardClaudeCut", claudeClear: "keyboardClaudeClear"
 } as const;
 
 const SETTINGS_SECTIONS: ReadonlyArray<{
@@ -591,7 +596,7 @@ export function SettingsPanel({
                     setCapturing(null);
                     setShortcutError(null);
                     void onChange({ keyboardPreset, ...(keyboardPreset === "custom" ? {} : {
-                      shortcuts: keyboardPresetShortcuts(keyboardPreset),
+                      shortcuts: keyboardPresetShortcuts(keyboardPreset, window.canvasTTY.window.isMacOS),
                       canvasWheelOverride: keyboardPreset === "macos" ? "Meta" : "Ctrl",
                       canvasNavigationOverride: "Alt"
                     }) });
@@ -603,10 +608,22 @@ export function SettingsPanel({
                 {([
                   ["keyboardCanvas", ["home", "renameWindow", "toggleFullscreen", "commandPalette", "openSettings", "focusUp", "focusDown", "focusLeft", "focusRight", "toggleDetail"]],
                   ["keyboardTerminal", ["terminalCopy", "terminalPaste", "terminalSearch", "terminalRestart", "terminalPageUp", "terminalPageDown"]],
-                  ["keyboardCodex", ["codexSubmit", "codexSubmitAlternate", "codexSubmitSuper", "codexNewline", "codexSelectAll"]]
-                ] as const).map(([group, actions]) => (
+                  ["keyboardCodex", window.canvasTTY.window.isMacOS
+                    ? ["codexSubmit", "codexNewline", "codexNewlineAlternate", "codexSelectAll", "codexCopy", "codexCut", "codexClear"] as ShortcutAction[]
+                    : ["codexSubmit", "codexSubmitAlternate", "codexSubmitSuper", "codexNewline", "codexSelectAll"] as ShortcutAction[]],
+                  ["keyboardClaude", ["claudeSubmit", "claudeNewline", "claudeNewlineAlternate", "claudeSelectAll", "claudeCopy", "claudeCut", "claudeClear"]]
+                ] as const).filter(([group]) => group !== "keyboardClaude" || window.canvasTTY.window.isMacOS).map(([group, actions]) => (
                   <div key={group}>
                     <h3>{t(locale, group)}</h3>
+                    {group === "keyboardClaude" && (
+                      <SettingGroup label={t(locale, "claudeDraftKeys")}>
+                        <Segmented
+                          value={settings.claudeDraftKeysEnabled ? "on" : "off"}
+                          options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
+                          onChange={(value) => void onChange({ claudeDraftKeysEnabled: value === "on" })}
+                        />
+                      </SettingGroup>
+                    )}
                     {actions.map((action) => (
                       <ShortcutRow
                         key={action}
@@ -617,7 +634,7 @@ export function SettingsPanel({
                         onKeyDown={(event) => captureShortcut(action, event)}
                         onPointerDown={(event) => capturePointerShortcut(action, event)}
                         disableLabel={t(locale, "disabled")}
-                        onDisable={["codexSubmit", "codexNewline", "codexSelectAll"].includes(action) ? undefined : () => {
+                        onDisable={REQUIRED_SHORTCUTS.includes(action) ? undefined : () => {
                           setCapturing(null);
                           setShortcutError(null);
                           void onChange({ keyboardPreset: "custom", shortcuts: { ...settings.shortcuts, [action]: "" } });

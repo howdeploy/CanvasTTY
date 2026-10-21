@@ -1208,6 +1208,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               focusActivation={settings.focusActivation}
               invertTerminalWheel={settings.invertTerminalWheel}
               copyOnSelect={settings.copyOnSelect}
+              claudeDraftKeys={settings.claudeDraftKeysEnabled}
               captureCanvasWheelOverWidgets={routeWidgetWheelToCanvas || widgetFocus.id !== terminalCanvasWidgetId(session.id)}
               focused={widgetFocus.id === terminalCanvasWidgetId(session.id)}
               focusChangeSource={widgetFocus.source}
@@ -1401,6 +1402,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               focusActivation={settings.focusActivation}
               invertTerminalWheel={settings.invertTerminalWheel}
               copyOnSelect={settings.copyOnSelect}
+              claudeDraftKeys={settings.claudeDraftKeysEnabled}
               captureCanvasWheelOverWidgets={false}
               focused={widgetFocus.id === terminalCanvasWidgetId(session.id)}
               focusChangeSource={widgetFocus.source}

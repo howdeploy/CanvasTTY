@@ -26,10 +26,14 @@ export interface IsolationPathInput {
   sessionId: string;
   /** Folders under CanvasTTY's private data this launch was handed (its own control grant, its account home). */
   grantedPrivate?: readonly string[];
+  /** Folders under CanvasTTY's private data this launch may also write (its Claude draft folder); read again too. */
+  ownWritable?: readonly string[];
   /** Extra socket folders this launch may connect to (the control grant's endpoint folder). */
   socketFolders?: readonly string[];
   /** Plan: the project is readable only (the CLI's own folders stay writable). */
   readOnlyProject?: boolean;
+  /** The person's user id: Claude Code keeps its scratch files in /tmp/claude-<uid>, whatever TMPDIR says. */
+  uid?: number;
 }
 
 export interface IsolationPaths {
@@ -144,7 +148,7 @@ function sensitiveHomeFolders(home: string, xdgConfig: string): string[] {
  * token-authenticated sockets and per-run hook settings the CLI must read.
  */
 export function privateAppData(userDataPath: string): string[] {
-  return ["agent-control", "provider-secrets.bin", "plugin-secrets", "account-homes", "github-oauth.json", "launch-runs"]
+  return ["agent-control", "provider-secrets.bin", "plugin-secrets", "account-homes", "github-oauth.json", "launch-runs", "claude-draft"]
     .map((name) => join(userDataPath, name));
 }
 
@@ -212,7 +216,8 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
     // variable pointing at HOME or above the project would hide them, so it is not followed.
     .filter((folder) => !ownFolders.includes(folder) && !hides(folder));
   const privateData = privateAppData(input.userDataPath);
-  const grants = [...(input.grantedPrivate ?? []), join(input.userDataPath, "launch-runs", safeSegment(input.sessionId))];
+  const ownWritable = input.ownWritable ?? [];
+  const grants = [...(input.grantedPrivate ?? []), ...ownWritable, join(input.userDataPath, "launch-runs", safeSegment(input.sessionId))];
   const project = input.cwd;
   const trustedOwn = providerFolders(input.provider, {}, hostHome);
   const trustedOthers = AGENT_PROVIDERS.filter((provider) => provider !== input.provider).flatMap((provider) => {
@@ -259,6 +264,9 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
       ...(input.readOnlyProject ? [] : [project]),
       input.sessionTemp,
       ...ownFolders,
+      ...ownWritable,
+      // Claude Code's Bash tool and external editor write here, not in TMPDIR; without it every shell call fails.
+      ...(input.provider === "claude" && input.uid !== undefined ? [join("/tmp", `claude-${input.uid}`)] : []),
       join(home, ".npm"), join(home, ".bun"), join(xdg.cache, "npm"), join(xdg.cache, "bun")
     ]),
     writableFiles: all(own.files),

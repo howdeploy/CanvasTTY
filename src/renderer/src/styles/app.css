@@ -615,6 +615,15 @@ button { border: 0; }
    Keep the surface and terminal geometry while suspending the screen's renderer. */
 .terminal-card__surface[data-suspended="true"] .xterm-screen { display: none; }
 .terminal-card__surface .xterm-viewport { background-color: var(--terminal-background, #202430); }
+/* Claude draft selection (Command+A); same tint as the terminal selection. */
+.terminal-card__draft-highlight {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  background: #7b789966;
+  pointer-events: none;
+}
 .terminal-card__summary { position: absolute; inset: var(--card-header-height) 0 0; width: 100%; height: calc(100% - var(--card-header-height)); display: none; align-items: center; justify-content: center; overflow: hidden; padding: 0; color: white; background: var(--terminal-background, #202430); cursor: zoom-in; text-align: left; }
 .terminal-card__summary[data-focus-activation="off"] { cursor: pointer; }
 .terminal-card__summary:hover { background: #242936; }

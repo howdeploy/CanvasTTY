@@ -103,7 +103,7 @@ test("auto exists only where the CLI has a native auto mode (OpenCode: a per-run
   assert.deepEqual(launch("codex", "yolo"), ["--dangerously-bypass-approvals-and-sandbox"]);
 });
 
-test("auto: Codex --approve-for-me (its workspace-write sandbox), Claude auto with its sandbox merged into the one --settings", () => {
+test("auto: Codex --approve-for-me (its workspace-write sandbox), Claude auto keeps one --settings and its own sandbox choice", () => {
   assert.deepEqual(launch("codex", "auto"), ["--approve-for-me"]);
   assert.deepEqual(launch("grok", "auto"), ["--permission-mode", "auto"]);
   const hooks = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "/hook" }] }] } });
@@ -112,12 +112,12 @@ test("auto: Codex --approve-for-me (its workspace-write sandbox), Claude auto wi
   assert.deepEqual(args.slice(0, 2), ["--permission-mode", "auto"]);
   assert.equal(args.filter((arg) => arg === "--settings").length, 1, "Claude keeps only the last --settings");
   const [settings] = settingsOf(args);
-  assert.deepEqual(settings.sandbox, { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false });
+  assert.equal(settings.sandbox, undefined, "Claude's sandbox follows the person's own Claude settings");
   assert.equal(settings.hooks.Stop[0].hooks[0].command, "/hook", "CanvasTTY's hooks survive");
   assert.equal(settings.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:11434");
-  // Without other settings the sandbox is its own inline --settings.
-  assert.deepEqual(settingsOf(launch("claude", "auto")), [{ sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false } }]);
-  assert.deepEqual(settingsOf(launch("claude", "auto", [], { platform: "darwin" })), settingsOf(launch("claude", "auto")), "macOS: the same sandbox");
+  // Without other settings there is no inline --settings at all, on macOS as on Linux.
+  assert.deepEqual(launch("claude", "auto"), ["--permission-mode", "auto"]);
+  assert.deepEqual(launch("claude", "auto", [], { platform: "darwin" }), ["--permission-mode", "auto"]);
   // Claude Code has no sandbox on Windows: auto there is its auto mode alone.
   assert.deepEqual(launch("claude", "auto", [], { platform: "win32" }), ["--permission-mode", "auto"]);
   // Inside CanvasTTY's isolation layer Claude's own sandbox cannot start (macOS refuses a sandbox in a sandbox): left out.
@@ -133,11 +133,11 @@ test("auto: Codex --approve-for-me (its workspace-write sandbox), Claude auto wi
   assert.deepEqual(launch("codex", "auto"), ["--approve-for-me"], "outside the layer Codex keeps its own sandbox");
 });
 
-test("a third-party model turns auto into accept-edits, sandbox kept; other profiles ignore the mark", () => {
+test("a third-party model turns auto into accept-edits; other profiles ignore the mark", () => {
   assert.deepEqual(launch("codex", "auto", [], { thirdPartyModel: true }), ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]);
   const claude = launch("claude", "auto", [], { thirdPartyModel: true });
   assert.deepEqual(claude.slice(0, 2), ["--permission-mode", "acceptEdits"]);
-  assert.equal(settingsOf(claude)[0].sandbox.enabled, true);
+  assert.deepEqual(settingsOf(claude), [], "no sandbox switched on for the person");
   assert.deepEqual(launch("grok", "auto", [], { thirdPartyModel: true }), ["--permission-mode", "acceptEdits"]);
   assert.deepEqual(launch("codex", "normal", [], { thirdPartyModel: true }), []);
 });

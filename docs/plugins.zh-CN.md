@@ -202,7 +202,7 @@ host.service.onEvent(({ serviceId, event, data }) => { /* … */ });
 - 5 秒内无应答、出错、应答无效、缺少机密，或插件被禁用、删除或不再受信任，都会拒绝启动并在卡片上显示原因。智能体绝不会在缺少用户所选贡献的情况下启动。插件不可用的恢复卡片以停止状态返回并显示该原因，记录保留到插件恢复或卡片被关闭。
 - 普通终端不接受启动选项。
 
-**启动配置档。** `profile` 为 `normal`（默认）、`yolo` 或 `auto`。`auto` 仅适用于 CLI 自带自动模式的智能体，均按各 CLI 的 `--help` 核实：Codex `--approve-for-me`（其自身审查，运行于 `workspace-write` 沙箱），Claude Code `--permission-mode auto` 及其沙箱（`{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":false}}` 合并进唯一的 `--settings`），以及 Grok `--permission-mode auto`（不依赖 Grok 沙箱）。基础保护和决策服务仍在其前面作答（Codex、Claude Code）。只要任一贡献者回答 `thirdPartyModel: true`，`auto` 就改为同一沙箱中 CLI 的“仅接受编辑”模式（Codex `--sandbox workspace-write --ask-for-approval on-request`，Claude Code 和 Grok `--permission-mode acceptEdits`）：原生审查者将是同一个模型，而弱模型自己的分类器不是安全边界。
+**启动配置档。** `profile` 为 `normal`（默认）、`yolo` 或 `auto`。`auto` 仅适用于 CLI 自带自动模式的智能体，均按各 CLI 的 `--help` 核实：Codex `--approve-for-me`（其自身审查，运行于 `workspace-write` 沙箱），Claude Code `--permission-mode auto`（其自身沙箱遵循用户的 Claude 设置，CanvasTTY 不额外添加），以及 Grok `--permission-mode auto`（不依赖 Grok 沙箱）。基础保护和决策服务仍在其前面作答（Codex、Claude Code）。只要任一贡献者回答 `thirdPartyModel: true`，`auto` 就改为 CLI 的“仅接受编辑”模式（Codex `--sandbox workspace-write --ask-for-approval on-request`，Claude Code 和 Grok `--permission-mode acceptEdits`）：原生审查者将是同一个模型，而弱模型自己的分类器不是安全边界。
 
 **受信任文件夹。** 在本机运行、其文件夹是用户为其顶层智能体选择的文件夹（或位于其中）的子智能体，会收到 `"trustedFolder"`：该文件夹的真实路径。CanvasTTY 会以仅限此次运行的 `-c projects=…` 覆盖替它回答 Codex 的 “Trust this folder?”（不会写入 `~/.codex`）；自行保存智能体配置目录的插件（例如账户的 `CLAUDE_CONFIG_DIR`）可以在那里将该文件夹标记为受信任。Codex 还会获得对 CanvasTTY 自己添加的 hook 的本次运行信任（`-c hooks.state=…`），因此不会停在 “Hooks need review”；项目或用户自己的 hook 仍会询问。插件不能传递 `-c hooks…`。
 

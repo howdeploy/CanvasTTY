@@ -1754,7 +1754,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                 <button className="shortcut-hints__more" type="button" data-interactive="true"
                   aria-haspopup="dialog" onClick={props.onOpenShortcutReference}>
                   {t(settings.locale, "keyboardShortcuts")}
-                  <UiIcon name="app-window" size={14} />
+                  <UiIcon name="app-window" size="1.27em" />
                 </button>
               </aside>
             )}

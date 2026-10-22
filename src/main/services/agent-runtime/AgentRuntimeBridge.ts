@@ -23,6 +23,10 @@ export interface PrepareAgentRuntimeLaunchInput {
   decisions?: boolean;
   /** Claude Code: what decides whether its lifecycle hooks may go over HTTP (see ClaudeHttpHooks.ts). */
   claudeHttp?: ClaudeHttpLaunchFacts;
+  /** Grok/Kimi: the CLI home a launch contributor started the launch with (`accountHookHome`), for its status hooks. */
+  accountHome?: string;
+  /** The card's own (already filtered) environment, which the launch builds from instead of the app's. */
+  environment?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface PreparedAgentRuntimePtyLaunch {
@@ -92,7 +96,7 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
     let prepared;
     try {
       prepared = this.providers.prepare(input.provider, input.terminalSessionId, this.coreHooksEnabled, decisions, budgetMs,
-        httpHookBase ?? undefined);
+        httpHookBase ?? undefined, input.accountHome, input.environment);
     } catch (error) {
       if (capability) this.gateway.revokeTerminalSession(input.terminalSessionId, capability.capabilityToken);
       throw error;

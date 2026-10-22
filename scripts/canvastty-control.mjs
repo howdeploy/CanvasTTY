@@ -155,8 +155,10 @@ create --cwd <directory> [--provider <id>] [--title <name>] [--yolo | --profile 
   --model: the CLI's own --model for this worker (OpenCode: provider/model); if
   the person names a model, pass it. --effort: codex, claude and grok only.
   providers shows each provider's model format and effort levels.
-  Only Codex workers report a captured result and expose startup/approval menus
-  to choose/dismiss; the create response lists each worker's capabilities.
+  Only Codex workers report a captured result and expose startup menus to
+  choose/dismiss; the create response lists each worker's capabilities. From an
+  Orchestrator session, choose, dismiss and send are refused (NEEDS_PERSON) while
+  a worker waits at an approval or permission prompt: only the person answers it.
 list
 status <session-id>
 screen <session-id>

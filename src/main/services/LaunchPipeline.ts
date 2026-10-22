@@ -12,6 +12,7 @@ import type {
 import { claudeCoreSettingsKey, coreOwnedLaunchArgument, parseInlineSettings } from "./terminalLaunch.ts";
 import { MAX_PLUGIN_SLOT_BYTES } from "./TerminalSessionStore.ts";
 import { LaunchRefusal } from "./launchRefusal.ts";
+import { contributedHookHome } from "./accountHomes.ts";
 import { MAX_INSPECTED_CONFIG_BYTES, parseJsonc, readInspectedFile } from "./inspectedConfig.ts";
 
 /** A trusted plugin service that declared launch options (PluginManager.launchContributors). */
@@ -22,6 +23,8 @@ export interface LaunchContributor {
   launch: PluginServiceLaunch;
   /** The plugin holds the `secrets` permission, so `secretEnv` may name its secrets. */
   secrets: boolean;
+  /** `<userData>/plugin-data/<pluginId>`, the host's record (never the plugin's answer); account homes live below it. */
+  dataDir?: string;
 }
 
 export interface LaunchPipelineDependencies {
@@ -73,6 +76,11 @@ export type PreparedLaunch =
     envSources: Record<string, string>;
     /** A contributor runs the agent on another model than its vendor's: "auto" becomes accept-edits. */
     thirdPartyModel: boolean;
+    /**
+     * Grok/Kimi: the home (`GROK_HOME` / `KIMI_CODE_HOME`) the contributor that set it handed this launch inside its own
+     * data folder (contributedHookHome); CanvasTTY writes that CLI's temporary configuration there.
+     */
+    accountHome?: string;
     cleanup(): Promise<void>;
   }
   | { ok: false; reason: string };
@@ -267,6 +275,7 @@ export class LaunchPipeline {
     const args: string[] = [];
     const secrets: string[] = [];
     let thirdPartyModel = false;
+    let accountHome: string | undefined;
     for (const answer of answers) {
       if ("refuse" in answer) return refuse(answer.refuse);
     }
@@ -313,6 +322,7 @@ export class LaunchPipeline {
         const conflict = claim(key);
         if (conflict) return refuse(conflict);
         env[key] = expand(value);
+        accountHome = contributedHookHome(context.provider, contributor.dataDir, key, env[key]) ?? accountHome;
       }
       for (const [key, secretKey] of Object.entries(contribution.secretEnv)) {
         const conflict = claim(key);
@@ -327,7 +337,7 @@ export class LaunchPipeline {
       args.push(...contributedArgs.map(expand));
       thirdPartyModel ||= contribution.thirdPartyModel === true;
     }
-    return { ok: true, env, args, secrets, envSources, thirdPartyModel, cleanup };
+    return { ok: true, env, args, secrets, envSources, thirdPartyModel, ...(accountHome ? { accountHome } : {}), cleanup };
   }
 
   private async ask(

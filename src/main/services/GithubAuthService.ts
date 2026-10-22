@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as electron from "electron";
 import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
+import type { GithubDeviceFlowState } from "../../shared/contracts";
 
 /** GitHub OAuth Device Flow for the plugin showcase. */
 
@@ -10,6 +11,7 @@ export interface GithubAuthStatus {
   authorized: boolean;
   login: string | null;
   tokenExpiresAt: number | null;
+  deviceFlowState: GithubDeviceFlowState;
 }
 
 interface StoredTokens {
@@ -60,6 +62,7 @@ export class GithubAuthService {
   private readonly pollTimeoutMs: number;
   private generation = 0;
   private deviceFlow: { generation: number; controller: AbortController } | null = null;
+  private deviceFlowState: GithubDeviceFlowState = "idle";
   private storeWrite = Promise.resolve();
 
   constructor(userDataPath: string, clientId?: string, options: GithubAuthServiceOptions = {}) {
@@ -126,13 +129,20 @@ export class GithubAuthService {
 
   async status(): Promise<GithubAuthStatus> {
     if (!this.tokens) {
-      return { configured: this.clientConfigured, authorized: false, login: null, tokenExpiresAt: null };
+      return {
+        configured: this.clientConfigured,
+        authorized: false,
+        login: null,
+        tokenExpiresAt: null,
+        deviceFlowState: this.deviceFlowState
+      };
     }
     return {
       configured: this.clientConfigured,
       authorized: true,
       login: this.tokens.login,
-      tokenExpiresAt: this.tokens.expiresAt
+      tokenExpiresAt: this.tokens.expiresAt,
+      deviceFlowState: this.deviceFlowState
     };
   }
 
@@ -146,10 +156,11 @@ export class GithubAuthService {
       throw new Error("GitHub OAuth is not configured (missing client id).");
     }
 
-    this.cancelDeviceFlow();
+    this.abortDeviceFlow();
     const generation = ++this.generation;
     const controller = new AbortController();
     this.deviceFlow = { generation, controller };
+    this.deviceFlowState = "pending";
 
     try {
       const body = new URLSearchParams({ client_id: this.clientId });
@@ -176,7 +187,9 @@ export class GithubAuthService {
 
       void this.pollDeviceCode(deviceCode, interval, flowLifetimeMs, generation, controller.signal)
         .catch((error) => {
-          if (!isAbortError(error)) console.warn("CanvasTTY GitHub OAuth device poll failed.", error);
+          if (controller.signal.aborted || isAbortError(error)) return;
+          this.finishDeviceFlow(generation, "failed");
+          console.warn("CanvasTTY GitHub OAuth device poll failed.", error);
         })
         .finally(() => {
           if (this.deviceFlow?.generation === generation) this.deviceFlow = null;
@@ -184,14 +197,26 @@ export class GithubAuthService {
 
       return { userCode, verificationUri, interval, expiresAt: this.now() + flowLifetimeMs };
     } catch (error) {
-      if (this.deviceFlow?.generation === generation) this.deviceFlow = null;
+      if (this.deviceFlow?.generation === generation) {
+        this.deviceFlow = null;
+        // The caller receives this error directly, so no separate outcome is kept.
+        this.deviceFlowState = "idle";
+      }
       throw error;
     }
   }
 
+  /** Stops a pending device sign-in. A completed sign-in or an existing session is left untouched. */
+  cancelDeviceFlow(): void {
+    if (!this.deviceFlow || this.deviceFlowState !== "pending") return;
+    this.abortDeviceFlow();
+    this.deviceFlowState = "cancelled";
+  }
+
   async signOut(): Promise<void> {
     this.generation += 1;
-    this.cancelDeviceFlow();
+    this.abortDeviceFlow();
+    this.deviceFlowState = "idle";
     this.tokens = null;
     this.refreshPromise = null;
     await this.enqueueStoreWrite(async () => {
@@ -199,9 +224,17 @@ export class GithubAuthService {
     });
   }
 
-  private cancelDeviceFlow(): void {
-    this.deviceFlow?.controller.abort();
+  private abortDeviceFlow(): void {
+    const flow = this.deviceFlow;
+    // Clear the flow before aborting so a fetcher that ignores its AbortSignal
+    // cannot apply a late response: every step re-checks isCurrentFlow().
     this.deviceFlow = null;
+    flow?.controller.abort();
+  }
+
+  private finishDeviceFlow(generation: number, state: GithubDeviceFlowState): void {
+    if (this.deviceFlow?.generation !== generation || this.deviceFlowState !== "pending") return;
+    this.deviceFlowState = state;
   }
 
   private isCurrentFlow(generation: number, signal: AbortSignal): boolean {
@@ -217,51 +250,82 @@ export class GithubAuthService {
   ): Promise<void> {
     const started = this.now();
     let interval = initialInterval;
+    let transientFailures = 0;
+    // A dropped connection, the request timeout, HTTP 429/5xx or an unreadable
+    // body is not the end of the flow: the person may still approve the code.
+    // Back off (RFC 8628 section 3.5) and poll again, but give up after a few
+    // failures in a row instead of polling a broken endpoint until the code expires.
+    const retryOrFail = (): boolean => {
+      transientFailures += 1;
+      if (transientFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+        this.finishDeviceFlow(generation, "failed");
+        return false;
+      }
+      interval = backedOff(interval);
+      return true;
+    };
     while (this.now() - started < lifetimeMs) {
       await this.wait(interval * 1000, signal);
       if (!this.isCurrentFlow(generation, signal)) return;
+      if (this.now() - started >= lifetimeMs) break;
 
       const body = new URLSearchParams({
         client_id: this.clientId,
         device_code: deviceCode,
         grant_type: "urn:ietf:params:oauth:grant-type:device_code"
       });
-      // A dropped connection, the 15 s request timeout or a GitHub 5xx is not
-      // the end of the flow: the person may still approve the code. Back off
-      // (RFC 8628 section 3.5) and poll again until the code expires.
-      let payload: unknown;
+      let response: Response;
+      let payload: unknown = null;
       try {
-        const response = await this.request("https://github.com/login/oauth/access_token", {
+        response = await this.request("https://github.com/login/oauth/access_token", {
           method: "POST",
           headers: oauthHeaders(),
           body: body.toString()
         }, signal);
-        if (!response.ok) {
-          interval = backedOff(interval);
-          continue;
-        }
-        payload = await response.json();
+        // OAuth errors may arrive with HTTP 400 (RFC 6749 section 5.2), so read the body either way.
+        payload = await response.json().catch(() => null);
       } catch (error) {
         if (signal.aborted) throw error;
-        interval = backedOff(interval);
-        continue;
+        if (!this.isCurrentFlow(generation, signal)) return;
+        if (retryOrFail()) continue;
+        return;
       }
-      if (!isRecord(payload)) {
-        interval = backedOff(interval);
-        continue;
+      if (!this.isCurrentFlow(generation, signal)) return;
+      const providerError = isRecord(payload) && typeof payload.error === "string" ? payload.error : null;
+      if (providerError === null && (!response.ok || !isRecord(payload))) {
+        if (isTransientStatus(response.status) || response.ok) {
+          if (retryOrFail()) continue;
+          return;
+        }
+        this.finishDeviceFlow(generation, "failed");
+        return;
       }
-      if (payload.error === "authorization_pending" || payload.error === "slow_down") {
-        if (payload.error === "slow_down") {
+      if (providerError === "authorization_pending" || providerError === "slow_down") {
+        transientFailures = 0;
+        if (providerError === "slow_down") {
           // +5 s for this and later polls; GitHub may name a longer interval.
-          const requested = typeof payload.interval === "number" && Number.isFinite(payload.interval) ? payload.interval : 0;
+          const requested = isRecord(payload) && typeof payload.interval === "number" && Number.isFinite(payload.interval)
+            ? payload.interval
+            : 0;
           interval = Math.max(interval + 5, Math.min(requested, MAX_POLL_INTERVAL_SECONDS));
         }
         continue;
       }
-      if (payload.error === "access_denied" || payload.error === "expired_token") return;
-      if (typeof payload.access_token === "string") {
+      if (providerError === "access_denied") {
+        this.finishDeviceFlow(generation, "denied");
+        return;
+      }
+      if (providerError === "expired_token") {
+        this.finishDeviceFlow(generation, "expired");
+        return;
+      }
+      if (providerError === null && isRecord(payload) && typeof payload.access_token === "string") {
         const login = await this.fetchLogin(payload.access_token, signal);
-        if (!login || !this.isCurrentFlow(generation, signal)) return;
+        if (!this.isCurrentFlow(generation, signal)) return;
+        if (!login) {
+          this.finishDeviceFlow(generation, "failed");
+          return;
+        }
         const expiresIn = typeof payload.expires_in === "number" && payload.expires_in > 0
           ? payload.expires_in
           : null;
@@ -272,11 +336,15 @@ export class GithubAuthService {
           login
         };
         this.tokens = next;
+        this.deviceFlowState = "idle";
         await this.persist(next, generation);
         return;
       }
+      // Any other provider error (device_flow_disabled, incorrect_client_credentials, ...) is final.
+      this.finishDeviceFlow(generation, "failed");
       return;
     }
+    this.finishDeviceFlow(generation, "expired");
   }
 
   private async refreshAccessToken(expected: StoredTokens, generation: number): Promise<string | null> {
@@ -433,6 +501,12 @@ function isMissingFile(error: unknown): boolean {
 }
 
 const MAX_POLL_INTERVAL_SECONDS = 60;
+/** Consecutive network, timeout, HTTP 429/5xx or unreadable answers before the sign-in is reported as failed. */
+const MAX_CONSECUTIVE_POLL_FAILURES = 5;
+
+function isTransientStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
 
 function backedOff(interval: number): number {
   return Math.min(Math.max(interval * 2, interval + 1), MAX_POLL_INTERVAL_SECONDS);

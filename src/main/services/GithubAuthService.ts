@@ -294,8 +294,14 @@ export class GithubAuthService {
       }
       if (!this.isCurrentFlow(generation, signal)) return;
       const providerError = isRecord(payload) && typeof payload.error === "string" ? payload.error : null;
+      // HTTP 429/5xx is transient whatever its body says (e.g. {"error":"temporarily_unavailable"});
+      // slow_down keeps its own handling below, which also raises the interval.
+      if (!response.ok && isTransientStatus(response.status) && providerError !== "slow_down") {
+        if (retryOrFail()) continue;
+        return;
+      }
       if (providerError === null && (!response.ok || !isRecord(payload))) {
-        if (isTransientStatus(response.status) || response.ok) {
+        if (response.ok) {
           if (retryOrFail()) continue;
           return;
         }

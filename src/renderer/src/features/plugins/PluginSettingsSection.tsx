@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   AppSettings,
   GithubAuthStatus,
+  GithubDeviceFlowState,
   GithubDeviceFlowStart,
   GithubPluginSearchResult,
   InstalledPlugin,
@@ -181,6 +182,7 @@ export function PluginSettingsSection({
   const [githubCode, setGithubCode] = useState<GithubDeviceFlowStart | null>(null);
   const [githubBusy, setGithubBusy] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
+  const githubFlowNotice = githubFlowNoticeText(locale, githubStatus?.deviceFlowState);
   const [showcasePreviews, setShowcasePreviews] = useState<Record<string, PluginInstallPreview>>({});
   const [showcaseManifests, setShowcaseManifests] = useState<Record<string, PluginManifest>>({});
   const [selectedShowcase, setSelectedShowcase] = useState<string | null>(null);
@@ -197,28 +199,27 @@ export function PluginSettingsSection({
     // The main process owns the device flow; this only reads its status, so it pauses while Settings is
     // closed and picks up (sign-in finished or code expired) as soon as Settings opens again.
     const stop = pollWhileOpen(open, githubCode.interval * 1000, async () => {
-      if (Date.now() >= githubCode.expiresAt) {
-        if (!cancelled) {
-          setGithubCode(null);
-          setError(t(locale, "githubAuthExpired"));
-        }
-        return STOP_POLLING;
-      }
       // A transient status read failure is retried on the next tick.
       const status = await window.canvasTTY.githubAuth.status();
       if (cancelled) return STOP_POLLING;
-      setGithubStatus(status);
-      if (status.authorized) {
+      if (status.authorized || isGithubFlowOutcome(status.deviceFlowState)) {
+        setGithubStatus(status);
         setGithubCode(null);
         return STOP_POLLING;
       }
+      if (Date.now() >= githubCode.expiresAt) {
+        setGithubStatus({ ...status, deviceFlowState: "expired" });
+        setGithubCode(null);
+        return STOP_POLLING;
+      }
+      setGithubStatus(status);
       return undefined;
     }, { immediate: false });
     return () => {
       cancelled = true;
       stop();
     };
-  }, [githubCode, locale, open]);
+  }, [githubCode, open]);
 
   const inspect = async (): Promise<void> => {
     if (busy || sourceUrl.trim().length === 0) return;
@@ -365,10 +366,22 @@ export function PluginSettingsSection({
     if (githubBusy) return;
     setGithubBusy(true);
     setError(null);
+    let flow: GithubDeviceFlowStart;
     try {
-      const flow = await window.canvasTTY.githubAuth.start();
+      flow = await window.canvasTTY.githubAuth.start();
+    } catch (reason) {
+      // The IPC error is main-process text ("Error invoking remote method …", HTTP codes): it goes to the log, and the
+      // GitHub section shows its own localized line (not configured, or sign-in failed).
+      console.warn("GitHub sign-in could not start.", reason);
+      const status = await window.canvasTTY.githubAuth.status().catch(() => null);
+      setGithubStatus(status && !status.configured ? status
+        : { configured: true, authorized: false, login: null, tokenExpiresAt: null, ...status, deviceFlowState: "failed" });
+      setGithubBusy(false);
+      return;
+    }
+    try {
       setGithubCode(flow);
-      setGithubStatus({ configured: true, authorized: false, login: null, tokenExpiresAt: null });
+      setGithubStatus({ configured: true, authorized: false, login: null, tokenExpiresAt: null, deviceFlowState: "pending" });
       await openGithubAuthorization(flow, target);
     } catch (reason) {
       setError(errorMessage(reason, t(locale, "githubAuthNotConfigured")));
@@ -387,9 +400,28 @@ export function PluginSettingsSection({
         configured: current?.configured ?? false,
         authorized: false,
         login: null,
-        tokenExpiresAt: null
+        tokenExpiresAt: null,
+        deviceFlowState: "idle"
       }));
       setGithubCode(null);
+    } finally {
+      setGithubBusy(false);
+    }
+  };
+
+  const runGithubCancel = async (): Promise<void> => {
+    if (githubBusy) return;
+    setGithubBusy(true);
+    setError(null);
+    try {
+      await window.canvasTTY.githubAuth.cancel();
+      // The poll may have finished first; the status says which outcome won.
+      setGithubStatus(await window.canvasTTY.githubAuth.status());
+      setGithubCode(null);
+      setCodeCopied(false);
+    } catch (reason) {
+      console.warn("GitHub sign-in could not be cancelled.", reason);
+      setError(githubSigninText(locale, "cancelFailed"));
     } finally {
       setGithubBusy(false);
     }
@@ -833,6 +865,12 @@ export function PluginSettingsSection({
             </span>
           )}
         </h3>
+        {!githubAuthorized && !githubCode && githubFlowNotice && (
+          // A cancelled sign-in is the person's own choice; a denied, expired or failed one is an error.
+          githubStatus?.deviceFlowState === "cancelled"
+            ? <p className="plugin-github-unavailable" role="status">{githubFlowNotice}</p>
+            : <p className="plugin-settings__error" role="alert">{githubFlowNotice}</p>
+        )}
         {!githubAuthorized && !githubCode && <p className="plugin-github-optional">{t(locale, "githubAuthOptional")}</p>}
         {githubStatus?.authorized ? (
           <div>
@@ -882,6 +920,9 @@ export function PluginSettingsSection({
                 {t(locale, "githubAuthOpenExternal")}
               </button>
             </div>
+            <button type="button" className="plugin-github-signout" disabled={githubBusy} onClick={() => void runGithubCancel()}>
+              {githubSigninText(locale, "cancel")}
+            </button>
           </div>
         ) : githubStatus && !githubConfigured ? (
           <p className="plugin-github-unavailable" role="status">{t(locale, "githubAuthNotConfigured")}</p>
@@ -1153,4 +1194,40 @@ function errorMessage(error: unknown, fallback: string): string {
   return (error instanceof Error ? error.message : fallback)
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .slice(0, 320);
+}
+
+function isGithubFlowOutcome(state: GithubDeviceFlowState | undefined): boolean {
+  return state === "denied" || state === "expired" || state === "failed" || state === "cancelled";
+}
+
+// The sign-in outcome lines live here, in the lazily loaded Settings chunk, not in the startup string table.
+const GITHUB_SIGNIN_TEXT = {
+  ru: {
+    denied: "Запрос на вход в GitHub отклонён. Можно попробовать снова.",
+    failed: "Не удалось завершить вход в GitHub. Можно попробовать снова.",
+    cancelled: "Вход в GitHub отменён.",
+    cancel: "Отменить вход",
+    cancelFailed: "Не удалось отменить вход в GitHub. Подробности записаны в журнал."
+  },
+  en: {
+    denied: "The GitHub sign-in request was denied. You can try again.",
+    failed: "GitHub sign-in could not be completed. You can try again.",
+    cancelled: "GitHub sign-in was cancelled.",
+    cancel: "Cancel sign-in",
+    cancelFailed: "GitHub sign-in could not be cancelled. Details are in the log."
+  }
+} satisfies Record<LocaleId, Record<string, string>>;
+
+function githubSigninText(locale: LocaleId, key: keyof typeof GITHUB_SIGNIN_TEXT.en): string {
+  return GITHUB_SIGNIN_TEXT[locale === "ru" ? "ru" : "en"][key];
+}
+
+function githubFlowNoticeText(locale: LocaleId, state: GithubDeviceFlowState | undefined): string | null {
+  switch (state) {
+    case "denied": return githubSigninText(locale, "denied");
+    case "expired": return t(locale, "githubAuthExpired");
+    case "failed": return githubSigninText(locale, "failed");
+    case "cancelled": return githubSigninText(locale, "cancelled");
+    default: return null;
+  }
 }

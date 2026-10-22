@@ -123,6 +123,15 @@ export function handleMacNativeSelectAll(event: KeyboardEvent, isMacOS: boolean)
   return true;
 }
 
+/**
+ * An action shortcut as the hints panel and the shortcut reference show it: arrows as glyphs, Meta as Command or
+ * Super. Key by key, so the Comma key is not looked for inside "Command".
+ */
+export function displayShortcutBinding(binding: string, isMacOS: boolean): string {
+  const names: Record<string, string> = { Meta: isMacOS ? "Command" : "Super", Comma: ",", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→" };
+  return binding.split("+").map((key) => names[key] ?? key).join("+");
+}
+
 export function displayCanvasNavigationBinding(binding: string, isMacOS: boolean): string {
   if (!isMacOS) return binding;
   return binding.split("+").map((part) => {

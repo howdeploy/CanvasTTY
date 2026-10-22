@@ -7,6 +7,7 @@ import type {
 } from "../../shared/contracts.ts";
 import { cardActionMatches } from "../../shared/pluginCardActions.ts";
 import type { PluginSessionSummary } from "./PluginSessions.ts";
+import { normalizeCardActionInput, normalizeCardReview } from "./PluginChangeReviews.ts";
 
 /** A trusted plugin service that declared `cardActions` (PluginManager.cardActionProviders). */
 export interface CardActionProvider {
@@ -22,6 +23,8 @@ export interface PluginCardsDependencies {
   trustedPlugins(): ReadonlySet<string>;
   call(pluginId: string, serviceId: string, method: "canvastty.cards.invoke", params: unknown, timeoutMs: number): Promise<unknown>;
   session(sessionId: string): PluginSessionSummary | null;
+  /** A rollback point restore is writing files in (or above, or below) this folder. */
+  restoring?(folder: string): boolean;
   redact(text: string): string;
   /** Pushes the new decorations to the window. */
   changed(decorations: PluginCardDecorations): void;
@@ -30,6 +33,8 @@ export interface PluginCardsDependencies {
 
 /** What a card action service receives (`canvastty.cards.invoke`). */
 export interface CardActionInvocation {
+  /** Only from the change review dialog (normalizeCardActionInput); never the session's identity. */
+  input?: Record<string, unknown>;
   actionId: string;
   sessionId: string;
   session: PluginSessionSummary;
@@ -115,18 +120,21 @@ export class PluginCards {
     }
     return {
       badges,
-      actions: this.providers().flatMap((provider) => provider.actions.map((action) => ({
+      // A review-only action (`menu: false`) is never listed: from the menu it would run without its review input.
+      actions: this.providers().flatMap((provider) => provider.actions.filter((action) => action.menu !== false).map((action) => ({
         pluginId: provider.pluginId,
         pluginName: provider.pluginName,
         actionId: action.id,
         title: action.title,
+        ...(action["title.ru"] ? { "title.ru": action["title.ru"] } : {}),
+        ...(action["title.en"] ? { "title.en": action["title.en"] } : {}),
         ...(action.when ? { when: structuredClone(action.when) } : {})
       })))
     };
   }
 
   /** The person chose an action on a card. Errors and timeouts come back as an error toast, nothing else. */
-  async invoke(pluginId: string, actionId: string, sessionId: string): Promise<PluginCardActionResult> {
+  async invoke(pluginId: string, actionId: string, sessionId: string, input?: unknown): Promise<PluginCardActionResult> {
     // Action ids are unique within a plugin, whichever of its services declares them.
     const provider = this.providers()
       .find((candidate) => candidate.pluginId === pluginId && candidate.actions.some((action) => action.id === actionId));
@@ -135,12 +143,19 @@ export class PluginCards {
     const session = this.deps.session(sessionId);
     if (!session) throw new Error("No card has that session id.");
     if (!cardActionMatches(action.when, session)) throw new Error("That action does not apply to this card.");
+    // A card action may change the card's files (apply a worktree, discard changes): never while a restore writes them.
+    if (this.deps.restoring && [session.cwd, session.workingDirectory].some((folder) => this.deps.restoring!(folder))) {
+      throw new Error("Workspace rollback point restoration is in progress. Try the action again after it finishes.");
+    }
+    const normalizedInput = normalizeCardActionInput(input);
+    if (action.menu === false && normalizedInput === undefined) throw new Error("That action runs only from a change review.");
     const timeoutMs = this.deps.timeoutMs ?? CARD_ACTION_TIMEOUT_MS;
     const params: CardActionInvocation = { actionId, sessionId, session };
     let timer: NodeJS.Timeout | undefined;
     try {
       const answer = await Promise.race([
-        this.deps.call(pluginId, provider.serviceId, "canvastty.cards.invoke", params, timeoutMs),
+        this.deps.call(pluginId, provider.serviceId, "canvastty.cards.invoke",
+          normalizedInput ? { ...params, input: normalizedInput } : params, timeoutMs),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error("The plugin did not answer in time.")), timeoutMs);
         })
@@ -148,7 +163,9 @@ export class PluginCards {
       const record = answer && typeof answer === "object" && !Array.isArray(answer) ? answer as Record<string, unknown> : {};
       const tone = TONES.has(record.tone as PluginCardTone) ? record.tone as PluginCardTone : "neutral";
       const message = typeof record.message === "string" && record.message.trim() ? this.message(record.message) : undefined;
-      return { tone, ...(message ? { message } : {}) };
+      const actions = new Set(this.providers().filter(row => row.pluginId === pluginId).flatMap(row => row.actions.map(action => action.id)));
+      const review = record.review === undefined ? undefined : normalizeCardReview(record.review, this.deps.redact, actions);
+      return { tone, ...(message ? { message } : {}), ...(review ? { review } : {}) };
     } catch (error) {
       return { tone: "error", message: this.message(`${provider.pluginName}: ${error instanceof Error ? error.message : "the action failed."}`) };
     } finally {

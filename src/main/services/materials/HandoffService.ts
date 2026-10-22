@@ -63,6 +63,8 @@ export interface HandoffImageOps {
 }
 
 interface HandoffTiming {
+  /** How long a paste waits for the agent's CLI to take input (OpenCode drops keys until its input field is up). */
+  readyMs: number;
   attachMs: number;
   pasteMs: number;
   pollMs: number;
@@ -114,7 +116,7 @@ type Checked = { ok: true; plan: HandoffPlan } | { ok: false; reason: HandoffBlo
 
 type Reserved = { ok: true; plan: HandoffPlan; screen: SessionScreen | null } | { ok: false; reason: HandoffBlock | MaterialFailure };
 
-const DEFAULT_TIMING: HandoffTiming = { attachMs: 8_000, pasteMs: 6_000, pollMs: 120 };
+const DEFAULT_TIMING: HandoffTiming = { readyMs: 15_000, attachMs: 8_000, pasteMs: 6_000, pollMs: 120 };
 
 export class HandoffService {
   private readonly options: HandoffServiceOptions;
@@ -509,7 +511,7 @@ export class HandoffService {
     const paste = async (data: string): Promise<string | null> => {
       const error = this.deliveryError(plan, screen);
       if (error) return error;
-      const written = await this.options.terminals.deliverInput(id, `${PASTE_START}${data}${PASTE_END}`, 0);
+      const written = await this.options.terminals.deliverInput(id, `${PASTE_START}${data}${PASTE_END}`, this.timing.readyMs);
       return written.delivered ? null : written.reason;
     };
     if (!screen) {
@@ -554,7 +556,7 @@ export class HandoffService {
       ? failed(error)
       : { state: "pasted", note: "enter-failed", sentAt: this.now(), imagesAttached: attached, error };
     this.submitting.set(plan.id, { sessionId: id, turnStartedAt: null });
-    const submitted = await this.options.terminals.deliverInput(id, "\r", 0);
+    const submitted = await this.options.terminals.deliverInput(id, "\r", this.timing.readyMs);
     return submitted.delivered
       ? { state: "submitted", sentAt: this.now(), imagesAttached: attached }
       : { state: "pasted", note: "enter-failed", sentAt: this.now(), imagesAttached: attached, error: submitted.reason };

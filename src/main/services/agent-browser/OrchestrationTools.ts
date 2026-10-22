@@ -6,6 +6,7 @@ import { PromptNotDeliveredError, type AgentControlService, type SpawnAgentReque
 import { LaunchRefusal } from "../launchRefusal.ts";
 import type { PluginAgentTools } from "../PluginAgentTools.ts";
 import {
+  CLIENT_SAFE_AGENT_WAIT_SECONDS,
   DEFAULT_AGENT_WAIT_SECONDS,
   MAX_AGENT_WAIT_SECONDS,
   ORCHESTRATION_TOOL_DEFINITIONS,
@@ -22,6 +23,13 @@ import type { McpToolDefinition } from "../../../agent-browser/orchestration-cat
  * a foreign session id is a protocol error, never a filtered result, so an
  * orchestrator cannot probe sessions it does not own.
  */
+/**
+ * How long spawn_agent (its checks, the launch and the CLI's readiness together) and send_to_agent wait for a prompt
+ * to reach the agent: under the about 60 s after which most MCP clients end a tool call, so the orchestrator gets
+ * the reason (and the session id) instead of a client timeout.
+ */
+export const AGENT_TOOL_DELIVERY_MS = 45_000;
+
 export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
   private readonly control: AgentControlService;
   private readonly plugins: Pick<PluginAgentTools, "list" | "call"> | null;
@@ -65,9 +73,9 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
         case "send_to_agent":
           return await this.send(sessionId, request.arguments, signal);
         case "observe_agent":
-          return this.observe(sessionId, request.arguments);
+          return await this.observe(sessionId, request.arguments);
         case "get_agent_result":
-          return this.result(sessionId, request.arguments);
+          return await this.result(sessionId, request.arguments);
         case "cancel_agent":
           return this.cancel(sessionId, request.arguments);
         case "list_agents":
@@ -118,12 +126,15 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     }
     this.requireOwned(orchestratorId, target);
     const seconds = typeof args.timeoutSeconds === "number" ? args.timeoutSeconds : DEFAULT_AGENT_WAIT_SECONDS;
+    // Shorter than the orchestrator's MCP client lets a tool call run, so it gets "timeout" and progress, not an error.
+    const limit = this.control.status(orchestratorId).provider === "claude" ? MAX_AGENT_WAIT_SECONDS : CLIENT_SAFE_AGENT_WAIT_SECONDS;
     try {
       const result = await this.control.waitFor(target, {
-        timeoutMs: Math.min(MAX_AGENT_WAIT_SECONDS, Math.max(1, seconds)) * 1_000,
+        timeoutMs: Math.min(limit, Math.max(1, seconds)) * 1_000,
         ...(signal ? { signal } : {})
       });
-      return { ...result };
+      return { ...result, ...(result.reason === "timeout"
+        ? { message: "Still running. Read output for its progress and call wait_for_agent again." } : {}) };
     } catch (error) {
       if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw canceledError();
       throw error;
@@ -131,6 +142,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
   }
 
   private async spawn(orchestratorId: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + AGENT_TOOL_DELIVERY_MS;
     if (!(AGENT_PROVIDERS as readonly unknown[]).includes(args.provider)) {
       throw orchestrationBridgeError("INVALID_REQUEST", unknownProviderMessage(args.provider), false);
     }
@@ -146,17 +158,27 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       if (unknown) throw orchestrationBridgeError("INVALID_REQUEST", unknown, false);
     }
     if (signal?.aborted) throw canceledError();
+    // A plugin the spawn does not name keeps this session's own options (never silently the CLI's default model).
+    const requested = args.launchOptions as SpawnAgentRequest["launchOptions"];
+    let inheritance: ReturnType<AgentControlService["subagentLaunchOptions"]>;
+    try {
+      inheritance = this.control.subagentLaunchOptions(orchestratorId, provider, requested, args.model as string | undefined);
+    } catch (error) {
+      throw orchestrationBridgeError("INVALID_REQUEST", error instanceof Error ? error.message : String(error), false);
+    }
+    const launchOptions = inheritance.launchOptions;
     const created = await this.control.spawn({
       parentSessionId: orchestratorId,
       provider: args.provider as never,
       cwd: args.cwd as string,
       ...(args.title !== undefined ? { title: args.title as string } : {}),
       ...(args.prompt !== undefined ? { initialPrompt: args.prompt as string } : {}),
-      ...(args.launchOptions !== undefined ? { launchOptions: args.launchOptions as SpawnAgentRequest["launchOptions"] } : {}),
+      ...(launchOptions !== undefined ? { launchOptions } : {}),
       ...(args.model !== undefined ? { model: args.model as string } : {}),
       ...(args.effort !== undefined ? { effort: args.effort as SpawnAgentRequest["effort"] } : {}),
+      ...(args.isolate === "worktree" ? { isolate: "worktree" as const } : {}),
       profile: profile.profile
-    }, signal).catch((error: unknown) => {
+    }, signal, Math.max(0, deadline - Date.now())).catch((error: unknown) => {
       if (signal?.aborted) throw canceledError();
       throw error;
     });
@@ -177,7 +199,11 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       profile: created.profile,
       ...(profile.inherited ? { profileInherited: true } : {}),
       ...(created.model !== undefined ? { model: created.model } : {}),
-      ...(created.effort !== undefined ? { effort: created.effort } : {})
+      ...(created.effort !== undefined ? { effort: created.effort } : {}),
+      // Which CLI serves it, the model it was asked for (null: its launch options or the CLI's own default decide),
+      // and where each plugin's launch options came from.
+      servedBy: { provider: created.provider, model: created.model ?? null, launchOptions: inheritance.sources },
+      ...(args.isolate === "worktree" ? { isolationRequested: "worktree" } : {})
     };
   }
 
@@ -188,7 +214,8 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
         args.sessionId as string,
         args.prompt as string,
         args.submit === undefined ? true : Boolean(args.submit),
-        signal
+        signal,
+        AGENT_TOOL_DELIVERY_MS
       );
     } catch (error) {
       if (signal?.aborted) throw canceledError();
@@ -198,9 +225,9 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     return { sessionId: args.sessionId as string, sent: true };
   }
 
-  private observe(orchestratorId: string, args: Record<string, unknown>): Record<string, unknown> {
+  private async observe(orchestratorId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.requireOwned(orchestratorId, args.sessionId as string);
-    const observation = this.control.observe(
+    const observation = await this.control.observe(
       args.sessionId as string,
       args.maxChars as number | undefined
     );
@@ -213,9 +240,9 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     };
   }
 
-  private result(orchestratorId: string, args: Record<string, unknown>): Record<string, unknown> {
+  private async result(orchestratorId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.requireOwned(orchestratorId, args.sessionId as string);
-    const result = this.control.result(args.sessionId as string);
+    const result = await this.control.result(args.sessionId as string);
     return {
       sessionId: result.sessionId,
       state: result.state,
@@ -223,7 +250,8 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       exitCode: result.exitCode,
       output: result.output,
       ...(result.exitLines ? { exitLines: result.exitLines } : {}),
-      ...(result.answer ? { answer: result.answer } : {})
+      ...(result.answer ? { answer: result.answer } : {}),
+      ...(result.answerUnavailable ? { answerUnavailable: result.answerUnavailable } : {})
     };
   }
 

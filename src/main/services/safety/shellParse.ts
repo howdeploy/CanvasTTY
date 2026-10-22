@@ -23,6 +23,8 @@ export interface Word {
   glob: boolean;
   /** Starts with an unquoted `~`. */
   tilde: boolean;
+  /** An unquoted `{` (a brace expansion such as `a.{bin,json}` may follow). */
+  brace?: boolean;
 }
 
 export interface Redirect { op: string; target: Word | null; fdDup: boolean }
@@ -223,6 +225,7 @@ export function lexShell(input: string): Lexed {
     const w = current();
     if (!w.quoted && w.text === '' && c === '~') w.tilde = true;
     if (c === '*' || c === '?' || c === '[') w.glob = true;
+    if (c === '{') w.brace = true;
     // cmd.exe variables: %NAME%.
     if (c === '%') {
       const m = /^%([A-Za-z_][A-Za-z0-9_()]*)%/u.exec(text.slice(i));

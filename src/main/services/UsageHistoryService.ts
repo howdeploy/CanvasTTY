@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { copyFile, lstat, open, rename, unlink, type FileHandle } from "node:fs/promises";
+import { lstat, open, rename, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { LimitProviderId, LimitsSnapshot } from "../../shared/contracts.ts";
@@ -114,19 +114,21 @@ export class UsageHistoryService {
   async load(): Promise<void> {
     const now = this.now();
     this.startedAt = now;
-    let raw: string;
+    let bytes: Buffer;
     let handle: FileHandle | undefined;
     try {
-      // Windows lacks O_NOFOLLOW; check the path before and after opening too.
-      if ((await lstat(this.filePath)).isSymbolicLink()) throw Object.assign(new Error("symlink"), { code: "ELOOP" });
+      // Windows lacks O_NOFOLLOW; check the path before and after opening too. File ids are compared as
+      // bigints: 64-bit NTFS ids lose precision as numbers.
+      const checked = await lstat(this.filePath, { bigint: true });
+      if (checked.isSymbolicLink()) throw Object.assign(new Error("symlink"), { code: "ELOOP" });
       handle = await open(this.filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      const opened = await handle.stat();
-      const current = await lstat(this.filePath);
-      if (current.isSymbolicLink() || opened.dev !== current.dev || opened.ino !== current.ino) {
+      const opened = await handle.stat({ bigint: true });
+      const current = await lstat(this.filePath, { bigint: true });
+      if (current.isSymbolicLink() || [checked, current].some((path) => path.dev !== opened.dev || path.ino !== opened.ino)) {
         throw Object.assign(new Error("history path changed"), { code: "ELOOP" });
       }
       if (!opened.isFile()) throw Object.assign(new Error("not a file"), { code: "ENOTFILE" });
-      raw = await handle.readFile("utf8");
+      bytes = await handle.readFile();
     } catch (error) {
       if (errorCode(error) === "ENOENT") return;
       this.block(`Usage history file could not be read (${errorCode(error)}); it was left untouched and new history is not being saved.`);
@@ -137,7 +139,7 @@ export class UsageHistoryService {
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(bytes.toString("utf8"));
     } catch {
       await this.quarantine("invalid JSON", now);
       return;
@@ -160,7 +162,8 @@ export class UsageHistoryService {
       // The cleaned history will replace the file, so the original is copied aside first.
       const name = preservedName(now);
       try {
-        await copyFile(this.filePath, join(this.directory, name), constants.COPYFILE_EXCL);
+        // The bytes read through the checked handle, not a second read by path that a swap could redirect.
+        await writeFile(join(this.directory, name), bytes, { flag: "wx", mode: 0o600 });
       } catch (error) {
         this.block(`Usage history contains ${restored.invalid} invalid records and could not be preserved (${errorCode(error)}); it was left untouched and new history is not being saved.`);
         return;

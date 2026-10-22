@@ -3,13 +3,15 @@ import fs, { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { syncBuiltinESMExports } from "node:module";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 import { FileAccessService } from "../src/main/services/FileAccessService.ts";
 
 async function makeTempDir(prefix) {
   return mkdtemp(join(tmpdir(), prefix));
 }
+
+const fsPromises = createRequire(import.meta.url)("node:fs/promises");
 
 function createService({ cwd, limits } = {}) {
   return new FileAccessService({
@@ -133,6 +135,35 @@ test("rejects symlinks whose real target escapes the root", async () => {
       reason: "not-permitted"
     });
   } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("rejects a read whose descriptor is not the file the contained path names", async (t) => {
+  // Simulates an intermediate directory swapped between realpath and open: the open lands on a file
+  // outside the root while the path re-resolved afterwards is still inside it.
+  const root = await makeTempDir("canvastty-files-swap-root-");
+  const outside = await makeTempDir("canvastty-files-swap-outside-");
+  const realOpen = fsPromises.open;
+  try {
+    const service = createService({ cwd: root });
+    const { rootId } = service.registerSessionRoot("session-1");
+    await writeFile(join(root, "notes.txt"), "inside");
+    await writeFile(join(outside, "secret.txt"), "top secret");
+    const redirected = join(outside, "secret.txt");
+    t.mock.method(fsPromises, "open", (path, ...rest) =>
+      String(path).endsWith("notes.txt") ? realOpen(redirected, ...rest) : realOpen(path, ...rest)
+    );
+    syncBuiltinESMExports();
+
+    assert.deepEqual(await service.read(rootId, "notes.txt"), {
+      kind: "unsupported",
+      reason: "not-permitted"
+    });
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
   }

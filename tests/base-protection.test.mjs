@@ -80,7 +80,7 @@ test("ordinary work inside the working folder has no deny", () => {
   assert.equal(rule(edit("src/new.ts")), null);
 });
 
-test("hook tool calls: Claude, Codex, Qwen and OpenCode names; only shells and file writes are checked", () => {
+test("hook tool calls: Claude, Codex, Qwen and OpenCode names; shells and file writes are checked, reads only for private data", () => {
   const cases = [
     ["Write", { file_path: join(home, "Downloads", "hello.txt"), content: "hello" }, "write-outside"],
     ["Edit", { file_path: "/etc/hosts", old_string: "a", new_string: "b" }, "write-outside"],
@@ -99,7 +99,9 @@ test("hook tool calls: Claude, Codex, Qwen and OpenCode names; only shells and f
     assert.equal(check(tool, input), null, `${tool} ${JSON.stringify(input)}`);
   }
   assert.deepEqual(patchPaths("*** Begin Patch\n*** Add File: a.txt\n*** Delete File: b.txt\n*** End Patch"), ["a.txt", "b.txt"]);
-  assert.deepEqual(actionFromHook("Grep", { pattern: "x" }).kind, null);
+  assert.deepEqual(actionFromHook("Grep", { pattern: "x" }), { kind: "read", command: null, commandCwd: null, paths: [], searched: [] });
+  assert.deepEqual(actionFromHook("Read", { file_path: "/etc/passwd" }).paths, ["/etc/passwd"]);
+  assert.deepEqual(actionFromHook("WebFetch", { url: "https://example.com" }).kind, null);
 });
 
 test("each deny tells the model what to do instead; a write only to the temporary folder suggests a folder in the project", () => {

@@ -113,6 +113,10 @@ test("manifests: tools need tools:agents, card actions need cards:decorate, sche
     ...exampleManifest,
     services: [{ ...exampleManifest.services[0], cardActions: [{ id: "x", title: "X", when: { environmentKinds: ["Bad Kind"] } }] }]
   }), /environmentKinds/u);
+  const withActions=count=>({...exampleManifest,services:[{...exampleManifest.services[0],
+    cardActions:Array.from({length:count},(_,index)=>({id:`action-${index}`,title:`Action ${index}`}))}]});
+  assert.equal(validatePluginManifest(withActions(16)).services[0].cardActions.length,16);
+  assert.throws(()=>validatePluginManifest(withActions(17)),/between 1 and 16/u);
 });
 
 test("tool listing follows the session's role and agent; names are <pluginId>__<tool>", () => {

@@ -1,13 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import type { ProviderId, SessionIsolation } from "../../../shared/contracts.ts";
 import { autoKind, PROFILE_RANK, type LaunchProfile } from "../../../shared/autoMode.ts";
 import { LaunchRefusal } from "../launchRefusal.ts";
-import { isolationPaths } from "./isolationPaths.ts";
+import { isolationPaths, type PlacedProject } from "./isolationPaths.ts";
+import { isPluginDataPath, worktreeGitAccess } from "./worktreeGitAccess.ts";
+import { validateAccountHome } from "./accountHomeIsolation.ts";
 import { seatbeltProfile } from "./seatbelt.ts";
-import { bubblewrapArguments, projectHooks } from "./bubblewrap.ts";
+import { bubblewrapArguments, projectHooks, type PathKind } from "./bubblewrap.ts";
 import { LinuxHostPaths } from "./linuxHostPaths.ts";
 
 export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
@@ -20,6 +22,8 @@ export const BUBBLEWRAP_USERNS_DOCS = "docs/installing-and-security.md#linux-whe
 /** A failed bubblewrap check is repeated after this long, so allowing it takes effect without a restart. */
 const BUBBLEWRAP_PROBE_RETRY_MS = 60_000;
 export const ISOLATION_NOTE = "CanvasTTY agent isolation: files can be written only inside the project folder, $TMPDIR and this CLI's own folders; SSH/cloud keys, other agents' credentials and CanvasTTY's tokens cannot be read; other processes, apps and daemons are out of reach. \"Operation not permitted\" outside that is this rule: do the work inside the project, or tell the person what you need.";
+/** Added to ISOLATION_NOTE for an agent in a validated plugin worktree (its environment only; nothing on the card). */
+export const WORKTREE_GIT_NOTE = "A plugin worktree's Git metadata stays read-only under agent isolation to protect the shared repository and sibling worktrees. You can edit project files; git add and git commit are unavailable here. The host environment collects your file edits into a review for the user to accept.";
 
 export interface AgentIsolationOptions {
   /** CanvasTTY's userData folder (its private data is never readable inside the layer). */
@@ -70,11 +74,19 @@ export interface IsolationLaunch {
   sessionId: string;
   provider: ProviderId;
   cwd: string;
+  /** The task's original project root (the root agent's folder), for validating a linked worktree in plugin data. */
+  taskProjectRoot?: string;
   command: string;
   args: readonly string[];
   env: Record<string, string>;
   /** Folders under CanvasTTY's private data this launch was handed (its control grant, its account home). */
   grantedPrivate?: readonly string[];
+  /** The CLI home a launch contributor selected inside its plugin data (LaunchPipeline); checked again here. */
+  accountHome?: string;
+  /** CanvasTTY's own gateway sockets for this launch (gatewaySocketAddresses), never read from `env`. */
+  gatewaySockets?: readonly string[];
+  /** Folders CanvasTTY itself placed this launch in (an environment's worktree, the person's chosen folder). */
+  placedProjects?: readonly PlacedProject[];
   /** The launch profile: in plan the project is not writable. */
   profile?: LaunchProfile;
 }
@@ -183,8 +195,19 @@ export class AgentIsolation {
       chmodSync(folder, 0o700);
       const temp = join(folder, "tmp");
       mkdirSync(temp, { mode: 0o700 });
+      const requestedCwdInPluginData = isPluginDataPath(launch.cwd, this.options.userDataPath);
       const cwd = realpathSync(launch.cwd);
+      // A project in plugin data must be a linked worktree the host validates against the task's own repository, unless
+      // the person chose that folder (or one above it) for the card the launch descends from.
+      const trustedWorktree = worktreeGitAccess(cwd, launch.taskProjectRoot ?? cwd, this.options.userDataPath);
+      const personChose = (launch.placedProjects ?? []).some((placed) => placed.pluginId === undefined && insideReal(cwd, placed.folder));
+      const unverifiedWorktree = !personChose && (requestedCwdInPluginData || isPluginDataPath(cwd, this.options.userDataPath)) && !trustedWorktree;
+      const accountHome = launch.accountHome === undefined
+        ? undefined
+        : validateAccountHome(this.options.userDataPath, launch.provider, launch.accountHome, launch.env);
+      const granted = [...(launch.grantedPrivate ?? []), ...(accountHome ? [accountHome] : [])];
       const paths = isolationPaths({
+        ...(trustedWorktree ? { worktreeGitAccess: trustedWorktree } : {}),
         provider: launch.provider,
         cwd,
         sessionTemp: temp,
@@ -192,14 +215,27 @@ export class AgentIsolation {
         hostEnvironment: this.hostEnvironment,
         userDataPath: this.options.userDataPath,
         sessionId: launch.sessionId,
-        ...(launch.grantedPrivate ? { grantedPrivate: launch.grantedPrivate } : {}),
+        ...(granted.length > 0 ? { grantedPrivate: granted } : {}),
+        ...(launch.gatewaySockets ? { gatewaySockets: launch.gatewaySockets } : {}),
+        ...(launch.placedProjects ? { placedProjects: launch.placedProjects } : {}),
         ...(launch.profile === "plan" ? { readOnlyProject: true } : {})
       });
+      // isolationPaths refused a project in plugin data that CanvasTTY did not place; one it placed must also be a linked
+      // worktree validated against the task's own repository.
+      if (unverifiedWorktree) {
+        throw new LaunchRefusal("The plugin environment worktree could not be verified against the task's original Git repository. The agent was not started.");
+      }
       // `git init` and `git clone` copy git's template, sample hooks included: an empty one writes no hooks.
       const gitTemplate = join(folder, "git-template");
       mkdirSync(gitTemplate, { mode: 0o500 });
       // An agent that meets "Operation not permitted" can read why here, instead of trying other ways around it.
-      const env = { ...launch.env, TMPDIR: `${temp}/`, TMP: temp, TEMP: temp, GIT_TEMPLATE_DIR: gitTemplate, [ISOLATION_ENV]: ISOLATION_NOTE };
+      const isolationNote = trustedWorktree ? `${ISOLATION_NOTE} ${WORKTREE_GIT_NOTE}` : ISOLATION_NOTE;
+      const env: Record<string, string> = { ...launch.env, TMPDIR: `${temp}/`, TMP: temp, TEMP: temp, GIT_TEMPLATE_DIR: gitTemplate, [ISOLATION_ENV]: isolationNote };
+      // Claude Code ignores TMPDIR for its Bash tool and editor files: `${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>`, which
+      // all of the person's Claude sessions share and the layer keeps read-only. Its own folder is the launch's temp.
+      if (launch.provider === "claude") env.CLAUDE_CODE_TMPDIR = temp;
+      // Read-only Git metadata: `git status` must not try to refresh the index (an optional lock it cannot take).
+      if (trustedWorktree) env.GIT_OPTIONAL_LOCKS = "0";
       if (available.layer === "seatbelt") {
         const profilePath = join(folder, "profile.sb");
         writeFileSync(profilePath, seatbeltProfile(paths), { mode: 0o600, flag: "wx" });
@@ -208,8 +244,8 @@ export class AgentIsolation {
       // bubblewrap mounts only what exists: the CLI's own missing folders are created and a missing protected file
       // gets a placeholder first (LinuxHostPaths), both undone by cleanup().
       releaseHostPaths = this.linuxHostPaths.prepare(paths);
-      const kind = (path: string): "file" | "directory" | null => {
-        try { const stat = statSync(path); return stat.isDirectory() ? "directory" : stat.isFile() ? "file" : null; } catch { return null; }
+      const kind = (path: string): PathKind => {
+        try { const stat = statSync(path); return stat.isDirectory() ? "directory" : stat.isFile() ? "file" : stat.isSocket() ? "socket" : null; } catch { return null; }
       };
       const args = bubblewrapArguments(paths, { command: launch.command, args: launch.args, cwd, ...(launch.env.XDG_RUNTIME_DIR ? { runtimeDir: launch.env.XDG_RUNTIME_DIR } : {}) }, kind);
       const hooks = projectHooks(cwd);
@@ -285,8 +321,32 @@ function findOnPath(name: string, exists: (path: string) => boolean): string | n
   return null;
 }
 
-/** The folder of a session's control grant, from the launch environment (it is readable inside the layer). */
+/**
+ * The Unix socket addresses in environments CanvasTTY's own gateways prepared for a launch (browser, lifecycle,
+ * orchestration). Pass only those: the launch's full environment also holds the person's variables and plugins'.
+ */
+export function gatewaySocketAddresses(...environments: ReadonlyArray<Readonly<Record<string, string>> | undefined>): string[] {
+  return [...new Set(environments.flatMap((environment) => Object.entries(environment ?? {})
+    .filter(([name, value]) => /^CANVASTTY_.*_ADDRESS$/u.test(name) && isAbsolute(value))
+    .map(([, value]) => value)))];
+}
+
+/**
+ * The folder of a session's control grant, from the control environment CanvasTTY itself prepared for the launch
+ * (`controlEnvironment`), never from the launch's full environment: a plugin can set the variable there too.
+ */
 export function controlGrantFolder(env: Readonly<Record<string, string | undefined>>): string | null {
   const connection = env.CANVASTTY_CONTROL_CONNECTION;
   return connection ? dirname(connection) : null;
+}
+
+/** `path` (already real) is `folder` or inside it once `folder` is resolved; an unreadable folder places nothing. */
+function insideReal(path: string, folder: string): boolean {
+  if (!isAbsolute(folder)) return false;
+  try {
+    const rest = relative(realpathSync(folder), path);
+    return rest === "" || (!rest.startsWith("..") && !isAbsolute(rest));
+  } catch {
+    return false;
+  }
 }

@@ -612,7 +612,16 @@ export class AgentControlGateway {
       this.redact(terminalScreenText(owned.terminal, true)), codexPlaceholderIsDim(owned.terminal), codexContinuationIsEmpty(owned.terminal));
     if (request.method === "screen") return { sessionId: id, text: screen, revision: hash(screen), outputOffset: owned.outputOffset,
       interaction: capabilities.menus ? codexChoices(screen) : null, composerReady };
-    if ((request.method === "choose" || request.method === "dismiss") && !capabilities.menus) {
+    // A prompt only the person may answer: the card waits for them (needs_approval, from the CLI's own permission
+    // hook), or Codex shows its approval prompt (before that hook's report arrived; for text, only while no composer is
+    // ready, so earlier output on screen does not refuse a task). An orchestrator's connection never answers it, with a
+    // choice, Escape or text. The person's own connection and the card itself still can.
+    const menuAction = request.method === "choose" || request.method === "dismiss";
+    const approvalOnScreen = capabilities.menus && (menuAction || !composerReady) && codexApprovalPrompt(screen);
+    if (agent && (menuAction || request.method === "send") && (fresh.status === "needs_approval" || approvalOnScreen)) {
+      throw new ControlError("NEEDS_PERSON", PERSON_ANSWERS_REFUSAL);
+    }
+    if (menuAction && !capabilities.menus) {
       throw new ControlError("NOT_SUPPORTED", `Menus are parsed for Codex only; resolve ${fresh.provider} prompts from the desktop and treat screen as the only evidence.`);
     }
     // Its launch plugins are still preparing it: nothing can be written yet, and nothing is queued.
@@ -775,6 +784,21 @@ export class AgentControlGateway {
     if (value !== "minimal" && value !== "detailed") throw new ControlError("INVALID_PARAMS", "detail must be minimal or detailed.");
     return value;
   }
+}
+
+/** What an orchestrator's connection gets for choose, dismiss or send while its worker waits for the person. */
+export const PERSON_ANSWERS_REFUSAL = "This worker is waiting for the person to answer an approval or permission prompt in its card "
+  + "(needs_approval); only the person may answer it, so nothing was written. Do not retry: tell the person what it asks "
+  + "(screen shows it), then check status again. Once they have answered it is no longer needs_approval.";
+
+/**
+ * Codex's own approval prompts (running a command, applying edits, granting permissions or network access, an MCP
+ * server's request): the person's to answer, whatever the card's status says yet. Its other menus (hooks review,
+ * model and update notices) are not approvals.
+ */
+export function codexApprovalPrompt(screen: string): boolean {
+  return /Would you like to (?:run the following command|make the following edits|grant these permissions)|\bneeds your approval\b|Do you want to approve\b/i.test(screen)
+    || /^\s*(?:›\s*)?\d+\.\s+(?:Yes, proceed\b|Yes, and don['’]t ask again\b|No, and tell Codex what to do differently\b)/m.test(screen);
 }
 
 function codexChoices(screen: string): { revision: string; selected: number; options: Array<{ number: number; label: string }> } | null {

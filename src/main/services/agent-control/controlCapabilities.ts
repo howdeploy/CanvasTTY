@@ -17,7 +17,10 @@ export const CONTROL_PROVIDERS: readonly AgentProviderId[] = AGENT_PROVIDERS;
 export interface ControlCapabilities {
   /** The worker reports a captured final answer through `result`. */
   result: boolean;
-  /** `screen` parses startup/approval menus that `choose`/`dismiss` can act on. */
+  /**
+   * `screen` parses numbered menus that `choose`/`dismiss` can act on. An approval or permission prompt is the person's:
+   * an orchestrator's own connection is refused it (NEEDS_PERSON).
+   */
   menus: boolean;
 }
 

@@ -512,3 +512,22 @@ test("a profile request that times out after the token arrived reports a failed 
     await rm(userData, { recursive: true, force: true });
   }
 });
+
+test("HTTP 429 and 5xx answers with an OAuth error body are retried like other transient answers", async () => {
+  for (const status of [429, 503]) {
+    const userData = await mkdtemp(`${tmpdir()}/canvastty-github-auth-transient-json-`);
+    try {
+      const { service, requests } = serviceWith(userData, (poll) => (poll === 1
+        ? Response.json({ error: "temporarily_unavailable" }, { status })
+        : Response.json({ access_token: "access", token_type: "bearer", scope: "" })));
+      await service.startDeviceFlow();
+      await waitFor(async () => (await service.status()).deviceFlowState !== "pending" || (await service.status()).authorized);
+      const result = await service.status();
+      assert.equal(result.authorized, true, `HTTP ${status}: the sign-in went on after the transient answer`);
+      assert.equal(requests.polls, 2);
+      await service.signOut();
+    } finally {
+      await rm(userData, { recursive: true, force: true });
+    }
+  }
+});

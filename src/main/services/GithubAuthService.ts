@@ -187,7 +187,9 @@ export class GithubAuthService {
 
       void this.pollDeviceCode(deviceCode, interval, flowLifetimeMs, generation, controller.signal)
         .catch((error) => {
-          if (controller.signal.aborted || isAbortError(error)) return;
+          // Only this flow's own abort (Cancel, sign-out, a new sign-in) is a cancellation; a request
+          // that hit its timeout also throws an AbortError, and that is a failure the person must see.
+          if (controller.signal.aborted) return;
           this.finishDeviceFlow(generation, "failed");
           console.warn("CanvasTTY GitHub OAuth device poll failed.", error);
         })
@@ -394,7 +396,8 @@ export class GithubAuthService {
       const payload: unknown = await response.json();
       return isRecord(payload) && typeof payload.login === "string" ? payload.login : null;
     } catch (error) {
-      if (isAbortError(error)) throw error;
+      // Rethrow only a cancelled flow; a timed-out or failed profile request is a failed sign-in.
+      if (signal.aborted && isAbortError(error)) throw error;
       return null;
     }
   }

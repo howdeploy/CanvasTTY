@@ -484,3 +484,31 @@ test("signOut clears a reported sign-in outcome", async () => {
     await rm(userData, { recursive: true, force: true });
   }
 });
+
+test("a profile request that times out after the token arrived reports a failed sign-in, not a stuck pending one", async () => {
+  const userData = await mkdtemp(`${tmpdir()}/canvastty-github-auth-profile-timeout-`);
+  const fetcher = async (url, init = {}) => {
+    if (String(url).endsWith("/login/device/code")) return deviceCodeAnswer();
+    if (String(url).endsWith("/login/oauth/access_token")) return Response.json({ access_token: "access", token_type: "bearer", scope: "" });
+    // The profile request hangs until the service's own request timeout aborts it.
+    return new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")), { once: true });
+    });
+  };
+  const warn = console.warn;
+  console.warn = () => undefined;
+  try {
+    const service = new GithubAuthService(userData, "client-id", {
+      fetcher, safeStorage, requestTimeoutMs: 10, delay: async () => undefined
+    });
+    await service.startDeviceFlow();
+    await waitFor(async () => (await service.status()).deviceFlowState !== "pending");
+    const status = await service.status();
+    assert.equal(status.deviceFlowState, "failed");
+    assert.equal(status.authorized, false);
+    await assert.rejects(() => readFile(`${userData}/github-oauth.json`, "utf8"), { code: "ENOENT" });
+  } finally {
+    console.warn = warn;
+    await rm(userData, { recursive: true, force: true });
+  }
+});

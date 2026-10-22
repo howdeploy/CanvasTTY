@@ -91,6 +91,8 @@ gh variable set SPARKLE_PUBLIC_ED_KEY --repo howdeploy/CanvasTTY \
 
 **Git 审计。** 隔离的智能体会话结束、被关闭或在退出后恢复时，CanvasTTY 会检查其文件夹下 git 目录发生变化的仓库。如果 git 现在会在隔离外运行某些东西（`core.hooksPath`、filter 或 diff 驱动、`fsmonitor`、hook 文件、`info/attributes`），会出现一条列出具体变化的通知；**Neutralize** 删除这些键并停用这些文件，**Keep as is** 保持不变。它不会撤销项目内的其他文件改动。
 
+**环境中的服务商密钥。** 你自己启动的普通终端卡片保留你的全部环境，但不包括 CanvasTTY 自己的凭据（`CANVASTTY_GITHUB_TOKEN`，以及任何 `CANVASTTY_*TOKEN`/`*KEY`/`*SECRET`/`*PASSWORD`），它们只供应用本身使用。智能体卡片永远不会继承这些凭据，也不会继承组织级管理员凭据（`OPENAI_ADMIN_KEY`、`ANTHROPIC_ADMIN_KEY`，以及任何 `*_ADMIN_*KEY` 或 `*_ADMIN_*TOKEN`）。除此之外，你自己启动的智能体在任何模式下都保留你的环境，包括 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY` 等普通密钥，因此用 API 密钥登录的 CLI 照常工作。子智能体以及插件启动的任何卡片（包括普通终端卡片，因为由插件操控）只继承进程所需的变量：`PATH`、`HOME`、用户、shell、语言区域和终端变量、临时目录和 XDG 目录、Windows 系统目录、代理变量（`HTTP(S)_PROXY`、`ALL_PROXY`、`NO_PROXY`）、证书设置（`SSL_CERT_FILE`、`SSL_CERT_DIR`、`NODE_EXTRA_CA_CERTS`、`REQUESTS_CA_BUNDLE`、`CURL_CA_BUNDLE`）、`EDITOR`/`VISUAL`/`PAGER` 以及各 CLI 自己的主目录（`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 等）。它们拿不到任何服务商密钥、令牌、云凭据、`SSH_AUTH_SOCK` 或 OpenCode 内联配置（`OPENCODE_CONFIG_CONTENT`，其中可能含有密钥），通过 CanvasTTY 为启动添加的配置也不会；需要的密钥通过启动贡献的 `secretEnv` 显式传入。如仍要传递某个变量，请在 CanvasTTY 启动时的环境中把它列入 `CANVASTTY_AGENT_PASS_ENV`（逗号分隔）。这里只涉及继承的变量：没有隔离层时，智能体以你的身份运行，仍可从 shell 配置文件中读取密钥；普通终端卡片运行你的登录 shell，也会读取该文件。
+
 ### Linux：bubblewrap 无法启动时
 
 Ubuntu 24.04 及更新版本（以及其他设置了 `kernel.apparmor_restrict_unprivileged_userns=1` 的发行版）只允许带 AppArmor 配置文件的程序创建非特权用户命名空间，而 bubblewrap 需要它。CanvasTTY 会检查一次（失败后一分钟再查），启用隔离时，如果 `bwrap` 已安装却无法启动，就按没有隔离层的电脑处理：子智能体和插件启动的智能体以手动模式运行，卡片会说明原因。要允许它，可以为 bubblewrap 单独添加配置文件（推荐，只影响 `bwrap`）：

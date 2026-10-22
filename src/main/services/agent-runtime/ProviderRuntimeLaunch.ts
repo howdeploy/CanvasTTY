@@ -11,6 +11,7 @@ import { dirname, isAbsolute, join, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { lazyRequire } from "../../lazyRequire.ts";
 import { isOwnLifecycleHookText } from "../agentHelpers.ts";
+import { ownedAccountHome } from "../accountHomes.ts";
 import {
   atomicWrite,
   ensurePrivateDirectory,
@@ -93,6 +94,11 @@ export interface ProviderRuntimeLaunchOptions {
   pluginHooks?: RuntimePluginHookSource;
   /** The decision hook (permission-gate.mjs); without it decision hooks are never installed. */
   permissionGate?: RuntimeHookHelperLaunch;
+  /**
+   * `<userData>/plugin-data`: the only place an account home (a CLI home a launch contributor started the launch with)
+   * may be for the Grok/Kimi lifecycle overlays to be written into it. Without it no account home gets them.
+   */
+  accountHomesRoot?: string;
 }
 
 export interface PreparedProviderRuntimeLaunch {
@@ -100,6 +106,10 @@ export interface PreparedProviderRuntimeLaunch {
   environment: Record<string, string>;
   releaseConfiguration(): void;
 }
+
+const KIMI_JOURNAL = ".canvastty-runtime-kimi.json";
+const RUNTIME_BACKUPS = ".canvastty-runtime-backups";
+const GROK_HOOKS_FILE = "canvastty-runtime-hooks.json";
 
 const HOOK_PROVIDERS: ReadonlySet<string> = new Set(["claude", "codex", "qwen", "opencode", "kimi", "hermes", "grok", "omp", "pi"]);
 
@@ -120,6 +130,8 @@ export class ProviderRuntimeLaunchAdapters {
   private grokOverlay: GrokRuntimeHooks | null = null;
   private grokOverlaySignature: string | null = null;
   private grokUsers = 0;
+  /** Grok/Kimi overlays in account homes, by provider and home; each is removed when its last launch ends. */
+  private readonly accountOverlays = new Map<string, { overlay: { cleanup(): void }; signature: string; users: number }>();
 
   constructor(options: ProviderRuntimeLaunchOptions) {
     validateHelper(options.helper);
@@ -128,6 +140,9 @@ export class ProviderRuntimeLaunchAdapters {
     }
     if (!isAbsolute(options.openCodePluginPath)) {
       throw new Error("OpenCode lifecycle plugin path must be absolute.");
+    }
+    if (options.accountHomesRoot !== undefined && !isAbsolute(options.accountHomesRoot)) {
+      throw new Error("Account homes root must be absolute.");
     }
     if (options.permissionGate) {
       validateHelper(options.permissionGate);
@@ -175,6 +190,10 @@ export class ProviderRuntimeLaunchAdapters {
    * `decisionBudgetMs` (a decision service's `decide.timeoutMs`) lengthens the hook's deadlines to fit it.
    * `claudeHttpHookBase` (Claude Code only) sends its lifecycle events, except SessionStart, as HTTP hooks to the
    * gateway's loopback listener instead of running the helper; the decision hook stays a command.
+   * `accountHome` (Grok and Kimi only, see accountHomes.ts): the CLI home a launch contributor started this launch
+   * with. When it is an account home inside `accountHomesRoot`, the Grok/Kimi overlay goes there instead of into the
+   * default home, since that is the only home the CLI reads. Claude Code, Codex, Qwen Code and OpenCode take their hooks
+   * from the launch's arguments or environment, so they work in any home already.
    */
   prepare(
     provider: AgentProvider,
@@ -182,7 +201,8 @@ export class ProviderRuntimeLaunchAdapters {
     coreHooksEnabled = true,
     decisions = false,
     decisionBudgetMs?: number,
-    claudeHttpHookBase?: string
+    claudeHttpHookBase?: string,
+    accountHome?: string
   ): PreparedProviderRuntimeLaunch {
     const pluginRegistrations = this.options.pluginHooks?.list(provider) ?? [];
     const gate = decisions && this.decisionsSupported(provider);
@@ -243,6 +263,10 @@ export class ProviderRuntimeLaunchAdapters {
       return prepared(coreHooksEnabled
         ? ["--extension", join(dirname(this.options.openCodePluginPath), "omp-extension.mjs")]
         : [], environment);
+    }
+    if (provider === "kimi" || provider === "grok") {
+      const ownHome = this.ownAccountHome(provider, accountHome);
+      if (ownHome) return prepared([], environment, this.acquireAccountHome(provider, ownHome, coreHooksEnabled, pluginCommands));
     }
     if (provider === "kimi") {
       return prepared([], environment, this.acquireKimi(coreHooksEnabled, pluginCommands));
@@ -352,6 +376,47 @@ export class ProviderRuntimeLaunchAdapters {
       this.grokOverlay = null;
       this.grokOverlaySignature = null;
       overlay?.cleanup();
+    });
+  }
+
+  /** The account home this Grok/Kimi launch's overlay goes into (accountHomes.ts), or null for the default home. */
+  private ownAccountHome(provider: "kimi" | "grok", candidate: string | undefined): string | null {
+    return ownedAccountHome({
+      root: this.options.accountHomesRoot,
+      candidate,
+      defaultHome: provider === "kimi" ? this.kimiHomeDirectory : this.grokHomeDirectory,
+      written: provider === "kimi" ? ["config.toml", KIMI_JOURNAL, RUNTIME_BACKUPS] : ["hooks", join("hooks", GROK_HOOKS_FILE)],
+      label: provider === "kimi" ? "Kimi" : "Grok"
+    });
+  }
+
+  private acquireAccountHome(
+    provider: "kimi" | "grok",
+    home: string,
+    coreHooksEnabled: boolean,
+    pluginCommands: readonly ProviderHookCommand[]
+  ): () => void {
+    const key = `${provider}\0${home}`;
+    const signature = overlaySignature(coreHooksEnabled, pluginCommands);
+    let entry = this.accountOverlays.get(key);
+    if (!entry || entry.signature !== signature) {
+      if (entry) {
+        this.accountOverlays.delete(key);
+        entry.overlay.cleanup();
+      }
+      const overlay = provider === "kimi"
+        ? KimiRuntimeHooks.begin(home, this.options.helper, this.platform, coreHooksEnabled, pluginCommands)
+        : GrokRuntimeHooks.begin(home, this.options.helper, this.platform, coreHooksEnabled, pluginCommands);
+      entry = { overlay, signature, users: 0 };
+      this.accountOverlays.set(key, entry);
+    }
+    const owned = entry;
+    owned.users += 1;
+    return once(() => {
+      owned.users -= 1;
+      if (owned.users !== 0 || this.accountOverlays.get(key) !== owned) return;
+      this.accountOverlays.delete(key);
+      owned.overlay.cleanup();
     });
   }
 
@@ -794,7 +859,7 @@ class KimiRuntimeHooks {
   ): KimiRuntimeHooks {
     ensurePrivateDirectory(home);
     const path = join(home, "config.toml");
-    const journalPath = join(home, ".canvastty-runtime-kimi.json");
+    const journalPath = join(home, KIMI_JOURNAL);
     this.recover(home);
     const original = readOptional(path);
     const block = kimiHookBlock(helper, platform, coreHooksEnabled, pluginCommands);
@@ -809,7 +874,7 @@ class KimiRuntimeHooks {
   }
 
   static recover(home: string): void {
-    const journalPath = join(home, ".canvastty-runtime-kimi.json");
+    const journalPath = join(home, KIMI_JOURNAL);
     const journal = readJournal(journalPath);
     if (!journal) return;
     const path = join(home, "config.toml");
@@ -895,7 +960,7 @@ class GrokRuntimeHooks {
   ): GrokRuntimeHooks {
     const hooksDirectory = join(home, "hooks");
     ensurePrivateDirectory(hooksDirectory);
-    const path = join(hooksDirectory, "canvastty-runtime-hooks.json");
+    const path = join(hooksDirectory, GROK_HOOKS_FILE);
     this.recover(home);
     if (existsSync(path)) throw new Error("Grok CanvasTTY lifecycle hook path is already occupied.");
     const expected = `${JSON.stringify({
@@ -909,7 +974,7 @@ class GrokRuntimeHooks {
   }
 
   static recover(home: string): void {
-    const path = join(home, "hooks", "canvastty-runtime-hooks.json");
+    const path = join(home, "hooks", GROK_HOOKS_FILE);
     const current = readOptional(path);
     if (current === null) return;
     if (
@@ -948,7 +1013,7 @@ function createTextJournal(
   mutated: string,
   extra: Record<string, unknown>
 ): TextOverlayJournal {
-  const backupDirectory = join(home, ".canvastty-runtime-backups");
+  const backupDirectory = join(home, RUNTIME_BACKUPS);
   ensurePrivateDirectory(backupDirectory);
   const backupPath = join(backupDirectory, `${provider}-${randomUUID()}.bak`);
   if (original !== null) atomicWrite(backupPath, original, modeOf(join(home, provider === "kimi" ? "config.toml" : "config.yaml")));

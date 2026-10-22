@@ -536,7 +536,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       providerClis,
       runtimeDirectory,
       hermesHomeDirectory,
-      kimiHomeDirectory
+      kimiHomeDirectory,
+      accountHomesRoot: join(userDataPath, "plugin-data")
     });
     // Off the startup path: the first Kimi launch then finds the probe answered instead of blocking on it.
     const bridge = agentBrowserBridge;
@@ -588,6 +589,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       openCodePluginPath,
       hermesHomeDirectory,
       kimiHomeDirectory,
+      // Account homes a launch contributor starts Grok/Kimi with live in plugin data (ProviderRuntimeLaunch.ownAccountHome).
+      accountHomesRoot: join(userDataPath, "plugin-data"),
       recoverOnStart: true,
       coreHooksEnabled: settings.get().agentLifecycleHooksEnabled,
       permissionGate: helpers.permissionGate,

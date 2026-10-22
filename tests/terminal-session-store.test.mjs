@@ -29,7 +29,8 @@ test("terminal window descriptors persist atomically without scrollback or envir
     const store = new TerminalSessionStore(directory);
     await store.replace([descriptor]);
     const raw = await readFile(store.filePath, "utf8");
-    assert.doesNotMatch(raw, /buffer|environment|capability|token/u);
+    // The checkout folder is the descriptor's cwd; leave it out so a path like ~/environment/... cannot match.
+    assert.doesNotMatch(raw.split(JSON.stringify(descriptor.cwd)).join('""'), /buffer|environment|capability|token/u);
 
     const reloaded = new TerminalSessionStore(directory);
     assert.deepEqual(await reloaded.load(), [descriptor]);

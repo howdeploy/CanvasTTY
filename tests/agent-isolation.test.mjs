@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
-import { AgentIsolation, ISOLATION_FOLDER_PREFIX, probeBubblewrap } from "../src/main/services/isolation/AgentIsolation.ts";
+import { AgentIsolation, gatewaySocketAddresses, ISOLATION_FOLDER_PREFIX, probeBubblewrap } from "../src/main/services/isolation/AgentIsolation.ts";
 import { isolationPaths } from "../src/main/services/isolation/isolationPaths.ts";
 import { seatbeltProfile } from "../src/main/services/isolation/seatbelt.ts";
 import { bubblewrapArguments } from "../src/main/services/isolation/bubblewrap.ts";
 import { AgentControlService } from "../src/main/services/AgentControlService.ts";
 import { codexInsideIsolation } from "../src/main/services/terminalLaunch.ts";
+import { LaunchPipeline } from "../src/main/services/LaunchPipeline.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 
@@ -180,6 +181,53 @@ test("bubblewrap: read-only root, writable project, tmpfs over what may not be r
   assert.deepEqual(args.slice(-5), ["--chdir", w.project, "--", "/usr/bin/claude", "--x"]);
 });
 
+test("bubblewrap: CanvasTTY's gateway socket folders are read-only, a hidden socket is masked", async (t) => {
+  const w = await world(t);
+  const lifecycle = join(w.userData, "lifecycle", "runtime");
+  const gateway = join(w.base, "ctty-1000-gw");
+  const sessionTemp = join(w.temp, "s");
+  const paths = isolationPaths({ provider: "codex", cwd: w.project, sessionTemp,
+    env: w.env, gatewaySockets: [join(lifecycle, "r.sock"), join(gateway, "gateway.sock")], userDataPath: w.userData, sessionId: "s" });
+  const ssh = join(w.home, ".ssh", "agent.sock");
+  const kinds = new Map([[w.project, "directory"], [sessionTemp, "directory"], [lifecycle, "directory"], [gateway, "directory"],
+    [join(w.userData, "browser", "runtime"), "directory"], [join(w.userData, "orchestration", "runtime"), "directory"], [ssh, "socket"]]);
+  const args = bubblewrapArguments({ ...paths, unreadable: [...paths.unreadable, ssh] }, { command: "/usr/bin/codex", args: [], cwd: w.project },
+    (path) => kinds.get(path) ?? null);
+  const pairs = args.map((arg, i) => `${arg} ${args[i + 1]} ${args[i + 2]}`);
+  // Connecting to a Unix socket needs no write access to its folder; a writable folder would let one agent replace a
+  // gateway socket and receive another agent's requests.
+  for (const folder of [lifecycle, gateway, join(w.userData, "browser", "runtime"), join(w.userData, "orchestration", "runtime")]) {
+    assert.ok(pairs.includes(`--ro-bind ${folder} ${folder}`), `${folder} read-only`);
+    assert.ok(!pairs.includes(`--bind ${folder} ${folder}`), `${folder} not writable`);
+  }
+  // This launch's own temporary folder (also a socket folder) stays writable, bound once.
+  assert.equal(pairs.filter((pair) => pair === `--bind ${sessionTemp} ${sessionTemp}`).length, 1);
+  assert.ok(!pairs.includes(`--ro-bind ${sessionTemp} ${sessionTemp}`));
+  // A socket it may not reach is hidden like a file, never left in place.
+  assert.ok(pairs.includes(`--ro-bind /dev/null ${ssh}`));
+});
+
+test("the paths: Kimi Code's own home (KIMI_CODE_HOME, default ~/.kimi-code) is Kimi's, and no other CLI's", async (t) => {
+  const w = await world(t);
+  const pool = join(w.userData, "account-homes", "kimi-a");
+  const env = { ...w.env, KIMI_CODE_HOME: pool };
+  const kimi = isolationPaths({ provider: "kimi", cwd: w.project, sessionTemp: join(w.temp, "s"), env, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(kimi.writable.includes(pool) && !kimi.unreadable.includes(pool), "a moved Kimi Code home stays Kimi's own");
+  const codex = isolationPaths({ provider: "codex", cwd: w.project, sessionTemp: join(w.temp, "s"), env, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(codex.unreadable.includes(pool), "another CLI cannot read a moved Kimi Code home");
+  const plain = isolationPaths({ provider: "codex", cwd: w.project, sessionTemp: join(w.temp, "s"), env: w.env, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(plain.unreadable.includes(join(w.home, ".kimi-code")), "Kimi Code's default sign-in folder is hidden from other CLIs");
+  assert.ok(plain.unreadable.includes(join(w.home, ".kimi")), "and the older kimi-cli's");
+  const share = isolationPaths({ provider: "kimi", cwd: w.project, sessionTemp: join(w.temp, "s"), env: { ...w.env, KIMI_SHARE_DIR: join(w.base, "kimi-share") }, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(share.writable.includes(join(w.base, "kimi-share")), "KIMI_SHARE_DIR moves the older kimi-cli's home");
+  // Kimi's config.toml holds its permission rules and hooks: its folders are writable, but that file stays the person's.
+  const own = isolationPaths({ provider: "kimi", cwd: w.project, sessionTemp: join(w.temp, "s"), env: w.env, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(own.writable.includes(join(w.home, ".kimi-code")));
+  assert.ok(own.protectedWrites.includes(join(w.home, ".kimi-code", "config.toml")), "Kimi Code's permission settings stay the person's");
+  assert.ok(own.protectedWrites.includes(join(w.home, ".kimi", "config.toml")), "and kimi-cli's");
+  assert.ok(kimi.protectedWrites.includes(join(pool, "config.toml")), "and a moved home's");
+});
+
 test("the paths: another CLI's home moved by its own variable is unreadable, never this CLI's own", async (t) => {
   const w = await world(t);
   const custom = (name) => join(w.base, "creds", name);
@@ -304,6 +352,86 @@ test("the launch: wrapped when the layer applies, refused (never unwrapped) when
   assert.deepEqual(cleaned, [auto.id], "its folder goes with the card");
 });
 
+test("the launch: only CanvasTTY's own gateway sockets reach the layer, never a CANVASTTY_*_ADDRESS from the person or a plugin", async (t) => {
+  const w = await world(t);
+  const calls = [];
+  const runtimeSocket = join(w.userData, "lifecycle", "runtime", "r.sock");
+  const runtime = {
+    prepareLaunch: () => ({ args: [], environment: { CANVASTTY_RUNTIME_ADDRESS: runtimeSocket, CANVASTTY_RUNTIME_CAPABILITY: "c" }, cleanup() {} }),
+    currentStatus: () => null
+  };
+  const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, runtime, true, fakeSpawner(calls));
+  t.after(() => terminals.shutdown());
+  const launches = [];
+  terminals.configureIsolation({
+    containment: () => true,
+    decide: (input) => new AgentIsolation({ userDataPath: w.userData, enabled: () => true, platform: "darwin", exists: () => true }).decide(input),
+    wrap: (launch) => { launches.push(launch); return { command: "/usr/bin/sandbox-exec", args: [launch.command, ...launch.args], env: launch.env, cleanup() {} }; }
+  });
+  const before = process.env.CANVASTTY_FOO_ADDRESS;
+  process.env.CANVASTTY_FOO_ADDRESS = join(w.home, "foo.sock");
+  t.after(() => { if (before === undefined) delete process.env.CANVASTTY_FOO_ADDRESS; else process.env.CANVASTTY_FOO_ADDRESS = before; });
+  terminals.create({ provider: "claude", profile: "auto", cwd: w.project, position: at });
+  assert.equal(launches.length, 1);
+  assert.equal(launches[0].env.CANVASTTY_FOO_ADDRESS, join(w.home, "foo.sock"), "the variable itself still reaches the agent");
+  assert.deepEqual(launches[0].gatewaySockets, [runtimeSocket]);
+  assert.deepEqual(gatewaySocketAddresses({ CANVASTTY_A_ADDRESS: "/a/s.sock", CANVASTTY_B_ADDRESS: "127.0.0.1:1", OTHER_ADDRESS: "/o" },
+    undefined, { CANVASTTY_C_ADDRESS: "/a/s.sock" }), ["/a/s.sock"], "absolute CanvasTTY addresses only, once each");
+});
+
+test("the launch: only the control grant CanvasTTY gave an orchestrator is reopened, never one a plugin names", async (t) => {
+  const w = await world(t);
+  const calls = [];
+  const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner(calls));
+  t.after(() => terminals.shutdown());
+  const launches = [];
+  terminals.configureIsolation({
+    containment: () => true,
+    decide: (input) => new AgentIsolation({ userDataPath: w.userData, enabled: () => true, platform: "darwin", exists: () => true }).decide(input),
+    wrap: (launch) => { launches.push(launch); return { command: "/usr/bin/sandbox-exec", args: [launch.command, ...launch.args], env: launch.env, cleanup() {} }; }
+  });
+  const own = join(w.userData, "agent-control", "sessions", "own", "connection.json");
+  terminals.setControlConnection({ connectionPath: join(w.userData, "agent-control", "connection.json"), cliPath: "/cli.mjs", grant: () => own });
+  // A launch contributor names another session's grant on an ordinary (non-orchestrator) launch.
+  const victim = join(w.userData, "agent-control", "sessions", "victim", "connection.json");
+  const runsRoot = join(w.temp, "runs");
+  await mkdir(runsRoot, { recursive: true });
+  const pipeline = new LaunchPipeline({
+    contributors: () => [{ pluginId: "p.one", pluginName: "Plugin p.one", serviceId: "launcher", secrets: false,
+      launch: { fields: [{ key: "on", label: "On", kind: "boolean", default: true }] } }],
+    call: async () => ({ env: { CANVASTTY_CONTROL_CONNECTION: victim } }),
+    secret: async () => null,
+    runsRoot
+  });
+  const waitFor = async (predicate) => {
+    for (let tries = 0; !predicate() && tries < 500; tries++) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(predicate(), "in time");
+  };
+  // The launch pipeline refuses the name already...
+  terminals.configureLaunchPipeline(pipeline);
+  const refused = terminals.create({ provider: "claude", profile: "auto", cwd: w.project, position: at, launchOptions: { "p.one": {} } });
+  const card = () => terminals.list().find((session) => session.id === refused.id);
+  await waitFor(() => card().status === "failed");
+  assert.match(card().failureDetails, /env CANVASTTY_CONTROL_CONNECTION is reserved for CanvasTTY/u);
+  assert.equal(launches.length, 0);
+  // ...and the isolation layer does not depend on that: a value that reaches the launch environment reopens nothing.
+  terminals.configureLaunchPipeline({
+    normalizeOptions: (...args) => pipeline.normalizeOptions(...args),
+    unavailable: (options) => pipeline.unavailable(options),
+    forgetSession: async () => undefined,
+    prepare: async () => ({ ok: true, env: { CANVASTTY_CONTROL_CONNECTION: victim }, args: [], secrets: [],
+      envSources: { CANVASTTY_CONTROL_CONNECTION: "Plugin p.one" }, thirdPartyModel: false, cleanup: async () => undefined })
+  });
+  terminals.create({ provider: "claude", profile: "auto", cwd: w.project, position: at, launchOptions: { "p.one": {} } });
+  await waitFor(() => launches.length === 1);
+  assert.equal(launches[0].env.CANVASTTY_CONTROL_CONNECTION, victim, "the variable itself reaches the agent");
+  assert.equal(launches[0].grantedPrivate, undefined, "but no folder is reopened for it");
+
+  terminals.create({ provider: "claude", profile: "auto", cwd: w.project, position: at, role: "orchestrator" });
+  assert.equal(launches.length, 2);
+  assert.deepEqual(launches[1].grantedPrivate, [join(w.userData, "agent-control", "sessions", "own")], "an orchestrator's own grant is");
+});
+
 test("without a layer a subagent runs in normal (it asks) and the card says why", async (t) => {
   const w = await world(t);
   const calls = [];
@@ -421,6 +549,52 @@ test("an isolated launch gets an empty git template, so git init writes no hooks
     assert.ok(wrapped.env.GIT_TEMPLATE_DIR);
     assert.deepEqual(await readdir(wrapped.env.GIT_TEMPLATE_DIR), []);
   } finally { wrapped.cleanup(); }
+});
+
+test("an isolated Claude keeps its Bash and editor files in the launch's own temp folder, on both layers; other CLIs are untouched", async (t) => {
+  const w = await world(t);
+  const uid = typeof process.getuid === "function" ? process.getuid() : 501;
+  const layers = [
+    ["seatbelt", isolation(w, { platform: "darwin", exists: () => true })],
+    ["bubblewrap", isolation(w, { platform: "linux", bubblewrapPath: "/usr/bin/bwrap", bubblewrapProbe: () => null, exists: () => true })]
+  ];
+  for (const [layer, isolated] of layers) {
+    // A CLAUDE_CODE_TMPDIR from the person's environment would point Claude back at a shared folder: replaced.
+    const claude = isolated.wrap({ sessionId: "c", provider: "claude", cwd: w.project, command: "/usr/bin/claude", args: [], env: { ...w.env, CLAUDE_CODE_TMPDIR: "/tmp" } });
+    const codex = isolated.wrap({ sessionId: "x", provider: "codex", cwd: w.project, command: "/usr/bin/codex", args: [], env: w.env });
+    try {
+      assert.equal(claude.env.CLAUDE_CODE_TMPDIR, claude.env.TMP, layer);
+      assert.equal(`${claude.env.CLAUDE_CODE_TMPDIR}/`, claude.env.TMPDIR, layer);
+      assert.match(claude.env.TMP, new RegExp(`^${w.temp}/${ISOLATION_FOLDER_PREFIX}`, "u"), layer);
+      assert.equal(codex.env.CLAUDE_CODE_TMPDIR, undefined, `${layer}: only Claude reads it`);
+      // The folder all of the person's Claude sessions share is not opened for writing.
+      const text = layer === "seatbelt" ? readFileSync(claude.args[1], "utf8") : claude.args.join(" ");
+      assert.ok(!text.includes(`claude-${uid}`), `${layer}: no grant of the shared /tmp/claude-${uid}`);
+    } finally {
+      claude.cleanup();
+      codex.cleanup();
+    }
+  }
+});
+
+test("seatbelt, for real: Claude's scratch folder is in its own temp folder; the shared /tmp/claude-<uid> stays read-only", onMac, async (t) => {
+  const w = await world(t);
+  const shared = `/private/tmp/claude-${process.getuid()}/ctty-iso-probe-${process.pid}`;
+  await mkdir(shared, { recursive: true });
+  await writeFile(join(shared, "other-session.output"), "another session's output");
+  t.after(() => rm(shared, { recursive: true, force: true }));
+  t.after(() => rm(`/private/tmp/claude-${process.getuid()}/ctty-iso-new-${process.pid}`, { recursive: true, force: true }));
+  const { lines, env } = run(w, [
+    // What Claude Code does for its Bash tool: ${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>/<project>/<session>/tasks.
+    'd="${CLAUDE_CODE_TMPDIR:-/tmp}/claude-$(id -u)/p/s/tasks"; mkdir -p "$d" && echo out > "$d/b.output" && cat "$d/b.output" >/dev/null && echo SCRATCH-ok || echo SCRATCH-denied',
+    `echo x >> "${shared}/other-session.output" 2>/dev/null && echo SHARED-WRITE-ok || echo SHARED-WRITE-denied`,
+    `: > "${shared}/planted" 2>/dev/null && echo SHARED-CREATE-ok || echo SHARED-CREATE-denied`,
+    `mkdir "/private/tmp/claude-$(id -u)/ctty-iso-new-${process.pid}" 2>/dev/null && echo SHARED-MKDIR-ok || echo SHARED-MKDIR-denied`
+  ].join("; "), { provider: "claude" });
+  assert.deepEqual(lines, ["SCRATCH-ok", "SHARED-WRITE-denied", "SHARED-CREATE-denied", "SHARED-MKDIR-denied"]);
+  assert.equal(env.CLAUDE_CODE_TMPDIR, env.TMP);
+  assert.equal(await readFile(join(shared, "other-session.output"), "utf8"), "another session's output");
+  assert.equal(existsSync(join(shared, "planted")), false);
 });
 
 test("seatbelt, for real: Claude saves a refreshed sign-in in the login keychain; nothing else there; plan is read-only", onMac, async (t) => {

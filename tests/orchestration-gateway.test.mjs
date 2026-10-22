@@ -370,6 +370,7 @@ test("a spawn_agent canceled while it was starting closes the agent it created",
   const control = {
     status: () => ({ role: "orchestrator", provider: "codex" }),
     profileFor: () => ({ profile: "normal", inherited: true }),
+    subagentLaunchOptions: (_parent, _provider, launchOptions) => ({ launchOptions, sources: {} }),
     spawn: async () => {
       controller.abort();
       return { id: "child-1", provider: "codex", status: "running", title: "worker" };

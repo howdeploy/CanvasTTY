@@ -28,20 +28,51 @@ export interface IsolationPathInput {
   grantedPrivate?: readonly string[];
   /** Extra socket folders this launch may connect to (the control grant's endpoint folder). */
   socketFolders?: readonly string[];
+  /**
+   * The sockets of CanvasTTY's own gateways for this launch, as the host set them up. Their folders are bound back;
+   * a CANVASTTY_*_ADDRESS in the launch environment (the person's own or a plugin's) never is.
+   */
+  gatewaySockets?: readonly string[];
+  /**
+   * Folders the host itself placed this launch in (an environment's worktree, the folder the person chose for the
+   * card the launch descends from). A project inside plugin data is reopened only when it is inside one of them.
+   */
+  placedProjects?: readonly PlacedProject[];
   /** Plan: the project is readable only (the CLI's own folders stay writable). */
   readOnlyProject?: boolean;
+}
+
+/**
+ * A folder the host placed a launch in. `pluginId`: an environment of that plugin placed it, so it counts only inside
+ * that plugin's own data folder; without it, the person chose the folder.
+ */
+export interface PlacedProject {
+  folder: string;
+  pluginId?: string;
 }
 
 export interface IsolationPaths {
   /** Writable folders (subpaths), every spelling. */
   writable: string[];
+  /**
+   * Read-only as a whole although a writable folder holds it: CanvasTTY's own data folder when the project contains it
+   * (a project at HOME). Its settings and the plugins it runs are not the agent's to change; the writable folders above
+   * that sit inside it (an account home, this launch's own folders) stay writable.
+   */
+  readOnlyFolders: string[];
+  /**
+   * The folders between a writable folder and a read-only folder inside it (`~/.config` for `~/.config/canvastty` in a
+   * project at HOME): what is inside stays writable, but they cannot be renamed or replaced, which would move the
+   * read-only folder out of its protected path and let a different one take its place.
+   */
+  fixedFolders: string[];
   /** Writable single files (with their `.lock` / `.tmp` / backup siblings). */
   writableFiles: string[];
   /** Folders that may be created (empty) on the way to a writable one: `~/.local/state` for `~/.local/state/opencode`. */
   creatableFolders: string[];
-  /** Inside writable folders, still not writable: the repository's git config, the CLIs' own permission settings. */
+  /** Inside writable folders, still not writable: the repository's git config and `commondir`, the CLIs' own permission settings. */
   protectedWrites: string[];
-  /** Permission-bearing agent directories; empty directories are neutral, unlike a fabricated build.md. */
+  /** Permission-bearing agent directories and the repository's linked-worktree records; empty directories are neutral. */
   protectedDirectories?: string[];
   /** The project's git hook folders: only `*.sample` files may be written there (what `git init` creates). */
   gitHooks: string[];
@@ -87,8 +118,13 @@ function providerFolders(provider: ProviderId, env: IsolationPathInput["env"], h
       return { folders: named("opencode"), files: [] };
     case "hermes":
       return { folders: [env.HERMES_HOME && isAbsolute(env.HERMES_HOME) ? env.HERMES_HOME : join(home, ".hermes"), ...named("hermes")], files: [] };
-    case "kimi":
-      return { folders: [env.KIMI_HOME && isAbsolute(env.KIMI_HOME) ? env.KIMI_HOME : join(home, ".kimi"), ...named("kimi")], files: [] };
+    case "kimi": {
+      // Kimi Code CLI keeps its sign-in in KIMI_CODE_HOME (default ~/.kimi-code); the older kimi-cli in
+      // KIMI_SHARE_DIR (default ~/.kimi). KIMI_HOME is kept as it was read before.
+      const moved = (name: string): string | null => { const value = env[name]; return value && isAbsolute(value) ? value : null; };
+      return { folders: [moved("KIMI_CODE_HOME") ?? join(home, ".kimi-code"), moved("KIMI_SHARE_DIR") ?? join(home, ".kimi"),
+        ...(moved("KIMI_HOME") ? [moved("KIMI_HOME")!] : []), ...named("kimi")], files: [] };
+    }
     case "cursor":
       return { folders: [...named("cursor"), ...named("cursor-agent")], files: [] };
     case "antigravity":
@@ -106,12 +142,17 @@ const HOME_VARIABLES: Partial<Record<ProviderId, readonly string[]>> = {
   claude: ["CLAUDE_CONFIG_DIR"],
   grok: ["GROK_HOME"],
   hermes: ["HERMES_HOME"],
-  kimi: ["KIMI_HOME"],
+  kimi: ["KIMI_CODE_HOME", "KIMI_SHARE_DIR", "KIMI_HOME"],
   opencode: ["OPENCODE_CONFIG_DIR"],
   qwen: ["QWEN_HOME"]
 };
 /** A CLI's configuration file named by a variable (it may hold keys): unreadable to other CLIs, never writable to its own. */
 const CONFIG_FILE_VARIABLES: Partial<Record<ProviderId, readonly string[]>> = { opencode: ["OPENCODE_CONFIG"] };
+
+/** The environment variables that name this provider's CLI home (empty when it has none). */
+export function providerHomeVariables(provider: ProviderId): readonly string[] {
+  return HOME_VARIABLES[provider] ?? [];
+}
 
 function movedProviderHomes(provider: ProviderId, env: IsolationPathInput["env"], variables = HOME_VARIABLES): string[] {
   return (variables[provider] ?? [])
@@ -138,13 +179,16 @@ function sensitiveHomeFolders(home: string, xdgConfig: string): string[] {
   ].map((name) => join(home, name)).concat([join(xdgConfig, "gh"), join(xdgConfig, "gcloud")]);
 }
 
+/** Plugins' private data below userData (PluginManager's `<userData>/plugin-data/<pluginId>`). */
+export const PLUGIN_DATA_FOLDER = "plugin-data";
+
 /**
- * CanvasTTY's own private data under userData (the same list base protection refuses): tokens, connection records,
- * secret stores, account homes and prepared launch files. Its gateways' runtime folders stay readable: they hold
- * token-authenticated sockets and per-run hook settings the CLI must read.
+ * CanvasTTY's own private data under userData: tokens, connection records, secret stores, account homes, prepared
+ * launch files and every plugin's private data (an accounts plugin keeps all of its CLI homes there). Its gateways'
+ * runtime folders stay readable: they hold token-authenticated sockets and per-run hook settings the CLI must read.
  */
 export function privateAppData(userDataPath: string): string[] {
-  return ["agent-control", "provider-secrets.bin", "plugin-secrets", "account-homes", "github-oauth.json", "launch-runs"]
+  return ["agent-control", "provider-secrets.bin", "plugin-secrets", "account-homes", "github-oauth.json", "launch-runs", PLUGIN_DATA_FOLDER]
     .map((name) => join(userDataPath, name));
 }
 
@@ -212,8 +256,18 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
     // variable pointing at HOME or above the project would hide them, so it is not followed.
     .filter((folder) => !ownFolders.includes(folder) && !hides(folder));
   const privateData = privateAppData(input.userDataPath);
-  const grants = [...(input.grantedPrivate ?? []), join(input.userDataPath, "launch-runs", safeSegment(input.sessionId))];
   const project = input.cwd;
+  // A project inside plugin data (a plugin environment's worktree) stays this launch's project: that exact folder is
+  // reopened, never its siblings, its plugin's other data or all plugin data. Only when the host placed the launch
+  // there: a folder an agent asked for (a subagent's cwd) could otherwise be a plugin's account homes.
+  const pluginDataRoot = join(input.userDataPath, PLUGIN_DATA_FOLDER);
+  const projectDepth = pluginDataDepth(pathSpellings, pluginDataRoot, project);
+  if (projectDepth >= 0 && projectDepth < 2) throw new Error(`The project ${project} is CanvasTTY's private plugin data.`);
+  if (projectDepth >= 2 && !(input.placedProjects ?? []).some((placed) => placesProject(pathSpellings, pluginDataRoot, placed, project))) {
+    throw new Error(`The project ${project} is inside CanvasTTY's private plugin data, and CanvasTTY did not place this launch there. Only a plugin environment's own folder or a folder the person chose is opened inside plugin data.`);
+  }
+  const grants = [...(input.grantedPrivate ?? []), join(input.userDataPath, "launch-runs", safeSegment(input.sessionId)),
+    ...(projectDepth >= 2 ? [project] : [])];
   const trustedOwn = providerFolders(input.provider, {}, hostHome);
   const trustedOthers = AGENT_PROVIDERS.filter((provider) => provider !== input.provider).flatMap((provider) => {
     const defaults = providerFolders(provider, {}, hostHome);
@@ -243,35 +297,48 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
       if (!withinGrant && !ownAccount) throw new Error(`CLI home ${folder} overlaps protected CanvasTTY data.`);
     }
   }
+  const gitDir = join(project, ".git");
+  const repository = existsSync(join(gitDir, "config"));
   const configSources = input.provider === "opencode" ? openCodeConfigPaths(input.env, input.cwd) : { jsonFiles: [], agentDirectories: [] };
   const socketFolders = [
-    ...Object.entries(input.env)
-      .filter(([name, value]) => /^CANVASTTY_.*_ADDRESS$/u.test(name) && typeof value === "string" && isAbsolute(value))
-      .map(([, value]) => dirname(value!)),
+    ...(input.gatewaySockets ?? []).filter((path) => isAbsolute(path)).map((path) => dirname(path)),
     ...(input.socketFolders ?? []),
     input.sessionTemp,
     join(input.userDataPath, "browser", "runtime"),
     join(input.userDataPath, "lifecycle", "runtime"),
     join(input.userDataPath, "orchestration", "runtime")
   ];
+  const writable = all([
+    ...(input.readOnlyProject ? [] : [project]),
+    input.sessionTemp,
+    ...ownFolders,
+    join(home, ".npm"), join(home, ".bun"), join(xdg.cache, "npm"), join(xdg.cache, "bun")
+  ]);
+  const userData = pathSpellings(input.userDataPath);
+  const readOnlyFolders = writable.some((folder) => userData.some((path) => isWithin(path, folder))) ? userData : [];
+  const fixedFolders = readOnlyFolders.flatMap((path) => writable.filter((folder) => folder !== path && isWithin(path, folder))
+    .flatMap((folder) => ancestorsBelow(folder, path)));
   return {
-    writable: all([
-      ...(input.readOnlyProject ? [] : [project]),
-      input.sessionTemp,
-      ...ownFolders,
-      join(home, ".npm"), join(home, ".bun"), join(xdg.cache, "npm"), join(xdg.cache, "bun")
-    ]),
+    writable,
+    readOnlyFolders,
+    fixedFolders: [...new Set(fixedFolders)],
     writableFiles: all(own.files),
     creatableFolders: all([...ownFolders, join(home, ".npm"), join(home, ".bun")].flatMap((folder) => ancestorsBelow(home, folder))),
     protectedWrites: all([
       // A repository that exists keeps its config (hooksPath, fsmonitor, filters run code when the person uses git
-      // later, outside the layer); a new one may be created, which writes its config.
-      ...(existsSync(join(project, ".git", "config")) ? [join(project, ".git", "config"), join(project, ".git", "config.lock")] : []),
-      ...(input.provider === "codex" ? ownFolders.map((folder) => join(folder, "config.toml")) : []),
+      // later, outside the layer), and its per-worktree config; a new one may be created, which writes its config.
+      ...(repository ? [join(gitDir, "config"), join(gitDir, "config.lock"), join(gitDir, "config.worktree"), join(gitDir, "config.worktree.lock")] : []),
+      // Where git reads the shared config and hooks from. Protected where it exists: an empty placeholder (Linux) would
+      // stop git from working; seatbelt also denies creating it (projectRoots).
+      ...(existsSync(join(gitDir, "commondir")) ? [join(gitDir, "commondir")] : []),
+      // Codex's and Kimi's config.toml hold their permission rules and hooks.
+      ...(input.provider === "codex" || input.provider === "kimi" ? ownFolders.map((folder) => join(folder, "config.toml")) : []),
       ...(input.provider === "claude" ? ownFolders.flatMap((folder) => [join(folder, "settings.json"), join(folder, "settings.local.json")]) : []),
       ...configSources.jsonFiles
     ]),
-    protectedDirectories: all(configSources.agentDirectories.flatMap((folder) => [join(folder, "agent"), join(folder, "agents")])),
+    // Linked worktrees' records (their git folder, `commondir` and config): what git reads when the person works there.
+    protectedDirectories: all([...configSources.agentDirectories.flatMap((folder) => [join(folder, "agent"), join(folder, "agents")]),
+      ...(repository ? [join(gitDir, "worktrees")] : [])]),
     gitHooks: all([join(project, ".git", "hooks")]),
     projectRoots: input.readOnlyProject ? [] : all([project]),
     unreadable: all([...sensitive, ...others, ...privateData]),
@@ -281,6 +348,30 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
     // CanvasTTY's gateways put their sockets when the userData path is too long for one.
     socketPrefixes: all([dirname(dirname(realish(input.sessionTemp))), "/private/tmp", "/tmp"].map((folder) => join(folder, "ctty-")))
   };
+}
+
+/** How many folders below plugin data `path` is (0: plugin data itself), in any spelling; -1 when it is not inside. */
+function pluginDataDepth(spellingsOf: (path: string) => string[], pluginDataRoot: string, path: string): number {
+  const roots = spellingsOf(pluginDataRoot);
+  return Math.max(-1, ...spellingsOf(path).flatMap((candidate) => roots
+    .filter((root) => isWithin(candidate, root))
+    .map((root) => relative(root, candidate).split(/[\\/]+/u).filter(Boolean).length)));
+}
+
+/**
+ * `project` is inside a folder the host placed the launch in, and that folder is itself a folder inside one plugin's
+ * data (never all of it or a whole plugin's data); an environment's folder counts only inside its own plugin's data.
+ */
+function placesProject(spellingsOf: (path: string) => string[], pluginDataRoot: string, placed: PlacedProject, project: string): boolean {
+  if (!isAbsolute(placed.folder)) return false;
+  if (pluginDataDepth(spellingsOf, pluginDataRoot, placed.folder) < 2) return false;
+  if (placed.pluginId !== undefined) {
+    // One folder name (PluginManager's `<plugin-data>/<pluginId>`), and the placed folder strictly inside it.
+    if (!/^[^/\\.][^/\\]*$/u.test(placed.pluginId)) return false;
+    if (pluginDataDepth(spellingsOf, join(pluginDataRoot, placed.pluginId), placed.folder) < 1) return false;
+  }
+  const folders = spellingsOf(placed.folder);
+  return spellingsOf(project).some((candidate) => folders.some((folder) => isWithin(candidate, folder)));
 }
 
 /** `path` is `folder` or inside it, by the host's path rules (separators, a drive on Windows). */

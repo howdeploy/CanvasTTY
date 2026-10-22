@@ -14,7 +14,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  AGENT_RUNTIME_ENV, DECISION_FAIL_CLOSED_ENV, OPENCODE_DECISIONS_ENV, RUNTIME_PROTOCOL_VERSION, permissionGateTimings
+  AGENT_RUNTIME_ENV, DECISION_FAIL_CLOSED_ENV, OPENCODE_DECISIONS_ENV, OPENCODE_DECISION_READS_ENV, RUNTIME_PROTOCOL_VERSION, permissionGateTimings
 } from "../src/agent-runtime/runtime-protocol.mjs";
 import { FAIL_CLOSED_MESSAGE, parseDecision } from "../src/agent-runtime/permission-gate.mjs";
 import { createOpenCodeDecisions } from "../src/agent-runtime/opencode-decisions.mjs";
@@ -262,6 +262,18 @@ test("launch: the decision hook carries the fail-closed flag; a launch without i
   assert.equal(launch.decisions, false);
   assert.equal(JSON.stringify(launch.args).includes(DECISION_FAIL_CLOSED_ENV), false);
   assert.equal(JSON.stringify(launch.args).includes("permission-gate"), false);
+  // Base protection off, a decision plugin applies: the fail-closed hook covers shells and writes, never reads.
+  const pluginOnly = new DecisionHooks({ baseProtection: () => false, services: () => [{ pluginId: "p", pluginName: "P", serviceId: "s", mayAllow: false }],
+    call: async () => null, session: () => null });
+  const pluginBridge = new AgentRuntimeBridge(gateway, { ...options, coreHooksEnabled: true, wantsDecisions: (provider) => pluginOnly.wanted(provider),
+    decisionReads: () => pluginOnly.checksReads() });
+  const pluginLaunch = pluginBridge.prepareLaunch({ terminalSessionId: "b", provider: "claude", cwd: root });
+  assert.equal(pluginLaunch.decisions, true);
+  assert.equal(JSON.parse(pluginLaunch.args[1]).hooks.PreToolUse[0].matcher, "Bash|Write|Edit|MultiEdit|NotebookEdit");
+  const on = new DecisionHooks({ baseProtection: () => true, services: () => [], call: async () => null, session: () => null });
+  assert.equal(on.checksReads(), true);
+  assert.equal(new DecisionHooks({ baseProtection: () => { throw new Error("settings"); }, services: () => [], call: async () => null, session: () => null }).checksReads(), true,
+    "a settings read that fails counts as on");
 });
 
 test("OpenCode: with decisions on, a check that cannot be made fails the tool call; ordinary answers are unchanged", async () => {
@@ -282,7 +294,12 @@ test("OpenCode: with decisions on, a check that cannot be made fails the tool ca
     await createOpenCodeDecisions({ env, send: async () => ({ behavior, message: "", unavailable: false }) }).guard(...call);
   }
   // Tools that are not checked are never sent and never fail.
-  await createOpenCodeDecisions({ env, send: async () => null }).guard({ tool: "read", callID: "c2" }, { args: { filePath: "/etc/hosts" } });
+  await createOpenCodeDecisions({ env, send: async () => null }).guard({ tool: "webfetch", callID: "c2" }, { args: { url: "https://example.com" } });
+  // Base protection off at launch: a read-only file tool is not checked, so it never fails closed.
+  await createOpenCodeDecisions({ env, send: async () => null }).guard({ tool: "read", callID: "c3" }, { args: { filePath: "/etc/hosts" } });
+  // Base protection on at launch: it is checked (for CanvasTTY's private data), so it fails closed like the others.
+  await assert.rejects(createOpenCodeDecisions({ env: { ...env, [OPENCODE_DECISION_READS_ENV]: "1" }, send: async () => null })
+    .guard({ tool: "read", callID: "c4" }, { args: { filePath: "/etc/hosts" } }), (error) => error.message === FAIL_CLOSED_MESSAGE);
 });
 
 test("the gate script stays importable without side effects (no socket, no stdin read)", async () => {

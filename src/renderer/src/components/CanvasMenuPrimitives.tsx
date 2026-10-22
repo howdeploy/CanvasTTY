@@ -66,9 +66,10 @@ export function CanvasMenuSub({ children }: { children: ReactNode }): React.JSX.
   return <span className="canvas-menu__sub">{children}</span>;
 }
 
-export function CanvasMenuChevron(): React.JSX.Element {
+/** `side`: the submenu opens to that side, and the chevron points there; without it, it points down. */
+export function CanvasMenuChevron({ side }: { side?: "left" | "right" } = {}): React.JSX.Element {
   return (
-    <span className="canvas-menu__chevron">
+    <span className={side ? `canvas-menu__chevron canvas-menu__chevron--${side}` : "canvas-menu__chevron"}>
       <UiIcon name="chevron" size="1em" />
     </span>
   );

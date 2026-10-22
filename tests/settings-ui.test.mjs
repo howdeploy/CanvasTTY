@@ -293,6 +293,8 @@ test("the redesigned menus use shared tokens, em geometry, and the configured UI
   const menuStyleEnd = styles.indexOf(".sticky-note-card", menuStyleStart);
   const menuStyles = styles.slice(menuStyleStart, menuStyleEnd);
   assert.doesNotMatch(menuStyles, /#[\da-f]{3,8}|rgba?\(/i);
+  assert.match(menuStyles, /\.canvas-menu__check \{[^}]*color: var\(--primary\)/);
+  assert.match(menuStyles, /\.canvas-menu__row:disabled \{/);
   assert.match(styles, /\.launcher-dock \{[^}]*font-size: calc\(13px \* var\(--ui-scale, 1\)\)/);
   assert.match(styles, /--card-header-height: calc\(54px \* var\(--ui-scale, 1\)\)/);
   assert.match(styles, /\.terminal-card__header \{[^}]*font-size: calc\(13px \* var\(--ui-scale, 1\)\)/);

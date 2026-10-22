@@ -398,11 +398,20 @@ button { border: 0; }
 .canvas-menu__kbd { padding: .2em .55em; border-radius: .4em; color: var(--text-dark); background: var(--secondary); font: 400 .78em/1.2 var(--font-mono); white-space: nowrap; }
 .canvas-menu__sub { color: var(--text-muted-on-dark); font-size: .92em; font-weight: 400; white-space: nowrap; }
 .canvas-menu__chevron { display: inline-flex; color: var(--text-muted-on-dark); }
+/* A submenu that opens to the side: the same chevron, turned toward it. */
+.canvas-menu__chevron--right { transform: rotate(-90deg); }
+.canvas-menu__chevron--left { transform: rotate(90deg); }
+/* The hint explains the disabled rows above it: aligned with their text (1.55em of the row font) and as quiet as they are. */
+.canvas-menu__hint { margin: 0; padding: .3em .8em .45em calc(1.55em / .92); color: var(--text); opacity: .5; font-size: .92em; line-height: 1.35; }
+.canvas-menu__check { display: inline-flex; color: var(--primary); }
+.canvas-menu__row:disabled { cursor: default; opacity: .5; }
+.canvas-menu__row:disabled:hover { background: transparent; }
 .canvas-menu__provider { min-width: 0; display: inline-flex; align-items: center; gap: .75em; overflow: hidden; text-overflow: ellipsis; }
 .canvas-menu__provider .provider-icon--small { --provider-icon-art-size: 1em; width: 1.1em; height: 1.1em; }
 .canvas-menu__submenu-anchor { position: relative; }
 .canvas-menu__submenu { top: -.45em; left: calc(100% + .55em); z-index: 1; width: 19em; min-width: 19em; margin: 0; }
 .canvas-menu__submenu--left { right: calc(100% + .55em); left: auto; }
+.canvas-menu__submenu--up { top: auto; bottom: -.45em; }
 .canvas-menu__palette-row { cursor: default; }
 .canvas-menu__swatches { display: flex; gap: .45em; padding: .15em .3em; }
 .canvas-menu__swatch { width: 1.5em; height: 1.5em; flex: 0 0 auto; border: .08em solid color-mix(in srgb, var(--surface) 75%, var(--text)); border-radius: .45em; outline: 0; cursor: pointer; }
@@ -676,6 +685,12 @@ button { border: 0; }
 .plugin-canvas-card--summary .plugin-canvas-card__summary { display: flex; }
 
 .browser-card { --card-header-height: calc(54px * var(--ui-scale, 1)); position: absolute; left: 0; top: 0; width: 920px; height: 620px; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 17px; color: white; background: #272934; box-shadow: var(--shadow-lg); transition: box-shadow .15s ease; }
+/* Auto-sort: sorted windows glide to their new place, without motion when reduced motion is requested. The Browser
+   card jumps: its native page view is placed from the card's measured rect and would stay at the start of a glide. */
+.workspace--auto-sorting :is(.terminal-card, .plugin-canvas-card) { transition: transform .24s ease, box-shadow .15s ease; }
+/* Zoomed out (summary), the outline of the windows a sort moved stays as thick on screen as at 50 % zoom. */
+.workspace--auto-sorting :is(.terminal-card--summary.terminal-card--selected, .plugin-canvas-card--summary.plugin-canvas-card--selected, .browser-card--summary.browser-card--selected) { box-shadow: 0 0 0 calc(.375rem * var(--summary-scale, 1)) var(--primary), var(--shadow-lg); }
+@media (prefers-reduced-motion: reduce) { .workspace--auto-sorting :is(.terminal-card, .plugin-canvas-card) { transition: none; } }
 .browser-card:focus-within, .browser-card--selected { box-shadow: 0 0 0 3px var(--primary), var(--shadow-lg); }
 .browser-card__header { height: var(--card-header-height); padding: 0 calc(11px * var(--ui-scale, 1)) 0 calc(15px * var(--ui-scale, 1)); display: flex; align-items: center; justify-content: space-between; gap: calc(12px * var(--ui-scale, 1)); color: white; background: var(--surface-soft); cursor: move; font-size: calc(13px * var(--ui-scale, 1)); touch-action: none; }
 .browser-card__title { min-width: 0; display: flex; align-items: center; gap: .77em; }

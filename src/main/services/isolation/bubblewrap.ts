@@ -1,6 +1,9 @@
 import { dirname, join } from "node:path";
 import type { IsolationPaths } from "./isolationPaths.ts";
 
+/** What is at a path, as far as mounting goes; null when nothing is there. */
+export type PathKind = "file" | "directory" | "socket" | null;
+
 /** The project's own git hooks folder. */
 export function projectHooks(cwd: string): string {
   return join(cwd, ".git", "hooks");
@@ -13,8 +16,9 @@ function within(path: string, folder: string): boolean {
 /**
  * The bubblewrap arguments of one isolated agent on Linux: the whole file system read-only, the project, this
  * launch's temporary folder and the CLI's own folders writable, an empty tmpfs over every folder it must not read (and
- * /dev/null over such files), its own PID namespace (it cannot signal the person's processes) and the person's user
- * runtime folder hidden (the systemd user manager, D-Bus session bus, SSH agent and Podman sockets live there).
+ * /dev/null over such files and sockets), CanvasTTY's gateway socket folders read-only, its own PID namespace (it
+ * cannot signal the person's processes) and the person's user runtime folder hidden (the systemd user manager, D-Bus
+ * session bus, SSH agent and Podman sockets live there).
  *
  * Linux cannot filter which Unix sockets a process connects to, so a socket outside those hidden folders (a system
  * Docker socket the person's account may use) stays reachable; docs/installing-and-security.md says so. `exists`
@@ -23,7 +27,7 @@ function within(path: string, folder: string): boolean {
 export function bubblewrapArguments(
   paths: IsolationPaths,
   launch: { command: string; args: readonly string[]; cwd: string; runtimeDir?: string },
-  exists: (path: string) => "file" | "directory" | null
+  exists: (path: string) => PathKind
 ): string[] {
   const args = [
     "--die-with-parent",
@@ -39,19 +43,37 @@ export function bubblewrapArguments(
     seen.add(path);
     args.push("--bind", path, path);
   }
+  // CanvasTTY's data folder inside a writable project: its parent folders there become mount points (a mount point
+  // cannot be renamed: EBUSY), the folder itself read-only over it, then its writable folders bound again.
+  for (const path of paths.fixedFolders) {
+    if (exists(path) === "directory") args.push("--bind", path, path);
+  }
+  for (const path of paths.readOnlyFolders) {
+    if (exists(path) !== "directory") continue;
+    args.push("--ro-bind", path, path);
+    for (const folder of seen) if (folder !== path && within(folder, path)) args.push("--bind", folder, folder);
+  }
+  // The CLI's own writable single files (such as ~/.claude.json), each bound on its own unless a writable folder bound
+  // above already contains it. (Linked-worktree Git metadata is not among them: a bind cannot allow atomic ref updates
+  // to one branch without making its whole folder writable, so it stays read-only under bubblewrap.)
   for (const path of paths.writableFiles) {
-    if (exists(path) === "file") args.push("--bind", path, path);
+    if (exists(path) === "file" && ![...seen].some((folder) => within(path, folder))) args.push("--bind", path, path);
   }
   for (const path of paths.unreadable) {
     const kind = exists(path);
     if (kind === "directory") args.push("--tmpfs", path);
-    else if (kind === "file") args.push("--ro-bind", "/dev/null", path);
+    // A socket is hidden like a file: /dev/null over it, so connecting fails.
+    else if (kind === "file" || kind === "socket") args.push("--ro-bind", "/dev/null", path);
   }
   // What this launch was handed stays read-only (as in the macOS profile), except the CLI's own moved home, which is
   // one of its writable folders.
   for (const path of paths.readableAgain) {
     if (exists(path)) args.push(seen.has(path) ? "--bind" : "--ro-bind", path, path);
   }
+  // The project's repository folder becomes a mount point before anything is mounted inside it: a mount point cannot
+  // be renamed (EBUSY), so `.git` cannot be moved away from the read-only mounts below and back.
+  const repository = join(launch.cwd, ".git");
+  if ([...seen].some((folder) => within(launch.cwd, folder)) && exists(repository) === "directory") args.push("--bind", repository, repository);
   // Last, over every bind above (a rebound home included): the read-only files and the project's git hooks.
   for (const path of [...paths.gitHooks, ...(paths.protectedDirectories ?? []), ...paths.protectedWrites]) {
     const kind = exists(path);
@@ -83,16 +105,29 @@ export function bubblewrapArguments(
     else if (!exists(info)) args.push("--tmpfs", info);
   }
   if (launch.runtimeDir && exists(launch.runtimeDir) === "directory") args.push("--tmpfs", launch.runtimeDir);
-  // CanvasTTY's gateway sockets may sit in the hidden runtime folder or in /tmp; bind their folders back.
+  // CanvasTTY's gateway sockets may sit in the hidden runtime folder or in /tmp; bind their folders back read-only.
+  // Connecting to a Unix socket needs no write access to its folder, and a writable one would let an agent remove a
+  // gateway socket and bind its own in its place, receiving other agents' requests. This launch's own temporary
+  // folder is already bound writable above.
+  // A bind takes the host folder as it is, so one over a hidden path would show it again: refused, never mounted.
+  // Over a writable folder (the project, a CLI home) it would make that read-only and undo the throwaway hooks
+  // folder above: refused too. Core gateways use dedicated folders, so neither happens with them.
+  const hidden = [...paths.unreadable, ...(launch.runtimeDir ? [launch.runtimeDir] : [])];
+  const writable = [...seen, ...paths.writableFiles];
   for (const path of paths.socketFolders) {
-    if (exists(path) === "directory" && !seen.has(path)) args.push("--bind", path, path);
+    if (exists(path) !== "directory" || seen.has(path)) continue;
+    const covered = hidden.find((secret) => within(secret, path));
+    if (covered) throw new Error(`The gateway socket folder ${path} contains ${covered}, which the agent may not read.`);
+    const shadowed = writable.find((folder) => within(folder, path));
+    if (shadowed) throw new Error(`The gateway socket folder ${path} contains ${shadowed}, which the agent writes; it is not mounted over it.`);
+    args.push("--ro-bind", path, path);
   }
   args.push("--chdir", launch.cwd, "--", launch.command, ...launch.args);
   return args;
 }
 
 /** A missing `path` whose nearest existing ancestor is one of the writable folders (or inside one). */
-export function creatableInside(path: string, writable: readonly string[], exists: (path: string) => "file" | "directory" | null): boolean {
+export function creatableInside(path: string, writable: readonly string[], exists: (path: string) => PathKind): boolean {
   let current = dirname(path);
   for (let i = 0; i < 128 && !exists(current); i++) {
     const parent = dirname(current);

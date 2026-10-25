@@ -137,6 +137,8 @@ export class EnvironmentRegistry {
     provider: ProviderId;
     cwd: string;
     choice: SessionEnvironmentChoice;
+    /** The task's original project (the folder of the agent the person started), for a worktree of that repository. */
+    projectRoot?: string;
   }): Promise<PreparedEnvironment> {
     const found = this.lookup(request.choice.pluginId, request.choice.kind);
     if (!found) return { ok: false, reason: `Environment ${request.choice.kind} from plugin ${request.choice.pluginId} is not available.` };
@@ -145,6 +147,7 @@ export class EnvironmentRegistry {
       kind: request.choice.kind,
       provider: request.provider,
       cwd: request.cwd,
+      ...(request.projectRoot ? { projectRoot: request.projectRoot } : {}),
       options: request.choice.options ?? {}
     }, undefined, {
       budgetMs: LATE_ANSWER_BUDGET_MS,

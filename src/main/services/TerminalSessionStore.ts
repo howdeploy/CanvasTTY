@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, normalize } from "node:path";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import type {
   LaunchProfileId,
@@ -25,6 +25,11 @@ export const MAX_PLUGIN_SLOT_BYTES = 4_096;
 const MAX_OPTION_PLUGINS = 16;
 
 export interface PersistedTerminalSession {
+  /**
+   * Host-only: the folders a plugin environment that declared `isolated` ran this card for (rollback point restores
+   * refuse them). A placed card saved without it counts as unknown scope.
+   */
+  isolatedEnvironmentScopes?: { roots: string[]; ambiguous: boolean };
   id: string;
   provider: ProviderId;
   profile: LaunchProfileId;
@@ -54,6 +59,11 @@ export interface PersistedTerminalSession {
   environmentChoice?: SessionEnvironmentChoice;
   /** The plugin that started the card (EP-4 `sessions.create`); it keeps control after a restore. */
   ownerPluginId?: string;
+  /**
+   * The folder the person chose for a card that an environment then placed elsewhere (its worktree): the task's
+   * original project, which the isolation layer validates that worktree against.
+   */
+  projectRoot?: string;
   /** The model and reasoning effort its launches ask the CLI for (launchModel.ts). */
   model?: string;
   effort?: ReasoningEffort;
@@ -218,7 +228,7 @@ function normalizeStoredThreadId(provider: ProviderId, candidate: unknown): stri
 }
 
 /** What core keeps beside the live metadata: nothing here is scrollback, prompts or secrets. */
-export type PersistedSessionExtras = Pick<PersistedTerminalSession, "options" | "environment" | "environmentChoice" | "ownerPluginId" | "gitAuditSince"> & {
+export type PersistedSessionExtras = Pick<PersistedTerminalSession, "options" | "environment" | "environmentChoice" | "ownerPluginId" | "projectRoot" | "gitAuditSince" | "isolatedEnvironmentScopes"> & {
   /** Overrides the derived state while a card is held stopped (its environment is unavailable). */
   heldState?: PersistedLastState;
 };
@@ -246,14 +256,29 @@ export function persistedTerminalSession(
     lastState,
     ...(lastState !== "running" ? { exitCode: metadata.exitCode } : {}),
     restore: metadata.skipRestore !== true,
+    ...(extras.isolatedEnvironmentScopes ? { isolatedEnvironmentScopes: structuredClone(extras.isolatedEnvironmentScopes) } : {}),
     ...(extras.options ? { options: structuredClone(extras.options) } : {}),
     ...(extras.environment ? { environment: structuredClone(extras.environment) } : {}),
     ...(extras.environmentChoice && !extras.environment ? { environmentChoice: structuredClone(extras.environmentChoice) } : {}),
     ...(extras.ownerPluginId ? { ownerPluginId: extras.ownerPluginId } : {}),
+    ...(extras.projectRoot && extras.environment ? { projectRoot: extras.projectRoot } : {}),
     ...(extras.gitAuditSince !== undefined ? { gitAuditSince: extras.gitAuditSince } : {}),
     ...(metadata.model !== undefined ? { model: metadata.model } : {}),
     ...(metadata.effort !== undefined ? { effort: metadata.effort } : {})
   };
+}
+
+/** Invalid or missing evidence on a placed card never regains local restore authority: it reads as unknown scope. */
+function normalizeIsolationEvidence(value: unknown, placed: boolean): PersistedTerminalSession["isolatedEnvironmentScopes"] {
+  if (value === undefined) return placed ? { roots: [], ambiguous: true } : undefined;
+  const invalid = { roots: [], ambiguous: true };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return invalid;
+  const evidence = value as { roots?: unknown; ambiguous?: unknown };
+  if (Object.keys(value).some((key) => key !== "roots" && key !== "ambiguous") || typeof evidence.ambiguous !== "boolean"
+    || !Array.isArray(evidence.roots) || evidence.roots.length > 32) return invalid;
+  if (evidence.roots.some((root) => typeof root !== "string" || root.length === 0 || root.length > 4096 || root.includes("\0")
+    || !isAbsolute(root) || normalize(root) !== root)) return invalid;
+  return { roots: [...new Set(evidence.roots as string[])], ambiguous: evidence.ambiguous };
 }
 
 export function normalizePersistedTerminalSessions(candidate: unknown): PersistedTerminalSessionState {
@@ -308,6 +333,7 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
     // Likewise a launch whose environment was chosen but not prepared yet.
     const environmentChoice = environment ? undefined : normalizeEnvironmentChoice(session.environmentChoice);
     if (!environment && session.environmentChoice !== undefined && !environmentChoice) continue;
+    const isolation = normalizeIsolationEvidence(session.isolatedEnvironmentScopes, Boolean(environment));
     sessions.push({
       id: session.id,
       provider: session.provider as ProviderId,
@@ -328,8 +354,10 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
       restore: session.restore !== false,
       ...(options ? { options } : {}),
       ...(environment ? { environment } : {}),
+      ...(isolation ? { isolatedEnvironmentScopes: isolation } : {}),
       ...(environmentChoice ? { environmentChoice } : {}),
       ...(isPluginId(session.ownerPluginId) ? { ownerPluginId: session.ownerPluginId } : {}),
+      ...(environment && typeof session.projectRoot === "string" && isAbsolute(session.projectRoot) ? { projectRoot: session.projectRoot } : {}),
       ...(typeof session.gitAuditSince === "number" && Number.isFinite(session.gitAuditSince) && session.gitAuditSince > 0
         ? { gitAuditSince: session.gitAuditSince } : {}),
       // A model or effort this CLI would not take is dropped: the card restores on the CLI's default.

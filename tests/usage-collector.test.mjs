@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { appendFile, chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises';
@@ -193,7 +193,7 @@ test('Hermes queries select accounting columns only, read-only, and never touch 
   }).collect(T0);
   const statements = argumentsSeen.filter((argument) => /^\s*SELECT/i.test(argument));
   assert.equal(statements.length, 2);
-  assert.ok(argumentsSeen.includes('-readonly') && argumentsSeen.includes('-safe') && argumentsSeen.some((a) => /^file:.*\?mode=ro&immutable=1$/.test(a)));
+  assert.ok(argumentsSeen.includes('-readonly') && argumentsSeen.includes('-safe') && argumentsSeen.some((a) => /^file:.*\?mode=ro$/.test(a)));
   for (const statement of statements) {
     assert.doesNotMatch(statement, /\*|system_prompt|title|messages|content|INSERT|UPDATE|DELETE|CREATE|DROP|ATTACH|PRAGMA\s/i);
   }
@@ -226,6 +226,98 @@ test('Hermes WAL stores: live writer, stopped writer without -wal/-shm, and orph
   const orphaned = await collectUntouched(collector, T0 + 4 * MINUTE, home);
   assert.match(orphaned.coverage.join('\n'), /Hermes default: WAL without shared-memory index/);
   assert.deepEqual((await readdir(dir)).sort(), ['state.db', 'state.db-wal']);
+});
+
+/** A collector whose sqlite3 calls are recorded (database URI per call) and can be made to fail first. */
+function recordingCollector(home, uris, failFirst = 0) {
+  let failures = failFirst;
+  return new LocalUsageCollector(home, {}, {}, {
+    sqlite: SQLITE,
+    sqliteRunner: async (file, args, options) => {
+      uris.push(args.find((argument) => argument.startsWith('file:')));
+      if (failures > 0) {
+        failures--;
+        throw Object.assign(new Error('Command failed'), { stderr: 'Error: in prepare, database is locked (5)' });
+      }
+      return { stdout: execFileSync(file, args, { ...options, encoding: 'utf8' }) };
+    }
+  });
+}
+
+/**
+ * A sqlite3 process holding `statements` open in an exclusive transaction. The writer runs in its own process: POSIX
+ * locks are per process, and this process opening and closing the database (snapshots, header reads) would drop them.
+ */
+async function exclusiveWriter(t, db, statements) {
+  const child = spawn(SQLITE, ['-init', devNull, '-batch', db], { env: {}, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
+  let output = '';
+  const ready = new Promise((resolve, reject) => {
+    child.stdout.on('data', (chunk) => { output += chunk; if (output.includes('writer-ready')) resolve(); });
+    child.once('exit', () => reject(new Error(`writer exited early: ${output}`)));
+  });
+  child.stdin.write(`BEGIN EXCLUSIVE; ${statements}; SELECT 'writer-ready';\n`);
+  await ready;
+  return async () => {
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    child.stdin.end('COMMIT;\n.quit\n');
+    await exited;
+  };
+}
+
+test('Hermes rollback-journal stores are read with locks, never as immutable; a busy writer is retried, then skipped', { skip: needsSqlite }, async (t) => {
+  const home = await fixture(t);
+  const dir = join(home, '.hermes');
+  const path = await hermesDb(dir, session('r', 'openai-codex', [0, 0, 0, 0], T0 - DAY) + modelRow('r', 'gpt-5.5', 'openai-codex', '', [100, 10, 0, 0], T0 - DAY, T0 - DAY));
+  const header = await readFile(path);
+  assert.deepEqual([header[18], header[19]], [1, 1], 'the fixture is a rollback-journal database');
+  const uris = [];
+  const collector = recordingCollector(home, uris);
+  await collectUntouched(collector, T0, home);
+  assert.ok(uris.length > 0 && uris.every((uri) => /\?mode=ro$/.test(uri)), `rollback-journal reads take locks: ${uris.join(' ')}`);
+
+  // A writer in the middle of a transaction holds the exclusive lock: an immutable read would ignore it and could
+  // see half-written pages. The locked read waits, retries a bounded number of times, then skips this poll.
+  const commit = await exclusiveWriter(t, path, 'UPDATE session_model_usage SET input_tokens = 150');
+  uris.length = 0;
+  // Not collectUntouched: the writer's rollback journal exists while its transaction is open.
+  const busy = await collector.collect(T0 + MINUTE);
+  assert.deepEqual(busy.events, []);
+  assert.match(busy.coverage.join('\n'), /Hermes default: database is busy; not collected this time\./);
+  assert.equal(uris.length, 3, 'three attempts, then the poll moves on');
+  assert.deepEqual((await readdir(dir)).sort(), ['state.db', 'state.db-journal'], 'only the writer\'s own journal exists');
+  await commit();
+  assert.deepEqual((await readdir(dir)).sort(), ['state.db'], 'no side files remain');
+
+  const after = await collectUntouched(collector, T0 + 2 * MINUTE, home);
+  assert.deepEqual(after.events.map((e) => e.input), [50], 'the committed change is counted on the next poll');
+  assert.deepEqual((await readdir(dir)).sort(), ['state.db'], 'reading created no side files');
+
+  // A transient lock is retried within the same poll.
+  const retried = [];
+  sql(path, `UPDATE session_model_usage SET input_tokens = 170`);
+  const second = recordingCollector(home, retried, 1);
+  const first = await collectUntouched(second, T0 + 3 * MINUTE, home);
+  assert.doesNotMatch(first.coverage.join('\n'), /busy/);
+  assert.equal(retried.length, 3, 'one failed attempt, then the schema and the accounting query');
+});
+
+test('Hermes WAL stores without side files keep the immutable read', { skip: needsSqlite }, async (t) => {
+  const { DatabaseSync } = await import('node:sqlite').catch(() => ({}));
+  if (!DatabaseSync) return t.skip('node:sqlite unavailable');
+  const home = await fixture(t);
+  const dir = join(home, '.hermes'), path = join(dir, 'state.db');
+  await mkdir(dir);
+  const writer = new DatabaseSync(path);
+  writer.exec('PRAGMA journal_mode=WAL;' + SCHEMA + session('w', 'openai-codex', [0, 0, 0, 0], T0 - DAY));
+  writer.close();
+  assert.deepEqual((await readdir(dir)).sort(), ['state.db']);
+  const header = await readFile(path);
+  assert.deepEqual([header[18], header[19]], [2, 2], 'the fixture is a WAL database');
+  const uris = [];
+  await collectUntouched(recordingCollector(home, uris), T0, home);
+  assert.ok(uris.length > 0 && uris.every((uri) => /\?mode=ro&immutable=1$/.test(uri)), uris.join(' '));
+  assert.deepEqual((await readdir(dir)).sort(), ['state.db']);
 });
 
 // ---- JSONL fixtures

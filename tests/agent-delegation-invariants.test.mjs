@@ -120,6 +120,27 @@ test("spawn_agent cancelled before or while the subagent starts leaves no card a
   assert.deepEqual(children(), [], "its card was closed");
 });
 
+test("concurrent environment resolutions cannot exceed the live subagent limit", async (t) => {
+  const { project } = await folders(t);
+  const { terminals } = managerWith(t);
+  const pending = [];
+  const control = new AgentControlService(terminals, {
+    limits: () => ({ maxDepth: 2, maxSubagents: 1 }),
+    resolveSubagentEnvironment: () => new Promise(resolve => pending.push(resolve))
+  });
+  const parent = terminals.create({ provider: "codex", profile: "normal", cwd: project, position: at, role: "orchestrator" });
+  const request = { parentSessionId: parent.id, provider: "codex", cwd: project };
+  const first = control.spawn(request);
+  const second = control.spawn(request);
+  const results = Promise.allSettled([first, second]);
+  assert.equal(pending.length, 2);
+  for (const resolve of pending) resolve(null);
+  const settled = await results;
+  assert.equal(settled.filter(result => result.status === "fulfilled").length, 1);
+  assert.match(settled.find(result => result.status === "rejected").reason.message, /already runs 1 live subagent/u);
+  assert.equal(control.children(parent.id).length, 1);
+});
+
 test("YOLO is enforced in the main process: acknowledged by the person, never for a subagent", async (t) => {
   const { project } = await folders(t);
   const { terminals } = managerWith(t, { acknowledged: ["claude"] });

@@ -56,6 +56,7 @@ import {
 } from "./lib/skinStyles";
 import { TitleBar } from "./components/TitleBar";
 import { Toast } from "./components/Toast";
+import { pluginServiceNoticeKind, pluginServiceNoticeSection, pluginServiceNoticeText } from "../../shared/pluginServiceNotice.ts";
 import { environmentOptions } from "./features/launcher/LaunchOptionsSection";
 import { UpdateNotice } from "./components/UpdateNotice";
 import { resolveAppearanceSettings } from "./features/settings/appearanceSettings";
@@ -71,6 +72,9 @@ import type { FileSessionOption } from "./features/files/FileBrowserCard";
 import { GitRiskNotice } from "./features/terminal/GitRiskNotice";
 import { UsageHistoryPanel } from "./features/usage/UsageHistoryPanel";
 import { WorkspaceCanvas } from "./features/workspace/WorkspaceCanvas";
+import type { PluginReviewRequest } from "./features/terminal/pluginReviewUiState";
+import { checkpointsHostSurface, pluginReviewHostSurface } from "./features/terminal/cardDialogSurfaces";
+import { preloadWhenIdle, usePreloadedSurface } from "./lib/preloadedSurface";
 import { createCameraStore } from "./features/workspace/cameraStore";
 import { isPixelSkinThemeId } from "./features/skins/skinCatalog";
 import { isPixelSkinPackId } from "./features/skins/SkinAssets";
@@ -362,10 +366,21 @@ export function App(): React.JSX.Element {
   const [launchPosition, setLaunchPosition] = useState<Point | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openUpdatesRequest, setOpenUpdatesRequest] = useState(0);
+  const [openSectionRequest, setOpenSectionRequest] = useState<{ section: "agents" | "plugins"; id: number } | null>(null);
   const [shortcutReferenceOpen, setShortcutReferenceOpen] = useState(false);
   const [usageHistoryOpen, setUsageHistoryOpen] = useState(false);
   /** App root outside the canvas transform; overlays portal here to inherit the theme tokens. */
   const [overlayHost, setOverlayHost] = useState<HTMLDivElement | null>(null);
+  // The change review a card action answered with (rendered here, inside the themed tree, as a modal dialog).
+  const [pluginReview, setPluginReview] = useState<PluginReviewRequest | null>(null);
+  // A card's rollback points dialog (its "Rollback points…" menu item).
+  const [checkpointsFor, setCheckpointsFor] = useState<{ sessionId: string; cardTitle: string } | null>(null);
+  // Out of the startup bundle, preloaded once the app is idle, rendered without a Suspense wait (see preloadedSurface).
+  const PluginReviewHost = usePreloadedSurface(pluginReviewHostSurface, pluginReview !== null);
+  const CheckpointsHost = usePreloadedSurface(checkpointsHostSurface, checkpointsFor !== null);
+  useEffect(() => preloadWhenIdle([pluginReviewHostSurface, checkpointsHostSurface]), []);
+  // A modal dialog owns the keyboard: no canvas shortcut fires underneath it and the native Browser is hidden.
+  const modalDialogOpen = shortcutReferenceOpen || pluginReview !== null || checkpointsFor !== null;
   const [homeEditDraft, setHomeEditDraft] = useState<HomeEditDraft | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [browserSelected, setBrowserSelected] = useState(false);
@@ -373,6 +388,7 @@ export function App(): React.JSX.Element {
   const [fullscreenSessionId, setFullscreenSessionId] = useState<string | null>(null);
   const [pendingTerminalUrl, setPendingTerminalUrl] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [toastAction, setToastAction] = useState<{ label: string; run(): void } | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ type: "idle" });
   const [dismissedUpdateNotice, setDismissedUpdateNotice] = useState<string | null>(null);
   const [updateNoticePending, setUpdateNoticePending] = useState(false);
@@ -391,7 +407,29 @@ export function App(): React.JSX.Element {
     fullscreen: false
   });
 
-  const showToast = useCallback((message: string): void => setToast(message), []);
+  const showToast = useCallback((message: string): void => {
+    setToastAction(null);
+    setToast(message);
+  }, []);
+  // A plugin page could not reach its service because its native code or module is off: say so with the way there.
+  const showPluginError = useCallback((message: string): void => {
+    const notice = pluginServiceNoticeKind(message);
+    if (!notice) {
+      showToast(message);
+      return;
+    }
+    const section = pluginServiceNoticeSection(notice);
+    setToast(pluginServiceNoticeText(notice, settings.locale));
+    setToastAction({
+      label: pluginServiceNoticeText("open", settings.locale),
+      run: () => {
+        setToast(null);
+        setToastAction(null);
+        setSettingsOpen(true);
+        setOpenSectionRequest((current) => ({ section, id: (current?.id ?? 0) + 1 }));
+      }
+    });
+  }, [settings.locale, showToast]);
   const fileSessionOptions = useMemo<FileSessionOption[]>(
     () => sessions.map((session) => ({ sessionId: session.id, label: session.title })),
     [sessions]
@@ -468,9 +506,13 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(() => setToast(null), 2_600);
+    // A toast with a button stays long enough to reach it.
+    const timer = window.setTimeout(() => {
+      setToast(null);
+      setToastAction(null);
+    }, toastAction ? 8_000 : 2_600);
     return () => window.clearTimeout(timer);
-  }, [toast]);
+  }, [toast, toastAction]);
 
   useEffect(() => {
     const unsubscribe = window.canvasTTY.window.onState(setWindowState);
@@ -1881,7 +1923,7 @@ export function App(): React.JSX.Element {
       setRenamingSessionId(activeSessionId);
     };
     const handleShortcut = (event: KeyboardEvent): void => {
-      if (shortcutReferenceOpen) return;
+      if (modalDialogOpen) return;
       if (handleMacNativeSelectAll(event, window.canvasTTY.window.isMacOS)) return;
       if (handoffRemarkIds !== null) return;
       if (shouldKeepNativeKeyboardInput(event.target, window.canvasTTY.window.isMacOS, event)) return;
@@ -1907,7 +1949,7 @@ export function App(): React.JSX.Element {
     };
 
     const handlePointerShortcut = (event: PointerEvent): void => {
-      if (shortcutReferenceOpen || usageHistoryOpen || handoffRemarkIds !== null) return;
+      if (modalDialogOpen || usageHistoryOpen || handoffRemarkIds !== null) return;
       if (isShortcutCaptureTarget(event.target) || isRenameInputTarget(event.target)) return;
       const action = matchesPointerShortcut(event, settings.shortcuts.home)
         ? "home"
@@ -1932,7 +1974,7 @@ export function App(): React.JSX.Element {
       window.removeEventListener("pointerdown", handlePointerShortcut, true);
       stopTerminalFocus();
     };
-  }, [activeSessionId, fullscreenSessionId, goHome, handoffRemarkIds, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, shortcutReferenceOpen, showToast, usageHistoryOpen, toggleSessionFullscreen]);
+  }, [activeSessionId, fullscreenSessionId, goHome, handoffRemarkIds, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, modalDialogOpen, showToast, usageHistoryOpen, toggleSessionFullscreen]);
 
   const appearance = resolveAppearanceSettings(settings);
   const rootClasses = useMemo(
@@ -1988,7 +2030,7 @@ export function App(): React.JSX.Element {
           limitsLoadState={limitsLoadState}
           plugins={plugins}
           browser={browser}
-          browserViewVisible={!settingsOpen && !usageHistoryOpen && !shortcutReferenceOpen && launchProvider === null && pendingTerminalUrl === null && handoffRemarkIds === null}
+          browserViewVisible={!settingsOpen && !usageHistoryOpen && !modalDialogOpen && launchProvider === null && pendingTerminalUrl === null && handoffRemarkIds === null}
           homeEditing={homeEditDraft !== null}
           camera={cameraStore}
           onCameraChange={changeCamera}
@@ -1999,13 +2041,15 @@ export function App(): React.JSX.Element {
           onOpenTerminal={(position) => void openTerminal(position)}
           onOpenBrowser={openBrowserFromUi}
           onOpenTerminalUrl={(url) => void openTerminalUrl(url)}
+          onPluginReview={setPluginReview}
+          onOpenCheckpoints={(sessionId, cardTitle) => setCheckpointsFor({ sessionId, cardTitle })}
           onRequestMedia={requestMedia}
           onRemoveMedia={removeMedia}
           onHomeLayoutChange={changeHomeLayout}
           onHomeGridSizeChange={changeHomeGridSize}
           onFinishHomeEdit={() => void finishHomeEditor()}
           onResetHomeLayout={resetHomeLayout}
-          onPluginError={showToast}
+          onPluginError={showPluginError}
           onPluginCanvasBoundsChange={changePluginCanvasBounds}
           onDisposePluginCanvas={disposePluginCanvas}
           onFocusPluginCanvas={focusPluginCanvas}
@@ -2080,6 +2124,9 @@ export function App(): React.JSX.Element {
       <Suspense fallback={null}>
         {shortcutReferenceOpen && <ShortcutReference settings={settings}
           onClose={() => setShortcutReferenceOpen(false)} />}
+        {checkpointsFor && CheckpointsHost && <CheckpointsHost request={checkpointsFor} locale={settings.locale} onClose={() => setCheckpointsFor(null)} />}
+        {pluginReview && PluginReviewHost && <PluginReviewHost request={pluginReview} locale={settings.locale}
+          setRequest={setPluginReview} showToast={showToast} />}
         <AgentLaunchDialog
           provider={launchProvider}
           settings={settings}
@@ -2111,6 +2158,7 @@ export function App(): React.JSX.Element {
         <SettingsPanel
           open={settingsOpen}
           openUpdatesRequest={openUpdatesRequest}
+          openSectionRequest={openSectionRequest}
           settings={settings}
           agentAvailability={agentAvailability}
           onRecheckAgentClis={recheckAgentClis}
@@ -2180,7 +2228,7 @@ export function App(): React.JSX.Element {
       {materials.snapshot.loadError && (
         <div className="materials-load-error" role="alert">{t(settings.locale, "materialsLoadFailed")}</div>
       )}
-      <Toast message={toast} />
+      <Toast message={toast} action={toastAction} />
     </div>
   );
 }

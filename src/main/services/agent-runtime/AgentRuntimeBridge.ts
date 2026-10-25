@@ -23,6 +23,10 @@ export interface PrepareAgentRuntimeLaunchInput {
   decisions?: boolean;
   /** Claude Code: what decides whether its lifecycle hooks may go over HTTP (see ClaudeHttpHooks.ts). */
   claudeHttp?: ClaudeHttpLaunchFacts;
+  /** Grok/Kimi: the CLI home a launch contributor started the launch with (`accountHookHome`), for its status hooks. */
+  accountHome?: string;
+  /** The card's own (already filtered) environment, which the launch builds from instead of the app's. */
+  environment?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface PreparedAgentRuntimePtyLaunch {
@@ -47,6 +51,11 @@ export interface AgentRuntimeBridgeOptions extends ProviderRuntimeLaunchOptions 
   wantsDecisions?(provider: Exclude<ProviderId, "terminal">): boolean;
   /** The longest decision budget for this agent (ms); the session's gate deadlines are sized from it. */
   decisionBudgetMs?(provider: Exclude<ProviderId, "terminal">): number;
+  /**
+   * Whether the decision hook also sees read-only file tools (base protection on): only then does a read wait on the
+   * gateway, and fail closed without it.
+   */
+  decisionReads?(): boolean;
   /** Whether a Claude launch may use HTTP lifecycle hooks; without it every launch uses the command helper. */
   claudeHttpHooks?(facts: ClaudeHttpLaunchFacts): ClaudeHttpVerdict;
 }
@@ -60,12 +69,14 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
   private coreHooksEnabled: boolean;
   private readonly wantsDecisions: AgentRuntimeBridgeOptions["wantsDecisions"];
   private readonly decisionBudgetMs: AgentRuntimeBridgeOptions["decisionBudgetMs"];
+  private readonly decisionReads: AgentRuntimeBridgeOptions["decisionReads"];
   private readonly claudeHttpHooks: AgentRuntimeBridgeOptions["claudeHttpHooks"];
 
   constructor(gateway: RuntimeGateway, options: AgentRuntimeBridgeOptions) {
     this.gateway = gateway;
     this.wantsDecisions = options.wantsDecisions;
     this.decisionBudgetMs = options.decisionBudgetMs;
+    this.decisionReads = options.decisionReads;
     this.claudeHttpHooks = options.claudeHttpHooks;
     this.providers = new ProviderRuntimeLaunchAdapters(options);
     this.coreHooksEnabled = options.coreHooksEnabled !== false;
@@ -78,6 +89,8 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
       && this.providers.decisionsSupported(input.provider);
     let budgetMs: number | undefined;
     try { budgetMs = decisions ? this.decisionBudgetMs?.(input.provider) : undefined; } catch { budgetMs = undefined; }
+    let reads = false;
+    try { reads = decisions && this.decisionReads?.() === true; } catch { reads = false; }
     const capability = this.coreHooksEnabled || decisions
       ? this.gateway.registerSession(
         input.terminalSessionId,
@@ -92,7 +105,7 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
     let prepared;
     try {
       prepared = this.providers.prepare(input.provider, input.terminalSessionId, this.coreHooksEnabled, decisions, budgetMs,
-        httpHookBase ?? undefined);
+        httpHookBase ?? undefined, reads, input.accountHome, input.environment);
     } catch (error) {
       if (capability) this.gateway.revokeTerminalSession(input.terminalSessionId, capability.capabilityToken);
       throw error;

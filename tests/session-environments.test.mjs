@@ -279,7 +279,7 @@ test("lifecycle: prepare, wrap, describe, saved ref; the environment never sees 
   assert.equal(calls.length, 0, "the card waits for the environment");
   await waitFor(() => calls.length === 1);
   assert.deepEqual(requests.slice(0, 2).map((request) => request.step), ["prepare", "wrap"]);
-  assert.deepEqual(requests[0].params, { sessionId: created.id, kind: "box", provider: "terminal", cwd, options: { name: "two" } });
+  assert.deepEqual(requests[0].params, { sessionId: created.id, kind: "box", provider: "terminal", cwd, projectRoot:cwd, options: { name: "two" } });
   const wrapParams = requests[1].params;
   assert.deepEqual(wrapParams.ref, { box: "b-1" });
   assert.equal(Object.keys(wrapParams.env).some((key) => /^(CANVASTTY_|PATH$|TERM$)/u.test(key)), false);

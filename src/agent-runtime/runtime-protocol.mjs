@@ -59,6 +59,8 @@ export const PERMISSION_GATE = Object.freeze({
 });
 // Set to "1" for an OpenCode session launched with decision hooks: its plugin then checks each shell and file call.
 export const OPENCODE_DECISIONS_ENV = "CANVASTTY_RUNTIME_DECISIONS";
+// Set to "1" as well when base protection was on at launch: the plugin then also checks read-only file tools.
+export const OPENCODE_DECISION_READS_ENV = "CANVASTTY_RUNTIME_DECISION_READS";
 // A decision service may ask for more time than the default 3 s (`decide.timeoutMs`, 1-60 s), for example to ask a
 // local model. The session's hook, helper and gateway deadlines are set at launch from the longest such budget and
 // passed to the helper in this variable; without it the defaults above hold.

@@ -48,6 +48,7 @@ import {
 } from "../../shared/contracts.ts";
 import { isValidSemver } from "../../shared/hostVersion.ts";
 import { PLUGIN_VISIBILITY_BRIDGE_SOURCE } from "../../shared/pluginVisibility.ts";
+import { PLUGIN_NATIVE_CODE_OFF_ERROR, PLUGIN_SERVICE_MODULE_OFF_ERROR } from "../../shared/pluginServiceNotice.ts";
 import type { PluginServiceSpec } from "./PluginServiceSupervisor.ts";
 import type { LaunchContributor } from "./LaunchPipeline.ts";
 import type { EnvironmentProvider } from "./EnvironmentRegistry.ts";
@@ -654,7 +655,8 @@ export class PluginManager {
         pluginName: manifest.name,
         serviceId: service.id,
         launch: structuredClone(service.launch),
-        secrets: manifest.permissions.includes("secrets")
+        secrets: manifest.permissions.includes("secrets"),
+        dataDir: join(this.dataRoot, plugin.manifest.id)
       });
     }
     return contributors;
@@ -1203,10 +1205,20 @@ export class PluginManager {
     return structuredClone(contribution);
   }
 
+  /**
+   * The plugin's own UI may ask `serviceId` now: it is in the active manifest and its native code is trusted. A
+   * service whose module is off or whose native code is not trusted gets a fixed text the renderer turns into a
+   * localized notice with a way to the right settings section (pluginServiceNotice).
+   */
   assertService(pluginId: string, serviceId: string): void {
-    const plugin = activePlugin(this.requireEnabledPlugin(pluginId));
+    const installed = this.requireEnabledPlugin(pluginId);
+    const plugin = activePlugin(installed);
     if (!plugin.manifest.services?.some((service) => service.id === serviceId)) {
+      if (installed.manifest.services?.some((service) => service.id === serviceId)) throw new Error(PLUGIN_SERVICE_MODULE_OFF_ERROR);
       throw new Error("Plugin service does not exist.");
+    }
+    if (!installed.nativeCodeTrusted || !this.serviceTrust.get(pluginId)?.[serviceId]) {
+      throw new Error(PLUGIN_NATIVE_CODE_OFF_ERROR);
     }
   }
 
@@ -1858,7 +1870,7 @@ function validateBrowserEngine(value: unknown): PluginBrowserEngine {
   return { id, title, ...(description ? { description } : {}), layout: value.layout === true };
 }
 
-const MAX_CARD_ACTIONS = 8;
+const MAX_CARD_ACTIONS = 16;
 
 function validateCardActions(value: unknown): PluginCardAction[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_CARD_ACTIONS) {
@@ -1866,11 +1878,19 @@ function validateCardActions(value: unknown): PluginCardAction[] {
   }
   return value.map((candidate): PluginCardAction => {
     if (!isRecord(candidate)) throw new Error("Every plugin card action must be an object.");
-    assertOnlyKeys(candidate, ["id", "title", "when"], "Plugin card action");
+    assertOnlyKeys(candidate, ["id", "title", "title.ru", "title.en", "when", "menu"], "Plugin card action");
     const id = requiredString(candidate.id, "card action id", 64);
     if (!isContributionId(id)) throw new Error(`Plugin card action id is invalid: ${id}.`);
-    const title = requiredString(candidate.title, "card action title", 40);
-    if (candidate.when === undefined) return { id, title };
+    const titleRu = optionalString(candidate["title.ru"], "card action title.ru", 40);
+    const titleEn = optionalString(candidate["title.en"], "card action title.en", 40);
+    const title = {
+      title: requiredString(candidate.title, "card action title", 40),
+      ...(titleRu ? { "title.ru": titleRu } : {}),
+      ...(titleEn ? { "title.en": titleEn } : {})
+    };
+    if (candidate.menu !== undefined && candidate.menu !== false) throw new Error(`Plugin card action ${id} menu must be false when present.`);
+    const menu = candidate.menu === false ? { menu: false as const } : {};
+    if (candidate.when === undefined) return { id, ...title, ...menu };
     if (!isRecord(candidate.when)) throw new Error(`Plugin card action ${id} when must be an object.`);
     assertOnlyKeys(candidate.when, ["providers", "environmentKinds", "roles"], "Plugin card action filter");
     const list = (key: string, valid: (item: unknown) => boolean): string[] | undefined => {
@@ -1889,7 +1909,7 @@ function validateCardActions(value: unknown): PluginCardAction[] {
       ...(environmentKinds ? { environmentKinds } : {}),
       ...(roles ? { roles: roles as PluginCardActionFilter["roles"] } : {})
     };
-    return { id, title, when };
+    return { id, ...title, when, ...menu };
   });
 }
 

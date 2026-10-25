@@ -288,7 +288,8 @@ export class PluginServiceSupervisor {
   private send(pluginId: string, serviceId: string, method: string, params: unknown, timeoutMs: number): Promise<unknown> {
     const record = this.services.get(serviceKey(pluginId, serviceId));
     if (!record || !record.child || (record.state !== "running" && record.state !== "starting")) {
-      return Promise.reject(new Error("Plugin service is not running."));
+      // A trusted service that crashed, failed to start or is waiting to restart says why.
+      return Promise.reject(new Error(`Plugin service is not running.${record?.lastError ? ` Last error: ${record.lastError}` : ""}`));
     }
     if (record.pending.size >= MAX_PENDING_REQUESTS) {
       return Promise.reject(new Error("Plugin service is busy."));

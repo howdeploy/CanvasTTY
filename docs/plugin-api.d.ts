@@ -173,7 +173,7 @@ export interface CanvasTTYPluginServiceManifestEntry {
   decide?: CanvasTTYServiceDecide;
   /** Agent tools in canvastty_agents; needs `tools:agents`. Up to 16; names unique within the plugin. */
   tools?: CanvasTTYAgentTool[];
-  /** Card actions; needs `cards:decorate`. Up to 8; ids unique within the plugin. */
+  /** Card actions; needs `cards:decorate`. Up to 16; ids unique within the plugin. */
   cardActions?: CanvasTTYCardAction[];
   /** A browser engine for agents' background tabs; needs `browser:engine`. Ids unique within the plugin. */
   browserEngine?: CanvasTTYBrowserEngine;
@@ -251,19 +251,74 @@ export interface CanvasTTYCardAction {
   id: string;
   /** Up to 40 characters, shown in the card's options menu. */
   title: string;
+  /** The title when the app is in Russian / English (up to 40 characters, like `description.ru`); `title` otherwise. */
+  "title.ru"?: string;
+  "title.en"?: string;
   /** Every listed key must match; a card outside an environment never matches `environmentKinds`. */
   when?: { providers?: CanvasTTYProviderId[]; environmentKinds?: string[]; roles?: CanvasTTYSessionRole[] };
+  /** `false`: not listed in the card menu; only a change review calls it, always with `input` (accept/reject). */
+  menu?: false;
 }
 
 /** Params of the host request `canvastty.cards.invoke` (15 s). */
 export interface CanvasTTYCardActionInvocation {
+  /**
+   * Only while the change review dialog is open (a JSON object, at most 1 MiB, from the app window): `{ offset }` or
+   * `{ agentSessionId, file, page }` for the review action, `{ agentSessionId?, files, resolutions? }` for its accept
+   * action and `{ agentSessionId? }` for its reject action. Never the session's identity: that is `sessionId`.
+   */
+  input?: {
+    agentSessionId?: string;
+    files?: string[];
+    resolutions?: Record<string, "current" | "agent">;
+    offset?: number;
+    file?: string;
+    page?: number;
+  };
   actionId: string;
   sessionId: string;
   session: CanvasTTYSessionSummary;
 }
 
-/** Answer to `canvastty.cards.invoke`: `message` (plain text, 2000 characters, masked) is a toast on the card. */
-export type CanvasTTYCardActionResult = { message?: string; tone?: CanvasTTYCardTone } | null;
+/** A page of text in a review (plain text, masked). */
+export interface CanvasTTYReviewTextPage {
+  label?: string;
+  text: string;
+  startLine: number;
+  totalLines: number;
+  hasMore: boolean;
+}
+
+/**
+ * A change review a card action can answer with (at most 512 KiB, 24 groups, 400 files; text cut at 16 KiB).
+ * `acceptActionId` and `rejectActionId` must be this plugin's own declared action ids.
+ */
+export interface CanvasTTYChangeReview {
+  title: string;
+  groups: {
+    sessionId: string;
+    title: string;
+    error?: string;
+    files: {
+      path: string;
+      diff: string;
+      status?: string;
+      page?: number;
+      hasMore?: boolean;
+      truncated?: boolean;
+      conflict?: { current: CanvasTTYReviewTextPage; agent: CanvasTTYReviewTextPage };
+    }[];
+  }[];
+  acceptActionId?: string;
+  rejectActionId?: string;
+  nextOffset?: number;
+}
+
+/**
+ * Answer to `canvastty.cards.invoke`: `message` (plain text, 2000 characters, masked) is a toast on the card; `review`
+ * opens the change review dialog instead.
+ */
+export type CanvasTTYCardActionResult = { message?: string; tone?: CanvasTTYCardTone; review?: CanvasTTYChangeReview } | null;
 
 export type CanvasTTYCardTone = "neutral" | "info" | "warn" | "error";
 
@@ -287,7 +342,11 @@ export interface CanvasTTYDecisionRequest {
   /** The agent's current folder, when its CLI reports it. */
   agentCwd: string | null;
   tool: { name: string; kind: "shell" | "edit" | "other"; command: string | null; paths: string[] };
-  /** The tool input as the agent sent it; null when it was over 40 KB (then `truncated`). */
+  /**
+   * The tool input as the agent sent it; null when it was over 40 KB (then `truncated`). OpenCode's tools come in Claude
+   * Code's names and shapes: bash {command, workdir}, Write {file_path, content}, Edit {file_path, old_string, new_string,
+   * replace_all}, MultiEdit {file_path, edits: [{old_string, new_string, replace_all}]}, apply_patch {patch}.
+   */
   input: unknown;
   truncated: boolean;
   /** How long the host waits for this answer (the service's `timeoutMs`). */
@@ -325,6 +384,8 @@ export interface CanvasTTYEnvironmentPrepareParams {
   kind: string;
   provider: CanvasTTYProviderId;
   cwd: string;
+  /** The folder of the agent the person started (the task's project), for a worktree of that repository. */
+  projectRoot?: string;
   options: Record<string, boolean | string>;
 }
 export type CanvasTTYEnvironmentPrepareResult =

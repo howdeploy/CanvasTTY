@@ -30,7 +30,7 @@ import type {
 } from "../../../../shared/contracts";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
-import { displayCanvasNavigationBinding, isRenameInputTarget, isShortcutCaptureTarget, matchesPhysicalOrLayoutKey, matchesShortcut, shouldKeepNativeKeyboardInput } from "../../lib/shortcuts";
+import { displayCanvasNavigationBinding, displayShortcutBinding, isRenameInputTarget, isShortcutCaptureTarget, matchesPhysicalOrLayoutKey, matchesShortcut, shouldKeepNativeKeyboardInput } from "../../lib/shortcuts";
 import { BrowserCard } from "../browser/BrowserCard";
 import type { FileBrowserCardProps, FileSessionOption } from "../files/FileBrowserCard";
 import { fileCardRuntimeFor, type FileCardRuntimeState } from "../files/fileCardRuntime";
@@ -51,6 +51,7 @@ import { useRemarkDraft } from "../materials/useRemarkDraft";
 import { stickyNoteAtPoint } from "../notes/stickyNoteBounds";
 import { PluginCanvasCard } from "../plugins/PluginCanvasCard";
 import { TerminalCard } from "../terminal/TerminalCard";
+import type { PluginReviewRequest } from "../terminal/pluginReviewUiState";
 import { shouldTogglePixelSkinMasterView } from "../terminal/terminalShortcuts";
 import { isPixelSkinThemeId } from "../skins/skinCatalog";
 import { isPixelSkinPackId, usePixelSkinPackAssets } from "../skins/SkinAssets";
@@ -145,6 +146,8 @@ interface TerminalCardHandlers {
   restart(id: string, resume?: boolean): Promise<void>;
   dispose(id: string, keepEnvironmentData?: boolean): void;
   openUrl(url: string): void;
+  pluginReview(request: PluginReviewRequest): void;
+  openCheckpoints(sessionId: string, cardTitle: string): void;
 }
 
 /** A group drag's commit basis, frozen once when the press activates: the pressed layer's start
@@ -213,6 +216,10 @@ interface WorkspaceCanvasProps {
   onOpenTerminal(position?: Point): void;
   onOpenBrowser(position?: Point): void;
   onOpenTerminalUrl(url: string): void;
+  /** A card action answered with a change review. */
+  onPluginReview(request: PluginReviewRequest): void;
+  /** An agent card's "Rollback points…" menu item. */
+  onOpenCheckpoints(sessionId: string, cardTitle: string): void;
   onFocusSession(session: SessionSnapshot): void;
   onResumeHistory(item: AgentChatHistoryItem, position: Point): Promise<SessionSnapshot>;
   activeSessionId: string | null;
@@ -286,7 +293,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const {
     settings, mediaData, sessions, limits, limitsLoadState, plugins, browser,
     browserViewVisible, homeEditing, camera, onCameraChange, onGoHome,
-    onOpenSettings, onOpenAgent, onOpenTerminal, onOpenBrowser, onOpenTerminalUrl, onFocusSession,
+    onOpenSettings, onOpenAgent, onOpenTerminal, onOpenBrowser, onOpenTerminalUrl, onPluginReview, onOpenCheckpoints, onFocusSession,
     activeSessionId, browserSelected, renamingSessionId, fullscreenSessionId, onToggleFullscreen, onSelectSession,
     onSelectBrowser, onClearCanvasSelection, onRenameSession, onRenameEnd,
     onRequestMedia, onRemoveMedia, onHomeLayoutChange, onHomeGridSizeChange,
@@ -726,7 +733,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     boundsChange: onSessionBoundsChange,
     restart: onRestartSession,
     dispose: onDisposeSession,
-    openUrl: onOpenTerminalUrl
+    openUrl: onOpenTerminalUrl,
+    pluginReview: onPluginReview,
+    openCheckpoints: onOpenCheckpoints
   };
   const terminalCardCallbacks = useMemo(() => {
     const latest = terminalCardHandlers;
@@ -735,7 +744,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       onRenameEnd: () => latest.current!.renameEnd(),
       onRestart: (id: string, resume?: boolean) => latest.current!.restart(id, resume),
       onDispose: (id: string, keepEnvironmentData?: boolean) => latest.current!.dispose(id, keepEnvironmentData),
-      onOpenUrl: (url: string) => latest.current!.openUrl(url)
+      onOpenUrl: (url: string) => latest.current!.openUrl(url),
+      onPluginReview: (request: PluginReviewRequest) => latest.current!.pluginReview(request),
+      onOpenCheckpoints: (sessionId: string, cardTitle: string) => latest.current!.openCheckpoints(sessionId, cardTitle)
     };
     return {
       canvas: {
@@ -1671,11 +1682,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             )}
             {settings.showShortcutHints && settings.shortcutHintsPlacement === placement && (
               <aside className="shortcut-hints" aria-label={t(settings.locale, "keyboardShortcuts")}>
-                <div><kbd>{settings.shortcuts.home}</kbd><span>{t(settings.locale, "homeShortcut")}</span></div>
-                <div><kbd>{settings.shortcuts.renameWindow}</kbd><span>{t(settings.locale, "renameWindow")}</span></div>
-                <div><kbd>{settings.shortcuts.toggleFullscreen.replace("Meta", window.canvasTTY.window.isMacOS ? "Command" : "Super")}</kbd><span>{t(settings.locale, "toggleFullscreen")}</span></div>
-                <div><kbd>{settings.shortcuts.focusUp}</kbd><span>{t(settings.locale, "keyboardFocusUp")}</span></div>
-                <div><kbd>Shift + drag</kbd><span>{t(settings.locale, "marqueeSelectionHint")}</span></div>
+                {([["home", "homeShortcut"], ["renameWindow", "renameWindow"], ["toggleFullscreen", "toggleFullscreen"],
+                  ["focusUp", "keyboardFocusUp"]] as const).map(([action, label]) => (
+                  <div key={action}><kbd>{displayShortcutBinding(settings.shortcuts[action], window.canvasTTY.window.isMacOS)}</kbd><span>{t(settings.locale, label)}</span></div>
+                ))}
+                <div><kbd>{t(settings.locale, "shortcutShiftDrag")}</kbd><span>{t(settings.locale, "marqueeSelectionHint")}</span></div>
                 {settings.canvasWheelCaptureMode === "key" && settings.canvasWheelOverride !== null && (
                   <div><kbd>{displayCanvasNavigationBinding(settings.canvasWheelOverride, window.canvasTTY.window.isMacOS)}</kbd>
                     <span>{t(settings.locale, "canvasWheelOverrideHint")}</span></div>
@@ -1687,7 +1698,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                 <button className="shortcut-hints__more" type="button" data-interactive="true"
                   aria-haspopup="dialog" onClick={props.onOpenShortcutReference}>
                   {t(settings.locale, "keyboardShortcuts")}
-                  <UiIcon name="app-window" size={14} />
+                  <UiIcon name="app-window" size="1.27em" />
                 </button>
               </aside>
             )}

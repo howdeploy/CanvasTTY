@@ -914,7 +914,12 @@ export interface PluginCardActionFilter {
 export interface PluginCardAction {
   id: string;
   title: string;
+  /** The title in that UI language (like the manifest's `description.ru`); `title` otherwise. */
+  "title.ru"?: string;
+  "title.en"?: string;
   when?: PluginCardActionFilter;
+  /** False: not listed in the card menu; only a change review calls it (as its accept or reject action). */
+  menu?: false;
 }
 
 export type PluginCardTone = "neutral" | "info" | "warn" | "error";
@@ -932,6 +937,8 @@ export interface PluginCardActionEntry {
   pluginName: string;
   actionId: string;
   title: string;
+  "title.ru"?: string;
+  "title.en"?: string;
   when?: PluginCardActionFilter;
 }
 
@@ -941,10 +948,78 @@ export interface PluginCardDecorations {
   actions: PluginCardActionEntry[];
 }
 
-/** What a card action answered, shown as a toast on the card. */
+export interface PluginReviewTextPage {
+  label?: string;
+  text: string;
+  startLine: number;
+  totalLines: number;
+  hasMore: boolean;
+}
+
+export interface PluginChangeReviewFile {
+  path: string;
+  status?: string;
+  diff: string;
+  page?: number;
+  hasMore?: boolean;
+  truncated?: boolean;
+  conflict?: { current: PluginReviewTextPage; agent: PluginReviewTextPage };
+}
+
+export interface PluginChangeReviewGroup {
+  sessionId: string;
+  title: string;
+  files: PluginChangeReviewFile[];
+  error?: string;
+  /** The group's agent is still working: accepting all of its files, rejecting it and the task-wide actions wait. */
+  active?: boolean;
+}
+
+/** Plain-text review supplied by an existing plugin; actions still require a human click. */
+export interface PluginChangeReview {
+  title: string;
+  groups: PluginChangeReviewGroup[];
+  acceptActionId?: string;
+  rejectActionId?: string;
+  nextOffset?: number;
+}
+
+/**
+ * Why a rollback point could not be listed, shown or restored: a stable code the renderer localizes (main-process text
+ * never reaches the dialog).
+ */
+export type CheckpointErrorCode =
+  | "not-git-root"
+  | "unknown-checkpoint"
+  | "submodules"
+  | "filters"
+  | "worktree-conflict"
+  | "no-safety-point"
+  | "restore-in-progress"
+  | "agent-running"
+  | "pending-launch"
+  | "isolated-environment"
+  | "missing-session"
+  | "failed";
+
+/** A rollback point taken before an agent turn ("before-turn") or before a restore ("before-restore"). */
+export interface CheckpointEntry {
+  id: string;
+  at: number;
+  kind: "before-turn" | "before-restore";
+}
+
+export type CheckpointListResult = { ok: true; checkpoints: CheckpointEntry[] } | { ok: false; code: CheckpointErrorCode };
+export type CheckpointPreviewResult =
+  | { ok: true; text: string; changedFiles: string[]; truncated: boolean }
+  | { ok: false; code: CheckpointErrorCode };
+export type CheckpointRestoreResult = { ok: true } | { ok: false; code: CheckpointErrorCode };
+
+/** What a card action answered, shown as a toast or a structured review on the card. */
 export interface PluginCardActionResult {
   message?: string;
   tone: PluginCardTone;
+  review?: PluginChangeReview;
 }
 
 export type PluginDecisionEvent = "pre-tool";
@@ -1136,7 +1211,11 @@ export interface GithubAuthStatus {
   authorized: boolean;
   login: string | null;
   tokenExpiresAt: number | null;
+  /** Outcome of the most recent device sign-in; "idle" when none is pending or to report. */
+  deviceFlowState: GithubDeviceFlowState;
 }
+
+export type GithubDeviceFlowState = "idle" | "pending" | "denied" | "expired" | "failed" | "cancelled";
 
 export interface GithubDeviceFlowStart {
   userCode: string;
@@ -1983,7 +2062,7 @@ export interface CanvasTTYApi {
     onServiceEvent(listener: (event: PluginServiceEvent) => void): () => void;
     cardDecorations(): Promise<PluginCardDecorations>;
     onCardDecorations(listener: (decorations: PluginCardDecorations) => void): () => void;
-    invokeCardAction(pluginId: string, actionId: string, sessionId: string): Promise<PluginCardActionResult>;
+    invokeCardAction(pluginId: string, actionId: string, sessionId: string, input?: Record<string, unknown>): Promise<PluginCardActionResult>;
     /** The service-provided choices of a plugin's `optionsFrom: "service"` launch fields for this agent; empty on any failure. */
     launchFieldOptions(pluginId: string, provider: ProviderId): Promise<PluginLaunchFieldOptions>;
     uninstall(pluginId: string): Promise<void>;
@@ -2049,6 +2128,7 @@ export interface CanvasTTYApi {
   githubAuth: {
     status(): Promise<GithubAuthStatus>;
     start(): Promise<GithubDeviceFlowStart>;
+    cancel(): Promise<void>;
     signOut(): Promise<void>;
     openUrl(url: string): Promise<void>;
   };
@@ -2065,6 +2145,14 @@ export interface CanvasTTYApi {
     setBounds(id: string, bounds: SessionBounds): void;
     rename(id: string, title: string): Promise<SessionMetadata>;
     setRestore(id: string, restore: boolean): Promise<SessionMetadata>;
+    /** The card's rollback points (its folder must be a Git project root), newest first. */
+    checkpoints(id: string): Promise<CheckpointListResult>;
+    previewCheckpoint(id: string, checkpointId: string): Promise<CheckpointPreviewResult>;
+    /**
+     * Refused while any card in the folder still runs; the current work is saved as another rollback point first. Files
+     * and the index go back; HEAD and the branch stay where they are.
+     */
+    restoreCheckpoint(id: string, checkpointId: string): Promise<CheckpointRestoreResult>;
     /** `keepEnvironmentData` answers "Keep environment data?" for a card that runs in a plugin environment. */
     dispose(id: string, options?: { keepEnvironmentData?: boolean }): Promise<void>;
     /** Report whether the card renders live output; hidden cards keep history but skip streaming. */
@@ -2245,6 +2333,7 @@ export const IPC = {
   githubAuthStatus: "github-auth:status",
   githubAuthStart: "github-auth:start",
   githubAuthSignOut: "github-auth:sign-out",
+  githubAuthCancel: "github-auth:cancel",
   githubAuthOpenUrl: "github-auth:open-url",
   terminalList: "terminal:list",
   terminalOpenFile: "terminal:open-file",
@@ -2261,6 +2350,9 @@ export const IPC = {
   terminalBounds: "terminal:bounds",
   terminalRename: "terminal:rename",
   terminalSetRestore: "terminal:set-restore",
+  terminalCheckpoints: "terminal:checkpoints",
+  terminalCheckpointPreview: "terminal:checkpoint-preview",
+  terminalCheckpointRestore: "terminal:checkpoint-restore",
   terminalDispose: "terminal:dispose",
   terminalData: "terminal:data",
   /** Main -> renderer: the TerminalDataEvents of one output flush, in order (see TerminalRendererOutbox). */

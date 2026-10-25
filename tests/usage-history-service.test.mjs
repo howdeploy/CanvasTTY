@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir, devNull } from "node:os";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { LocalUsageCollector, discoverSqlite } from "../src/main/services/LocalUsageCollector.ts";
@@ -350,6 +351,58 @@ test("structurally invalid history is quarantined the same way", async () => {
     const preserved = (await readdir(directory)).filter((name) => name.startsWith("usage-history.corrupt-"));
     assert.equal(preserved.length, 1);
     assert.equal(await readFile(join(directory, preserved[0]), "utf8"), invalid);
+  });
+});
+
+const fsPromises = createRequire(import.meta.url)("node:fs/promises");
+
+/** Runs `run` while every open of `path` first calls `before` and its handle calls `onClose` before closing. */
+async function withOpenHook(t, path, { before = async () => undefined, onClose = async () => undefined }, run) {
+  const realOpen = fsPromises.open;
+  t.mock.method(fsPromises, "open", async (target, ...rest) => {
+    if (target !== path) return realOpen(target, ...rest);
+    await before();
+    const handle = await realOpen(target, ...rest);
+    const close = handle.close.bind(handle);
+    handle.close = async () => { await onClose(); return close(); };
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    await run();
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+}
+
+test("a history file swapped between the symlink check and the open is refused and left alone", async (t) => {
+  await withDirectory(async (directory) => {
+    const path = join(directory, FILE);
+    await writeFile(path, "{}");
+    await writeFile(join(directory, "planted.json"), "planted");
+    const { history } = service(directory);
+    await withOpenHook(t, path, { before: () => rename(join(directory, "planted.json"), path) }, () => history.load());
+    assert.match(history.get().error, /could not be read \(ELOOP\)/);
+    assert.equal(await readFile(path, "utf8"), "planted", "the swapped-in file is not touched");
+  });
+});
+
+test("the preserved original is the content that was read, even if the path is swapped afterwards", async (t) => {
+  await withDirectory(async (directory) => {
+    const original = JSON.stringify(envelope(
+      { events: [event("good", { from: T0 - DAY, to: T0 - DAY }), event("bad", { input: -5 })] },
+      { version: 2, files: { [KEY]: cursor(1) }, hermes: {} }
+    ));
+    const path = join(directory, FILE);
+    await writeFile(path, original);
+    await writeFile(join(directory, "planted.json"), "planted");
+    const { history } = service(directory);
+    await withOpenHook(t, path, { onClose: () => rename(join(directory, "planted.json"), path) }, () => history.load());
+    const preserved = (await readdir(directory)).filter((name) => name.startsWith("usage-history.corrupt-"));
+    assert.equal(preserved.length, 1);
+    assert.equal(await readFile(join(directory, preserved[0]), "utf8"), original);
+    if (process.platform !== "win32") assert.equal((await stat(join(directory, preserved[0]))).mode & 0o777, 0o600);
   });
 });
 

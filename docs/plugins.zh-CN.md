@@ -201,6 +201,7 @@ host.service.onEvent(({ serviceId, event, data }) => { /* … */ });
 - Claude Code 只应用最后一个 `--settings`，因此插件的内联 `--settings` JSON 会合并进 CanvasTTY 自己的 JSON（`env` 等对象按键合并，hook 列表追加）；若其中设置了 `permissions`、`hooks`、`disableAllHooks`、`sandbox`、`defaultMode` 或 `apiKeyHelper`，启动会被拒绝。`--settings <json>` 与 `--settings=<json>` 两种形式都会检查；设置文件只接受贡献自身的启动文件（`{launchFiles}/…`），CanvasTTY 读取并以同样方式检查后以内联 JSON 传递；其他文件路径一律拒绝。`--bare`、`--safe-mode`、`--allowedTools`、`--permission-prompt-tool` 和 `--permission-prompts` 也只由 CanvasTTY 传递。
 - 5 秒内无应答、出错、应答无效、缺少机密，或插件被禁用、删除或不再受信任，都会拒绝启动并在卡片上显示原因。智能体绝不会在缺少用户所选贡献的情况下启动。插件不可用的恢复卡片以停止状态返回并显示该原因，记录保留到插件恢复或卡片被关闭。
 - 普通终端不接受启动选项。
+- 隔离的智能体无法读取任何插件的数据文件夹（`<userData>/plugin-data`）。如果某个 `env` 值把该智能体 CLI 自己的主目录变量设为该插件自身数据文件夹内的一个精确绝对路径文件夹（不能是数据文件夹本身；末尾的 `/` 会被忽略），就只为这个智能体重新开放这一个文件夹。只有以下变量算数，且各自只对应自己的 CLI：`CODEX_HOME`（Codex）、`CLAUDE_CONFIG_DIR`（Claude Code）、`GROK_HOME`（Grok）、`HERMES_HOME`（Hermes）、`KIMI_CODE_HOME`、`KIMI_SHARE_DIR` 和 `KIMI_HOME`（Kimi）、`OPENCODE_CONFIG_DIR`（OpenCode）和 `QWEN_HOME`（Qwen Code）；`HOME` 和 `XDG_*` 永远不算。它必须是真实的文件夹，路径上不能有符号链接。插件数据中的其他内容都不会被重新开放，插件也不能指定其他要开放的文件夹。
 
 **启动配置档。** `profile` 为 `normal`（默认）、`yolo` 或 `auto`。`auto` 仅适用于 CLI 自带自动模式的智能体，均按各 CLI 的 `--help` 核实：Codex `--approve-for-me`（其自身审查，运行于 `workspace-write` 沙箱），Claude Code `--permission-mode auto` 及其沙箱（`{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":false}}` 合并进唯一的 `--settings`），以及 Grok `--permission-mode auto`（不依赖 Grok 沙箱）。基础保护和决策服务仍在其前面作答（Codex、Claude Code）。只要任一贡献者回答 `thirdPartyModel: true`，`auto` 就改为同一沙箱中 CLI 的“仅接受编辑”模式（Codex `--sandbox workspace-write --ask-for-approval on-request`，Claude Code 和 Grok `--permission-mode acceptEdits`）：原生审查者将是同一个模型，而弱模型自己的分类器不是安全边界。
 
@@ -235,13 +236,13 @@ CanvasTTY 负责卡片、PTY、保存的记录和恢复顺序；服务回答五�
 
 | 请求 | 参数 | 应答 | 时限 |
 |:--|:--|:--|:--|
-| `canvastty.environment.prepare` | `sessionId, kind, provider, cwd, options` | `{ ref, label, cwd? }` 或 `{ refuse: { reason } }`。`ref` 是不超过 4 KB 的不透明 JSON，随卡片保存；`label`（80 字符）是徽标；`cwd`（已存在的绝对路径文件夹）成为卡片的文件夹 | 15 秒 |
+| `canvastty.environment.prepare` | `sessionId, kind, provider, cwd, projectRoot?, options` | `{ ref, label, cwd? }` 或 `{ refuse: { reason } }`。`ref` 是不超过 4 KB 的不透明 JSON，随卡片保存；`label`（80 字符）是徽标；`cwd`（已存在的绝对路径文件夹）成为卡片的文件夹 | 15 秒 |
 | `canvastty.environment.wrap` | `sessionId, kind, ref, provider, command, args, env, secretEnvNames, cwd` | `{ command, args, env?, secretEnv?, cwd? }` 或 `{ refuse }` | 5 秒 |
 | `canvastty.environment.resume` | `sessionId, kind, ref` | `{ ok: true }` 或 `{ stopped: { reason } }` | 10 秒 |
 | `canvastty.environment.release` | `sessionId, kind, ref, keepData, reason`（`closed` 或 `quit`） | 忽略 | 10 秒 |
 | `canvastty.environment.describe` | `sessionId, kind, ref` | `{ label, detail? }`，用于卡片徽标及其提示 | 3 秒 |
 
-- `prepare` 只在卡片首次启动时调用一次。`wrap` 在每次启动（创建、重启、恢复）前调用，把宿主原本要启动的命令变成在环境中运行的命令，例如 `ssh -tt host …`、`docker exec -it …`，或在另一个文件夹中运行同一程序。PTY 仍由宿主通过 node-pty 创建，因此回滚、状态和编排照常工作。
+- `prepare` 只在卡片首次启动时调用一次。`projectRoot` 是用户启动的代理所在的文件夹（任务的项目），用于创建该仓库的 worktree。插件数据中的 worktree 环境文件夹只有在它是该仓库的链接 worktree、且所在分支没有被其他 worktree 检出时，才会在代理隔离下作为代理的项目；Git 元数据对代理只读（不能 `git add` 或 `git commit`），因此由插件自己收集代理的修改。`wrap` 在每次启动（创建、重启、恢复）前调用，把宿主原本要启动的命令变成在环境中运行的命令，例如 `ssh -tt host …`、`docker exec -it …`，或在另一个文件夹中运行同一程序。PTY 仍由宿主通过 node-pty 创建，因此回滚、状态和编排照常工作。
 - `wrap` 的输出会被检查：`command` 必须是可执行文件的绝对路径，或由宿主在 `PATH` 中解析的纯程序名；命令行、相对路径或 shell 语法会被拒绝，任何内容都不经过 shell 运行。`args` 是数组（256 项，每项 8 KB，不含 NUL）。`env` 和 `secretEnv` 遵循启动贡献者的规则：保留名称以及 CanvasTTY 或启动选项已为此次启动设置的名称会被拒绝。`secretEnv` 的值来自插件自己的机密（需要 `secrets`），并像启动机密一样被遮蔽。
 - `wrap` 收到此次启动自身的变量（来自 CanvasTTY 和所选启动选项），不含保留的 `CANVASTTY_*` 名称，也不含机密值；`secretEnvNames` 列出进程将从宿主获得值的名称，包装器可以按名称转发它们（`docker exec -e NAME`）。
 - 恢复时先恢复所有保存的环境，再先启动父卡片、后启动子卡片。如果插件被禁用、删除或不受信任，或 `resume` 应答 `stopped`，卡片以停止状态返回并显示原因，记录保留；重启会再次调用 `resume`。卡片绝不会改为在本地启动，超时或错误会拒绝启动，不会回退。
@@ -262,7 +263,7 @@ CanvasTTY 负责卡片、PTY、保存的记录和恢复顺序；服务回答五�
 }]
 ```
 
-`pre-tool` 指每一次 shell 和写文件的工具调用，在运行之前，并且适用于所有权限模式（包括 YOLO）：Claude Code、Codex 和 Qwen Code 通过它们的 `PreToolUse` hook，OpenCode 通过 CanvasTTY 的 OpenCode 插件（`tool.execute.before`）。`appliesTo` 限定 agent；省略时为全部四个。主机发送 `canvastty.decide`（仅主机可发），最多等待 `timeoutMs`（1000 到 60000；省略时 3000）。agent 的调用会等待同样长的时间，所以只有在回答确实需要时才申请更长时间（例如让本地模型阅读命令）；CanvasTTY 在卡片启动时按适用服务中最长的预算设置该卡片的 hook，之后才被信任的服务所得时间不超过卡片允许的范围。请求以 `budgetMs` 携带该预算：
+`pre-tool` 指每一次 shell 和写文件的工具调用，在运行之前，并且适用于所有权限模式（包括 YOLO）：Claude Code、Codex 和 Qwen Code 通过它们的 `PreToolUse` hook，OpenCode 通过 CanvasTTY 的 OpenCode 插件（`tool.execute.before`）。OpenCode 的工具以 Claude Code 的名称和输入形状到达：`bash` `{command, workdir}`、`Write` `{file_path, content}`（整个新文件）、`Edit` `{file_path, old_string, new_string, replace_all}`、`MultiEdit` `{file_path, edits: [{old_string, new_string, replace_all}]}` 和 `apply_patch` `{patch}`。`appliesTo` 限定 agent；省略时为全部四个。主机发送 `canvastty.decide`（仅主机可发），最多等待 `timeoutMs`（1000 到 60000；省略时 3000）。agent 的调用会等待同样长的时间，所以只有在回答确实需要时才申请更长时间（例如让本地模型阅读命令）；CanvasTTY 在卡片启动时按适用服务中最长的预算设置该卡片的 hook，之后才被信任的服务所得时间不超过卡片允许的范围。请求以 `budgetMs` 携带该预算：
 
 ```ts
 interface DecisionRequest {
@@ -345,7 +346,7 @@ interface PluginSessionEvent {
 
 ### 卡片标记与动作（`cards:decorate`）
 
-具有 `cards:decorate` 的服务可以在任意卡片上设置标记，并声明最多 8 个 `cardActions`：
+具有 `cards:decorate` 的服务可以在任意卡片上设置标记，并声明最多 16 个 `cardActions`：
 
 ```json
 "permissions": ["cards:decorate"],
@@ -358,6 +359,9 @@ interface PluginSessionEvent {
 - `cards.setBadge` `{ sessionId, badge: { text, tone?, tooltip? } | null }`：`text` 最多 24 个字符，`tone` 为 `neutral`（默认）、`info`、`warn` 或 `error`，`tooltip` 最多 200 个字符；`null` 移除该插件的标记。每张卡片最多 4 个插件标记。标记是纯文本，像 agent 文本一样被遮蔽，并随卡片关闭或插件信任撤销而消失。
 - 动作出现在所有匹配 `when` 的卡片的选项菜单中：`providers`、`environmentKinds`（任意插件的环境；不在环境中的卡片永远不匹配）和 `roles`，均为可选；列出的每一项都必须匹配。选择动作会发送 `canvastty.cards.invoke` `{ actionId, sessionId, session }`（仅宿主可发；`session` 为上面的摘要），最多等待 15 s。回答 `{ message?, tone? }`：消息（纯文本，最多 2000 个字符，经过遮蔽）以提示的形式显示在卡片上。超时或出错时显示错误提示。
 - 任何地方都没有 HTML：标记、标题和消息都按文本渲染。
+- 带有 `review` 的回答会打开变更审查对话框，而不是提示。`review` 为 `{ title, groups, acceptActionId?, rejectActionId?, nextOffset? }`；每个分组为 `{ sessionId, title, files, error?, active? }`（每个代理一个；`active: true` 表示该代理仍在运行，此时对话框会禁用接受其全部文件、拒绝它以及整个任务的操作，但仍可接受其中一部分文件；其文件初始不被选中，其 `error` 显示为提示而非错误），每个文件为 `{ path, diff, status?, page?, hasMore?, truncated?, conflict? }`，其中 `conflict` 为 `{ current, agent }` 两个文本页 `{ label?, text, startLine, totalLines, hasMore }`。整个审查最多 512 KiB、24 个分组和 400 个文件；文本为纯文本、经过遮蔽、去除控制字符并截断到 16 KiB（此时文件标记为已截断）；文件路径不得因遮蔽而改变。`acceptActionId` 和 `rejectActionId` 必须是本插件声明的动作 id，否则回答被拒绝。请用 `"menu": false` 声明它们：这样的动作不会出现在卡片菜单中（从菜单运行时没有 `input`），不带 `input` 调用时会被拒绝。
+- 对话框打开期间，宿主会带着 `input` 对象（最多 1 MiB 的 JSON 对象，仅由应用窗口发送，从不作为会话身份）再次调用同一动作：不带 `input` 表示刷新审查，`{ offset }` 表示下一页文件（`nextOffset`），`{ agentSessionId, file, page }` 表示某个文件 diff 的一页（打开文件时为第 0 页）。接受会以 `{ agentSessionId?, files, resolutions? }` 调用 `acceptActionId`（所选文件；`resolutions` 把冲突路径映射为 `"current"` 或 `"agent"`；整个任务时不带 `agentSessionId`），拒绝会以 `{ agentSessionId? }` 调用 `rejectActionId`。接受和拒绝只在用户于对话框中确认后才发送。对修改请回答剩余的审查或一条消息。
+- `title` 最多 40 个字符。与清单中的 `description.ru`/`description.en` 一样，动作可以添加 `"title.ru"` 和 `"title.en"`（各最多 40 个字符）：卡片菜单显示应用语言对应的标题，否则显示 `title`。
 
 完整示例见 [`examples/plugins/collect-demo`](../examples/plugins/collect-demo)：在 `worktree` 环境（来自 `env-worktree`）的卡片上，动作 **Show changes** 显示 worktree 的 `git diff --stat` 并设置“N changed”标记；工具 `collect-demo__diffstat` 为编排器提供同样的信息，针对它自己的文件夹或某个子 agent 的文件夹（插件通过会话事件得知子 agent）。
 
@@ -382,7 +386,9 @@ interface PluginSessionEvent {
 
 两项安全功能内置，无需插件：
 
-- **基础保护**（设置 → Agents → Base protection，默认开启；用户可以关闭）通过同一个 hook 拒绝：sudo 及其他提权、把下载或生成的文本管道给 shell、下载后直接运行、磁盘和格式化命令、fork 炸弹，以及在工作文件夹之外写入或删除（包括主目录、其他项目和 `/tmp`），以及删除工作文件夹本身。agent 自己的计划和记忆文件夹（`~/.claude/plans`、`~/.claude/projects/<project>/memory`，以及本次运行 `CLAUDE_CONFIG_DIR` 中的相同位置）不算"外部"。它还会拒绝任何程序（包括解释器单行命令和套接字客户端）使用 CanvasTTY 自己的私有数据（来自应用的 userData 文件夹：agent-control 令牌与描述文件、各网关的连接记录与套接字、密钥存储、账户主目录；以及临时文件夹下的控制/运行时套接字文件夹）；拒绝原因会引导模型改用 **Orchestrator** 启动和 `canvastty_agents` 工具。内置控制 CLI 可以引用它的描述文件。它只会拒绝；每条原因都告诉模型应当改做什么（写入 `/tmp` 时建议在项目内建立临时文件夹）。
+- **基础保护**（设置 → Agents → Base protection，默认开启；用户可以关闭）通过同一个 hook 拒绝：sudo 及其他提权、把下载或生成的文本管道给 shell、下载后直接运行、磁盘和格式化命令、fork 炸弹，以及在工作文件夹之外写入或删除（包括主目录、其他项目和 `/tmp`），以及删除工作文件夹本身。agent 自己的计划和记忆文件夹（`~/.claude/plans`、`~/.claude/projects/<project>/memory`，以及本次运行 `CLAUDE_CONFIG_DIR` 中的相同位置）不算"外部"。它还会拒绝使用 CanvasTTY 自己的私有数据（来自应用的 userData 文件夹：agent-control 令牌与描述文件、各网关的连接记录与套接字、密钥存储、账户主目录、插件数据（`plugin-data`，但本卡片的启动插件为它选定的账户主目录除外）；以及临时文件夹下的控制/运行时套接字文件夹），即使工作文件夹包含它们（例如项目就是主目录）：包括点名这些路径的命令（含它能识别的解释器单行命令和套接字客户端）、文件写入，以及只读文件工具（Claude Code 的 Read、NotebookRead、Grep、Glob、LS，以及 Qwen Code 和 OpenCode 的对应工具；只读工具不检查其他内容，且仅在 agent 启动时基础保护已开启的情况下才检查）；拒绝原因会引导模型改用 **Orchestrator** 启动和 `canvastty_agents` 工具。内置控制 CLI 可以引用它的描述文件。它只会拒绝；每条原因都告诉模型应当改做什么（写入 `/tmp` 时建议在项目内建立临时文件夹）。
+
+  基础保护是尽力而为的检查：它在工具调用运行前读取调用内容，因此无法发现运行时才拼出的路径（命令替换、无法解析的变量、像 Python `os.walk` 这样自行遍历文件夹的脚本），也不会拒绝从应用数据文件夹上层开始的递归搜索（`grep -r token ~`、对主目录的 Grep）。如果一次调用包含的路径数量、路径长度或嵌套 shell 层数超过它的检查范围，该调用会被拒绝，而不是只检查一部分；检查过程出错的 shell、文件编辑或读取调用同样会被拒绝。因此，把项目设为主目录或任何包含 CanvasTTY 数据的文件夹，本身并不安全。请在 agent 隔离下运行这类 agent（macOS 上的 sandbox-exec，Linux 上的 bubblewrap）：它会对 agent 进程树中的所有程序隐藏私有数据，包括遍历。
 - **密钥遮蔽**：CanvasTTY 从一个 agent 交给另一个 agent 的所有文本（`observe_agent`、`wait_for_agent`、`get_agent_result`，以及 control CLI 的 `screen`、`result` 和失败详情）都会被遮蔽：CanvasTTY 保存的服务商密钥、启动时的 `secretEnv` 值、服务通过 `redaction.register` 注册的值（包括被终端折行拆开的情况），以及常见密钥形式（`sk-…`、GitHub、Slack、AWS、Google、JWT、`Bearer …`、`"apiKey": "…"`、PEM 私钥、长随机串）。插件工具的回答、会话事件中的 `screen`、卡片标记和卡片动作消息也以同样方式遮蔽。
 
 host.onStorageChange(listener) 会把 host.storage.set 的写入通知给同一插件的所有活动界面——画布卡片、HOME 小组件和独立窗口——从而避免轮询。

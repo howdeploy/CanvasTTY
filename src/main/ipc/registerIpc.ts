@@ -30,6 +30,8 @@ import { isCustomTerminalBorderSkinId, type SkinRegistry } from "../services/Ski
 import { isPixelSkinSlot, isPixelTerminalBorderSkinId, type PixelSkinPackRegistry } from "../services/PixelSkinPackRegistry";
 import { providerCliAvailability, type ProviderCliRegistry } from "../services/providerCliRegistry";
 import type { TerminalManager } from "../services/TerminalManager";
+import type { GitCheckpoints } from "../services/GitCheckpoints";
+import { checkpointIpcHandlers } from "./checkpointIpc";
 import type { AgentChatHistoryService } from "../services/AgentChatHistoryService";
 import { withoutAccountScope, type LimitsService } from "../services/LimitsService";
 import type { UsageHistoryService } from "../services/UsageHistoryService";
@@ -65,6 +67,8 @@ interface Dependencies {
   settings: SettingsStore;
   recheckProviderClis(): Promise<{ availability: AgentCliAvailability; settings: AppSettings }>;
   terminals: TerminalManager;
+  /** Rollback points of agents' Git projects (main/index.ts); without it the dialog's requests are not served. */
+  checkpoints?: GitCheckpoints;
   agentChatHistory: AgentChatHistoryService;
   limits: LimitsService;
   usageHistory: UsageHistoryService;
@@ -205,6 +209,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   settings,
   recheckProviderClis,
   terminals,
+  checkpoints,
   agentChatHistory,
   limits,
   usageHistory,
@@ -532,13 +537,13 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     assertMainRenderer(event, getMainWindow);
     return pluginCards.decorations();
   });
-  ipcMain.handle(IPC.pluginsInvokeCardAction, (event, pluginId: unknown, actionId: unknown, sessionId: unknown) => {
+  ipcMain.handle(IPC.pluginsInvokeCardAction, (event, pluginId: unknown, actionId: unknown, sessionId: unknown, input?: unknown) => {
     // Only the app window's own card menu invokes actions; plugin surfaces cannot reach this channel.
     assertMainRenderer(event, getMainWindow);
     if (typeof pluginId !== "string" || typeof actionId !== "string" || typeof sessionId !== "string") {
       throw new Error("Card action request is invalid.");
     }
-    return pluginCards.invoke(pluginId, actionId, sessionId);
+    return pluginCards.invoke(pluginId, actionId, sessionId, input);
   });
   ipcMain.handle(IPC.pluginsLaunchFieldOptions, (event, pluginId: unknown, provider: unknown) => {
     // Only the app's own launcher asks; plugin surfaces cannot reach this channel.
@@ -919,6 +924,10 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     assertMainRenderer(event, getMainWindow);
     return githubAuth.signOut();
   });
+  ipcMain.handle(IPC.githubAuthCancel, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    githubAuth.cancelDeviceFlow();
+  });
   ipcMain.handle(IPC.githubAuthOpenUrl, (event, value: unknown) => {
     assertMainRenderer(event, getMainWindow);
     if (typeof value !== "string") throw new Error("URL is required.");
@@ -972,6 +981,21 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     if (typeof id !== "string") throw new Error("Terminal session id is invalid.");
     return terminals.setRestore(id, restore);
   });
+  if (checkpoints) {
+    const rollback = checkpointIpcHandlers({ checkpoints, terminals });
+    ipcMain.handle(IPC.terminalCheckpoints, (event, id: unknown) => {
+      assertMainRenderer(event, getMainWindow);
+      return rollback.list(id);
+    });
+    ipcMain.handle(IPC.terminalCheckpointPreview, (event, id: unknown, checkpointId: unknown) => {
+      assertMainRenderer(event, getMainWindow);
+      return rollback.preview(id, checkpointId);
+    });
+    ipcMain.handle(IPC.terminalCheckpointRestore, (event, id: unknown, checkpointId: unknown) => {
+      assertMainRenderer(event, getMainWindow);
+      return rollback.restore(id, checkpointId);
+    });
+  }
   ipcMain.handle(IPC.terminalResolveGitRisk, (event, reportId: unknown, action: unknown) => {
     assertMainRenderer(event, getMainWindow);
     if (typeof reportId !== "string" || reportId.length > 64) throw new Error("Git warning id is invalid.");

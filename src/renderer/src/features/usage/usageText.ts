@@ -45,14 +45,15 @@ const RU = {
   account: "Аккаунт (хеш)",
   accountUnknown: "аккаунт неизвестен",
   latest: "Последнее наблюдение",
-  latestValue: "{percent}% · {time}",
+  latestValue: "{share} · {time}",
+  quotaShare: "использовано {used}% · осталось {left}%",
   reset: "Сброс окна",
   resetUnknown: "неизвестен",
   resetsInPeriod: "Сбросов окна за период: {count}",
   resetPassed: "Сброс уже наступил после последнего наблюдения — текущее значение неизвестно.",
   windowStale: "Последнее наблюдение {age} назад — ряд устарел, новые изменения не измеряются.",
   windowNeverObserved: "Нет наблюдений до конца периода.",
-  noObservationsInPeriod: "За период наблюдений нет. Последнее до него: {percent}% · {time} · {account}.",
+  noObservationsInPeriod: "За период наблюдений нет. Последнее до него: {share} · {time} · {account}.",
   unknownProviderName: "Провайдер не определён",
   measured: "Измерено",
   measuredValue: "+{points} п. п.",
@@ -206,14 +207,15 @@ const EN: UsageText = {
   account: "Account (hash)",
   accountUnknown: "account unknown",
   latest: "Latest observation",
-  latestValue: "{percent}% · {time}",
+  latestValue: "{share} · {time}",
+  quotaShare: "{used}% used · {left}% left",
   reset: "Window reset",
   resetUnknown: "unknown",
   resetsInPeriod: "Window resets in period: {count}",
   resetPassed: "The reset has passed since the latest observation — the current value is unknown.",
   windowStale: "Latest observation {age} ago — the series is stale and new changes are not measured.",
   windowNeverObserved: "No observations up to the end of the period.",
-  noObservationsInPeriod: "No observations in this period. Latest before it: {percent}% · {time} · {account}.",
+  noObservationsInPeriod: "No observations in this period. Latest before it: {share} · {time} · {account}.",
   unknownProviderName: "Provider not identified",
   measured: "Measured",
   measuredValue: "+{points} pp",
@@ -327,6 +329,12 @@ export function usageText(locale: LocaleId): UsageText {
 
 export function fill(template: string, values: Record<string, string | number>): string {
   return template.replace(/\{(\w+)\}/g, (match, key: string) => (key in values ? String(values[key]) : match));
+}
+
+/** A quota observation (the share of the window already used) with what is left of it: never a bare percent. */
+export function quotaShareText(locale: LocaleId, usedPercent: number): string {
+  const used = Math.min(100, Math.max(0, usedPercent));
+  return fill(usageText(locale).quotaShare, { used: formatPoints(locale, used), left: formatPoints(locale, 100 - used) });
 }
 
 export function formatPoints(locale: LocaleId, value: number): string {

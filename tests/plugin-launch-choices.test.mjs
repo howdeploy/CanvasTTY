@@ -158,7 +158,9 @@ test("spawn_agent takes plugin launch options and hands them to the launch", () 
     get: (id) => (id === "orch" ? parent : undefined),
     getMetadata: (id) => (id === "orch" ? parent : null),
     listMetadata: () => [parent],
-    create: (request) => { created.push(request); return { id: "child", ...request, status: "starting", title: "c" }; }
+    create: (request) => { created.push(request); return { id: "child", ...request, status: "starting", title: "c" }; },
+    launchOptionsOf: () => undefined,
+    modelSetByOf: () => []
   };
   const control = new AgentControlService(terminals);
   control.spawn({ parentSessionId: "orch", provider: "codex", cwd: process.cwd(), launchOptions: { "canvastty-accounts": { account: "ollama" } } });

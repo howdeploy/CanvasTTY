@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type {
   LaunchProfileId,
@@ -12,6 +12,7 @@ import type {
 import { claudeCoreSettingsKey, coreOwnedLaunchArgument, parseInlineSettings } from "./terminalLaunch.ts";
 import { MAX_PLUGIN_SLOT_BYTES } from "./TerminalSessionStore.ts";
 import { LaunchRefusal } from "./launchRefusal.ts";
+import { contributedHookHome } from "./accountHomes.ts";
 import { MAX_INSPECTED_CONFIG_BYTES, parseJsonc, readInspectedFile } from "./inspectedConfig.ts";
 
 /** A trusted plugin service that declared launch options (PluginManager.launchContributors). */
@@ -22,6 +23,8 @@ export interface LaunchContributor {
   launch: PluginServiceLaunch;
   /** The plugin holds the `secrets` permission, so `secretEnv` may name its secrets. */
   secrets: boolean;
+  /** `<userData>/plugin-data/<pluginId>`, the host's record (never the plugin's answer); account homes live below it. */
+  dataDir?: string;
 }
 
 export interface LaunchPipelineDependencies {
@@ -73,6 +76,15 @@ export type PreparedLaunch =
     envSources: Record<string, string>;
     /** A contributor runs the agent on another model than its vendor's: "auto" becomes accept-edits. */
     thirdPartyModel: boolean;
+    /** Plugin ids whose contribution decides the model: it passes the CLI's model flag or runs a third-party model. */
+    modelSetBy: string[];
+    /** This run's own folder below the card's folder; `cleanup` removes it. */
+    runDirectory: string;
+    /**
+     * Grok/Kimi: the home (`GROK_HOME` / `KIMI_CODE_HOME`) the contributor that set it handed this launch inside its own
+     * data folder (contributedHookHome); CanvasTTY writes that CLI's temporary configuration there.
+     */
+    accountHome?: string;
     cleanup(): Promise<void>;
   }
   | { ok: false; reason: string };
@@ -118,9 +130,25 @@ export class LaunchPipeline {
     return rm(this.dependencies.runsRoot, { recursive: true, force: true });
   }
 
-  /** Removes a closed session's file folders. */
-  forgetSession(sessionId: string): Promise<void> {
-    return rm(join(this.dependencies.runsRoot, safeSegment(sessionId)), { recursive: true, force: true });
+  /**
+   * Removes a closed card's run folders that this pipeline prepared for it, then the card's folder if nothing else
+   * is left in it. A card brought back under the same id may already be writing a new run folder there; it is kept.
+   */
+  async forgetSession(sessionId: string, runDirectories: Iterable<string>): Promise<void> {
+    const parent = join(this.dependencies.runsRoot, safeSegment(sessionId));
+    const errors: unknown[] = [];
+    for (const runDirectory of new Set(runDirectories)) {
+      // Only a run folder directly below this card's folder is ever removed here.
+      if (dirname(resolve(runDirectory)) !== resolve(parent)) continue;
+      try { await removeRunFolder(runDirectory); } catch (error) { errors.push(error); }
+    }
+    try {
+      await rmdir(parent);
+    } catch (error) {
+      // Still in use by a newer run of the same card, or already gone; the startup sweep removes what is left.
+      if (!PARENT_KEPT_CODES.has((error as NodeJS.ErrnoException).code ?? "")) errors.push(error);
+    }
+    if (errors.length) throw new AggregateError(errors, "Launch run folders could not be removed.");
   }
 
   /** Launch policies that apply to this agent: every launch of it asks them, chosen or not. */
@@ -145,45 +173,45 @@ export class LaunchPipeline {
    * Checks launcher values against each plugin's declared fields and fills defaults.
    * Throws with a person-readable reason; returns undefined when nothing was chosen.
    */
-  normalizeOptions(provider: ProviderId, candidate: unknown, context?: { delegated?: boolean }): Record<string, PluginLaunchValues> | undefined {
+  normalizeOptions(provider: ProviderId, candidate: unknown, context?: {
+    delegated?: boolean;
+    /** The orchestrator's own options: repeating them for its subagent is the person's choice, not the orchestrator's. */
+    inherited?: Readonly<Record<string, Readonly<PluginLaunchValues>>>;
+  }): Record<string, PluginLaunchValues> | undefined {
     if (candidate === undefined) return undefined;
     if (!isRecord(candidate) || Object.keys(candidate).length > MAX_OPTION_PLUGINS) throw new Error("Launch options are invalid.");
     if (Object.keys(candidate).length === 0) return undefined;
     if (provider === "terminal") throw new Error("A plain terminal takes no launch options.");
     const contributors = new Map(this.dependencies.contributors().map((contributor) => [contributor.pluginId, contributor]));
     const options: Record<string, PluginLaunchValues> = {};
-    for (const [pluginId, raw] of Object.entries(candidate)) {
+    for (const [pluginId, requested] of Object.entries(candidate)) {
+      let raw = requested;
       const contributor = contributors.get(pluginId);
       if (!contributor) throw new Error(unavailableReason(pluginId));
       // An orchestrator picks options for its subagents only where the plugin said that is safe.
+      const notDelegable = `${contributor.pluginName} has not declared its launch options safe for an orchestrator to choose; only the person chooses them, in the launcher.`;
+      // Without the declaration a subagent may only repeat the orchestrator's own values: the keys it leaves out are
+      // the inherited ones, never the plugin's defaults, and the result is checked against them below.
+      const inherited = context?.delegated && contributor.launch.delegable !== true ? context.inherited?.[pluginId] : undefined;
       if (context?.delegated && contributor.launch.delegable !== true) {
-        throw new LaunchRefusal(`${contributor.pluginName} has not declared its launch options safe for an orchestrator to choose; only the person chooses them, in the launcher.`);
+        if (!inherited || !sameAsInherited(raw, inherited)) throw new LaunchRefusal(notDelegable);
+        raw = { ...inherited, ...(raw as Record<string, unknown>) };
       }
-      const { appliesTo, fields } = contributor.launch;
-      if (appliesTo && !appliesTo.includes(provider as never)) {
-        throw new Error(`${contributor.pluginName} launch options do not apply to ${provider}.`);
+      if (!inherited) {
+        options[pluginId] = launchValues(contributor, provider, raw);
+        continue;
       }
-      if (!isRecord(raw)) throw new Error(`${contributor.pluginName} launch options are invalid.`);
-      const known = new Set(fields.map((field) => field.key));
-      const unknown = Object.keys(raw).find((key) => !known.has(key));
-      if (unknown) throw new Error(`${contributor.pluginName} has no launch option ${unknown.slice(0, 40)}.`);
-      const values: PluginLaunchValues = {};
-      for (const field of fields) {
-        const value = raw[field.key] ?? field.default
-          ?? (field.kind === "boolean" ? false : field.kind === "select" ? field.options?.[0]?.value ?? "" : "");
-        const plainText = (limit: number): boolean => typeof value === "string" && value.length <= limit && !/[\u0000-\u001f\u007f]/.test(value);
-        // A service-provided choice may have changed since the launcher showed it: the service checks it when it prepares.
-        const valid = field.kind === "boolean"
-          ? typeof value === "boolean"
-          : field.kind === "select"
-            ? typeof value === "string" && (Boolean(field.options?.some((option) => option.value === value)) || (field.optionsFrom === "service" && plainText(200)))
-            : plainText(field.maxLength ?? 200);
-        if (!valid) throw new Error(`${contributor.pluginName} launch option ${field.label} is invalid.`);
-        values[field.key] = value as boolean | string;
+      // The person's earlier choice no longer fits the plugin (it changed its fields or what it applies to): a subagent
+      // never gets other values than its orchestrator's, so it is refused with that reason.
+      const changed = `${contributor.pluginName} launch options changed since this orchestrator started, so its subagents cannot repeat the person's choice. `
+        + "The person can start the orchestrator again with the new options.";
+      let values: PluginLaunchValues;
+      try {
+        values = launchValues(contributor, provider, raw);
+      } catch {
+        throw new LaunchRefusal(changed);
       }
-      if (Buffer.byteLength(JSON.stringify(values), "utf8") > MAX_PLUGIN_SLOT_BYTES) {
-        throw new Error(`${contributor.pluginName} launch options exceed 4 KB.`);
-      }
+      if (!sameValues(values, inherited)) throw new LaunchRefusal(changed);
       options[pluginId] = values;
     }
     return options;
@@ -239,8 +267,14 @@ export class LaunchPipeline {
    * refuses the whole launch with a reason; nothing is ever launched without a contribution the person selected,
    * or past a policy that did not answer.
    */
-  async prepare(context: LaunchSessionContext): Promise<PreparedLaunch> {
+  async prepare(context: LaunchSessionContext, launch: {
+    model?: string;
+    /** Plugins whose options a subagent repeats unchanged from its orchestrator of the same CLI: the person chose them. */
+    personChosen?: readonly string[];
+  } = {}): Promise<PreparedLaunch> {
     const contributors = new Map(this.dependencies.contributors().map((contributor) => [contributor.pluginId, contributor]));
+    // Only a subagent's launch is refused for a second model; it was chosen for it, not by the person.
+    const delegated = context.role === "subagent";
     const selected = Object.keys(context.options).sort();
     for (const pluginId of selected) {
       if (!contributors.has(pluginId)) return { ok: false, reason: unavailableReason(pluginId) };
@@ -251,7 +285,7 @@ export class LaunchPipeline {
       ...policies.map((contributor) => this.ask(contributor, context, false))
     ]);
     const runDirectory = join(this.dependencies.runsRoot, safeSegment(context.sessionId), randomUUID());
-    const cleanup = (): Promise<void> => rm(runDirectory, { recursive: true, force: true });
+    const cleanup = (): Promise<void> => removeRunFolder(runDirectory);
     const refuse = async (reason: string): Promise<PreparedLaunch> => {
       await cleanup().catch(() => undefined);
       return { ok: false, reason };
@@ -267,6 +301,9 @@ export class LaunchPipeline {
     const args: string[] = [];
     const secrets: string[] = [];
     let thirdPartyModel = false;
+    const modelSetBy: string[] = [];
+    let modelArgumentBy: string | undefined;
+    let accountHome: string | undefined;
     for (const answer of answers) {
       if ("refuse" in answer) return refuse(answer.refuse);
     }
@@ -285,6 +322,25 @@ export class LaunchPipeline {
       }
       const forbidden = contributedArgs.find((argument) => coreOwnedLaunchArgument(context.provider, argument));
       if (forbidden) return refuse(`${name} added ${forbidden.slice(0, 60)}, which only CanvasTTY may pass.`);
+      const modelFlag = modelSettingArgument(context.provider, contributedArgs);
+      if (modelFlag !== undefined || contribution.thirdPartyModel === true) {
+        // A subagent's CLI gets one model: a second model flag next to the launch's own made OpenCode crash at start.
+        // A person's own launches (and their restores) start as they always did; the person chose both.
+        if (delegated && modelFlag !== undefined && launch.model !== undefined) {
+          return refuse(`${name} sets the model of this launch, and the launch also asks for model ${launch.model.slice(0, 80)}. Omit the model, or choose ${name} options for the model you want.`);
+        }
+        // Two model arguments are the crash, and are always refused. A plugin that only routes the CLI to another service
+        // (thirdPartyModel) next to one that picks the model is allowed only as the person's own combination: both
+        // repeated unchanged from the orchestrator. A pair the orchestrator chose itself is refused as before.
+        const personPair = !(modelFlag !== undefined && modelArgumentBy !== undefined)
+          && [...modelSetBy, contributor.pluginId].every((pluginId) => launch.personChosen?.includes(pluginId) === true);
+        if (delegated && modelSetBy.length > 0 && !personPair) {
+          const first = contributors.get(modelSetBy[0]!)?.pluginName ?? modelSetBy[0]!;
+          return refuse(`${first} and ${name} both set the model of this launch; choose launch options from only one of them.`);
+        }
+        if (modelFlag !== undefined) modelArgumentBy ??= contributor.pluginId;
+        modelSetBy.push(contributor.pluginId);
+      }
       // A configuration a CLI reads from the environment or an argument may not decide its approvals either.
       const widening = permissionConfigProblem(context.provider, contribution, context.cwd);
       if (widening) return refuse(`${name} ${widening}`);
@@ -313,6 +369,7 @@ export class LaunchPipeline {
         const conflict = claim(key);
         if (conflict) return refuse(conflict);
         env[key] = expand(value);
+        accountHome = contributedHookHome(context.provider, contributor.dataDir, key, env[key]) ?? accountHome;
       }
       for (const [key, secretKey] of Object.entries(contribution.secretEnv)) {
         const conflict = claim(key);
@@ -327,7 +384,7 @@ export class LaunchPipeline {
       args.push(...contributedArgs.map(expand));
       thirdPartyModel ||= contribution.thirdPartyModel === true;
     }
-    return { ok: true, env, args, secrets, envSources, thirdPartyModel, cleanup };
+    return { ok: true, env, args, secrets, envSources, thirdPartyModel, modelSetBy, runDirectory, ...(accountHome ? { accountHome } : {}), cleanup };
   }
 
   private async ask(
@@ -562,6 +619,17 @@ function unavailableReason(pluginId: string): string {
   return `Needs plugin ${pluginId} for its launch options; it is disabled, removed, or its native code is not trusted.`;
 }
 
+/** Errors that leave a card's folder in place on purpose: another run still uses it, or it is gone. */
+const PARENT_KEPT_CODES = new Set(["ENOENT", "ENOTEMPTY", "EEXIST", "EBUSY", "EPERM"]);
+
+/**
+ * Removes one run folder. On Windows the agent may still hold a file there for a moment after its PTY exits, so
+ * busy/permission errors are retried briefly before giving up.
+ */
+function removeRunFolder(runDirectory: string): Promise<void> {
+  return rm(runDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
 function safeSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "_").slice(0, 128) || "_";
 }
@@ -574,4 +642,93 @@ export function errorText(error: unknown): string {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+/** A plugin's launch values checked against its declared fields, with defaults filled in. Throws with a person-readable reason. */
+function launchValues(contributor: LaunchContributor, provider: ProviderId, raw: unknown): PluginLaunchValues {
+  const { appliesTo, fields } = contributor.launch;
+  if (appliesTo && !appliesTo.includes(provider as never)) {
+    throw new Error(`${contributor.pluginName} launch options do not apply to ${provider}.`);
+  }
+  if (!isRecord(raw)) throw new Error(`${contributor.pluginName} launch options are invalid.`);
+  const known = new Set(fields.map((field) => field.key));
+  const unknown = Object.keys(raw).find((key) => !known.has(key));
+  if (unknown) throw new Error(`${contributor.pluginName} has no launch option ${unknown.slice(0, 40)}.`);
+  const values: PluginLaunchValues = {};
+  for (const field of fields) {
+    const value = raw[field.key] ?? field.default
+      ?? (field.kind === "boolean" ? false : field.kind === "select" ? field.options?.[0]?.value ?? "" : "");
+    const plainText = (limit: number): boolean => typeof value === "string" && value.length <= limit && !/[\u0000-\u001f\u007f]/.test(value);
+    // A service-provided choice may have changed since the launcher showed it: the service checks it when it prepares.
+    const valid = field.kind === "boolean"
+      ? typeof value === "boolean"
+      : field.kind === "select"
+        ? typeof value === "string" && (Boolean(field.options?.some((option) => option.value === value)) || (field.optionsFrom === "service" && plainText(200)))
+        : plainText(field.maxLength ?? 200);
+    if (!valid) throw new Error(`${contributor.pluginName} launch option ${field.label} is invalid.`);
+    values[field.key] = value as boolean | string;
+  }
+  if (Buffer.byteLength(JSON.stringify(values), "utf8") > MAX_PLUGIN_SLOT_BYTES) {
+    throw new Error(`${contributor.pluginName} launch options exceed 4 KB.`);
+  }
+  return values;
+}
+
+/** The orchestrator's own choice repeated for its subagent: only keys it chose, each with the same value. */
+function sameAsInherited(raw: unknown, inherited: Readonly<PluginLaunchValues> | undefined): boolean {
+  if (!inherited || !isRecord(raw)) return false;
+  const keys = Object.keys(raw);
+  // An empty choice repeats only an empty one (a plugin without fields, chosen in the launcher).
+  if (keys.length === 0) return Object.keys(inherited).length === 0;
+  return keys.every((key) => Object.hasOwn(inherited, key) && inherited[key] === raw[key]);
+}
+
+/** Exactly the same keys and values. */
+function sameValues(values: Readonly<PluginLaunchValues>, inherited: Readonly<PluginLaunchValues>): boolean {
+  const keys = Object.keys(values);
+  return keys.length === Object.keys(inherited).length
+    && keys.every((key) => Object.hasOwn(inherited, key) && inherited[key] === values[key]);
+}
+
+/**
+ * How each CLI's arguments choose its model. Every CLI here takes `--model`; `short` are its short model flags,
+ * `profile` flags that select a configuration profile (which may name a model), and `config` flags that set a
+ * configuration key, with the keys that decide the model.
+ */
+const MODEL_ARGUMENTS: Readonly<Partial<Record<ProviderId, { short?: readonly string[]; profile?: readonly string[]; config?: { flags: readonly string[]; keys: readonly string[] } }>>> = {
+  codex: { short: ["-m"], profile: ["--profile", "-p"], config: { flags: ["-c", "--config"], keys: ["model", "model_provider", "profile"] } },
+  opencode: { short: ["-m"] },
+  qwen: { short: ["-m"] },
+  kimi: { short: ["-m"] },
+  grok: { short: ["-m"] }
+};
+
+/**
+ * The first argument that chooses the CLI's model, in any form: `--model x`, `--model=x`, a short `-m x` or `-mx`,
+ * and for Codex `--profile`/`-p` and `-c`/`--config` setting `model`, `model_provider` or `profile`. Undefined when none does.
+ */
+export function modelSettingArgument(provider: ProviderId, args: readonly string[]): string | undefined {
+  const table = MODEL_ARGUMENTS[provider] ?? {};
+  const valueFlags = ["--model", ...(table.short ?? []), ...(table.profile ?? [])];
+  const configKeys = new Set(table.config?.keys ?? []);
+  const configSetsModel = (value: string | undefined): boolean => {
+    if (value === undefined) return false;
+    const key = value.split("=", 1)[0]!.trim().replace(/^["']|["']$/gu, "");
+    return value.includes("=") && configKeys.has(key);
+  };
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index]!;
+    if (valueFlags.some((flag) => argument === flag || attachedValue(argument, flag) !== undefined)) return argument;
+    for (const flag of table.config?.flags ?? []) {
+      const value = argument === flag ? args[index + 1] : attachedValue(argument, flag);
+      if (configSetsModel(value)) return argument === flag ? `${argument} ${value}` : argument;
+    }
+  }
+  return undefined;
+}
+
+/** The value written into the flag's own argument: `--flag=value`, or `-fvalue` for a short flag. */
+function attachedValue(argument: string, flag: string): string | undefined {
+  if (flag.startsWith("--")) return argument.startsWith(`${flag}=`) ? argument.slice(flag.length + 1) : undefined;
+  return argument.length > flag.length && argument.startsWith(flag) ? argument.slice(flag.length) : undefined;
 }

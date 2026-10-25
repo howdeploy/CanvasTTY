@@ -46,6 +46,7 @@ test("Claude and Codex receive automatic lifecycle hooks without prompt or respo
   assert.equal(settings.showStatusInTerminalTab, true);
   assert.match(settings.hooks.UserPromptSubmit[0].hooks[0].command, /working.*UserPromptSubmit/u);
   assert.match(settings.hooks.PermissionRequest[0].hooks[0].command, /needs_approval.*PermissionRequest/u);
+  assert.match(settings.hooks.PostToolUseFailure[0].hooks[0].command, /working.*PostToolUseFailure/u);
   assert.match(settings.hooks.Stop[0].hooks[0].command, /idle.*Stop/u);
   assert.match(settings.hooks.Stop[0].hooks[0].command, /^ELECTRON_RUN_AS_NODE='1' /u);
   assert.equal(JSON.stringify(settings).includes('"prompt":'), false);
@@ -497,3 +498,25 @@ function runtimeOptionsFor(root, qwenSystemSettingsPath, pluginHooks) {
     environment: {}
   };
 }
+
+test("with status hooks off a result-capturing subagent gets no lease and no lifecycle hooks", async (t) => {
+  const root = await fixture(t);
+  const registrations = [];
+  const gateway = {
+    registerSession(id, provider, capture, _grant, decisions) {
+      registrations.push({ id, capture, decisions });
+      return { address: join(root, "runtime.sock"), terminalSessionId: id, provider, capabilityToken: "token" };
+    },
+    revokeTerminalSession() {},
+    currentStatus: () => null
+  };
+  const bridge = new AgentRuntimeBridge(gateway, { ...runtimeOptionsFor(root), coreHooksEnabled: false });
+  for (const provider of ["codex", "opencode"]) {
+    const launch = bridge.prepareLaunch({ terminalSessionId: provider, provider, cwd: root, captureResult: true, decisions: false });
+    assert.equal(launch.environment[AGENT_RUNTIME_ENV.capabilityToken], undefined, `${provider}: turning status hooks off means no hooks`);
+    assert.deepEqual(launch.args.filter((arg) => /^hooks\./u.test(arg)), []);
+    assert.equal(launch.environment.OPENCODE_CONFIG_CONTENT, undefined);
+    launch.cleanup();
+  }
+  assert.deepEqual(registrations, []);
+});

@@ -180,6 +180,27 @@ test("bubblewrap: read-only root, writable project, tmpfs over what may not be r
   assert.deepEqual(args.slice(-5), ["--chdir", w.project, "--", "/usr/bin/claude", "--x"]);
 });
 
+test("the paths: Kimi Code's own home (KIMI_CODE_HOME, default ~/.kimi-code) is Kimi's, and no other CLI's", async (t) => {
+  const w = await world(t);
+  const pool = join(w.userData, "account-homes", "kimi-a");
+  const env = { ...w.env, KIMI_CODE_HOME: pool };
+  const kimi = isolationPaths({ provider: "kimi", cwd: w.project, sessionTemp: join(w.temp, "s"), env, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(kimi.writable.includes(pool) && !kimi.unreadable.includes(pool), "a moved Kimi Code home stays Kimi's own");
+  const codex = isolationPaths({ provider: "codex", cwd: w.project, sessionTemp: join(w.temp, "s"), env, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(codex.unreadable.includes(pool), "another CLI cannot read a moved Kimi Code home");
+  const plain = isolationPaths({ provider: "codex", cwd: w.project, sessionTemp: join(w.temp, "s"), env: w.env, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(plain.unreadable.includes(join(w.home, ".kimi-code")), "Kimi Code's default sign-in folder is hidden from other CLIs");
+  assert.ok(plain.unreadable.includes(join(w.home, ".kimi")), "and the older kimi-cli's");
+  const share = isolationPaths({ provider: "kimi", cwd: w.project, sessionTemp: join(w.temp, "s"), env: { ...w.env, KIMI_SHARE_DIR: join(w.base, "kimi-share") }, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(share.writable.includes(join(w.base, "kimi-share")), "KIMI_SHARE_DIR moves the older kimi-cli's home");
+  // Kimi's config.toml holds its permission rules and hooks: its folders are writable, but that file stays the person's.
+  const own = isolationPaths({ provider: "kimi", cwd: w.project, sessionTemp: join(w.temp, "s"), env: w.env, userDataPath: w.userData, sessionId: "s1" });
+  assert.ok(own.writable.includes(join(w.home, ".kimi-code")));
+  assert.ok(own.protectedWrites.includes(join(w.home, ".kimi-code", "config.toml")), "Kimi Code's permission settings stay the person's");
+  assert.ok(own.protectedWrites.includes(join(w.home, ".kimi", "config.toml")), "and kimi-cli's");
+  assert.ok(kimi.protectedWrites.includes(join(pool, "config.toml")), "and a moved home's");
+});
+
 test("the paths: another CLI's home moved by its own variable is unreadable, never this CLI's own", async (t) => {
   const w = await world(t);
   const custom = (name) => join(w.base, "creds", name);

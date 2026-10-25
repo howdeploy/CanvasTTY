@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -83,4 +83,33 @@ test("Settings and the launch/link dialogs are split out of the app's static imp
     `code statically reachable from App.js should stay bounded now that heavy UI loads on demand, got ${eagerBytes} bytes`
 
   );
+});
+
+// Text that only Settings shows is kept next to it (not in the startup string table), so it loads with the Settings
+// chunk. Each entry: a module that must not be statically reachable from App.js, and an English string from it that
+// must not appear in any chunk App.js loads at startup.
+const SETTINGS_ONLY_TEXT = [
+  ["src/renderer/src/features/settings/canvasNavigationText.ts", "Wheel/pinch capture over widgets"],
+  ["src/renderer/src/features/plugins/PluginSettingsSection.tsx", "GitHub sign-in could not be cancelled"]
+];
+
+test("text that only Settings shows stays out of the startup bundle", async () => {
+  const outdir = await mkdtemp(join(tmpdir(), "canvastty-bundle-text-"));
+  try {
+    const { metafile } = await build({
+      entryPoints: [appEntry], bundle: true, splitting: true, platform: "browser", format: "esm", outdir, write: true,
+      metafile: true, logLevel: "silent",
+      loader: { ".svg": "text", ".css": "empty", ".png": "empty", ".ttf": "empty", ".woff2": "empty", ".ico": "empty" }
+    });
+    const { paths: eagerPaths } = staticallyReachableBytes(metafile, outputFor(metafile, "App.js"));
+    const eagerText = (await Promise.all([...eagerPaths].map((path) => readFile(path, "utf8")))).join("\n");
+    for (const [module, text] of SETTINGS_ONLY_TEXT) {
+      const holders = Object.entries(metafile.outputs).filter(([, output]) => Object.keys(output.inputs).some((input) => input.endsWith(module)));
+      assert.ok(holders.length > 0, `${module} is bundled`);
+      for (const [path] of holders) assert.ok(!eagerPaths.has(path), `${module} must only load with Settings`);
+      assert.ok(!eagerText.includes(text), `"${text}" must not be in the startup bundle`);
+    }
+  } finally {
+    await rm(outdir, { recursive: true, force: true });
+  }
 });

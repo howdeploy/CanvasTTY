@@ -28,10 +28,13 @@ const prompt = string({ minLength: 1, maxLength: 65_536 });
 export const AGENT_PROVIDER_IDS = Object.freeze([
   "codex", "claude", "qwen", "kimi", "opencode", "hermes", "grok", "omp", "pi", "cursor", "minimax", "devin", "antigravity"
 ]);
-/** wait_for_agent: the longest wait one call may ask for, and the wait without timeoutSeconds (some MCP clients
- *  end a tool call after 60 seconds). */
-export const MAX_AGENT_WAIT_SECONDS = 600;
-export const DEFAULT_AGENT_WAIT_SECONDS = 55;
+/** wait_for_agent: the longest wait one call may ask for, and the wait without timeoutSeconds. Most MCP clients end a
+ *  tool call after 60 seconds (Codex's default tool_timeout_sec, OpenCode's client), so a call from any orchestrator
+ *  but Claude Code (whose client waits far longer) returns after at most CLIENT_SAFE_AGENT_WAIT_SECONDS: a "timeout"
+ *  that says the subagent still runs, never a call its client cut off. */
+export const MAX_AGENT_WAIT_SECONDS = 100;
+export const DEFAULT_AGENT_WAIT_SECONDS = 50;
+export const CLIENT_SAFE_AGENT_WAIT_SECONDS = 50;
 /** spawn_agent.effort: every level some CLI takes (src/shared/launchModel.ts REASONING_EFFORTS; a test keeps them equal). */
 export const REASONING_EFFORT_IDS = Object.freeze(["minimal", "low", "medium", "high", "xhigh", "max"]);
 const provider = string({ minLength: 1, maxLength: 32, enum: [...AGENT_PROVIDER_IDS] });
@@ -58,7 +61,7 @@ export const ORCHESTRATION_TOOL_DEFINITIONS = Object.freeze([
   ),
   tool(
     "spawn_agent",
-    `Launch another provider's agent as a CanvasTTY subagent of this session and optionally deliver a first prompt. Returns the new session id. provider must be an id from list_providers (known ids: ${AGENT_PROVIDER_IDS.join(", ")}); call list_providers first to see which are installed and signed in. Give each subagent one self-contained part of the task and an absolute cwd. If the person names a model, pass it as model in the format list_providers gives for that provider (OpenCode: provider/model); effort sets the reasoning effort where that CLI has one (list_providers shows its efforts). An unsupported model or effort is refused with the reason. profile: without it the subagent gets this session's launch profile, or the next lower one its CLI has; a subagent never gets more than this session (plan < normal < acceptEdits < auto) and never YOLO. "auto" lets it work without asking the person for each edit or command inside the project; CanvasTTY's outer layers (agent isolation, base protection) still stop writes outside the project, secrets and system changes. The answer says the profile it got. cwd must be this project's folder or a folder inside it. launchOptions passes plugin launch options exactly as a plugin tool gives them (for example the account a plugin picked), for plugins that allow an orchestrator to choose them. Refusals say why (a limit the person set, a folder outside the project, a profile above this session's): change the request instead of retrying it. Then call wait_for_agent and get_agent_result.`,
+    `Launch another provider's agent as a CanvasTTY subagent of this session and optionally deliver a first prompt. Returns the new session id. provider must be an id from list_providers (known ids: ${AGENT_PROVIDER_IDS.join(", ")}); call list_providers first to see which are installed and signed in. Give each subagent one self-contained part of the task and an absolute cwd. If the person names a model, pass it as model in the format list_providers gives for that provider (OpenCode: provider/model); effort sets the reasoning effort where that CLI has one (list_providers shows its efforts). An unsupported model or effort is refused with the reason. profile: without it the subagent gets this session's launch profile, or the next lower one its CLI has; a subagent never gets more than this session (plan < normal < acceptEdits < auto) and never YOLO. "auto" lets it work without asking the person for each edit or command inside the project; CanvasTTY's outer layers (agent isolation, base protection) still stop writes outside the project, secrets and system changes. The answer says the profile it got. cwd must be this project's folder or a folder inside it. launchOptions passes plugin launch options exactly as a plugin tool gives them (for example the account a plugin picked), for plugins that allow an orchestrator to choose them. A plugin this call does not name keeps this session's own launch options (for example its model account), so the subagent never falls back silently to its CLI's default model; a subagent of another CLI is refused while this session's model comes from a plugin's options (spawn one of this CLI instead), and model next to inherited options that set the model is refused. The answer's servedBy says which CLI and requested model serve it and where each plugin's options came from. Refusals say why (a limit the person set, a folder outside the project, a profile above this session's): change the request instead of retrying it. Then call wait_for_agent and get_agent_result.`,
     {
       provider,
       cwd: string({ minLength: 1, maxLength: 4_096 }),
@@ -73,25 +76,25 @@ export const ORCHESTRATION_TOOL_DEFINITIONS = Object.freeze([
   ),
   tool(
     "send_to_agent",
-    "Write a prompt into one of this session's subagents. Plain terminal sessions are not agents.",
+    "Write a prompt into one of this session's subagents. Plain terminal sessions are not agents. Refused while the subagent is needs_approval: that prompt is the person's to answer.",
     { sessionId, prompt, submit: boolean() },
     ["sessionId", "prompt"]
   ),
   tool(
     "observe_agent",
-    "Read the capped terminal tail and status of one of this session's subagents.",
+    "Read the status of one of this session's subagents and the end of its screen as masked plain text (once its process exited, also exitLines).",
     { sessionId, maxChars: integer({ minimum: 256, maximum: 8_192 }) },
     ["sessionId"]
   ),
   tool(
     "wait_for_agent",
-    `Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason "idle" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), "needs_approval" (its card shows a prompt only the person may answer; never answer it yourself), "done" or "failed" (its process exited), "quiet" (it reports no status or no turn start and its screen stopped changing, so judge from output), "closed" (its card was closed) or "timeout" after timeoutSeconds (default ${DEFAULT_AGENT_WAIT_SECONDS}, at most ${MAX_AGENT_WAIT_SECONDS}), with status, exitCode, waitedMs, the masked terminal tail as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. After a timeout, call it again. Then read get_agent_result.`,
+    `Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason "idle" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), "needs_approval" (its card shows a prompt only the person may answer, such as a shell command it wants to run, shown in output; never answer it yourself: tell the person what it asks, then call wait_for_agent again, which waits for their answer instead of returning the same prompt again), "done" or "failed" (its process exited), "quiet" (it reports no status or no turn start and its screen stopped changing, so judge from output), "closed" (its card was closed) or "timeout" after timeoutSeconds (default ${DEFAULT_AGENT_WAIT_SECONDS}, at most ${MAX_AGENT_WAIT_SECONDS}; unless this session is Claude Code, a call returns after at most ${CLIENT_SAFE_AGENT_WAIT_SECONDS} seconds, before its MCP client would end the call), with status, exitCode, waitedMs, the end of its screen as masked plain text as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents; when CanvasTTY status hooks are off it cannot be captured and answerUnavailable says so instead: then read output); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. A timeout means it is still running: read output as its progress and call wait_for_agent again. Then read get_agent_result.`,
     { sessionId, timeoutSeconds: integer({ minimum: 1, maximum: MAX_AGENT_WAIT_SECONDS }) },
     ["sessionId"]
   ),
   tool(
     "get_agent_result",
-    "Get one of this session's subagents' result: answer (its last turn's final reply as the agent reported it, for Codex and OpenCode subagents; truncated:true when only the end was kept), status (idle once its turn ended), the exit state (running | done | failed; an interactive CLI stays running after a task) and the masked terminal tail as output. Prefer answer; the terminal tail is raw screen output.",
+    "Get one of this session's subagents' result: answer (its last turn's final reply as the agent reported it, for Codex and OpenCode subagents; truncated:true when only the end was kept), status (idle once its turn ended), the exit state (running | done | failed; an interactive CLI stays running after a task) and the end of its screen as masked plain text as output (what the terminal shows, without control sequences). Prefer answer. answerUnavailable (reason status_hooks_off) means no answer can be captured because CanvasTTY status hooks are off: read output instead.",
     { sessionId },
     ["sessionId"]
   ),

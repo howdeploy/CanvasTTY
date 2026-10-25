@@ -56,6 +56,7 @@ import {
 } from "./lib/skinStyles";
 import { TitleBar } from "./components/TitleBar";
 import { Toast } from "./components/Toast";
+import { pluginServiceNoticeKind, pluginServiceNoticeSection, pluginServiceNoticeText } from "../../shared/pluginServiceNotice.ts";
 import { environmentOptions } from "./features/launcher/LaunchOptionsSection";
 import { UpdateNotice } from "./components/UpdateNotice";
 import { resolveAppearanceSettings } from "./features/settings/appearanceSettings";
@@ -362,6 +363,7 @@ export function App(): React.JSX.Element {
   const [launchPosition, setLaunchPosition] = useState<Point | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openUpdatesRequest, setOpenUpdatesRequest] = useState(0);
+  const [openSectionRequest, setOpenSectionRequest] = useState<{ section: "agents" | "plugins"; id: number } | null>(null);
   const [shortcutReferenceOpen, setShortcutReferenceOpen] = useState(false);
   const [usageHistoryOpen, setUsageHistoryOpen] = useState(false);
   /** App root outside the canvas transform; overlays portal here to inherit the theme tokens. */
@@ -373,6 +375,7 @@ export function App(): React.JSX.Element {
   const [fullscreenSessionId, setFullscreenSessionId] = useState<string | null>(null);
   const [pendingTerminalUrl, setPendingTerminalUrl] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [toastAction, setToastAction] = useState<{ label: string; run(): void } | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ type: "idle" });
   const [dismissedUpdateNotice, setDismissedUpdateNotice] = useState<string | null>(null);
   const [updateNoticePending, setUpdateNoticePending] = useState(false);
@@ -391,7 +394,29 @@ export function App(): React.JSX.Element {
     fullscreen: false
   });
 
-  const showToast = useCallback((message: string): void => setToast(message), []);
+  const showToast = useCallback((message: string): void => {
+    setToastAction(null);
+    setToast(message);
+  }, []);
+  // A plugin page could not reach its service because its native code or module is off: say so with the way there.
+  const showPluginError = useCallback((message: string): void => {
+    const notice = pluginServiceNoticeKind(message);
+    if (!notice) {
+      showToast(message);
+      return;
+    }
+    const section = pluginServiceNoticeSection(notice);
+    setToast(pluginServiceNoticeText(notice, settings.locale));
+    setToastAction({
+      label: pluginServiceNoticeText("open", settings.locale),
+      run: () => {
+        setToast(null);
+        setToastAction(null);
+        setSettingsOpen(true);
+        setOpenSectionRequest((current) => ({ section, id: (current?.id ?? 0) + 1 }));
+      }
+    });
+  }, [settings.locale, showToast]);
   const fileSessionOptions = useMemo<FileSessionOption[]>(
     () => sessions.map((session) => ({ sessionId: session.id, label: session.title })),
     [sessions]
@@ -468,9 +493,13 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(() => setToast(null), 2_600);
+    // A toast with a button stays long enough to reach it.
+    const timer = window.setTimeout(() => {
+      setToast(null);
+      setToastAction(null);
+    }, toastAction ? 8_000 : 2_600);
     return () => window.clearTimeout(timer);
-  }, [toast]);
+  }, [toast, toastAction]);
 
   useEffect(() => {
     const unsubscribe = window.canvasTTY.window.onState(setWindowState);
@@ -2005,7 +2034,7 @@ export function App(): React.JSX.Element {
           onHomeGridSizeChange={changeHomeGridSize}
           onFinishHomeEdit={() => void finishHomeEditor()}
           onResetHomeLayout={resetHomeLayout}
-          onPluginError={showToast}
+          onPluginError={showPluginError}
           onPluginCanvasBoundsChange={changePluginCanvasBounds}
           onDisposePluginCanvas={disposePluginCanvas}
           onFocusPluginCanvas={focusPluginCanvas}
@@ -2111,6 +2140,7 @@ export function App(): React.JSX.Element {
         <SettingsPanel
           open={settingsOpen}
           openUpdatesRequest={openUpdatesRequest}
+          openSectionRequest={openSectionRequest}
           settings={settings}
           agentAvailability={agentAvailability}
           onRecheckAgentClis={recheckAgentClis}
@@ -2180,7 +2210,7 @@ export function App(): React.JSX.Element {
       {materials.snapshot.loadError && (
         <div className="materials-load-error" role="alert">{t(settings.locale, "materialsLoadFailed")}</div>
       )}
-      <Toast message={toast} />
+      <Toast message={toast} action={toastAction} />
     </div>
   );
 }

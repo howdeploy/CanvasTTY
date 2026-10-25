@@ -11,6 +11,7 @@ import { dirname, isAbsolute, join, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { lazyRequire } from "../../lazyRequire.ts";
 import { isOwnLifecycleHookText } from "../agentHelpers.ts";
+import { ownedAccountHome } from "../accountHomes.ts";
 import {
   atomicWrite,
   ensurePrivateDirectory,
@@ -26,6 +27,7 @@ import {
   CLAUDE_HTTP_HOOK,
   DECISION_BUDGET_ENV,
   OPENCODE_DECISIONS_ENV,
+  OPENCODE_DECISION_READS_ENV,
   permissionGateTimings
 } from "../../../agent-runtime/runtime-protocol.mjs";
 
@@ -93,6 +95,11 @@ export interface ProviderRuntimeLaunchOptions {
   pluginHooks?: RuntimePluginHookSource;
   /** The decision hook (permission-gate.mjs); without it decision hooks are never installed. */
   permissionGate?: RuntimeHookHelperLaunch;
+  /**
+   * `<userData>/plugin-data`: the only place an account home (a CLI home a launch contributor started the launch with)
+   * may be for the Grok/Kimi lifecycle overlays to be written into it. Without it no account home gets them.
+   */
+  accountHomesRoot?: string;
 }
 
 export interface PreparedProviderRuntimeLaunch {
@@ -100,6 +107,10 @@ export interface PreparedProviderRuntimeLaunch {
   environment: Record<string, string>;
   releaseConfiguration(): void;
 }
+
+const KIMI_JOURNAL = ".canvastty-runtime-kimi.json";
+const RUNTIME_BACKUPS = ".canvastty-runtime-backups";
+const GROK_HOOKS_FILE = "canvastty-runtime-hooks.json";
 
 const HOOK_PROVIDERS: ReadonlySet<string> = new Set(["claude", "codex", "qwen", "opencode", "kimi", "hermes", "grok", "omp", "pi"]);
 
@@ -120,6 +131,8 @@ export class ProviderRuntimeLaunchAdapters {
   private grokOverlay: GrokRuntimeHooks | null = null;
   private grokOverlaySignature: string | null = null;
   private grokUsers = 0;
+  /** Grok/Kimi overlays in account homes, by provider and home; each is removed when its last launch ends. */
+  private readonly accountOverlays = new Map<string, { overlay: { cleanup(): void }; signature: string; users: number }>();
 
   constructor(options: ProviderRuntimeLaunchOptions) {
     validateHelper(options.helper);
@@ -128,6 +141,9 @@ export class ProviderRuntimeLaunchAdapters {
     }
     if (!isAbsolute(options.openCodePluginPath)) {
       throw new Error("OpenCode lifecycle plugin path must be absolute.");
+    }
+    if (options.accountHomesRoot !== undefined && !isAbsolute(options.accountHomesRoot)) {
+      throw new Error("Account homes root must be absolute.");
     }
     if (options.permissionGate) {
       validateHelper(options.permissionGate);
@@ -175,6 +191,11 @@ export class ProviderRuntimeLaunchAdapters {
    * `decisionBudgetMs` (a decision service's `decide.timeoutMs`) lengthens the hook's deadlines to fit it.
    * `claudeHttpHookBase` (Claude Code only) sends its lifecycle events, except SessionStart, as HTTP hooks to the
    * gateway's loopback listener instead of running the helper; the decision hook stays a command.
+   * `decisionReads` (base protection on at launch) lets the decision hook see read-only file tools as well.
+   * `accountHome` (Grok and Kimi only, see accountHomes.ts): the CLI home a launch contributor started this launch
+   * with. When it is an account home inside `accountHomesRoot`, the Grok/Kimi overlay goes there instead of into the
+   * default home, since that is the only home the CLI reads. Claude Code, Codex, Qwen Code and OpenCode take their hooks
+   * from the launch's arguments or environment, so they work in any home already.
    */
   prepare(
     provider: AgentProvider,
@@ -182,20 +203,24 @@ export class ProviderRuntimeLaunchAdapters {
     coreHooksEnabled = true,
     decisions = false,
     decisionBudgetMs?: number,
-    claudeHttpHookBase?: string
+    claudeHttpHookBase?: string,
+    decisionReads = false,
+    accountHome?: string,
+    /** The card's own (already filtered) environment; the launch reads the person's OpenCode inline config from it. */
+    environment: Readonly<Record<string, string | undefined>> = this.environment
   ): PreparedProviderRuntimeLaunch {
     const pluginRegistrations = this.options.pluginHooks?.list(provider) ?? [];
     const gate = decisions && this.decisionsSupported(provider);
     const pluginCommands = [
       ...this.pluginHookCommands(provider, pluginRegistrations),
-      ...(gate && provider !== "opencode" ? decisionHookCommands(provider as DecisionHookProvider, this.options.permissionGate!, this.platform, decisionBudgetMs) : [])
+      ...(gate && provider !== "opencode" ? decisionHookCommands(provider as DecisionHookProvider, this.options.permissionGate!, this.platform, decisionBudgetMs, decisionReads) : [])
     ];
     const openCodeDecisions = gate && provider === "opencode";
     // Only providers with a hook adapter get lifecycle configuration. Cursor,
     // MiniMax, Devin and Antigravity must never reach Grok's shared hook overlay.
     const hasHooks = HOOK_PROVIDERS.has(provider)
       && (coreHooksEnabled || pluginCommands.length > 0 || (provider === "opencode" && (pluginRegistrations.length > 0 || openCodeDecisions)));
-    const environment = hasHooks
+    const hookEnvironment = hasHooks
       ? {
         ...(pluginRegistrations.length > 0 ? {
           [PLUGIN_HOOK_TERMINAL_SESSION_ENV]: terminalSessionId
@@ -204,13 +229,13 @@ export class ProviderRuntimeLaunchAdapters {
       : {};
     if (!hasHooks) {
       this.clearSharedOverlay(provider);
-      return prepared([], environment);
+      return prepared([], hookEnvironment);
     }
     if (provider === "claude") {
-      return prepared(claudeHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands, claudeHttpHookBase), environment);
+      return prepared(claudeHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands, claudeHttpHookBase), hookEnvironment);
     }
     if (provider === "codex") {
-      return prepared(codexHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands), environment);
+      return prepared(codexHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands), hookEnvironment);
     }
     if (provider === "qwen") {
       const path = createQwenHookSettings({
@@ -222,7 +247,7 @@ export class ProviderRuntimeLaunchAdapters {
         coreHooksEnabled,
         pluginCommands
       });
-      return prepared([], { ...environment, [QWEN_SYSTEM_SETTINGS]: path }, () => unlinkIfExists(path));
+      return prepared([], { ...hookEnvironment, [QWEN_SYSTEM_SETTINGS]: path }, () => unlinkIfExists(path));
     }
     if (provider === "opencode") {
       const pluginEnvironment = this.openCodePluginEnvironment(
@@ -230,11 +255,15 @@ export class ProviderRuntimeLaunchAdapters {
         coreHooksEnabled
       );
       return prepared([], {
-        ...environment,
+        ...hookEnvironment,
         ...pluginEnvironment,
-        ...(openCodeDecisions ? { [OPENCODE_DECISIONS_ENV]: "1", ...budgetEnvironment(decisionBudgetMs) } : {}),
+        ...(openCodeDecisions ? {
+          [OPENCODE_DECISIONS_ENV]: "1",
+          ...(decisionReads ? { [OPENCODE_DECISION_READS_ENV]: "1" } : {}),
+          ...budgetEnvironment(decisionBudgetMs)
+        } : {}),
         [OPENCODE_CONFIG_CONTENT]: openCodeLifecycleConfig(
-          this.environment[OPENCODE_CONFIG_CONTENT],
+          environment[OPENCODE_CONFIG_CONTENT],
           this.options.openCodePluginPath
         )
       });
@@ -242,16 +271,20 @@ export class ProviderRuntimeLaunchAdapters {
     if (provider === "omp" || provider === "pi") {
       return prepared(coreHooksEnabled
         ? ["--extension", join(dirname(this.options.openCodePluginPath), "omp-extension.mjs")]
-        : [], environment);
+        : [], hookEnvironment);
+    }
+    if (provider === "kimi" || provider === "grok") {
+      const ownHome = this.ownAccountHome(provider, accountHome);
+      if (ownHome) return prepared([], hookEnvironment, this.acquireAccountHome(provider, ownHome, coreHooksEnabled, pluginCommands));
     }
     if (provider === "kimi") {
-      return prepared([], environment, this.acquireKimi(coreHooksEnabled, pluginCommands));
+      return prepared([], hookEnvironment, this.acquireKimi(coreHooksEnabled, pluginCommands));
     }
     if (provider === "hermes") {
-      return prepared([], environment, this.acquireHermes(coreHooksEnabled, pluginCommands));
+      return prepared([], hookEnvironment, this.acquireHermes(coreHooksEnabled, pluginCommands));
     }
-    if (provider === "grok") return prepared([], environment, this.acquireGrok(coreHooksEnabled, pluginCommands));
-    return prepared([], environment);
+    if (provider === "grok") return prepared([], hookEnvironment, this.acquireGrok(coreHooksEnabled, pluginCommands));
+    return prepared([], hookEnvironment);
   }
 
   recoverConfigurations(): void {
@@ -355,6 +388,47 @@ export class ProviderRuntimeLaunchAdapters {
     });
   }
 
+  /** The account home this Grok/Kimi launch's overlay goes into (accountHomes.ts), or null for the default home. */
+  private ownAccountHome(provider: "kimi" | "grok", candidate: string | undefined): string | null {
+    return ownedAccountHome({
+      root: this.options.accountHomesRoot,
+      candidate,
+      defaultHome: provider === "kimi" ? this.kimiHomeDirectory : this.grokHomeDirectory,
+      written: provider === "kimi" ? ["config.toml", KIMI_JOURNAL, RUNTIME_BACKUPS] : ["hooks", join("hooks", GROK_HOOKS_FILE)],
+      label: provider === "kimi" ? "Kimi" : "Grok"
+    });
+  }
+
+  private acquireAccountHome(
+    provider: "kimi" | "grok",
+    home: string,
+    coreHooksEnabled: boolean,
+    pluginCommands: readonly ProviderHookCommand[]
+  ): () => void {
+    const key = `${provider}\0${home}`;
+    const signature = overlaySignature(coreHooksEnabled, pluginCommands);
+    let entry = this.accountOverlays.get(key);
+    if (!entry || entry.signature !== signature) {
+      if (entry) {
+        this.accountOverlays.delete(key);
+        entry.overlay.cleanup();
+      }
+      const overlay = provider === "kimi"
+        ? KimiRuntimeHooks.begin(home, this.options.helper, this.platform, coreHooksEnabled, pluginCommands)
+        : GrokRuntimeHooks.begin(home, this.options.helper, this.platform, coreHooksEnabled, pluginCommands);
+      entry = { overlay, signature, users: 0 };
+      this.accountOverlays.set(key, entry);
+    }
+    const owned = entry;
+    owned.users += 1;
+    return once(() => {
+      owned.users -= 1;
+      if (owned.users !== 0 || this.accountOverlays.get(key) !== owned) return;
+      this.accountOverlays.delete(key);
+      owned.overlay.cleanup();
+    });
+  }
+
   /** Whether this provider can take the decision hook: Claude Code, Codex, Qwen Code (PreToolUse) and OpenCode. */
   decisionsSupported(provider: AgentProvider): boolean {
     return Boolean(this.options.permissionGate) && (provider === "opencode" || Object.hasOwn(DECISION_TOOL_MATCHERS, provider));
@@ -406,6 +480,8 @@ const CLAUDE_HOOKS: readonly HookMapping[] = [
   { event: "UserPromptSubmit", state: "working" },
   { event: "PermissionRequest", state: "needs_approval" },
   { event: "PostToolUse", state: "working" },
+  // An approved tool that fails runs PostToolUseFailure, not PostToolUse: the turn goes on after the approval.
+  { event: "PostToolUseFailure", state: "working" },
   { event: "Stop", state: "idle" },
   { event: "StopFailure", state: "idle" },
   { event: "SessionEnd", state: "idle" },
@@ -547,17 +623,28 @@ const DECISION_TOOL_MATCHERS: Readonly<Record<DecisionHookProvider, string>> = {
   qwen: "^(run_shell_command|write_file|edit|replace)$"
 };
 
+/**
+ * With base protection on at launch the hook also matches read-only file tools, for its private-data rule only.
+ * Codex has no read-only file tool in its hooks: it reads through its shell.
+ */
+const DECISION_READ_TOOL_MATCHERS: Readonly<Record<DecisionHookProvider, string>> = {
+  claude: "Bash|Write|Edit|MultiEdit|NotebookEdit|Read|NotebookRead|Grep|Glob|LS",
+  codex: "Bash|apply_patch|Edit|Write",
+  qwen: "^(run_shell_command|write_file|edit|replace|read_file|read_many_files|grep_search|search_file_content|glob|list_directory)$"
+};
+
 function decisionHookCommands(
   provider: DecisionHookProvider,
   gate: RuntimeHookHelperLaunch,
   platform: NodeJS.Platform,
-  decisionBudgetMs?: number
+  decisionBudgetMs?: number,
+  reads = false
 ): ProviderHookCommand[] {
   validateHelper(gate);
   const { hookSeconds } = permissionGateTimings(decisionBudgetMs);
   return [{
     event: "PreToolUse",
-    matcher: DECISION_TOOL_MATCHERS[provider],
+    matcher: (reads ? DECISION_READ_TOOL_MATCHERS : DECISION_TOOL_MATCHERS)[provider],
     // The hook is installed only when something decides for this session, so it always fails closed.
     command: commandWithEnvironment(
       [gate.command, ...gate.args, "pretool"],
@@ -794,7 +881,7 @@ class KimiRuntimeHooks {
   ): KimiRuntimeHooks {
     ensurePrivateDirectory(home);
     const path = join(home, "config.toml");
-    const journalPath = join(home, ".canvastty-runtime-kimi.json");
+    const journalPath = join(home, KIMI_JOURNAL);
     this.recover(home);
     const original = readOptional(path);
     const block = kimiHookBlock(helper, platform, coreHooksEnabled, pluginCommands);
@@ -809,7 +896,7 @@ class KimiRuntimeHooks {
   }
 
   static recover(home: string): void {
-    const journalPath = join(home, ".canvastty-runtime-kimi.json");
+    const journalPath = join(home, KIMI_JOURNAL);
     const journal = readJournal(journalPath);
     if (!journal) return;
     const path = join(home, "config.toml");
@@ -895,7 +982,7 @@ class GrokRuntimeHooks {
   ): GrokRuntimeHooks {
     const hooksDirectory = join(home, "hooks");
     ensurePrivateDirectory(hooksDirectory);
-    const path = join(hooksDirectory, "canvastty-runtime-hooks.json");
+    const path = join(hooksDirectory, GROK_HOOKS_FILE);
     this.recover(home);
     if (existsSync(path)) throw new Error("Grok CanvasTTY lifecycle hook path is already occupied.");
     const expected = `${JSON.stringify({
@@ -909,7 +996,7 @@ class GrokRuntimeHooks {
   }
 
   static recover(home: string): void {
-    const path = join(home, "hooks", "canvastty-runtime-hooks.json");
+    const path = join(home, "hooks", GROK_HOOKS_FILE);
     const current = readOptional(path);
     if (current === null) return;
     if (
@@ -948,7 +1035,7 @@ function createTextJournal(
   mutated: string,
   extra: Record<string, unknown>
 ): TextOverlayJournal {
-  const backupDirectory = join(home, ".canvastty-runtime-backups");
+  const backupDirectory = join(home, RUNTIME_BACKUPS);
   ensurePrivateDirectory(backupDirectory);
   const backupPath = join(backupDirectory, `${provider}-${randomUUID()}.bak`);
   if (original !== null) atomicWrite(backupPath, original, modeOf(join(home, provider === "kimi" ? "config.toml" : "config.yaml")));

@@ -709,7 +709,7 @@ test("send appends submit unless told otherwise and rejects exited sessions", as
   terminals.disposeAll();
 });
 
-test("observe returns a capped terminal tail and result reflects exit state", () => {
+test("observe returns a capped terminal tail and result reflects exit state", async () => {
   const { terminals, control } = serviceFixture();
   const parent = terminals.create({
     provider: "codex",
@@ -717,11 +717,11 @@ test("observe returns a capped terminal tail and result reflects exit state", ()
     profile: "normal",
     position: { x: 0, y: 0 }
   });
-  const observation = control.observe(parent.id);
+  const observation = await control.observe(parent.id);
   assert.equal(observation.sessionId, parent.id);
   assert.equal(observation.output.length <= 8_192, true);
 
-  const running = control.result(parent.id);
+  const running = await control.result(parent.id);
   assert.equal(running.state, "running");
   assert.equal(running.exitCode, null);
   terminals.disposeAll();
@@ -746,8 +746,8 @@ test("cancel disposes the subagent and plain terminals are not agents", async ()
   assert.equal(terminals.list().some((session) => session.id === child.id), false);
 
   assert.throws(() => control.send(terminal.id, "text"), /not agents/u);
-  assert.throws(() => control.observe(terminal.id), /not agents/u);
-  assert.throws(() => control.result(terminal.id), /not agents/u);
+  await assert.rejects(control.observe(terminal.id), /not agents/u);
+  await assert.rejects(control.result(terminal.id), /not agents/u);
   terminals.disposeAll();
 });
 
@@ -805,8 +805,8 @@ test("an orchestrator tool call looks its sessions up by id: no other card's scr
   assert.equal(control.status(child.id).id, child.id);
   assert.equal(control.isInSubtree(parent.id, child.id), true);
   assert.deepEqual(control.children(parent.id).map((session) => session.id), [child.id]);
-  control.observe(child.id);
-  control.result(child.id);
+  await control.observe(child.id);
+  await control.result(child.id);
   assert.throws(() => control.status("missing"), /does not exist/u);
 
   assert.deepEqual(copied, [child.id, child.id], "only the observed card's own scrollback is read, and no list() snapshot of every card");

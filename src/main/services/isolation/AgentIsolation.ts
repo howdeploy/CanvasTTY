@@ -1,13 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ProviderId, SessionIsolation } from "../../../shared/contracts.ts";
 import { autoKind, PROFILE_RANK, type LaunchProfile } from "../../../shared/autoMode.ts";
 import { LaunchRefusal } from "../launchRefusal.ts";
-import { isolationPaths } from "./isolationPaths.ts";
+import { isolationPaths, type PlacedProject } from "./isolationPaths.ts";
+import { validateAccountHome } from "./accountHomeIsolation.ts";
 import { seatbeltProfile } from "./seatbelt.ts";
-import { bubblewrapArguments, projectHooks } from "./bubblewrap.ts";
+import { bubblewrapArguments, projectHooks, type PathKind } from "./bubblewrap.ts";
 import { LinuxHostPaths } from "./linuxHostPaths.ts";
 
 export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
@@ -75,6 +76,12 @@ export interface IsolationLaunch {
   env: Record<string, string>;
   /** Folders under CanvasTTY's private data this launch was handed (its control grant, its account home). */
   grantedPrivate?: readonly string[];
+  /** The CLI home a launch contributor selected inside its plugin data (LaunchPipeline); checked again here. */
+  accountHome?: string;
+  /** CanvasTTY's own gateway sockets for this launch (gatewaySocketAddresses), never read from `env`. */
+  gatewaySockets?: readonly string[];
+  /** Folders CanvasTTY itself placed this launch in (an environment's worktree, the person's chosen folder). */
+  placedProjects?: readonly PlacedProject[];
   /** The launch profile: in plan the project is not writable. */
   profile?: LaunchProfile;
 }
@@ -184,6 +191,10 @@ export class AgentIsolation {
       const temp = join(folder, "tmp");
       mkdirSync(temp, { mode: 0o700 });
       const cwd = realpathSync(launch.cwd);
+      const accountHome = launch.accountHome === undefined
+        ? undefined
+        : validateAccountHome(this.options.userDataPath, launch.provider, launch.accountHome, launch.env);
+      const granted = [...(launch.grantedPrivate ?? []), ...(accountHome ? [accountHome] : [])];
       const paths = isolationPaths({
         provider: launch.provider,
         cwd,
@@ -192,14 +203,19 @@ export class AgentIsolation {
         hostEnvironment: this.hostEnvironment,
         userDataPath: this.options.userDataPath,
         sessionId: launch.sessionId,
-        ...(launch.grantedPrivate ? { grantedPrivate: launch.grantedPrivate } : {}),
+        ...(granted.length > 0 ? { grantedPrivate: granted } : {}),
+        ...(launch.gatewaySockets ? { gatewaySockets: launch.gatewaySockets } : {}),
+        ...(launch.placedProjects ? { placedProjects: launch.placedProjects } : {}),
         ...(launch.profile === "plan" ? { readOnlyProject: true } : {})
       });
       // `git init` and `git clone` copy git's template, sample hooks included: an empty one writes no hooks.
       const gitTemplate = join(folder, "git-template");
       mkdirSync(gitTemplate, { mode: 0o500 });
       // An agent that meets "Operation not permitted" can read why here, instead of trying other ways around it.
-      const env = { ...launch.env, TMPDIR: `${temp}/`, TMP: temp, TEMP: temp, GIT_TEMPLATE_DIR: gitTemplate, [ISOLATION_ENV]: ISOLATION_NOTE };
+      const env: Record<string, string> = { ...launch.env, TMPDIR: `${temp}/`, TMP: temp, TEMP: temp, GIT_TEMPLATE_DIR: gitTemplate, [ISOLATION_ENV]: ISOLATION_NOTE };
+      // Claude Code ignores TMPDIR for its Bash tool and editor files: `${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>`, which
+      // all of the person's Claude sessions share and the layer keeps read-only. Its own folder is the launch's temp.
+      if (launch.provider === "claude") env.CLAUDE_CODE_TMPDIR = temp;
       if (available.layer === "seatbelt") {
         const profilePath = join(folder, "profile.sb");
         writeFileSync(profilePath, seatbeltProfile(paths), { mode: 0o600, flag: "wx" });
@@ -208,8 +224,8 @@ export class AgentIsolation {
       // bubblewrap mounts only what exists: the CLI's own missing folders are created and a missing protected file
       // gets a placeholder first (LinuxHostPaths), both undone by cleanup().
       releaseHostPaths = this.linuxHostPaths.prepare(paths);
-      const kind = (path: string): "file" | "directory" | null => {
-        try { const stat = statSync(path); return stat.isDirectory() ? "directory" : stat.isFile() ? "file" : null; } catch { return null; }
+      const kind = (path: string): PathKind => {
+        try { const stat = statSync(path); return stat.isDirectory() ? "directory" : stat.isFile() ? "file" : stat.isSocket() ? "socket" : null; } catch { return null; }
       };
       const args = bubblewrapArguments(paths, { command: launch.command, args: launch.args, cwd, ...(launch.env.XDG_RUNTIME_DIR ? { runtimeDir: launch.env.XDG_RUNTIME_DIR } : {}) }, kind);
       const hooks = projectHooks(cwd);
@@ -285,7 +301,20 @@ function findOnPath(name: string, exists: (path: string) => boolean): string | n
   return null;
 }
 
-/** The folder of a session's control grant, from the launch environment (it is readable inside the layer). */
+/**
+ * The Unix socket addresses in environments CanvasTTY's own gateways prepared for a launch (browser, lifecycle,
+ * orchestration). Pass only those: the launch's full environment also holds the person's variables and plugins'.
+ */
+export function gatewaySocketAddresses(...environments: ReadonlyArray<Readonly<Record<string, string>> | undefined>): string[] {
+  return [...new Set(environments.flatMap((environment) => Object.entries(environment ?? {})
+    .filter(([name, value]) => /^CANVASTTY_.*_ADDRESS$/u.test(name) && isAbsolute(value))
+    .map(([, value]) => value)))];
+}
+
+/**
+ * The folder of a session's control grant, from the control environment CanvasTTY itself prepared for the launch
+ * (`controlEnvironment`), never from the launch's full environment: a plugin can set the variable there too.
+ */
 export function controlGrantFolder(env: Readonly<Record<string, string | undefined>>): string | null {
   const connection = env.CANVASTTY_CONTROL_CONNECTION;
   return connection ? dirname(connection) : null;

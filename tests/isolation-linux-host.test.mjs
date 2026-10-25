@@ -84,6 +84,26 @@ test("bubblewrap: a missing CLI permission file inside its writable folder is pr
   assert.equal(existsSync(join(w.home, ".claude", "settings.json")), false);
 });
 
+test("bubblewrap: a CANVASTTY_*_ADDRESS into HOME binds nothing and un-hides nothing; a core gateway folder over a hidden path is refused", posixHost, async (t) => {
+  const w = await freshHome(t);
+  await mkdir(join(w.home, ".ssh"));
+  await writeFile(join(w.home, ".ssh", "id_test"), "FAKE-PRIVATE-KEY");
+  const lifecycle = join(w.userData, "lifecycle", "runtime");
+  await mkdir(lifecycle, { recursive: true });
+  // The person's or a plugin's variable: in the environment only, not a gateway CanvasTTY set up.
+  const wrapped = linux(w).wrap({ sessionId: "s1", provider: "codex", cwd: w.project, command: "/bin/sh", args: ["-c", "true"],
+    env: { ...w.env, CANVASTTY_FOO_ADDRESS: join(w.home, "foo.sock") }, gatewaySockets: [join(lifecycle, "r.sock")] });
+  try {
+    assert.equal(mountFor(wrapped.args, w.home)?.target, "/", "HOME is not bound");
+    assert.equal(mountFor(wrapped.args, join(w.home, ".ssh", "id_test"))?.mode, "tmpfs", "its keys stay hidden");
+    assert.equal(persistsWrite(wrapped.args, join(w.home, "notes.txt")), false);
+    assert.deepEqual(mountFor(wrapped.args, join(lifecycle, "r.sock")), { target: lifecycle, mode: "ro" }, "the core gateway folder, read-only");
+  } finally { wrapped.cleanup(); }
+  // A core gateway whose folder holds something hidden is refused rather than mounted over it.
+  assert.throws(() => linux(w).wrap({ sessionId: "s2", provider: "codex", cwd: w.project, command: "/bin/sh", args: ["-c", "true"], env: w.env,
+    gatewaySockets: [join(w.home, "gw.sock")] }), /gateway socket folder .* contains .*\.ssh, which the agent may not read/u);
+});
+
 test("bubblewrap: a fresh HOME gets the CLI's own state folders, so its first run can write them", posixHost, async (t) => {
   const w = await freshHome(t);
   const wrapped = wrapIn(linux(w), w, "opencode");

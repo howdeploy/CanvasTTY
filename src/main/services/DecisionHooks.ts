@@ -25,7 +25,10 @@ export interface DecisionSession {
   role: SessionRole;
   /** The session's working folder: "outside" is measured from here. */
   cwd: string;
-  /** The agent's own config folders (CLAUDE_CONFIG_DIR of this run), whose plans and memory are not "outside". */
+  /**
+   * The agent's own config folders (CLAUDE_CONFIG_DIR of this run, and the account home a launch contributor selected
+   * for it): their plans and memory are not "outside", and CanvasTTY's private data does not include them.
+   */
   configDirs: string[];
   /** The profile the card runs in. */
   profile?: LaunchProfileId;
@@ -85,7 +88,8 @@ const MAX_SERVICES = 8;
  * first and its deny is final. Then every trusted decision service that applies answers deny, ask, allow or
  * nothing, in parallel, within 3 s. Any deny wins; else any ask (a timeout, an error or an unreadable answer is an
  * ask); else an allow counts only from a plugin the person separately let allow; else no verdict and the agent goes
- * on as it would without CanvasTTY. Nothing here ever turns a failure into an allow.
+ * on as it would without CanvasTTY. Nothing here ever turns a failure into an allow. A read-only file tool call is
+ * checked by base protection's private-data rule only; decision services are not asked about it.
  */
 export class DecisionHooks {
   private readonly deps: DecisionHooksDependencies;
@@ -99,6 +103,11 @@ export class DecisionHooks {
     if (this.protects()) return true;
     const services = this.applicable(provider);
     return services === null || services.length > 0;
+  }
+
+  /** Whether a launch's hook should also see read-only file tools: only base protection checks them. */
+  checksReads(): boolean {
+    return this.protects();
   }
 
   /** The longest wait a decision service of this agent asked for: the session's gate is sized for it at launch. */
@@ -129,15 +138,18 @@ export class DecisionHooks {
       // Cut input: the rules could not see the command, or where a file tool writes. Unchecked is not allowed.
       if (request.truncated) {
         const cut = actionFromHook(request.toolName, request.toolInput, request.toolInputPreview);
-        if (cut.kind === "shell" || cut.kind === "edit" && cut.paths.length === 0) return { behavior: "deny", message: TOO_LARGE_MESSAGE };
+        // A cut read-only call (a read_many_files list, a huge Grep pattern) may hide the path it reads.
+        if (cut.kind === "shell" || cut.kind === "read" || cut.kind === "edit" && cut.paths.length === 0) return { behavior: "deny", message: TOO_LARGE_MESSAGE };
       }
     }
+    // Read-only file tools reach the hook only for base protection's private-data rule: plugins are not asked.
+    const action = actionFromHook(request.toolName, request.toolInput, request.toolInputPreview);
+    if (action.kind === "read") return { behavior: "none" };
     const services = this.applicable(session.provider);
     // The plugin list itself failed: that is the gateway's failure (the person is asked, or a fail-closed gate
     // denies), never "no plugin has an opinion".
     if (services === null) throw new Error("decision services unavailable");
     if (services.length === 0) return { behavior: "none" };
-    const action = actionFromHook(request.toolName, request.toolInput, request.toolInputPreview);
     const params: Omit<DecisionRequest, "budgetMs"> = {
       event: "pre-tool",
       sessionId,

@@ -1136,7 +1136,11 @@ export interface GithubAuthStatus {
   authorized: boolean;
   login: string | null;
   tokenExpiresAt: number | null;
+  /** Outcome of the most recent device sign-in; "idle" when none is pending or to report. */
+  deviceFlowState: GithubDeviceFlowState;
 }
+
+export type GithubDeviceFlowState = "idle" | "pending" | "denied" | "expired" | "failed" | "cancelled";
 
 export interface GithubDeviceFlowStart {
   userCode: string;
@@ -2049,6 +2053,7 @@ export interface CanvasTTYApi {
   githubAuth: {
     status(): Promise<GithubAuthStatus>;
     start(): Promise<GithubDeviceFlowStart>;
+    cancel(): Promise<void>;
     signOut(): Promise<void>;
     openUrl(url: string): Promise<void>;
   };
@@ -2245,6 +2250,7 @@ export const IPC = {
   githubAuthStatus: "github-auth:status",
   githubAuthStart: "github-auth:start",
   githubAuthSignOut: "github-auth:sign-out",
+  githubAuthCancel: "github-auth:cancel",
   githubAuthOpenUrl: "github-auth:open-url",
   terminalList: "terminal:list",
   terminalOpenFile: "terminal:open-file",

@@ -84,6 +84,7 @@ import {
 } from "../../lib/providers";
 import { shortcutFromKeyboardEvent, shortcutFromPointerEvent } from "../../lib/shortcuts";
 import { t, type TranslationKey } from "../../lib/i18n";
+import { canvasNavigationText } from "./canvasNavigationText";
 import { formatBytes } from "../materials/materialCardModel";
 import {
   createTerminalBorderSkinPreviewStyleController,
@@ -172,6 +173,8 @@ const DEFAULT_PROFILE_LABELS: Record<DefaultLaunchProfile, TranslationKey> = {
 interface SettingsPanelProps {
   open: boolean;
   openUpdatesRequest: number;
+  /** Opens a section from outside (a plugin notice's "Open settings"); "agents" scrolls to Extension native code. */
+  openSectionRequest?: { section: "agents" | "plugins"; id: number } | null;
   settings: AppSettings;
   agentAvailability: AgentCliAvailability | null;
   onRecheckAgentClis(): Promise<void>;
@@ -208,6 +211,7 @@ interface SettingsPanelProps {
 export function SettingsPanel({
   open,
   openUpdatesRequest,
+  openSectionRequest = null,
   settings,
   agentAvailability,
   onRecheckAgentClis,
@@ -288,6 +292,19 @@ export function SettingsPanel({
   useLayoutEffect(() => {
     if (open && contentRef.current) contentRef.current.scrollTop = 0;
   }, [open, section]);
+
+  const scrollToNativeCode = useRef(false);
+  useEffect(() => {
+    if (!openSectionRequest) return;
+    scrollToNativeCode.current = openSectionRequest.section === "agents";
+    setSection(openSectionRequest.section);
+  }, [openSectionRequest]);
+  // Once, after the section is shown (and its scroll reset): bring Extension native code into view.
+  useEffect(() => {
+    if (!open || section !== "agents" || !scrollToNativeCode.current) return;
+    scrollToNativeCode.current = false;
+    contentRef.current?.querySelector<HTMLElement>(".plugin-services")?.scrollIntoView({ block: "start" });
+  }, [open, openSectionRequest, section]);
 
   const openAgentInstall = (provider: AgentProviderId): void => {
     const url = PROVIDERS[provider].installUrl;
@@ -626,20 +643,20 @@ export function SettingsPanel({
                     ))}
                   </div>
                 ))}
-                <SettingGroup label={t(locale, "canvasWheelCapture")} description={t(locale, "canvasWheelCaptureDescription")}>
+                <SettingGroup label={canvasNavigationText(locale, "canvasWheelCapture")} description={canvasNavigationText(locale, "canvasWheelCaptureDescription")}>
                   <Segmented value={settings.canvasWheelCaptureMode}
-                    options={[["off", "Off"], ["always", "On"], ["key", "Key"]]}
+                    options={[["off", t(locale, "off")], ["always", t(locale, "on")], ["key", canvasNavigationText(locale, "canvasWheelCaptureKey")]]}
                     onChange={(value) => changeCanvasWheelCaptureMode(value as CanvasWheelCaptureMode)} />
                   {settings.canvasWheelCaptureMode === "key" && (
                     <CanvasNavigationShortcutEditor open={open} locale={locale}
-                      label={t(locale, "canvasWheelOverride")} binding={settings.canvasWheelOverride}
+                      label={canvasNavigationText(locale, "canvasWheelOverride")} binding={settings.canvasWheelOverride}
                       actionShortcuts={Object.values(settings.shortcuts)} allowDisable={false}
                       onCaptureStart={() => { setCapturing(null); setShortcutError(null); }}
                       onChange={(canvasWheelOverride) => onChange({ keyboardPreset: "custom", canvasWheelOverride })} />
                   )}
-                  {canvasOverrideBindingsMatch && <p className="shortcut-editor__warning">{t(locale, "canvasOverrideBindingsMatch")}</p>}
+                  {canvasOverrideBindingsMatch && <p className="shortcut-editor__warning">{canvasNavigationText(locale, "canvasOverrideBindingsMatch")}</p>}
                 </SettingGroup>
-                <SettingGroup label={t(locale, "canvasNavigationOverride")} description={t(locale, "canvasNavigationOverrideDescription")}>
+                <SettingGroup label={t(locale, "canvasNavigationOverride")} description={canvasNavigationText(locale, "canvasNavigationOverrideDescription")}>
                   <CanvasNavigationShortcutEditor open={open} locale={locale}
                     label={t(locale, "canvasNavigationOverride")} binding={settings.canvasNavigationOverride}
                     actionShortcuts={Object.values(settings.shortcuts)} allowDisable

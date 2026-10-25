@@ -79,6 +79,8 @@ interface RuntimeLease {
   provider: Exclude<ProviderId, "terminal">;
   tokenDigest: Buffer;
   activeTurnId: string | null;
+  /** A turn started and has not reported idle yet; between turns an unseen turn id may open the next one. */
+  turnOpen: boolean;
   /** Turn ids this session already reported (bounded, oldest dropped): a late start of one of them is stale. */
   seenTurnIds: Set<string>;
   latest: RuntimeLifecycleSignal | null;
@@ -276,6 +278,7 @@ export class RuntimeGateway {
       provider,
       tokenDigest: tokenDigest(capabilityToken),
       activeTurnId: null,
+      turnOpen: false,
       seenTurnIds: new Set(),
       latest: null,
       captureResult: captureResultOrGrantExpiresAt === true,
@@ -469,21 +472,27 @@ export class RuntimeGateway {
       throw new Error("Answer capture is not authorized for this session.");
     }
 
-    if (message.turnId && isTurnStart(message.event)) {
+    const startsTurn = isTurnStart(message.event);
+    if (message.turnId && startsTurn) {
       // Each hook runs on its own connection, so a start of an earlier turn can arrive after the next turn began;
       // it must not make that newer turn's events look stale.
       if (message.turnId !== lease.activeTurnId && lease.seenTurnIds.has(message.turnId)) return null;
       lease.activeTurnId = message.turnId;
+      lease.turnOpen = true;
       rememberTurn(lease, message.turnId);
-    } else if (
-      message.turnId
-      && lease.activeTurnId
-      && message.turnId !== lease.activeTurnId
-    ) {
-      return null;
+    } else if (message.turnId && message.turnId !== lease.activeTurnId) {
+      // A turn whose start hook was lost (it timed out, or the CLI skipped it) still counts: after an idle, an
+      // unseen id opens the next turn. During an open turn, or for an id already seen, the event is out of order.
+      if (lease.activeTurnId && (lease.turnOpen || lease.seenTurnIds.has(message.turnId))) return null;
+      lease.activeTurnId = message.turnId;
+      lease.turnOpen = true;
+      rememberTurn(lease, message.turnId);
     } else if (message.turnId) {
       rememberTurn(lease, message.turnId);
+    } else if (startsTurn) {
+      lease.turnOpen = true;
     }
+    if (message.state === "idle") lease.turnOpen = false;
     const signal: RuntimeLifecycleSignal = {
       state: message.state,
       event: message.event,
@@ -877,7 +886,8 @@ function isTurnStart(event: string): boolean {
   return event === "UserPromptSubmit"
     || event === "TurnStarted"
     || event === "pre_llm_call"
-    || event === "session.status:busy";
+    || event === "session.status:busy"
+    || event === "session.status:retry";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

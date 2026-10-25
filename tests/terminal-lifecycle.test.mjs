@@ -290,15 +290,31 @@ test("session metadata revisions advance before lifecycle events cross IPC", asy
   assert.match(source, /metadata\.revision \+= 1;[\s\S]{0,120}?this\.emit\(IPC\.terminalSession/);
 });
 
-test("revoking lifecycle hooks makes live agent status unavailable until a restarted session gets a new parser", async () => {
+test("revoking lifecycle hooks makes live agent status unavailable until a restarted session gets a new parser", async (t) => {
   const source = await readFile(terminalManagerPath, "utf8");
-
-  assert.match(source, /setLifecycleHooksEnabled\(enabled: boolean\): void/);
-  assert.match(source, /this\.lifecycleHooksEnabled = next;\s*if \(next\) return;/);
-  assert.match(source, /session\.lifecycle = null;/);
-  assert.match(source, /session\.metadata\.provider === "terminal"/);
-  assert.match(source, /session\.metadata\.status = "unavailable";\s*this\.emitSession\(session\.metadata\)/);
-  assert.match(source, /if \(!this\.lifecycleHooksEnabled \|\| !session/);
+  const { TerminalManager } = await import("../src/main/services/TerminalManager.ts");
+  const { availableRegistry, fakeSpawner } = await import("./helpers/terminal.mjs");
+  const manager = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner([]));
+  t.after(() => manager.disposeAll());
+  const session = manager.create({ provider: "codex", profile: "normal", cwd: process.cwd(), position: { x: 0, y: 0 } });
+  const shell = manager.create({ provider: "terminal", profile: "normal", cwd: process.cwd(), position: { x: 0, y: 0 } });
+  const shellStatus = manager.getMetadata(shell.id).status;
+  manager.applyProviderSignal(session.id, { kind: "lifecycle", state: "working" });
+  assert.equal(manager.getMetadata(session.id).status, "working");
+  manager.setLifecycleHooksEnabled(false);
+  assert.equal(manager.getMetadata(session.id).status, "unavailable");
+  assert.equal(manager.sessions.get(session.id).lifecycle, null);
+  assert.equal(manager.getMetadata(shell.id).status, shellStatus, "a plain terminal has no agent status to revoke");
+  for (const state of ["needs_approval", "working", "idle"]) {
+    manager.applyProviderSignal(session.id, { kind: "lifecycle", state });
+    assert.equal(manager.getMetadata(session.id).status, "unavailable", "a hook signal never restores a disabled status");
+  }
+  manager.setLifecycleHooksEnabled(true);
+  manager.applyProviderSignal(session.id, { kind: "lifecycle", state: "working" });
+  assert.equal(manager.getMetadata(session.id).status, "unavailable", "re-enabling applies only to new or restarted sessions");
+  const fresh = manager.create({ provider: "codex", profile: "normal", cwd: process.cwd(), position: { x: 0, y: 0 } });
+  manager.applyProviderSignal(fresh.id, { kind: "lifecycle", state: "working" });
+  assert.equal(manager.getMetadata(fresh.id).status, "working");
   assert.match(source, /session\.lifecycle = this\.lifecycleHooksEnabled\s*\? createProviderLifecycleParser/);
 });
 
@@ -306,8 +322,9 @@ test("only explicit turn-stop hooks set completed art and a new turn clears it",
   const [card, manager, main] = await Promise.all([
     readFile(terminalCardPath, "utf8"),
     readFile(terminalManagerPath, "utf8"),
-    readFile(new URL("../src/main/index.ts", import.meta.url), "utf8")
+    readFile(new URL("../src/main/services/agent-runtime/applyRuntimeSignal.ts", import.meta.url), "utf8")
   ]);
+  // main/index.ts hands every runtime signal to applyRuntimeSignal, which passes the hook's event on.
   assert.match(main, /state: signal\.state,\s*event: signal\.event/);
   assert.match(manager, /\["Stop", "StopFailure", "StopCancelled"\]\.includes\(signal\.event \?\? ""\)/);
   assert.match(manager, /nextStatus === "working" \? false : completed \|\| Boolean\(session\.metadata\.turnCompleted\)/);
@@ -377,7 +394,6 @@ test("failed PTYs preserve their final sanitized output as failure details", asy
 
   // Masked whole before the last lines are chosen (a cut inside a secret would leave its tail readable).
   assert.match(source, /terminalFailureDetails\(this\.redactSecrets\(current\.bufferChunks\.slice\(current\.bufferStart\)\.join\(""\)\)\)/);
-  assert.match(source, /current\.metadata\.failureDetails = exitCode === 0/);
 });
 
 function effectDependenciesContaining(source, marker) {

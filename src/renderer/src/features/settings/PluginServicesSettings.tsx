@@ -79,7 +79,7 @@ export function PluginServicesSettings({
   };
 
   return (
-    <section className="setting-group agent-hooks plugin-services">
+    <section data-setting-label={t(locale, "pluginNativeCode")} tabIndex={-1} className="setting-group agent-hooks plugin-services">
       <h3>{t(locale, "pluginNativeCode")}</h3>
       <p className="setting-group__description">{t(locale, "pluginNativeCodeDescription")}</p>
       <div className="agent-hooks__list">

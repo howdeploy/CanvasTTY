@@ -533,8 +533,11 @@ function LimitRow({ row, locale, now }: { row: HomeLimitRow; locale: LocaleId; n
       {row.window ? (
         <span className="limit-row__metric">
           <span className="limit-row__summary">
-            <strong>{formatPercent(row.window.usedPercent, locale)}</strong>
-            <span>{formatResetCountdown(row.window.resetsAt, now, locale)}</span>
+            <span className="limit-row__share">
+              <strong>{formatPercent(row.window.usedPercent, locale)}</strong>
+              <span>{t(locale, "limitUsed")} · {limitLeft(row.window.usedPercent, locale)}</span>
+            </span>
+            <span className="limit-row__countdown">{formatResetCountdown(row.window.resetsAt, now, locale)}</span>
           </span>
           <span className="limit-row__track" aria-hidden="true">
             <i className="limit-row__fill" style={{ width: `${row.window.usedPercent}%` }} />
@@ -552,7 +555,8 @@ function limitMeta(row: HomeLimitRow, locale: LocaleId): string {
 
   const details = [
     formatLimitDuration(row.window.windowMinutes, locale),
-    `${formatPercent(row.window.usedPercent, locale)} ${t(locale, "limitUsed")}`,
+    t(locale, "limitUsedPercent").replace("{percent}", formatPercent(row.window.usedPercent, locale)),
+    limitLeft(row.window.usedPercent, locale),
     formatReset(row.window.resetsAt, locale)
   ];
   if (row.state === "stale") {
@@ -570,6 +574,11 @@ function formatReset(resetsAt: number, locale: LocaleId): string {
     minute: "2-digit"
   }).format(resetsAt);
   return `${t(locale, "limitResetsAt")} ${formatted}`;
+}
+
+/** What is left of a window whose used share is `usedPercent` (both are always shown, never a bare percent). */
+function limitLeft(usedPercent: number, locale: LocaleId): string {
+  return t(locale, "limitLeftPercent").replace("{percent}", formatPercent(Math.max(0, 100 - usedPercent), locale));
 }
 
 function formatPercent(value: number, locale: LocaleId): string {

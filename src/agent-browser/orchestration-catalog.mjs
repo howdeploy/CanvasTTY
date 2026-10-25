@@ -73,7 +73,7 @@ export const ORCHESTRATION_TOOL_DEFINITIONS = Object.freeze([
   ),
   tool(
     "send_to_agent",
-    "Write a prompt into one of this session's subagents. Plain terminal sessions are not agents.",
+    "Write a prompt into one of this session's subagents. Plain terminal sessions are not agents. Refused while the subagent is needs_approval: that prompt is the person's to answer.",
     { sessionId, prompt, submit: boolean() },
     ["sessionId", "prompt"]
   ),
@@ -85,7 +85,7 @@ export const ORCHESTRATION_TOOL_DEFINITIONS = Object.freeze([
   ),
   tool(
     "wait_for_agent",
-    `Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason "idle" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), "needs_approval" (its card shows a prompt only the person may answer; never answer it yourself), "done" or "failed" (its process exited), "quiet" (it reports no status or no turn start and its screen stopped changing, so judge from output), "closed" (its card was closed) or "timeout" after timeoutSeconds (default ${DEFAULT_AGENT_WAIT_SECONDS}, at most ${MAX_AGENT_WAIT_SECONDS}), with status, exitCode, waitedMs, the masked terminal tail as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. After a timeout, call it again. Then read get_agent_result.`,
+    `Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason "idle" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), "needs_approval" (its card shows a prompt only the person may answer, such as a shell command it wants to run, shown in output; never answer it yourself: tell the person what it asks, then call wait_for_agent again, which waits for their answer instead of returning the same prompt again), "done" or "failed" (its process exited), "quiet" (it reports no status or no turn start and its screen stopped changing, so judge from output), "closed" (its card was closed) or "timeout" after timeoutSeconds (default ${DEFAULT_AGENT_WAIT_SECONDS}, at most ${MAX_AGENT_WAIT_SECONDS}), with status, exitCode, waitedMs, the masked terminal tail as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. After a timeout, call it again. Then read get_agent_result.`,
     { sessionId, timeoutSeconds: integer({ minimum: 1, maximum: MAX_AGENT_WAIT_SECONDS }) },
     ["sessionId"]
   ),

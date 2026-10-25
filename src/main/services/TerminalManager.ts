@@ -53,6 +53,7 @@ import {
   type ControlConnection
 } from "./agent-control/controlCapabilities.ts";
 import { codexTrustArguments, mergeOpenCodeLaunchEnvironment } from "./agent-runtime/ProviderRuntimeLaunch.ts";
+import { accountHookHome } from "./accountHomes.ts";
 import { openCodeProjectFolderEnvironment } from "./openCodeConfig.ts";
 import { onDiskPath } from "./onDiskPath.ts";
 import { RESULT_CAPTURE_PROVIDERS } from "./resultCapture.ts";
@@ -72,6 +73,7 @@ import { LaunchRefusal } from "./launchRefusal.ts";
 import { configuredMode } from "./configuredMode.ts";
 import { envKey, RESERVED_ENV, type LaunchPipeline, type PreparedLaunch } from "./LaunchPipeline.ts";
 import type { EnvironmentRegistry } from "./EnvironmentRegistry.ts";
+import { agentEnvironment, shellEnvironment } from "./ambientProviderKeys.ts";
 import {
   persistedTerminalSession,
   type PersistedEnvironmentRef,
@@ -1721,19 +1723,32 @@ export class TerminalManager {
   ): PlannedSpawn | { failure: LaunchFailure } {
     const providerCli = provider === "terminal" ? undefined : this.providerClis.get(provider);
     if (providerCli?.state === "unavailable") return { failure: providerCli };
+    // The person's environment: a plain shell the person starts keeps all of it but CanvasTTY's own credentials; their
+    // own agent cards also lose admin keys; a delegated card (a subagent, or any card a plugin started, plain shell
+    // included, since its owner drives it) gets only an allowlist (ambientProviderKeys.ts). Every launch builder below
+    // reads this, never process.env; what a launch sets explicitly is added on top.
+    const delegated = this.isDelegated(id, role);
+    const baseEnvironment = provider === "terminal" && !delegated
+      ? shellEnvironment(terminalEnvironment())
+      : agentEnvironment(terminalEnvironment(), { delegated });
     // What decides whether Claude's lifecycle hooks may go over HTTP (ClaudeHttpHooks.ts): where and how it runs.
     const claudeHttp = provider === "claude" && providerCli?.state === "available" ? {
       executable: providerCli.executable,
       profile,
       environmentWrapped,
-      env: { ...terminalEnvironment(), ...providerCli.environment, ...(contribution?.env ?? {}) },
+      env: { ...baseEnvironment, ...providerCli.environment, ...(contribution?.env ?? {}) },
       args: contribution?.args ?? [],
       cwd
     } : undefined;
+    // Grok and Kimi read their hooks (Kimi also its MCP servers) from their home: the launch's own account home (inside
+    // the data folder of the plugin that set it) gets CanvasTTY's temporary configuration there.
+    const hookHome = accountHookHome(provider, contribution?.env);
+    const accountHome = hookHome !== undefined && hookHome === contribution?.accountHome ? hookHome : undefined;
     const agentRuntime = provider === "terminal"
       ? null
-      : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd,
+      : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd, environment: baseEnvironment,
         ...(captureResult ? { captureResult: true } : {}),
+        ...(accountHome ? { accountHome } : {}),
         ...(claudeHttp ? { claudeHttp } : {}),
         ...(answerCaptureGrantExpiresAt === undefined ? {} : { answerCaptureGrantExpiresAt }) }) ?? null;
     let pluginTools: string[] = [];
@@ -1765,12 +1780,13 @@ export class TerminalManager {
           terminalSessionId: id,
           provider,
           cwd,
+          ...(accountHome ? { accountHome } : {}),
+          environment: baseEnvironment,
           ...(bridged ? {
             includeOrchestration: true,
             orchestrationTools: [...(role === "orchestrator" ? ORCHESTRATION_TOOL_NAMES : []), ...pluginTools]
           } : {})
         }) ?? null;
-      const baseEnvironment = terminalEnvironment();
       const browserEnvironment = agentBrowser?.environment ?? {};
       const runtimeEnvironment = agentRuntime?.environment ?? {};
       const orchestrationEnvironment = agentOrchestration?.environment ?? {};

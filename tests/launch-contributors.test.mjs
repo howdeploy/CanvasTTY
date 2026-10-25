@@ -430,3 +430,22 @@ test("end to end: the example service prepares a launch over JSON-RPC", async (t
   const empty = await pipeline.prepare(context({ greeting: "" }));
   assert.match(empty.reason, /Launch Env: Value is empty/u);
 });
+
+test("a plugin-started agent drops ambient provider keys, yet the key its launch contribution names explicitly arrives", async (t) => {
+  // Fake values only, set on this test process.
+  const saved = { OPENAI_API_KEY: process.env.OPENAI_API_KEY, OPENAI_ADMIN_KEY: process.env.OPENAI_ADMIN_KEY, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY };
+  t.after(() => { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  Object.assign(process.env, { OPENAI_API_KEY: "fake-oa", OPENAI_ADMIN_KEY: "fake-oa-adm", ANTHROPIC_API_KEY: "fake-an" });
+  const { pipeline } = await pipelineFixture(t, {
+    contributors: [contributor("p.keys", { secrets: true })],
+    answers: { "p.keys": { secretEnv: { OPENAI_API_KEY: "api-key" } } },
+    secrets: { "p.keys/api-key": SECRET }
+  });
+  const { manager, calls } = await managerFixture(t, pipeline);
+  manager.create({ provider: "codex", profile: "normal", cwd, position: at, launchOptions: { "p.keys": {} } }, { ownerPluginId: "p.keys" });
+  await waitFor(() => calls.length === 1);
+  const env = calls[0].options.env;
+  assert.equal(env.OPENAI_API_KEY, SECRET, "the contribution's own key");
+  assert.equal(env.ANTHROPIC_API_KEY, undefined, "no ambient provider key for a delegated agent");
+  assert.equal(env.OPENAI_ADMIN_KEY, undefined, "never an admin key");
+});

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -243,7 +243,7 @@ test("the real scoped wrapper forwards Unicode and shell-looking argv literally 
     assert.equal(seen.electronNode, undefined, "helper-only flags never reach Codex or its tools");
     assert.ok(!seen.path.includes(join(directory, "shell-codex-")), "child tools cannot re-enter the observer");
     assert.equal(signals[0].event, "ShellCodexStart");
-    assert.ok(signals.find((signal) => signal.event === "SessionStart" && signal.threadId === THREAD && signal.cwd === cwd));
+    assert.equal(signals.find((signal) => signal.event === "SessionStart" && signal.threadId === THREAD)?.cwd, await realpath(cwd));
     assert.equal(signals.at(-1).event, "ShellCodexEnd");
     assert.equal(new Set(signals.map((signal) => signal.invocationId)).size, 1);
     const recipePath = join(prepared.shellCodexWrapper, "..", "launch.json");
@@ -253,7 +253,8 @@ test("the real scoped wrapper forwards Unicode and shell-looking argv literally 
 
 test("unused shell observers never consume ordinary agent runtime slots", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canvastty-shell-slots-"));
-  const gateway = new RuntimeGateway({ runtimeDirectory: directory });
+  const gateway = new RuntimeGateway({ runtimeDirectory: directory,
+    windowsHostPath: resolve("build/windows-agent-pipe-host/canvastty-windows-agent-pipe-host.exe") });
   try {
     await gateway.start();
     for (let index = 0; index < 40; index += 1) gateway.registerSession(`shell-${index}`, "codex", false, undefined, false, undefined, true);

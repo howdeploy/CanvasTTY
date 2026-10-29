@@ -48,9 +48,9 @@ test("verify appSkins.css defines rules for all bundled themes", () => {
     );
   }
 
-  // Check background attributes: cover, center, no-repeat, fixed viewport
+  // Preserve the complete background image without cropping it.
   assert.match(css, /\.workspace\[data-theme-background\]/);
-  assert.match(css, /background-size:\s*cover/);
+  assert.match(css, /background-size:\s*contain/);
   assert.match(css, /background-position:\s*center/);
   assert.match(css, /background-repeat:\s*no-repeat/);
 

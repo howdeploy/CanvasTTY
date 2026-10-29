@@ -190,7 +190,8 @@ export class BrowserTabLifecycle {
       this.resetRetries(entry);
       if (!enabled) {
         this.cancelTimer(entry);
-        if (entry.state === "frozen") void this.ensureLive(entry.id).catch(this.onError);
+        // The queued wake must also follow a freeze that has not finished yet.
+        if (entry.state === "frozen" || entry.state === "active") void this.ensureLive(entry.id).catch(this.onError);
       } else {
         // Idle time counts from now: turning the setting on must not put long-hidden tabs to sleep at once.
         entry.lastUsedAt = this.now();

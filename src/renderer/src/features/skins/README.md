@@ -52,8 +52,16 @@ card without changing the selected art or layout.
   working turn clears the completed art.
 - The frame canvas is noninteractive and below the transparent xterm surface.
   The terminal, title, and controls remain interactive.
-- The workspace background uses `cover`. Terminal PNGs are static; no tiny
-  procedural Sakura animation is added.
+- Built-in and imported workspace backgrounds use the workspace element below
+  the title bar as their positioning area (`background-attachment: scroll`).
+  The camera transforms only the child scene: panning and canvas zoom do not
+  move or scale the background. Resizing the window or entering fullscreen
+  changes the workspace bounds, and CSS resizes the background with them.
+  Every window uses `cover`, filling this area while preserving the image's
+  aspect ratio, including ultrawide and all-monitor fullscreen windows.
+  Cropping at the edges is intentional; no special fit mode is selected by
+  display count or aspect ratio. Terminal PNGs are static; no tiny procedural
+  Sakura animation is added.
 
 Five built-in themes ship: Sakura, Matrix, Forest Cabin, Gold & Black, and Cat.
 Each has three detail levels and completed art. Gold & Black minimal working

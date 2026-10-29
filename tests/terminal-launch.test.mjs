@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveTerminalLaunch } from "../src/main/services/terminalLaunch.ts";
+import { keyboardPresetShortcuts } from "../src/shared/contracts.ts";
 
 function available(provider, executable, options = {}) {
   return {
@@ -13,6 +14,43 @@ function available(provider, executable, options = {}) {
     checked: [{ path: executable, result: "selected" }]
   };
 }
+
+test("Codex launch snapshots physical bindings while stock transports and bundled keymaps stay distinct", () => {
+  const shortcuts = { ...keyboardPresetShortcuts("macos"), codexSubmit: "F5", codexNewline: "F6" };
+  const options = { platform: "linux", environment: {}, resourcesPath: "/no-bundled-assets",
+    providerCli: available("codex", "/official/codex"), fileExists: () => false, shortcuts };
+  const stock = resolveTerminalLaunch("codex", "normal", [], options);
+  assert.equal(stock.command, "/official/codex");
+  assert.deepEqual(stock.args, ["-c", 'tui.keymap.composer.submit=["enter"]',
+    "-c", 'tui.keymap.editor.insert_newline=["ctrl-j","ctrl-m","enter","shift-enter","alt-enter"]']);
+  assert.deepEqual(JSON.parse(stock.environment.CANVASTTY_CODEX_KEYBOARD), {
+    submit: "F5", submitAlternate: "Ctrl+Enter", submitSuper: "Meta+Enter", newline: "F6", selectAll: "",
+    submitSequence: "\r", newlineSequence: "\u001b[13;2u"
+  });
+  for (const platform of ["linux", "darwin", "win32"]) {
+    assert.deepEqual(resolveTerminalLaunch("codex", "normal", [], { ...options, platform }).args, stock.args);
+  }
+  const thread = "12345678-1234-4234-8234-123456789abc";
+  assert.deepEqual(resolveTerminalLaunch("codex", "normal", [], { ...options, resumePrevious: true, resumeThreadId: thread }).args,
+    ["-c", 'tui.keymap.composer.submit=["enter"]',
+      "-c", 'tui.keymap.editor.insert_newline=["ctrl-j","ctrl-m","enter","shift-enter","alt-enter"]', "resume", thread]);
+  const bundled = resolveTerminalLaunch("codex", "normal", [], { ...options, fileExists: () => true,
+    environment: { CANVASTTY_CODEX_TUI_QA: "/qa/frontend", CANVASTTY_CODEX_TUI_LAUNCHER_QA: "/qa/launch.mjs" } });
+  assert.equal(bundled.command, process.execPath);
+  assert.deepEqual(bundled.args, ["/qa/launch.mjs", "--backend", "/official/codex", "--frontend", "/qa/frontend", "--"]);
+  assert.deepEqual(JSON.parse(bundled.environment.CANVASTTY_CODEX_KEYBOARD), {
+    submit: "F5", submitAlternate: "Ctrl+Enter", submitSuper: "Meta+Enter", newline: "F6", selectAll: "Meta+A"
+  });
+  shortcuts.codexSubmit = "F8";
+  shortcuts.codexNewline = "F9";
+  assert.equal(JSON.parse(stock.environment.CANVASTTY_CODEX_KEYBOARD).submit, "F5");
+  assert.equal(JSON.parse(bundled.environment.CANVASTTY_CODEX_KEYBOARD).newline, "F6");
+  const next = resolveTerminalLaunch("codex", "normal", [], options);
+  assert.equal(JSON.parse(next.environment.CANVASTTY_CODEX_KEYBOARD).submit, "F8");
+  const other = resolveTerminalLaunch("claude", "normal", [], { ...options, providerCli: available("claude", "/official/claude") });
+  assert.deepEqual(other.args, []);
+  assert.equal(other.environment.CANVASTTY_CODEX_KEYBOARD, undefined);
+});
 
 test("a mascot starts one new Codex turn with one image without changing other providers", () => {
   const initial = { initialPrompt: "Read the pipeline.\nKeep the character identity.", initialImagePath: "/project with spaces/character.png" };

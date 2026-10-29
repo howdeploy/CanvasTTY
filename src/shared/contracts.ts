@@ -5,12 +5,12 @@ import type { UsageHistory } from "./usageHistory.ts";
 export type AgentProviderId = Exclude<ProviderId, "terminal">;
 export type AgentCliAvailability = Record<AgentProviderId, boolean>;
 export type LimitProviderId = Extract<AgentProviderId, "codex" | "claude" | "qwen" | "kimi" | "opencode" | "grok">;
-/** "auto" only for agents with a native auto mode (autoMode.ts); "normal" is the default. */
+/** Provider-specific launch modes and their availability are defined in autoMode.ts. */
 export type LaunchProfileId = import("./autoMode.ts").LaunchProfile;
 export type DefaultLaunchProfile = import("./autoMode.ts").DefaultLaunchProfile;
 export type ReasoningEffort = import("./launchModel.ts").ReasoningEffort;
 /**
- * What a session is for, independent of its normal/YOLO profile: an ordinary
+ * What a session is for, independent of its permission profile: an ordinary
  * agent, or an orchestrator that drives other sessions through the local
  * agent-control endpoint (it receives the control descriptor in its environment).
  */
@@ -227,7 +227,7 @@ export function keyboardPresetShortcuts(preset: Exclude<KeyboardPreset, "custom"
   return {
     ...DEFAULT_SHORTCUTS,
     toggleFullscreen: preset === "macos" ? "Meta+F" : "F11",
-    ...(preset !== "macos" ? { terminalCopy: "Ctrl+Shift+C" } : {}),
+    ...(preset === "linux" ? { terminalCopy: "Ctrl+Shift+C" } : {}),
     ...(preset === "macos" ? {
       commandPalette: "Meta+K", openSettings: "Meta+Comma",
       terminalCopy: "Meta+C", terminalPaste: "Meta+V", codexSelectAll: "Meta+A"
@@ -694,8 +694,13 @@ export interface SessionMetadata {
   id: string;
   revision: number;
   provider: ProviderId;
-  /** Bindings actually consumed by this separately launched Codex editor. */
-  nativeEditor?: { submit: string; submitAlternate: string; submitSuper: string; newline: string; selectAll: string };
+  /** Editor bindings supplied at launch. Empty selectAll means the frontend has no configured select-all action. */
+  nativeEditor?: {
+    submit: string; submitAlternate: string; submitSuper: string; newline: string; selectAll: string;
+    /** Stock Codex receives stable submit/newline actions behind the person's physical CanvasTTY shortcuts. */
+    submitSequence?: string;
+    newlineSequence?: string;
+  };
   /** Provider conversation id, when the session is attached to one. */
   threadId?: string;
   profile: LaunchProfileId;
@@ -1799,6 +1804,7 @@ export type LimitUnavailableReason =
   | "subscription-required"
   | "unsupported-protocol"
   | "timeout"
+  | "rate-limited"
   | "protocol-error"
   | "api-profile";
 
@@ -2098,6 +2104,8 @@ export interface CanvasTTYApi {
     dispose(id: string, options?: { keepEnvironmentData?: boolean }): Promise<void>;
     /** Report whether the card renders live output; hidden cards keep history but skip streaming. */
     setVisible(id: string, visible: boolean): void;
+    /** Confirm an absolute producer offset only after xterm has parsed it. */
+    acknowledgeOutput?(id: string, outputOffset: number): void;
     /** With `id`, only that session's output (one context-bridge call per batch instead of one per card). */
     onData(listener: (event: TerminalDataEvent) => void, id?: string): () => void;
     onSession(listener: (event: SessionEvent) => void): () => void;
@@ -2295,6 +2303,7 @@ export const IPC = {
   terminalData: "terminal:data",
   /** Main -> renderer: the TerminalDataEvents of one output flush, in order (see TerminalRendererOutbox). */
   terminalDataBatch: "terminal:data-batch",
+  terminalOutputParsed: "terminal:output-parsed",
   terminalSession: "terminal:session",
   terminalRemoved: "terminal:removed",
   terminalGitRisk: "terminal:git-risk",

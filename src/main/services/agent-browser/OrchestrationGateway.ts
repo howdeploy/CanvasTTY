@@ -1,7 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import type { Server } from "node:net";
-import { join } from "node:path";
 import type {
   OrchestrationBridgeErrorPayload,
   OrchestrationCapability,
@@ -23,10 +22,9 @@ import {
 import { ORCHESTRATION_TOOL_DEFINITIONS } from "../../../agent-browser/orchestration-catalog.mjs";
 import type { McpToolDefinition } from "../../../agent-browser/orchestration-catalog.mjs";
 import {
-  MAX_UNIX_SOCKET_PATH_BYTES,
+  createUnixEndpoint,
   closeServer,
   listenOnEndpoint,
-  makePrivateDirectory,
   removeEndpoint,
   tokenDigest,
   tokenMatches
@@ -210,25 +208,30 @@ export class OrchestrationGateway {
       this.socketEndpoint = endpoint;
       this.transportStartedAt = this.now();
     } else {
-      // Unix domain sockets cap at ~104 path bytes (macOS); fall back to a short
-      // current-user directory exactly like the browser gateway does.
-      let runtimeDirectory = this.runtimeDirectory;
-      this.ownedRuntimeDirectory = null;
-      let endpoint = join(runtimeDirectory, `orchestration-${randomUUID()}.sock`);
-      if (Buffer.byteLength(endpoint, "utf8") > MAX_UNIX_SOCKET_PATH_BYTES) {
-        runtimeDirectory = join("/tmp", `ctty-orch-${process.getuid?.() ?? "user"}-${randomUUID().slice(0, 8)}`);
-        this.ownedRuntimeDirectory = runtimeDirectory;
-        endpoint = join(runtimeDirectory, "orchestration.sock");
+      const { endpoint, ownedRuntimeDirectory } = await createUnixEndpoint(
+        `orchestration-${randomUUID()}.sock`, "ctty-orch-", this.runtimeDirectory
+      );
+      if (generation !== this.generation) {
+        await removeEndpoint(endpoint, ownedRuntimeDirectory, { socketFile: false, ignoreErrors: true });
+        return;
       }
-      await makePrivateDirectory(runtimeDirectory, { recursive: true });
-      if (generation !== this.generation) return;
+      this.ownedRuntimeDirectory = ownedRuntimeDirectory;
       this.socketEndpoint = endpoint;
-      await listenOnEndpoint(this.server, endpoint);
+      try {
+        await listenOnEndpoint(this.server, endpoint);
+      } catch (error) {
+        await closeServer(this.server);
+        await removeEndpoint(endpoint, ownedRuntimeDirectory, { socketFile: true, ignoreErrors: true });
+        this.socketEndpoint = null;
+        this.ownedRuntimeDirectory = null;
+        throw error;
+      }
       if (generation !== this.generation) {
         // stop() ran while the socket opened: it closed nothing that was listening yet, so close it here.
         await closeServer(this.server);
-        await removeEndpoint(endpoint, this.ownedRuntimeDirectory, { socketFile: true, ignoreErrors: true });
+        await removeEndpoint(endpoint, ownedRuntimeDirectory, { socketFile: true, ignoreErrors: true });
         if (this.socketEndpoint === endpoint) this.socketEndpoint = null;
+        this.ownedRuntimeDirectory = null;
         return;
       }
     }

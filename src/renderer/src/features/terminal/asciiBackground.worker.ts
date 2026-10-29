@@ -1,3 +1,4 @@
+import { attachAsciiContextRecovery } from "./asciiContextRecovery";
 import type { AsciiPiece } from "../../../../shared/terminalBackground";
 import { drawAsciiFrame } from "./asciiFrameCanvas";
 import { createAsciiGpuRenderer } from "./asciiFrameGpu";
@@ -25,9 +26,10 @@ let speed = 1;
 let syncClock: BackgroundSyncClock | null = null;
 let transform: AsciiFrameTransform = { scale: 100, offsetX: 0, offsetY: 0 };
 let timer: ReturnType<typeof setTimeout> | undefined;
+let contextLost = false;
 
 function draw(advance = true): void {
-  if (!frame || (!ctx && !gpu)) return;
+  if (contextLost || !frame || (!ctx && !gpu)) return;
   try {
     if (advance || text === undefined) text = frame(time, { paper: false, color });
     if (gpu) gpu(text, color, pixelRatio, transform);
@@ -50,7 +52,7 @@ function advanceTime(now: number): void {
 
 function tick(): void {
   timer = undefined;
-  if (!playing || !frame) return;
+  if (contextLost || !playing || !frame) return;
   const start = performance.now();
   advanceTime(start);
   draw();
@@ -65,7 +67,7 @@ function tick(): void {
 function run(): void {
   clearTimeout(timer);
   timer = undefined;
-  if (playing && frame && piece.meta.fps !== 0) {
+  if (!contextLost && playing && frame && piece.meta.fps !== 0) {
     last = performance.now();
     timer = setTimeout(tick, 0);
   }
@@ -88,11 +90,22 @@ self.onmessage = async ({ data }: MessageEvent<BackgroundWorkerMessage>): Promis
       }
     }
     if (typeof canvas.addEventListener === "function") {
-      canvas.addEventListener("webglcontextlost", (event) => {
-        event.preventDefault();
+      attachAsciiContextRecovery(canvas, () => {
+        contextLost = true;
+        clearTimeout(timer);
+        timer = undefined;
         gpu = null;
-        ctx = canvas.getContext("2d", { alpha: false });
-        draw(false);
+        ctx = null;
+      }, () => {
+        try {
+          gpu = createAsciiGpuRenderer(canvas, piece.meta);
+          if (!gpu) throw new Error("WebGL background restoration failed.");
+          contextLost = false;
+          draw(false);
+          run();
+        } catch (error) {
+          self.postMessage({ type: "error", error: error instanceof Error ? error.message : String(error) });
+        }
       });
     }
     try {

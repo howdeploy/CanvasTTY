@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import {
   boundsEqual,
@@ -100,8 +101,18 @@ test("a drag or resize cancelled by lost pointer capture snaps the card back to 
   const card = await read("terminal/TerminalCard.tsx");
   for (const name of ["cancelDrag", "cancelResize"]) {
     const body = card.slice(card.indexOf(`const ${name} = `), card.indexOf("};", card.indexOf(`const ${name} = `)));
-    assert.match(body, /applyLiveBounds\(\{ position: session\.position, size: session\.size \}\)/u, name);
-    assert.match(body, /if \(!(dragState|resizeState)\.current\) return;/u, `${name}: not after a normal pointerup`);
+    const state = { current: { pointerId: 1 } };
+    const saved = bounds(10, 20);
+    const applied = [];
+    const cancel = new Function("dragState", "resizeState", "session", "applyLiveBounds",
+      `${stripTypeScriptTypes(`${body}};`)} return ${name};`)(state, state, saved, value => applied.push(value));
+    cancel({ pointerId: 2 });
+    assert.deepEqual(applied, [], `${name}: another pointer cannot cancel`);
+    cancel({ pointerId: 1 });
+    assert.deepEqual(applied, [saved], `${name}: restore saved bounds`);
+    assert.equal(state.current, null);
+    cancel();
+    assert.deepEqual(applied, [saved], `${name}: an ended gesture is untouched`);
   }
   const region = await read("workspace/CanvasRegionCard.tsx");
   const cancelDrag = region.slice(region.indexOf("const cancelDrag = "), region.indexOf("};", region.indexOf("const cancelDrag = ")));

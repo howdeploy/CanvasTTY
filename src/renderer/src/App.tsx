@@ -176,7 +176,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   snapToGrid: true,
   copyOnSelect: false,
   terminalLinkOpenMode: "ask",
-  invertTerminalWheel: true,
+  invertTerminalWheel: false,
   invertCanvasWheel: false,
   edgePan: false,
   edgePanSpeed: "normal",
@@ -193,8 +193,8 @@ const FALLBACK_SETTINGS: AppSettings = {
   minimapInteractionMode: "click",
   shortcutHintsPlacement: "bottom-right",
   canvasControlsPlacement: "bottom-left",
-  keyboardPreset: window.canvasTTY.window.isMacOS ? "macos" : "linux",
-  shortcuts: keyboardPresetShortcuts(window.canvasTTY.window.isMacOS ? "macos" : "linux"),
+  keyboardPreset: window.canvasTTY.window.isMacOS ? "macos" : window.canvasTTY.window.platform === "win32" ? "windows" : "linux",
+  shortcuts: keyboardPresetShortcuts(window.canvasTTY.window.isMacOS ? "macos" : window.canvasTTY.window.platform === "win32" ? "windows" : "linux"),
   mediaPath: null,
   mediaFit: "cover",
   lastDirectory: "/",
@@ -1949,6 +1949,14 @@ export function App(): React.JSX.Element {
         return;
       }
       if (event.repeat) return;
+      // A focused xterm textarea still belongs to the selected canvas window.
+      if (event.target instanceof Element
+        && event.target.closest(".xterm") && matchesShortcut(event, settings.shortcuts.renameWindow)) {
+        event.preventDefault();
+        event.stopPropagation();
+        performShortcut("renameWindow");
+        return;
+      }
       if (shouldKeepNativeKeyboardInput(event.target, window.canvasTTY.window.isMacOS, event)) return;
       if (matchesShortcut(event, settings.shortcuts.toggleFullscreen)) {
         event.preventDefault();

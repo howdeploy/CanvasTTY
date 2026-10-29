@@ -78,7 +78,9 @@ test("CI preserves hidden synthetic reports but cannot upload a build after a fa
   assert.equal(reports.with.path.trim(), ".pty-results/*.json");
   assert.equal(build.if, "success()");
   assert.deepEqual(build.with.path.trim().split("\n"), ["release/*.zip", "release/*.dmg"]);
-  assert.ok(steps.findIndex((step) => step.run?.startsWith("node scripts/audit-pty-test-bundle.mjs")) < steps.indexOf(build));
+  const safetyGate = steps.findIndex((step) => step.run?.startsWith("node scripts/audit-pty-test-bundle.mjs"));
+  assert.notEqual(safetyGate, -1, "the bundle safety gate must exist");
+  assert.ok(safetyGate < steps.indexOf(build));
   const packageStep = steps.find((step) => step.run === "npm run package:mac");
   const builder = parse(await readFile(join(root, "electron-builder.yml"), "utf8"));
   assert.equal(packageStep.env.CSC_FOR_PULL_REQUEST, "true", "PR runs must create the ad-hoc signature instead of retaining Electron's obsolete seal");

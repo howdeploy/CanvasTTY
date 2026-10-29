@@ -192,6 +192,7 @@ export function useCanvasPointerNavigation({
   }, [localPoint]);
 
   const finishMarquee = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
+    if (marqueeState.current?.pointerId === event.pointerId) updateMarquee(event);
     const state = marqueeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
     marqueeState.current = null;
@@ -203,7 +204,7 @@ export function useCanvasPointerNavigation({
     suppressClick.current = true;
     window.setTimeout(() => { suppressClick.current = false; }, 0);
     onMarqueeSelectionRef.current(canvasWorldRect(state.start, state.current, cameraRef.current));
-  }, [cameraRef, viewport]);
+  }, [cameraRef, viewport, updateMarquee]);
 
   const updateGroupDrag = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
     const state = groupDrag.current;
@@ -229,8 +230,15 @@ export function useCanvasPointerNavigation({
   }, [cameraRef, viewport]);
 
   const finishGroupDrag = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
-    const state = groupDrag.current;
+    let state = groupDrag.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // A fast gesture can deliver its travel only on pointerup. Activate the same group
+    // basis here, before the pressed card can commit a move on its own. Capture
+    // is unnecessary at release: there will be no more moves to redirect.
+    if (!state.active) {
+      state = advanceCanvasGroupDrag(state, event);
+      if (state.active) onGroupDragStartRef.current(state.layerId);
+    }
     groupDrag.current = null;
     // A press that never travelled is a plain click: the card keeps its own
     // pointer-up path, and nothing is suppressed.

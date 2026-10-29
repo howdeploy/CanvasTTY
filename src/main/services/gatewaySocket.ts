@@ -1,6 +1,9 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, rmdir, unlink } from "node:fs/promises";
+import assert from "node:assert/strict";
+import { chmod, mkdir, mkdtemp, rmdir, unlink } from "node:fs/promises";
 import type { Server } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // What the four local gateways (agent browser, orchestration, agent runtime,
 // agent control) share: how a capability token is checked, and how a Unix
@@ -30,6 +33,36 @@ export function tokenMatches(token: string, expected: Buffer | null | undefined)
 export async function makePrivateDirectory(directory: string, options: { recursive?: boolean } = {}): Promise<void> {
   await mkdir(directory, { recursive: options.recursive ?? false, mode: 0o700 });
   await chmod(directory, 0o700);
+}
+
+/** Keeps socket paths short even when the profile or the system temporary directory has a long path. */
+export async function createUnixEndpoint(
+  filename: string,
+  directoryPrefix: string,
+  requestedRuntimeDirectory?: string
+): Promise<{ endpoint: string; ownedRuntimeDirectory: string | null }> {
+  if (requestedRuntimeDirectory) {
+    const endpoint = join(requestedRuntimeDirectory, filename);
+    if (Buffer.byteLength(endpoint, "utf8") <= MAX_UNIX_SOCKET_PATH_BYTES) {
+      await makePrivateDirectory(requestedRuntimeDirectory, { recursive: true });
+      return { endpoint, ownedRuntimeDirectory: null };
+    }
+  }
+  let prefix = join(tmpdir(), directoryPrefix);
+  // mkdtemp appends six characters. Check before creating any directory.
+  if (Buffer.byteLength(join(`${prefix}XXXXXX`, filename), "utf8") > MAX_UNIX_SOCKET_PATH_BYTES) {
+    prefix = join("/tmp", directoryPrefix);
+  }
+  assert(Buffer.byteLength(join(`${prefix}XXXXXX`, filename), "utf8") <= MAX_UNIX_SOCKET_PATH_BYTES,
+    "Unix socket endpoint name is too long.");
+  const directory = await mkdtemp(prefix);
+  try {
+    await chmod(directory, 0o700);
+    return { endpoint: join(directory, filename), ownedRuntimeDirectory: directory };
+  } catch (error) {
+    await rmdir(directory).catch(() => undefined);
+    throw error;
+  }
 }
 
 /** Listens on a Unix socket (or named pipe) endpoint and, off Windows, restricts the socket file to its owner. */

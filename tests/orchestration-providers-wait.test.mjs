@@ -101,8 +101,9 @@ test("list_providers reads the CLI registry, the cached sign-in state and plugin
     { key: "account", kind: "select" }, { key: "mode", kind: "select", choices: ["fast"] }
   ] }]);
   assert.equal(by.claude.launchOptions, undefined, "a plugin that did not declare its options delegable is not listed");
-  assert.deepEqual(by.codex.profiles, ["auto", "normal", "acceptEdits", "plan"], "never YOLO for a subagent");
-  assert.deepEqual(by.qwen.profiles, ["auto", "normal"], "a contained auto where isolation runs");
+  assert.deepEqual(by.codex.profiles, ["auto", "normal", "acceptEdits", "dontAsk", "plan"], "never YOLO for a subagent");
+  assert.deepEqual(by.qwen.profiles, ["auto", "normal", "ask", "acceptEdits", "plan"], "native Qwen modes, never Bypass for a subagent");
+  assert.deepEqual(by.kimi.profiles, ["auto", "normal", "plan"], "Kimi has no edit-only tier and Never Ask is not delegated");
   assert.deepEqual(directory.launchOptionTools, ["canvastty-accounts__list_routes"]);
   assert.match(directory.note, /canvastty-accounts__list_routes/u);
   assert.match(directory.note, /Do not search the filesystem/u);
@@ -129,6 +130,7 @@ function fakeTerminals() {
   return {
     sessions,
     add,
+    lastPromptDelivery: () => undefined,
     getMetadata: (id) => {
       const session = sessions.get(id);
       if (!session) return null;

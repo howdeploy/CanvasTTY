@@ -217,13 +217,14 @@ test("BrowserAuditStore repairs a line torn by a crash instead of refusing every
   const reopened = new BrowserAuditStore(root);
   const warn = console.warn;
   console.warn = () => undefined;
+  let appended;
   try {
-    const appended = await reopened.append(auditInput("after-crash"));
+    appended = await reopened.append(auditInput("after-crash"));
     assert.equal(appended.sequence, 3);
   } finally {
     console.warn = warn;
   }
-  assert.deepEqual(await reopened.verify(), { valid: true, records: 3, lastHash: (await reopened.verify()).lastHash });
+  assert.deepEqual(await reopened.verify(), { valid: true, records: 3, lastHash: appended.hash });
   assert.equal((await readFile(reopened.filePath, "utf8")).split("\n").filter(Boolean).length, 3);
 
   // A complete last record that only lost its newline is kept, not dropped.

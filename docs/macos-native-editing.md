@@ -119,8 +119,9 @@ and [upstream server-version notice](https://github.com/openai/codex/blob/rust-v
 
 ## Launch-scoped browser configuration
 
-Codex launches carrying inline config use `--no-daemon` so each launch receives
+Codex launches carrying CanvasTTY's browser/runtime inline config use `--no-daemon` so each launch receives
 its own browser capability rather than reusing a daemon's earlier configuration.
+Editor keymap overrides alone do not force `--no-daemon`.
 A successfully spawned PTY retains its unused browser capability while the user
 is in a trust dialog or resume picker. Exit, close and failed-spawn cleanup still
 revoke the capability; standalone unused capabilities keep their existing TTL.

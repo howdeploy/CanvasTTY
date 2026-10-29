@@ -15,34 +15,16 @@ import { PROVIDERS } from "../../lib/providers";
 import { directoryPathFromClipboard } from "../../lib/directoryPathFromClipboard";
 import { LaunchOptionsSection } from "./LaunchOptionsSection";
 import {
-  autoKind,
   availableProfiles,
   BYPASS_CHANGES_NOTHING,
   isolationAvailable,
   resolveDefaultLaunchProfile
 } from "../../../../shared/autoMode";
-import type { TranslationKey } from "../../lib/i18n";
+import { PROFILE_LABELS, profileNoteKey } from "../../lib/launchProfiles";
 
 /** The mode the launcher starts in for this CLI: the person's default, else the next one the CLI has. */
 export function initialProfile(provider: ProviderId, settings: AppSettings, platform: string): LaunchProfileId {
   return resolveDefaultLaunchProfile(provider, settings, isolationAvailable(settings, platform));
-}
-
-const PROFILE_LABEL: Record<LaunchProfileId, TranslationKey> = {
-  auto: "autoProfile", normal: "manualProfile", acceptEdits: "acceptEditsProfile", plan: "planProfile", yolo: "bypassProfile"
-};
-
-/** What the chosen mode does for this CLI, honestly per CLI. */
-export function profileNoteKey(provider: ProviderId, profile: LaunchProfileId): TranslationKey | null {
-  if (profile === "auto") {
-    const kind = autoKind(provider);
-    if (provider === "grok") return "autoNoteGrok";
-    return kind === "native" ? "autoNoteNative" : kind === "config" ? "autoNoteOpenCode" : kind === "contained" ? "autoNoteContained" : null;
-  }
-  if (profile === "acceptEdits") return "acceptEditsNote";
-  if (profile === "plan") return provider === "codex" ? "planNoteCodex" : "planNote";
-  if (profile === "normal") return "manualNote";
-  return null;
 }
 
 interface AgentLaunchDialogProps {
@@ -105,6 +87,7 @@ export function AgentLaunchDialog({
   if (!provider) return null;
 
   const isTerminal = provider === "terminal";
+  const profiles = isTerminal ? [] : availableProfiles(provider, isolationAvailable(settings, platform));
   const acknowledged = isTerminal || settings.acknowledgedDangerousProfiles.includes(provider);
   const dangerKey = PROVIDERS[provider].dangerKey ?? "confirmLaunch";
   // An orchestrator without the endpoint would be a plain session with a
@@ -198,13 +181,14 @@ export function AgentLaunchDialog({
           <button className={role === "orchestrator" ? "profile-button profile-button--active" : "profile-button"} type="button" aria-pressed={role === "orchestrator"} onClick={() => setRole("orchestrator")}>{t(locale, "roleOrchestrator")}</button>
         </div>}
 
-        <div className="profile-row">
-          {!isTerminal && availableProfiles(provider, isolationAvailable(settings, platform)).map((mode) => (
+        <div className="profile-row" style={{ gridTemplateColumns: profiles.length ? `repeat(${profiles.length}, minmax(min-content, 1fr)) 64px` : "1fr" }}>
+          {profiles.map((mode) => (
             <button key={mode} className={profile === mode ? "profile-button profile-button--active" : "profile-button"} type="button"
+              title={mode === "ask" ? t(locale, "askNote") : undefined}
               aria-pressed={profile === mode} onClick={() => {
                 setProfile(mode);
                 setConfirmDanger(false);
-              }}>{t(locale, PROFILE_LABEL[mode])}</button>
+              }}>{t(locale, PROFILE_LABELS[mode])}</button>
           ))}
           <button className="launch-submit" type="button" disabled={busy || endpointMissing} onClick={() => void submit()}>
             {busy ? <span className="launch-submit__busy" /> : <UiIcon name="arrow" size={38} />}
@@ -227,7 +211,7 @@ export function AgentLaunchDialog({
 
         <LaunchOptionsSection provider={provider} locale={locale} onChange={changeLaunchOptions} onEnvironmentChange={changeEnvironment} />
 
-        {!isTerminal && profileNoteKey(provider, profile) && (
+        {!isTerminal && profile !== "yolo" && profileNoteKey(provider, profile) && (
           <div className="role-note">
             <span>{t(locale, profileNoteKey(provider, profile)!)}</span>
             {profile !== "normal" && <span>{t(locale, isolationAvailable(settings, platform) ? "isolationNoteOn" : "isolationNoteOff")}</span>}
@@ -237,6 +221,7 @@ export function AgentLaunchDialog({
           <div className={`danger-note ${confirmDanger ? "danger-note--confirm" : ""}`}>
             <strong>{t(locale, BYPASS_CHANGES_NOTHING.has(provider) ? "bypassChangesNothing" : dangerKey)}</strong>
             {!BYPASS_CHANGES_NOTHING.has(provider) && <span>{t(locale, isolationAvailable(settings, platform) ? "bypassInsideIsolation" : "bypassWithoutIsolation")}</span>}
+            {provider === "kimi" && <span>{t(locale, "bypassNoteKimi")}</span>}
             {!acknowledged && <span>{confirmDanger ? t(locale, "dangerousFirstUse") : t(locale, "confirmLaunch")}</span>}
           </div>
         )}

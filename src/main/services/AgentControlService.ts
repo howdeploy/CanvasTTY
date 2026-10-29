@@ -1,4 +1,4 @@
-import { agentPromptInput } from "./codexInput.ts";
+import type { PromptDeliveryReceipt } from "./promptDelivery.ts";
 import type {
   AgentProviderId,
   CreateSessionRequest,
@@ -9,7 +9,7 @@ import type {
 import { realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { PROVIDER_CAPABILITIES } from "../../shared/contracts.ts";
-import { isLaunchProfile, PROFILE_RANK, profileAvailable, profileCeiling, type LaunchProfile } from "../../shared/autoMode.ts";
+import { isLaunchProfile, LAUNCH_PROFILES, PROFILE_RANK, profileAvailable, profileCeiling, type LaunchProfile } from "../../shared/autoMode.ts";
 import { isPathInside } from "../../agent-runtime/path-inside.mjs";
 import type { TerminalManager } from "./TerminalManager.ts";
 import { onDiskPath, otherSpellings } from "./onDiskPath.ts";
@@ -57,6 +57,7 @@ export interface AgentObservation {
   /** Once the process exited: its exit code and the last lines of its screen as plain text, masked. */
   exitCode?: number | null;
   exitLines?: string;
+  delivery?: PromptDeliveryReceipt;
 }
 
 /** Why waitFor returned. "done"/"failed": the process exited (exit code 0 or not); "quiet": the provider reports no
@@ -64,6 +65,7 @@ export interface AgentObservation {
 export type AgentWaitReason = "idle" | "needs_approval" | "done" | "failed" | "quiet" | "closed" | "timeout";
 
 export interface AgentWaitResult {
+  delivery?: PromptDeliveryReceipt;
   sessionId: string;
   reason: AgentWaitReason;
   /** The session's status as the wait ended; absent once its card is gone. */
@@ -101,6 +103,7 @@ export const MAX_AGENT_WAIT_MS = 600_000;
 const AGENT_WAIT_TIMING: AgentWaitTiming = { checkMs: 500, settleMs: 1_000, quietMs: 10_000 };
 
 export interface AgentResult {
+  delivery?: PromptDeliveryReceipt;
   sessionId: string;
   state: "running" | "done" | "failed";
   /** The session's status (idle once its turn ended; state stays "running" while the CLI is open). */
@@ -192,8 +195,7 @@ export class AgentControlService {
       ...(request.effort !== undefined ? { effort: request.effort } : {})
     }, { ...(RESULT_CAPTURE_PROVIDERS.has(request.provider) ? { captureResult: true } : {}), origin: "subagent" });
     if (request.initialPrompt === undefined || request.initialPrompt.length === 0) return Promise.resolve(created);
-    const input = agentPromptInput(request.provider, request.initialPrompt);
-    return this.deliver(created.id, input, "prompt", signal)
+    return this.deliver(created.id, request.initialPrompt, true, "prompt", signal)
       .then(() => this.terminals.getMetadata(created.id) ?? created, (error: unknown) => {
         // Cancelled while it started: nobody receives its id, so the card is closed instead of left running.
         if (!signal?.aborted) throw error;
@@ -207,16 +209,19 @@ export class AgentControlService {
     return subagentProfile(this.requireSession(parentSessionId).profile, provider, requested, this.containment());
   }
 
-  /** Resolves after a PTY write; provider submission/acceptance is not acknowledged here. */
-  send(sessionId: string, text: string, submit = true, signal?: AbortSignal): Promise<void> {
+  /** Reports partial pastes separately from submission and native acceptance. */
+  send(sessionId: string, text: string, submit = true, signal?: AbortSignal): Promise<PromptDeliveryReceipt | undefined> {
     const session = this.requireSession(sessionId);
     if (session.provider === "terminal") throw new Error("Plain terminals are not agents.");
     const capabilities = PROVIDER_CAPABILITIES[session.provider as AgentProviderId];
     if (!capabilities.send) throw new Error(`${session.provider} cannot receive prompts.`);
     if (typeof text !== "string" || text.length === 0) throw new Error("Prompt text is required.");
     if (session.exitCode !== null) throw new Error("Agent session has already exited.");
-    const input = agentPromptInput(session.provider, text, submit);
-    return this.deliver(sessionId, input, "text", signal);
+    return this.deliver(sessionId, text, submit, "text", signal);
+  }
+
+  delivery(sessionId: string): PromptDeliveryReceipt | undefined {
+    return this.terminals.lastPromptDelivery(sessionId);
   }
 
   status(sessionId: string): SessionMetadata {
@@ -294,9 +299,11 @@ export class AgentControlService {
     if (!capabilities.observe) throw new Error(`${session.provider} cannot be observed.`);
     const buffer = this.terminals.readBuffer(sessionId).buffer;
     const exitLines = session.exitCode === null ? null : this.exitLines(buffer);
+    const delivery = this.delivery(sessionId);
     return {
       sessionId: session.id,
       status: session.status,
+      ...(delivery ? { delivery } : {}),
       // Masked before the cut (a cut inside a secret would leave a tail no pattern recognizes), over a window
       // wider than any match rather than the whole scrollback.
       output: this.redactTail(buffer, maxChars),
@@ -309,13 +316,16 @@ export class AgentControlService {
     const session = this.requireSession(sessionId);
     if (session.provider === "terminal") throw new Error("Plain terminals are not agents.");
     const capabilities = PROVIDER_CAPABILITIES[session.provider as AgentProviderId];
+    const delivery = this.delivery(sessionId);
     if (capabilities.result === "none") {
-      return { sessionId: session.id, state: "running", status: session.status, exitCode: session.exitCode, output: "" };
+      return { sessionId: session.id, state: "running", status: session.status, exitCode: session.exitCode, output: "",
+        ...(delivery ? { delivery } : {}) };
     }
     const answer = this.answer(sessionId);
     const buffer = capabilities.result === "terminal"
       ? this.terminals.readBuffer(sessionId).buffer
       : "";
+    const exitLines = session.exitCode === null ? null : this.exitLines(buffer);
     return {
       sessionId: session.id,
       state: session.exitCode === null
@@ -323,8 +333,9 @@ export class AgentControlService {
         : session.exitCode === 0 ? "done" : "failed",
       status: session.status,
       exitCode: session.exitCode,
+      ...(delivery ? { delivery } : {}),
       output: this.redactTail(buffer, MAX_OBSERVE_CHARS),
-      ...(session.exitCode !== null && this.exitLines(buffer) ? { exitLines: this.exitLines(buffer)! } : {}),
+      ...(exitLines ? { exitLines } : {}),
       ...(answer ? { answer } : {})
     };
   }
@@ -350,6 +361,7 @@ export class AgentControlService {
       try { observation = this.observe(sessionId); } catch { observation = null; }
       const answer = reason === "timeout" || reason === "needs_approval" ? null : this.answer(sessionId);
       return { sessionId, reason, status: session.status, exitCode: session.exitCode, waitedMs, output: observation?.output ?? "",
+        ...(observation?.delivery ? { delivery: observation.delivery } : {}),
         ...(observation?.exitLines ? { exitLines: observation.exitLines } : {}), ...(answer ? { answer } : {}) };
     };
     let offset = this.outputOffset(sessionId);
@@ -383,12 +395,13 @@ export class AgentControlService {
     this.terminals.dispose(sessionId);
   }
 
-  /** Ordered PTY delivery, bound to this launch; native acceptance is not acknowledged. */
-  private async deliver(sessionId: string, data: string, what: "prompt" | "text", signal?: AbortSignal): Promise<void> {
-    const delivery = await this.terminals.deliverInput(sessionId, data, undefined, signal, this.requireSession(sessionId).provider === "codex");
+  /** Ordered delivery bound to this launch, with partial writes and native evidence reported separately. */
+  private async deliver(sessionId: string, text: string, submit: boolean, what: "prompt" | "text", signal?: AbortSignal): Promise<PromptDeliveryReceipt | undefined> {
+    const delivery = await this.terminals.deliverPrompt(sessionId, text, submit, signal);
     if (!delivery.delivered) {
       throw new PromptNotDeliveredError(sessionId, `The ${what} for agent ${sessionId} was not delivered: ${delivery.reason}`);
     }
+    return delivery.receipt;
   }
 
   /** The last lines of an exited agent's screen as plain text: masked over the whole tail window before it is cut. */
@@ -443,7 +456,7 @@ export class DelegationRefusal extends LaunchRefusal {
 }
 
 /**
- * The launch profile of a subagent: never more than its orchestrator's (plan < normal < acceptEdits < auto < yolo),
+ * The launch profile of a subagent: never above its orchestrator's PROFILE_RANK,
  * never YOLO. Asked for: that profile, when its CLI has it and it is not above the orchestrator's. Not asked for: the
  * orchestrator's, or the next lower one its CLI has, so a person who runs the orchestrator in auto is not asked about
  * every step of its subagents. `containment`: CanvasTTY's isolation layer runs here (a CLI without an auto mode of its
@@ -460,7 +473,7 @@ export function subagentProfile(
     if (requested === "yolo") {
       return { error: "YOLO (bypass) is never given to a subagent. Use profile auto or a lower one; the person alone launches agents in YOLO." };
     }
-    if (!isLaunchProfile(requested)) return { error: "profile must be auto, normal, acceptEdits or plan." };
+    if (!isLaunchProfile(requested)) return { error: `profile must be one of: ${LAUNCH_PROFILES.filter((profile) => profile !== "yolo").join(", ")}.` };
     if (PROFILE_RANK[requested] > PROFILE_RANK[ceiling]) {
       return { error: `This orchestrator runs in the ${parent} profile, so its subagents get at most ${ceiling}; ${requested} would give a subagent more than its orchestrator. Only the person can launch an agent with more.` };
     }
@@ -471,9 +484,9 @@ export function subagentProfile(
     }
     return { profile: requested, inherited: false };
   }
-  const order: LaunchProfile[] = ["auto", "acceptEdits", "normal", "plan"];
-  const start = order.indexOf(ceiling);
-  const profile = order.slice(start < 0 ? 0 : start).find((candidate) => profileAvailable(provider, candidate, containment)) ?? "normal";
+  const order: LaunchProfile[] = [ceiling, "auto", "acceptEdits", "normal", "ask", "askCached", "dontAsk", "autonomous", "plan", "readOnly"];
+  const profile = order.find((candidate) => PROFILE_RANK[candidate] <= PROFILE_RANK[ceiling] && profileAvailable(provider, candidate, containment));
+  if (!profile) return { error: `${provider} has no available profile at or below ${ceiling}; choose another provider.` };
   return { profile, inherited: true };
 }
 

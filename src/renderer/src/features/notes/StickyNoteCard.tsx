@@ -62,6 +62,7 @@ export function StickyNoteCard({
   const textSaveTimer = useRef<number | null>(null);
   const persistedText = useRef(note.text);
   const pendingText = useRef(note.text);
+  const textDirty = useRef(false);
   const onTextChangeRef = useRef(onTextChange);
   const initialBounds = { position: note.position, size: note.size };
   const liveBounds = useRef<SessionBounds>(initialBounds);
@@ -71,6 +72,7 @@ export function StickyNoteCard({
   onTextChangeRef.current = onTextChange;
 
   useEffect(() => {
+    if (dragState.current || resizeState.current) return;
     const bounds = { position: note.position, size: note.size };
     liveBounds.current = bounds;
     setPosition(bounds.position);
@@ -78,6 +80,10 @@ export function StickyNoteCard({
   }, [note.position, note.size]);
 
   useEffect(() => {
+    // A settings response can acknowledge an earlier save while the editor already
+    // contains newer input. Keep that draft (and its debounce) until it is saved.
+    if (textDirty.current && pendingText.current !== note.text) return;
+    textDirty.current = false;
     persistedText.current = note.text;
     pendingText.current = note.text;
     setText(note.text);
@@ -110,6 +116,7 @@ export function StickyNoteCard({
   };
 
   const changeText = (nextText: string): void => {
+    textDirty.current = true;
     pendingText.current = nextText;
     setText(nextText);
     if (textSaveTimer.current !== null) window.clearTimeout(textSaveTimer.current);
@@ -135,11 +142,11 @@ export function StickyNoteCard({
     };
   };
 
-  const drag = (event: React.PointerEvent<HTMLElement>): void => {
+  const drag = (event: React.PointerEvent<HTMLElement>, final = false): void => {
     const state = dragState.current;
     if (!state || state.pointerId !== event.pointerId) return;
     // A buttonless move is a hover, not a drag.
-    if (event.buttons === 0) return;
+    if (event.buttons === 0 && !final) return;
     const rawPosition = {
       x: state.startBounds.position.x + (event.clientX - state.startClient.x) / camera.get().zoom,
       y: state.startBounds.position.y + (event.clientY - state.startClient.y) / camera.get().zoom
@@ -154,18 +161,29 @@ export function StickyNoteCard({
     if (dragState.current?.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
+    if (event.type === "pointercancel") {
+      cancelDrag(event);
+      return;
+    }
+    drag(event, true);
     dragState.current = null;
     onBoundsChange(note.id, liveBounds.current);
   };
 
   // A group drag takes pointer capture without a pointerup; drop local state so a
   // later hover cannot act on it.
-  const cancelDrag = (): void => {
+  const cancelDrag = (event?: React.PointerEvent<HTMLElement>): void => {
+    const state = dragState.current;
+    if (!state || (event && state.pointerId !== event.pointerId)) return;
     dragState.current = null;
+    applyBounds(state.startBounds);
   };
 
-  const cancelResize = (): void => {
+  const cancelResize = (event?: React.PointerEvent<HTMLDivElement>): void => {
+    const state = resizeState.current;
+    if (!state || (event && state.pointerId !== event.pointerId)) return;
     resizeState.current = null;
+    applyBounds(state.startBounds);
   };
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>, direction: ResizeDirection): void => {
@@ -182,11 +200,11 @@ export function StickyNoteCard({
     };
   };
 
-  const resize = (event: React.PointerEvent<HTMLDivElement>): void => {
+  const resize = (event: React.PointerEvent<HTMLDivElement>, final = false): void => {
     const state = resizeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
     // A buttonless move is a hover, not a resize.
-    if (event.buttons === 0) return;
+    if (event.buttons === 0 && !final) return;
     event.preventDefault();
     event.stopPropagation();
     const deltaX = (event.clientX - state.startClient.x) / camera.get().zoom;
@@ -217,6 +235,11 @@ export function StickyNoteCard({
     if (resizeState.current?.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
+    if (event.type === "pointercancel") {
+      cancelResize(event);
+      return;
+    }
+    resize(event, true);
     resizeState.current = null;
     onBoundsChange(note.id, liveBounds.current);
   };

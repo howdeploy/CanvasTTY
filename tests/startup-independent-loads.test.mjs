@@ -5,74 +5,71 @@
  * together before the renderer's application surface can load; they belong in one Promise.all.
  */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
-import { PluginManager } from "../src/main/services/PluginManager.ts";
-import { PixelSkinPackRegistry } from "../src/main/services/PixelSkinPackRegistry.ts";
-import { SettingsStore } from "../src/main/services/SettingsStore.ts";
-import { SkinRegistry } from "../src/main/services/SkinRegistry.ts";
 
 const mainPath = new URL("../src/main/index.ts", import.meta.url);
 
-test("initializeServices awaits the four independent persistence loads together, not one after another", async () => {
+async function persistenceStartup() {
   const source = await readFile(mainPath, "utf8");
-  const start = source.indexOf("async function initializeServices");
-  const end = source.indexOf("// Secrets this app knows are masked", start);
-  assert.ok(start !== -1 && end !== -1 && end > start, "the initializeServices boundaries must still exist");
-  const body = source.slice(start, end);
-
-  // Each independent load must appear inside one Promise.all(...) call, not behind its own await.
-  const combined = body.match(/Promise\.all\(\s*\[([^\]]*)\]/su);
-  assert.ok(combined, "the four independent loads must be combined in one Promise.all([...])");
-  const group = combined[1];
-  for (const call of ["settings.load()", "terminalBorderSkins.initialize()", "pixelSkinPacks.initialize()", "pluginManager.load()"]) {
-    assert.ok(group.includes(call), `${call} must be inside the Promise.all group`);
-  }
-  // None of the four may still be awaited on its own line outside that group (the old, serial form).
-  for (const call of ["settings.load()", "terminalBorderSkins.initialize()", "pixelSkinPacks.initialize()", "pluginManager.load()"]) {
-    const soloAwaits = body.split("\n").filter((line) => line.trim().startsWith("await") && line.includes(call));
-    assert.equal(soloAwaits.length, 0, `${call} must not also be awaited by itself`);
-  }
-});
-
-test("before/after: awaiting the same four real loads together instead of serially cuts the wall time roughly to the slowest one", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "canvastty-startup-overlap-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
-  // A small, deliberate delay stands in for real disk latency (a cold SSD, an antivirus scanner, a
-  // network home directory): enough to measure, small enough this test stays fast.
-  const DELAY_MS = 40;
-  const slowly = async (fn) => {
-    await new Promise((resolve) => setTimeout(resolve, DELAY_MS));
-    return fn();
+  const start = source.indexOf("async function initializeServices(");
+  const end = source.indexOf('protocol.handle("canvastty-plugin"', start);
+  assert.ok(start >= 0 && end > start, "run the real initialization through its persistence barrier");
+  const started = [];
+  const loads = {};
+  const store = (name, method) => function () {
+    let resolve, reject;
+    const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+    loads[name] = { resolve, reject };
+    return { [method]: () => { started.push(name); return promise; } };
   };
-
-  const registries = [];
-  const loaders = () => {
-    const settings = new SettingsStore(directory, "en");
-    const terminalBorderSkins = new SkinRegistry(directory);
-    const pixelSkinPacks = new PixelSkinPackRegistry(directory);
-    const pluginManager = new PluginManager(directory);
-    registries.push(terminalBorderSkins); // installs a directory watcher; disposed in t.after below
-    return [
-      () => slowly(() => settings.load()),
-      () => slowly(() => terminalBorderSkins.initialize()),
-      () => slowly(() => pixelSkinPacks.initialize()),
-      () => slowly(() => pluginManager.load())
-    ];
+  const context = {
+    session: { defaultSession: {
+      setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, setDevicePermissionHandler() {}
+    } },
+    providerClis: null,
+    buildProviderCliRegistry: () => ({}),
+    providerCliAvailability: () => ({}),
+    resolveHermesHomeDirectory: () => "/fixture/hermes",
+    resolveKimiHomeDirectory: () => "/fixture/kimi",
+    recoverHermesConfigurationOnStartup() {},
+    recoverKimiConfigurationOnStartup() {},
+    HermesHudService: class {},
+    hermesHudService: null,
+    app: { getPath: () => "/fixture/user-data", getLocale: () => "en" },
+    process: { platform: "linux" },
+    editMenuLocale: null,
+    pluginManager: null,
+    SettingsStore: store("settings", "load"),
+    SkinRegistry: store("borders", "initialize"),
+    PixelSkinPackRegistry: store("pixel", "initialize"),
+    PluginManager: store("plugins", "load")
   };
-  t.after(() => { for (const registry of registries) registry.dispose(); });
+  const initialize = runInNewContext(`${stripTypeScriptTypes(`${source.slice(start, end)}\n}`)}; initializeServices`, context);
+  return { initialize, started, loads };
+}
 
-  const serialStart = Date.now();
-  for (const load of loaders()) await load();
-  const serialMs = Date.now() - serialStart;
+test("initializeServices starts every independent load before waiting and propagates a load failure", async () => {
+  const startup = await persistenceStartup();
+  let finished = false;
+  const running = startup.initialize({}).then(() => { finished = true; });
+  assert.deepEqual(startup.started.toSorted(), ["borders", "pixel", "plugins", "settings"]);
+  startup.loads.settings.resolve();
+  startup.loads.borders.resolve();
+  startup.loads.pixel.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(finished, false, "initialization must wait for the last store");
+  startup.loads.plugins.resolve();
+  await running;
+  assert.equal(finished, true);
 
-  const parallelStart = Date.now();
-  await Promise.all(loaders().map((load) => load()));
-  const parallelMs = Date.now() - parallelStart;
-
-  assert.ok(serialMs >= DELAY_MS * 4 * 0.8, `serial loads should take on the order of ${DELAY_MS * 4}ms, took ${serialMs}ms`);
-  assert.ok(parallelMs < serialMs * 0.6, `overlapped loads (${parallelMs}ms) should be well under serial loads (${serialMs}ms)`);
+  const failed = await persistenceStartup();
+  const failure = new Error("plugin state could not be read");
+  const rejected = assert.rejects(failed.initialize({}), (error) => error === failure);
+  assert.deepEqual(failed.started.toSorted(), ["borders", "pixel", "plugins", "settings"]);
+  failed.loads.plugins.reject(failure);
+  for (const name of ["settings", "borders", "pixel"]) failed.loads[name].resolve();
+  await rejected;
 });

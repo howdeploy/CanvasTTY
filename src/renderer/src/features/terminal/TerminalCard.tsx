@@ -32,6 +32,7 @@ import { usePluginCardDecorations } from "../plugins/cardDecorations";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
+import { PROFILE_LABELS, profileNoteKey } from "../../lib/launchProfiles";
 import { matchesShortcut } from "../../lib/shortcuts";
 import { GitRiskNotice } from "./GitRiskNotice";
 import { isCustomTerminalBorderSkinId, terminalBorderSkinFallback } from "../../lib/skinStyles";
@@ -54,7 +55,7 @@ import {
 import { attachTerminalRedrawViewport, fitTerminalPreservingViewport } from "./terminalViewport";
 import { attachTerminalOutput, createTerminalDeliveryGate } from "./terminalOutput";
 import { surfaceIsLive, surfaceLifecycle, type SurfaceGate } from "../workspace/surfaceLifecycle";
-import { createPinnedInputRefresh, limitPinnedTerminalInput, pinnedTerminalInput } from "./terminalPinnedInput";
+import { createPinnedInputRefresh, limitPinnedTerminalInput, pinnedTerminalInput, type PinnedTerminalInput } from "./terminalPinnedInput";
 import { terminalLinkTarget } from "./terminalLinkTarget";
 import { terminalFileLinkProvider } from "./terminalFileLinks";
 import { parseTerminalFileLink } from "../../../../shared/terminalFileLink";
@@ -430,6 +431,7 @@ function TerminalCardView({
   };
 
   useEffect(() => {
+    if ((dragState.current || resizeState.current)) return;
     const bounds = { position: session.position, size: session.size };
     liveBounds.current = bounds;
     setPosition(bounds.position);
@@ -509,6 +511,7 @@ function TerminalCardView({
     host.append(pinnedInput);
     let pinnedRows = 0;
     let pinnedFitFrame: number | null = null;
+    let renderedPinnedInput: (PinnedTerminalInput & { cols: number }) | null = null;
     const renderPinnedInput = (): void => {
       // Include reserved rows so showing the pinned input cannot sustain its own visibility.
       const completePinned = pinnedTerminalInput(terminal.buffer.active, terminal.rows + pinnedRows);
@@ -523,29 +526,39 @@ function TerminalCardView({
         pinnedInput.style.width = `${screen?.clientWidth ?? host.clientWidth}px`;
         pinnedInput.style.setProperty("--pinned-terminal-columns", String(terminal.cols));
         pinnedInput.style.setProperty("--pinned-row-count", String(nextRows));
-        pinnedInput.replaceChildren(...pinned.rows.map((text, rowIndex) => {
-          const row = document.createElement("div");
-          row.className = "terminal-card__pinned-input-row";
-          for (const part of text.match(/\s+|\S+/gu) ?? []) {
-            if (/^\s+$/u.test(part)) {
-              row.append(document.createTextNode(part));
-            } else {
-              const word = document.createElement("span");
-              word.textContent = part;
-              row.append(word);
+        const previous = renderedPinnedInput;
+        if (!previous || previous.cols !== terminal.cols
+          || previous.cursorRow !== pinned.cursorRow || previous.cursorColumn !== pinned.cursorColumn
+          || previous.rows.length !== pinned.rows.length
+          || pinned.rows.some((text, index) => text !== previous.rows[index])) {
+          pinnedInput.replaceChildren(...pinned.rows.map((text, rowIndex) => {
+            const row = document.createElement("div");
+            row.className = "terminal-card__pinned-input-row";
+            for (const part of text.match(/\s+|\S+/gu) ?? []) {
+              if (/^\s+$/u.test(part)) {
+                row.append(document.createTextNode(part));
+              } else {
+                const word = document.createElement("span");
+                word.textContent = part;
+                row.append(word);
+              }
             }
-          }
-          if (rowIndex === pinned.cursorRow) {
-            const cursorColumn = Math.min(pinned.cursorColumn, Math.max(0, terminal.cols - 1));
-            row.classList.add("terminal-card__pinned-input-row--cursor");
-            row.dataset.cursorColumn = String(cursorColumn);
-            row.style.setProperty("--pinned-cursor-column", String(cursorColumn));
-          }
-          return row;
-        }));
+            if (rowIndex === pinned.cursorRow) {
+              const cursorColumn = Math.min(pinned.cursorColumn, Math.max(0, terminal.cols - 1));
+              row.classList.add("terminal-card__pinned-input-row--cursor");
+              row.dataset.cursorColumn = String(cursorColumn);
+              row.style.setProperty("--pinned-cursor-column", String(cursorColumn));
+            }
+            return row;
+          }));
+          renderedPinnedInput = { ...pinned, cols: terminal.cols };
+        }
       } else {
         host.style.removeProperty("--pinned-input-height");
-        pinnedInput.replaceChildren();
+        if (renderedPinnedInput !== null) {
+          pinnedInput.replaceChildren();
+          renderedPinnedInput = null;
+        }
         pinnedInput.style.removeProperty("--pinned-terminal-columns");
         pinnedInput.style.removeProperty("--pinned-row-count");
       }
@@ -586,10 +599,10 @@ function TerminalCardView({
     const unsubscribe = attachTerminalOutput(
       window.canvasTTY.terminal,
       session.id,
-      (data) => {
+      (data, parsed) => {
         pool.touch(session.id);
         backgroundOutputActivity.current?.();
-        terminal.write(data);
+        terminal.write(data, parsed);
       },
       (error) => {
         console.error("CanvasTTY could not load terminal history.", error);
@@ -610,9 +623,16 @@ function TerminalCardView({
     };
     fitRef.current = fit;
     terminal.attachCustomKeyEventHandler((event) => {
+      if (event.isComposing) return true;
       const editor = nativeEditorRef.current;
-      if (editor && Object.values(editor).some((binding) => matchesShortcut(event, binding))) {
-        const sequence = codexShortcutSequence(event);
+      const editorAction = editor && (
+        [editor.submit, editor.submitAlternate, editor.submitSuper].some((binding) => matchesShortcut(event, binding)) ? "submit"
+          : matchesShortcut(event, editor.newline) ? "newline"
+            : matchesShortcut(event, editor.selectAll) ? "selectAll" : null
+      );
+      if (editor && editorAction && event.type === "keydown" && !event.isComposing) {
+        const sequence = (editorAction === "submit" ? editor.submitSequence
+          : editorAction === "newline" ? editor.newlineSequence : undefined) ?? codexShortcutSequence(event);
         if (sequence !== null) {
           event.preventDefault();
           event.stopPropagation();
@@ -621,14 +641,7 @@ function TerminalCardView({
           return false;
         }
       }
-      const codexEnter = codexEnterSequence(event, session.provider);
-      if (codexEnter !== null) {
-        event.preventDefault();
-        event.stopPropagation();
-        window.canvasTTY.terminal.input(session.id, codexEnter);
-        return false;
-      }
-      const selectCodexDraft = nativeEditorRef.current ? false
+      const selectCodexDraft = nativeEditorRef.current?.selectAll ? false
         : shouldSelectCodexDraft(event, window.canvasTTY.window.isMacOS, session.provider);
       if (selectCodexDraft) {
         event.preventDefault();
@@ -683,7 +696,16 @@ function TerminalCardView({
             ? "\u0003" : "\u001b[99;9u");
         return false;
       }
-      if (!shouldPasteTerminalClipboard(event, shortcutsRef.current)) return true;
+      if (!shouldPasteTerminalClipboard(event, shortcutsRef.current)) {
+        const codexEnter = codexEnterSequence(event, session.provider);
+        if (codexEnter !== null) {
+          event.preventDefault();
+          event.stopPropagation();
+          window.canvasTTY.terminal.input(session.id, codexEnter);
+          return false;
+        }
+        return true;
+      }
 
       event.preventDefault();
       event.stopPropagation();
@@ -784,6 +806,7 @@ function TerminalCardView({
       host.classList.remove("terminal-card__surface--pinned-input");
       host.style.removeProperty("--pinned-input-height");
       pinnedInput.remove();
+      renderedPinnedInput = null;
       titleChange.dispose();
       searchResults.dispose();
       fileLinks.dispose();
@@ -983,11 +1006,11 @@ function TerminalCardView({
     };
   };
 
-  const drag = (event: React.PointerEvent<HTMLElement>): void => {
+  const drag = (event: React.PointerEvent<HTMLElement>, final = false): void => {
     const state = dragState.current;
     if (!state || state.pointerId !== event.pointerId) return;
     // A buttonless move is a hover, not a drag.
-    if (event.buttons === 0) return;
+    if (event.buttons === 0 && !final) return;
     const rawPosition = {
       x: state.startBounds.position.x + (event.clientX - state.startClient.x) / camera.get().zoom,
       y: state.startBounds.position.y + (event.clientY - state.startClient.y) / camera.get().zoom
@@ -1000,6 +1023,11 @@ function TerminalCardView({
 
   const endDrag = (event: React.PointerEvent<HTMLElement>): void => {
     if (!dragState.current || dragState.current.pointerId !== event.pointerId) return;
+    if (event.type === "pointercancel") {
+      cancelDrag(event);
+      return;
+    }
+    drag(event, true);
     dragState.current = null;
     onBoundsChange(session.id, liveBounds.current);
   };
@@ -1008,14 +1036,14 @@ function TerminalCardView({
   // later hover cannot act on it.
   // Pointer capture lost mid-gesture (no pointerup): nothing was committed, so the card goes back to its saved bounds.
   // After a normal pointerup the gesture is already over and this does nothing.
-  const cancelDrag = (): void => {
-    if (!dragState.current) return;
+  const cancelDrag = (event?: React.PointerEvent<HTMLElement>): void => {
+    if (!dragState.current || (event && dragState.current.pointerId !== event.pointerId)) return;
     dragState.current = null;
     applyLiveBounds({ position: session.position, size: session.size });
   };
 
-  const cancelResize = (): void => {
-    if (!resizeState.current) return;
+  const cancelResize = (event?: React.PointerEvent<HTMLDivElement>): void => {
+    if (!resizeState.current || (event && resizeState.current.pointerId !== event.pointerId)) return;
     resizeState.current = null;
     applyLiveBounds({ position: session.position, size: session.size });
   };
@@ -1033,11 +1061,11 @@ function TerminalCardView({
     };
   };
 
-  const resizeCard = (event: React.PointerEvent<HTMLDivElement>): void => {
+  const resizeCard = (event: React.PointerEvent<HTMLDivElement>, final = false): void => {
     const state = resizeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
     // A buttonless move is a hover, not a resize.
-    if (event.buttons === 0) return;
+    if (event.buttons === 0 && !final) return;
     event.preventDefault();
     event.stopPropagation();
     const deltaX = (event.clientX - state.startClient.x) / camera.get().zoom;
@@ -1062,7 +1090,12 @@ function TerminalCardView({
 
   const endResize = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (!resizeState.current || resizeState.current.pointerId !== event.pointerId) return;
+    if (event.type === "pointercancel") {
+      cancelResize(event);
+      return;
+    }
     event.stopPropagation();
+    resizeCard(event, true);
     resizeState.current = null;
     onBoundsChange(session.id, liveBounds.current);
   };
@@ -1329,13 +1362,14 @@ function TerminalCardView({
             <span className="terminal-card__role" title={t(locale, "orchestratorRoleNote")}>{t(locale, "roleOrchestrator")}</span>
           )}
           {session.profile === "auto" && (
-            <span className="terminal-card__role" title={t(locale, session.autoDowngraded ? "autoDowngradedNote" : "autoProfileNote")}>
+            <span className="terminal-card__role" title={t(locale, session.autoDowngraded ? "autoDowngradedNote" : profileNoteKey(session.provider, session.profile) ?? "autoProfileNote")}>
               {t(locale, session.autoDowngraded ? "autoDowngraded" : "autoProfile")}
             </span>
           )}
-          {(session.profile === "acceptEdits" || session.profile === "plan" || session.profile === "yolo") && (
-            <span className="terminal-card__role" title={t(locale, session.profile === "acceptEdits" ? "acceptEditsNote" : session.profile === "plan" ? "planNote" : "bypassInsideIsolation")}>
-              {t(locale, session.profile === "acceptEdits" ? "acceptEditsProfile" : session.profile === "plan" ? "planProfile" : "bypassProfile")}
+          {session.profile !== "normal" && session.profile !== "auto" && (
+            <span className="terminal-card__role" title={t(locale, profileNoteKey(session.provider, session.profile)
+              ?? (session.isolation?.state === "on" ? "bypassInsideIsolation" : "bypassWithoutIsolation"))}>
+              {t(locale, PROFILE_LABELS[session.profile])}
             </span>
           )}
           {session.isolation && (

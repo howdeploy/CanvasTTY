@@ -29,6 +29,27 @@ export async function openCodeInputReady(calls, index) {
   calls[index].process.emitData(OPENCODE_STARTUP_READY);
 }
 
+/** A fake editor echoes bracketed pastes but starts a turn only on a separate submit write. */
+export function echoPromptInput(pty, provider, readyFrame) {
+  const write = pty.write.bind(pty);
+  let draft = "", pastes = 0;
+  pty.write = (data) => {
+    write(data);
+    if (data.startsWith("\x1b[200~") && data.endsWith("\x1b[201~")) {
+      draft += data.slice(6, -6);
+      pastes++;
+      const text = draft.includes("\n") ? `[Pasted text #${pastes} +${draft.split("\n").length} lines]` : draft;
+      const frame = (pty.provider ?? provider) === "kimi"
+        ? `\x1b[2J\x1b[H╭──────────────────────────────────────────────────────────────────╮\r\n│ > ${text.padEnd(62)} │\r\n╰──────────────────────────────────────────────────────────────────╯\x1b[2;5H`
+        : `\x1b[2J\x1b[H${(pty.provider ?? provider) === "claude" ? "❯" : "›"} ${text}`;
+      (pty.emitData ?? pty.data).call(pty, frame);
+    } else if (data === "\r" || /^\x1b\[\d+;\d+u$/u.test(data) || /^\x1b\[\d+(?:;\d+)?~$/u.test(data)) {
+      draft = "";
+      (pty.emitData ?? pty.data).call(pty, readyFrame);
+    }
+  };
+}
+
 /**
  * A PTY spawner that pushes `{ command, args, options, process }` to `calls` and
  * returns a fake PTY: `emitData`/`emitExit` drive its listeners, `lastResize`

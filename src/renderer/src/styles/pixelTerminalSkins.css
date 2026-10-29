@@ -134,7 +134,7 @@
   right: calc(var(--pixel-skin-right-inset) + 8px);
 }
 .terminal-card[data-pixel-skin="true"] .terminal-card__summary {
-  z-index: 4;
+  z-index: 2;
   inset: var(--pixel-skin-top-inset) var(--pixel-skin-right-inset) var(--pixel-skin-bottom-inset) var(--pixel-skin-left-inset);
   width: auto;
   height: auto;

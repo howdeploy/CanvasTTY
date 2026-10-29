@@ -1,5 +1,6 @@
 import { matchesPhysicalOrLayoutKey, matchesShortcut } from "../../lib/shortcuts.ts";
 import type { ShortcutBindings } from "../../../../shared/contracts.ts";
+export { codexShortcutSequence } from "../../../../shared/codexKeyboard.ts";
 
 interface TerminalKeyEvent {
   type: string;
@@ -15,27 +16,6 @@ interface TerminalKeyEvent {
 
 export const SHIFT_ENTER_SEQUENCE = "\u001b[13;2u";
 export const CODEX_SELECT_ALL_SEQUENCE = "\u001b[97;9u";
-
-/** Preserve modifiers for native editor actions even when xterm lacks Super encoding. */
-export function codexShortcutSequence(event: TerminalKeyEvent): string | null {
-  if (event.type !== "keydown" || event.isComposing) return null;
-  const modifiers = 1 + Number(event.shiftKey) + 2 * Number(event.altKey)
-    + 4 * Number(event.ctrlKey) + 8 * Number(event.metaKey);
-  const key = event.code || event.key;
-  const letter = /^Key([A-Z])$/.exec(key);
-  const digit = /^(?:Digit|Numpad)([0-9])$/.exec(key);
-  const codepoint = letter ? letter[1]!.toLowerCase().charCodeAt(0) : digit ? digit[1]!.charCodeAt(0)
-    : ({ Enter: 13, NumpadEnter: 13, Space: 32, Tab: 9, Escape: 27, Backspace: 127, Comma: 44 } as Record<string, number>)[key];
-  if (codepoint !== undefined) return `\u001b[${codepoint};${modifiers}u`;
-  const suffix = ({ ArrowUp: "A", ArrowDown: "B", ArrowRight: "C", ArrowLeft: "D", Home: "H", End: "F",
-    F1: "P", F2: "Q", F3: "R", F4: "S" } as Record<string, string>)[key];
-  if (suffix) return `\u001b[1;${modifiers}${suffix}`;
-  const tilde = ({ Insert: 2, Delete: 3, PageUp: 5, PageDown: 6, F5: 15, F6: 17, F7: 18, F8: 19,
-    F9: 20, F10: 21, F11: 23, F12: 24 } as Record<string, number>)[key];
-  if (tilde !== undefined) return `\u001b[${tilde};${modifiers}~`;
-  const functionKey = /^F(\d+)$/.exec(key);
-  return functionKey ? `\u001b[${57363 + Number(functionKey[1])};${modifiers}u` : null;
-}
 
 export function codexEnterSequence(event: TerminalKeyEvent, provider: string): string | null {
   if (provider !== "codex" || event.type !== "keydown" || event.isComposing

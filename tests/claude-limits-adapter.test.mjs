@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { readClaudeUsage } from "../src/main/services/LimitsService.ts";
+import { LimitsService, readClaudeUsage } from "../src/main/services/LimitsService.ts";
 
 test("Claude limits use the current user's OAuth token and perform the usage request", async () => {
   const configRoot = await mkdtemp(join(tmpdir(), "canvastty-claude-limits-"));
@@ -39,6 +39,67 @@ test("Claude limits use the current user's OAuth token and perform the usage req
   } finally {
     await rm(configRoot, { recursive: true, force: true });
   }
+});
+
+test("Claude throttling preserves the last quota, waits before retrying, and follows credential changes", async (t) => {
+  const configRoot = await mkdtemp(join(tmpdir(), "canvastty-claude-throttle-"));
+  t.after(() => rm(configRoot, { recursive: true, force: true }));
+  const credential = (token) => writeFile(join(configRoot, ".credentials.json"), JSON.stringify({
+    claudeAiOauth: { accessToken: token }
+  }));
+  await credential("fixture-account-one");
+  let now = Date.parse("2026-10-29T12:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const requests = [];
+  let response = () => new Response("{}", { status: 429, headers: { "retry-after": "0" } });
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    requests.push(options.headers.authorization);
+    return response();
+  });
+  const service = new LimitsService({ get: (provider) => ({
+    state: provider === "claude" ? "available" : "unavailable", provider,
+    executable: "/fixture/claude", launcher: "native", environment: {}, checked: []
+  }) }, "test", { cacheTtlMs: 0, claude: { configRoot, platform: "linux" } });
+  t.after(() => service.dispose());
+  const read = async () => (await service.getProviders(["claude"])).providers[0];
+
+  assert.equal((await read()).reason, "rate-limited");
+  now += 4 * 60_000;
+  assert.equal((await read()).reason, "rate-limited");
+  await service.providerClisRefreshed();
+  assert.equal((await read()).reason, "rate-limited");
+  assert.equal(requests.length, 1, "refresh and polling cannot bypass a zero-header backoff");
+  now += 60_000;
+  assert.equal((await read()).reason, "rate-limited");
+  assert.equal(requests.length, 2, "the fallback deadline permits another request after five minutes");
+
+  response = () => Response.json({ five_hour: { utilization: 12 } });
+  await credential("fixture-account-two");
+  const fresh = await read();
+  assert.equal(fresh.state, "available", "a different credential is not blocked by the old one");
+  assert.equal(fresh.windows[0].usedPercent, 12);
+  assert.deepEqual(requests, ["Bearer fixture-account-one", "Bearer fixture-account-one", "Bearer fixture-account-two"]);
+
+  response = () => new Response("{}", { status: 429, headers: { "retry-after": "120" } });
+  const stale = await read();
+  assert.equal(stale.state, "stale");
+  assert.equal(stale.reason, "rate-limited");
+  assert.equal(stale.fetchedAt, fresh.fetchedAt);
+  assert.deepEqual(stale.windows, fresh.windows);
+  now += 119_999;
+  assert.equal((await read()).reason, "rate-limited");
+  assert.equal(requests.length, 4);
+  now += 2;
+  response = () => Response.json({ five_hour: { utilization: 19 } });
+  const recovered = await read();
+  assert.equal(recovered.state, "available");
+  assert.equal(recovered.windows[0].usedPercent, 19);
+  assert.equal(requests.length, 5, "the server's retry deadline permits a fresh request");
+
+  const retryAt = now + 180_000;
+  response = () => new Response("{}", { status: 429, headers: { "retry-after": new Date(retryAt).toUTCString() } });
+  await assert.rejects(readClaudeUsage("test", { configRoot, platform: "linux" }),
+    (error) => error.message === "rate-limited" && error.retryAt === Math.floor(retryAt / 1_000) * 1_000);
 });
 
 test("missing Claude credentials mean sign-in is unavailable, not that a subscription is required", async () => {

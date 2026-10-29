@@ -10,14 +10,18 @@ import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 
 test("rapid bounds updates during a drag coalesce into a single session-store write", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "canvastty-bounds-coalesce-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
   const manager = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner([]));
+  t.after(async () => {
+    await manager.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  });
   const store = new TerminalSessionStore(directory);
   let replaceCalls = 0;
+  let replaced;
   const originalReplace = store.replace.bind(store);
   store.replace = async (sessions) => {
     replaceCalls += 1;
+    replaced = structuredClone(sessions);
     return originalReplace(sessions);
   };
   manager.configureSessionPersistence(store, "continue");
@@ -45,6 +49,7 @@ test("rapid bounds updates during a drag coalesce into a single session-store wr
   assert.equal(replaceCalls, 1, "20 rapid bounds updates should coalesce into a single write");
   assert.equal(manager.list()[0].size.width, 800);
   assert.equal(manager.list()[0].position.x, 19, "the coalesced write still reflects the latest bounds");
-
-  await manager.shutdown();
+  const persisted = replaced.find((session) => session.id === created.id);
+  assert.deepEqual(persisted.position, { x: 19, y: 19 }, "the deferred save receives the final position");
+  assert.deepEqual(persisted.size, { width: 800, height: 500 }, "the deferred save receives the final size");
 });

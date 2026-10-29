@@ -45,3 +45,26 @@ test("oversized incomplete OSC data is discarded", () => {
   assert.equal(parser.push(`\u001b]2;${"x".repeat(5_000)}`), null);
   assert.equal(parser.push(`\u001b]2;${working}\u0007`), "working");
 });
+
+test("OSC 7501 root reports survive chunk boundaries and never treat done or error as process exit", () => {
+  const parser = createProviderLifecycleParser("codex");
+  assert.equal(parser.push("\x1b]7501;state=wor"), null);
+  assert.equal(parser.push("king:app=codex\x1b"), null);
+  assert.equal(parser.push("\\"), "working");
+  assert.equal(parser.push("\x1b]7501;state=idle:app=codex\x07"), "idle");
+  assert.equal(parser.programStatus, "idle");
+  for (const body of ["state=working:app=other", "state=working:app=codex:id=child", "state=unknown:app=codex"]) {
+    assert.equal(parser.push(`\x1b]7501;${body}\x07`), null);
+    assert.equal(parser.programStatus, "idle");
+  }
+  for (const state of ["done", "error"]) {
+    assert.equal(parser.push(`\x1b]7501;state=${state}:app=codex\x07`), "idle");
+    assert.equal(parser.programStatus, state);
+  }
+  assert.equal(parser.push("\x1b]7501;?\x1b\\"), null);
+  assert.match(parser.takeReply(), /^\x1b\]7501;\?:states=/u);
+  assert.equal(parser.takeReply(), null);
+  const claude = createProviderLifecycleParser("claude");
+  assert.equal(claude.push("\x1b]7501;state=working:app=claude-code\x07"), "working");
+  assert.equal(claude.push("\x1b]7501;state=blocked:kind=permission:app=claude-code\x07"), "needs_approval");
+});

@@ -38,8 +38,8 @@ Module.registerHooks({
 app.commandLine.appendSwitch("use-mock-keychain");
 app.dock?.hide();
 app.setPath("userData", env.BENCH_USERDATA);
-process.on("uncaughtException", (error) => report.errors.push(`uncaught: ${error.message}`));
-process.on("unhandledRejection", (error) => report.errors.push(`rejection: ${error?.message ?? String(error)}`));
+process.on("uncaughtException", (error) => { report.errors.push(`uncaught: ${error.message}`); if (report.done) { report.valid = false; save(); } });
+process.on("unhandledRejection", (error) => { report.errors.push(`rejection: ${error?.message ?? String(error)}`); if (report.done) { report.valid = false; save(); } });
 
 let firstWindow = null;
 app.on("browser-window-created", (_event, window) => {
@@ -54,7 +54,7 @@ app.on("browser-window-created", (_event, window) => {
     firstWindow = window;
   }
   window.webContents.on("console-message", (event) => {
-    if (event.level === "error") report.rendererErrors.push(String(event.message).slice(0, 300));
+    if (event.level === "error") { report.rendererErrors.push(String(event.message).slice(0, 300)); if (report.done) { report.valid = false; save(); } }
   });
 });
 
@@ -146,8 +146,9 @@ app.whenReady().then(() => {
     }
     report.windowEnd = { visible: win.isVisible(), focused: win.isFocused() };
     report.done = true;
+    report.valid = report.errors.length === 0 && report.rendererErrors.length === 0;
     save();
-    setTimeout(() => app.exit(0), 8000);
+    setTimeout(() => { report.errors.push("forced shutdown after the quit deadline"); report.valid = false; save(); app.exit(1); }, 8000);
     app.quit();
   };
   void start();

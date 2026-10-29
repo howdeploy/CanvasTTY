@@ -12,6 +12,7 @@ interface Entry<V> {
   references: number;
   value: Promise<V>;
   loaded?: V;
+  expired?: boolean;
   releaseTimer?: unknown;
 }
 
@@ -35,7 +36,8 @@ export function createReleasingCache<K, V>(options: {
       if (!entry) {
         const created: Entry<V> = { references: 0, value: Promise.resolve(undefined as V) };
         created.value = options.load(key).then((value) => {
-          created.loaded = value;
+          if (created.expired) options.dispose(value);
+          else created.loaded = value;
           return value;
         }, (error: unknown) => {
           remove(key, created);
@@ -60,6 +62,7 @@ export function createReleasingCache<K, V>(options: {
             own.releaseTimer = undefined;
             if (own.references > 0) return;
             remove(key, own);
+            own.expired = true;
             if (own.loaded !== undefined) options.dispose(own.loaded);
           }, options.delayMs);
         }

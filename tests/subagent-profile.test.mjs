@@ -12,10 +12,11 @@ import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 test("a subagent never gets more than its orchestrator, and never YOLO", () => {
   assert.deepEqual(subagentProfile("normal", "opencode"), { profile: "normal", inherited: true });
   assert.deepEqual(subagentProfile("auto", "opencode"), { profile: "auto", inherited: true });
-  assert.deepEqual(subagentProfile("auto", "qwen"), { profile: "normal", inherited: true }, "no auto and no isolation layer: normal");
-  assert.deepEqual(subagentProfile("auto", "qwen", undefined, true), { profile: "auto", inherited: true }, "inside the layer a contained auto");
+  assert.deepEqual(subagentProfile("auto", "qwen"), { profile: "auto", inherited: true }, "Qwen has native Auto without CanvasTTY isolation");
+  assert.deepEqual(subagentProfile("auto", "hermes"), { profile: "normal", inherited: true }, "no native Auto launch mapping and no isolation layer");
+  assert.deepEqual(subagentProfile("auto", "hermes", undefined, true), { profile: "auto", inherited: true }, "inside the layer a contained auto");
   assert.deepEqual(subagentProfile("yolo", "codex"), { profile: "auto", inherited: true });
-  assert.deepEqual(subagentProfile("yolo", "kimi"), { profile: "normal", inherited: true });
+  assert.deepEqual(subagentProfile("yolo", "kimi"), { profile: "auto", inherited: true });
   assert.deepEqual(subagentProfile("auto", "claude", "acceptEdits"), { profile: "acceptEdits", inherited: false });
   assert.deepEqual(subagentProfile("acceptEdits", "claude"), { profile: "acceptEdits", inherited: true });
   assert.deepEqual(subagentProfile("acceptEdits", "kimi"), { profile: "normal", inherited: true }, "the next lower one its CLI has");
@@ -25,11 +26,18 @@ test("a subagent never gets more than its orchestrator, and never YOLO", () => {
   assert.match(subagentProfile("normal", "opencode", "auto").error, /runs in the normal profile, so its subagents get at most normal/u);
   assert.match(subagentProfile("plan", "codex", "normal").error, /at most plan/u);
   assert.match(subagentProfile("yolo", "codex", "yolo").error, /never given to a subagent/u);
-  assert.match(subagentProfile("auto", "qwen", "auto").error, /qwen has no auto mode of its own/u);
-  assert.match(subagentProfile("normal", "codex", "fast").error, /auto, normal, acceptEdits or plan/u);
+  assert.match(subagentProfile("auto", "hermes", "auto").error, /hermes has no auto mode of its own/u);
+  assert.match(subagentProfile("normal", "codex", "fast").error, /profile must be one of/u);
+  assert.deepEqual(subagentProfile("readOnly", "cursor"), { profile: "readOnly", inherited: true });
+  assert.deepEqual(subagentProfile("readOnly", "codex"), { profile: "plan", inherited: true });
+  assert.deepEqual(subagentProfile("askCached", "omp"), { profile: "askCached", inherited: true });
+  assert.deepEqual(subagentProfile("dontAsk", "claude"), { profile: "dontAsk", inherited: true });
+  assert.deepEqual(subagentProfile("autonomous", "devin"), { profile: "autonomous", inherited: true });
+  assert.match(subagentProfile("plan", "hermes").error, /no available profile at or below plan/u);
+  assert.match(subagentProfile("readOnly", "omp").error, /no available profile at or below readOnly/u);
+  assert.match(subagentProfile("normal", "codex", "dontAsk").error, /would give a subagent more/u);
   const spawn = ORCHESTRATION_TOOL_DEFINITIONS.find((tool) => tool.name === "spawn_agent");
-  assert.deepEqual(spawn.inputSchema.properties.profile.enum, ["auto", "normal", "acceptEdits", "plan"]);
-  assert.match(spawn.description, /never YOLO/u);
+  assert.deepEqual(spawn.inputSchema.properties.profile.enum, ["auto", "normal", "ask", "askCached", "acceptEdits", "dontAsk", "autonomous", "plan", "readOnly"]);
   assert.match(validateOrchestrationArguments("spawn_agent", { provider: "codex", cwd: "/p", profile: "yolo" }).error, /profile is not an accepted value/u);
 });
 
@@ -67,8 +75,11 @@ test("an auto orchestrator's OpenCode subagent runs in auto: edits without askin
   const inline = calls.at(-1).options.env.OPENCODE_CONFIG_CONTENT;
   assert.ok(inline === undefined || JSON.parse(inline).agent?.build?.permission === undefined, "normal gets no auto rules");
   const qwen = await spawn({ provider: "qwen" });
-  assert.equal(qwen.profile, "normal", "an auto the CLI lacks (no isolation layer here) becomes normal");
-  await assert.rejects(spawn({ provider: "qwen", profile: "auto" }), (error) => error.bridgeError?.code === "INVALID_REQUEST" && /no auto mode/u.test(error.message));
+  assert.equal(qwen.profile, "auto");
+  assert.ok(calls.at(-1).args.includes("--approval-mode"));
+  const hermes = await spawn({ provider: "hermes" });
+  assert.equal(hermes.profile, "normal", "an auto without a native launch mapping or isolation becomes normal");
+  await assert.rejects(spawn({ provider: "hermes", profile: "auto" }), (error) => error.bridgeError?.code === "INVALID_REQUEST" && /no auto mode/u.test(error.message));
   await assert.rejects(spawn({ provider: "codex", profile: "yolo" }), (error) => error.bridgeError?.code === "INVALID_REQUEST" && /never given to a subagent/u.test(error.message));
 });
 
@@ -78,6 +89,7 @@ test("a YOLO orchestrator's subagents run in auto or normal, never YOLO", async 
   assert.equal(codex.profile, "auto");
   assert.ok(!calls.at(-1).args.includes("--dangerously-bypass-approvals-and-sandbox"));
   const kimi = await spawn({ provider: "kimi" });
-  assert.equal(kimi.profile, "normal");
-  assert.ok(!calls.at(-1).args.includes("--yolo"));
+  assert.equal(kimi.profile, "auto");
+  assert.ok(calls.at(-1).args.includes("--yolo"), "Ask When Needed is Kimi's supervised Auto");
+  assert.ok(!calls.at(-1).args.includes("--auto"), "Never Ask remains unavailable to subagents");
 });

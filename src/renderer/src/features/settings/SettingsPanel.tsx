@@ -118,10 +118,12 @@ import type { SkinDetailLevel } from "../skins/SkinLayout";
 import { PixelSkinPackCreator } from "./PixelSkinPackCreator";
 import {
   availableProfiles,
+  LAUNCH_PROFILES,
   isDefaultLaunchProfile,
   isolationAvailable,
   resolveDefaultLaunchProfile
 } from "../../../../shared/autoMode";
+import { PROFILE_LABELS } from "../../lib/launchProfiles";
 import { MascotsSettings } from "./MascotsSettings";
 
 type SettingsSection = "general" | "keyboardShortcuts" | "appearance" | "agents" | "controls" | "externalIntegrations" | "canvasLink" | "browser" | "plugins" | "mascots" | "updates" | "about";
@@ -165,13 +167,6 @@ const CANVAS_COLOR_PREVIEWS: Record<CanvasColorId, string> = {
   mist: "#A9B9BD",
   rose: "#B9A6AD",
   slate: "#262B36"
-};
-
-const DEFAULT_PROFILE_LABELS: Record<DefaultLaunchProfile, TranslationKey> = {
-  auto: "autoProfile",
-  acceptEdits: "acceptEditsProfile",
-  normal: "manualProfile",
-  plan: "planProfile"
 };
 
 interface SettingsPanelProps {
@@ -1027,15 +1022,16 @@ export function SettingsPanel({
               </SettingGroup>
               <SettingGroup label={t(locale, "agentIsolation")} description={t(locale, "agentIsolationDescription")}>
                 <Segmented
-                  value={settings.agentIsolation === "off" ? "off" : "on"}
+                  value={settings.agentIsolation === "on" ? "on" : "off"}
                   options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
-                  onChange={(value) => void onChange({ agentIsolation: value === "off" ? "off" : "on" })}
+                  onChange={(value) => void onChange({ agentIsolation: value === "on" ? "on" : "off" })}
                 />
               </SettingGroup>
               <SettingGroup label={t(locale, "defaultLaunchProfile")} description={t(locale, "defaultLaunchProfileDescription")}>
                 <Segmented
                   value={settings.defaultLaunchProfile ?? "auto"}
-                  options={[["auto", t(locale, "autoProfile")], ["acceptEdits", t(locale, "acceptEditsProfile")], ["normal", t(locale, "manualProfile")], ["plan", t(locale, "planProfile")]]}
+                  wrap
+                  options={LAUNCH_PROFILES.filter(isDefaultLaunchProfile).map((profile) => [profile, t(locale, PROFILE_LABELS[profile])] as [string, string])}
                   onChange={(value) => void onChange({ defaultLaunchProfile: value as AppSettings["defaultLaunchProfile"] })}
                 />
               </SettingGroup>
@@ -1062,7 +1058,7 @@ export function SettingsPanel({
                         <span className="agent-launcher-settings__identity">
                           <ProviderIcon provider={provider} size="small" />
                           <strong>{PROVIDERS[provider].label}</strong>
-                          {fallback && <small>{t(locale, "defaultLaunchProfileFallback").replace("{profile}", t(locale, DEFAULT_PROFILE_LABELS[actualProfile]))}</small>}
+                          {fallback && <small>{t(locale, "defaultLaunchProfileFallback").replace("{profile}", t(locale, PROFILE_LABELS[actualProfile]))}</small>}
                         </span>
                         <Segmented
                           value={selected}
@@ -1070,7 +1066,7 @@ export function SettingsPanel({
                           disabled={defaultProfilesBusy}
                           options={[
                             ["inherit", t(locale, "inheritDefaultLaunchProfile")],
-                            ...available.map((profile) => [profile, t(locale, DEFAULT_PROFILE_LABELS[profile])] as [string, string])
+                            ...available.map((profile) => [profile, t(locale, PROFILE_LABELS[profile])] as [string, string])
                           ]}
                           onChange={(value) => changeAgentDefaultProfile(
                             provider,

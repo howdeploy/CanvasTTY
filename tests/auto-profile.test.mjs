@@ -81,13 +81,26 @@ async function pipelineAnswering(t, answer, extra = {}) {
   return { pipeline, requests };
 }
 
-test("auto exists only where the CLI has a native auto mode (OpenCode: a per-run permission config); normal and YOLO are unchanged", () => {
-  assert.deepEqual(Object.keys(AUTO_MODE).sort(), ["claude", "codex", "grok"]);
-  for (const provider of ["qwen", "kimi", "cursor", "terminal"]) assert.equal(hasAutoMode(provider), false, provider);
+test("verified native modes use their CLI flags while contained auto still needs isolation", () => {
+  assert.deepEqual(Object.keys(AUTO_MODE).sort(), ["antigravity", "claude", "codex", "cursor", "devin", "grok", "kimi", "omp", "qwen"]);
+  for (const provider of ["hermes", "omp", "cursor", "terminal"]) assert.equal(hasAutoMode(provider), false, provider);
+  for (const provider of ["qwen", "kimi", "devin", "antigravity"]) assert.equal(hasAutoMode(provider), true, provider);
   assert.equal(hasAutoMode("opencode"), true);
-  assert.throws(() => launch("qwen", "auto"), /qwen has no auto mode of its own; its auto runs only inside CanvasTTY's agent isolation/u);
+  assert.throws(() => launch("hermes", "auto"), /hermes has no auto mode of its own; its auto runs only inside CanvasTTY's agent isolation/u);
   // A CLI without an auto mode of its own gets its approval bypass as auto, only inside the isolation layer.
-  assert.deepEqual(launch("qwen", "auto", [], { isolated: true }), ["--yolo"]);
+  assert.deepEqual(launch("hermes", "auto", [], { isolated: true }), ["--yolo"]);
+  assert.deepEqual(launch("qwen", "auto"), ["--approval-mode", "auto"]);
+  assert.deepEqual(launch("qwen", "acceptEdits"), ["--approval-mode", "auto-edit"]);
+  assert.deepEqual(launch("qwen", "plan"), ["--approval-mode", "plan"]);
+  assert.deepEqual(launch("kimi", "auto"), ["--yolo"]);
+  assert.deepEqual(launch("kimi", "plan"), ["--plan"]);
+  assert.deepEqual(launch("kimi", "yolo"), ["--auto"]);
+  assert.deepEqual(launch("devin", "auto"), ["--permission-mode", "smart"]);
+  assert.deepEqual(launch("devin", "acceptEdits"), ["--permission-mode", "accept-edits"]);
+  assert.deepEqual(launch("omp", "acceptEdits"), ["--approval-mode", "write"]);
+  assert.deepEqual(launch("antigravity", "auto"), ["--mode", "auto"]);
+  assert.deepEqual(launch("antigravity", "acceptEdits"), ["--mode", "accept-edits"]);
+  assert.deepEqual(launch("antigravity", "plan"), ["--mode", "plan"]);
   assert.deepEqual(launch("cursor", "auto", [], { isolated: true }), ["--force"]);
   // Accept-edits and plan, where the CLI has them.
   assert.deepEqual(launch("codex", "acceptEdits"), ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]);
@@ -97,6 +110,20 @@ test("auto exists only where the CLI has a native auto mode (OpenCode: a per-run
   assert.deepEqual(launch("cursor", "plan"), ["--mode", "plan"]);
   assert.deepEqual(launch("opencode", "plan"), ["--agent", "plan"]);
   assert.deepEqual(launch("cursor", "yolo"), ["--force"], "cursor-agent's bypass is --force");
+  assert.deepEqual(launch("cursor", "readOnly"), ["--mode", "ask"]);
+  assert.deepEqual(launch("omp", "ask"), ["--approval-mode", "always-ask"]);
+  assert.deepEqual(launch("omp", "askCached"), ["--approval-mode", "always-ask-cached"]);
+  assert.deepEqual(launch("devin", "autonomous"), ["--sandbox", "--permission-mode", "autonomous"]);
+  assert.deepEqual(launch("claude", "ask"), ["--permission-mode", "manual"]);
+  assert.deepEqual(launch("grok", "ask"), ["--permission-mode", "default"]);
+  assert.deepEqual(launch("qwen", "ask"), ["--approval-mode", "default"]);
+  assert.deepEqual(launch("devin", "ask"), ["--permission-mode", "normal"]);
+  assert.deepEqual(launch("antigravity", "ask"), ["--mode", "default"]);
+  for (const provider of ["claude", "grok"]) assert.deepEqual(launch(provider, "dontAsk"), ["--permission-mode", "dontAsk"]);
+  assert.deepEqual(launch("codex", "dontAsk"), ["--sandbox", "workspace-write", "--ask-for-approval", "never"]);
+  assert.deepEqual(launch("codex", "dontAsk", [], { isolated: true }), ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]);
+  assert.throws(() => launch("opencode", "readOnly"), /has no readOnly mode/u);
+  assert.throws(() => launch("devin", "plan"), /has no plan mode/u);
   // Normal adds no permission flag and no sandbox.
   assert.deepEqual(launch("codex", "normal", ["-c", "x=1"]), ["--no-daemon", "-c", "x=1"]);
   assert.deepEqual(launch("claude", "normal"), []);
@@ -139,6 +166,10 @@ test("a third-party model turns auto into accept-edits, sandbox kept; other prof
   assert.deepEqual(claude.slice(0, 2), ["--permission-mode", "acceptEdits"]);
   assert.equal(settingsOf(claude)[0].sandbox.enabled, true);
   assert.deepEqual(launch("grok", "auto", [], { thirdPartyModel: true }), ["--permission-mode", "acceptEdits"]);
+  assert.deepEqual(launch("qwen", "auto", [], { thirdPartyModel: true }), ["--approval-mode", "auto-edit"]);
+  assert.deepEqual(launch("devin", "auto", [], { thirdPartyModel: true }), ["--permission-mode", "accept-edits"]);
+  assert.deepEqual(launch("antigravity", "auto", [], { thirdPartyModel: true }), ["--mode", "accept-edits"]);
+  assert.deepEqual(launch("kimi", "auto", [], { thirdPartyModel: true }), ["--yolo"]);
   assert.deepEqual(launch("codex", "normal", [], { thirdPartyModel: true }), []);
 });
 
@@ -196,14 +227,23 @@ test("a card launched in auto through a third-party account shows accept-edits; 
   const { pipeline } = await pipelineAnswering(t, (context) => context.options.on ? { thirdPartyModel: true } : null);
   const { terminals, calls } = manager(t, pipeline);
   const cwd = process.cwd();
-  assert.throws(() => terminals.create({ provider: "qwen", profile: "auto", cwd, position: at }), /qwen has no auto mode/u);
+  const editorArgs = [
+    "-c", 'tui.keymap.composer.submit=["enter"]',
+    "-c", 'tui.keymap.editor.insert_newline=["ctrl-j","ctrl-m","enter","shift-enter","alt-enter"]'
+  ];
+  assert.throws(() => terminals.create({ provider: "hermes", profile: "auto", cwd, position: at }), /hermes has no auto mode/u);
   const own = terminals.create({ provider: "codex", profile: "auto", cwd, position: at });
-  assert.deepEqual(calls[0].args, ["--approve-for-me"]);
+  assert.deepEqual(calls[0].args, ["--approve-for-me", ...editorArgs]);
   assert.equal(own.autoDowngraded, undefined);
   const account = terminals.create({ provider: "codex", profile: "auto", cwd, position: at, launchOptions: { "p.accounts": { on: true } } });
   await waitFor(() => calls.length === 2);
-  assert.deepEqual(calls[1].args, ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]);
+  assert.deepEqual(calls[1].args, ["--sandbox", "workspace-write", "--ask-for-approval", "on-request", ...editorArgs]);
   assert.equal(terminals.list().find((session) => session.id === account.id).autoDowngraded, true);
+  const kimi = terminals.create({ provider: "kimi", profile: "auto", cwd, position: at, launchOptions: { "p.accounts": { on: true } } });
+  await waitFor(() => calls.length === 3);
+  assert.deepEqual(calls[2].args, ["--yolo"]);
+  assert.equal(terminals.list().find((session) => session.id === kimi.id).autoDowngraded, undefined,
+    "Kimi keeps Ask When Needed and must not be labelled as the edit-only mode it does not have");
   const record = { id: "11111111-1111-4111-8111-111111111111", provider: "codex", profile: "auto", title: "t", titleCustomized: false,
     cwd, position: at, size: { width: 800, height: 600 } };
   assert.equal(normalizePersistedTerminalSessions({ version: 1, sessions: [record] }).sessions[0].profile, "auto");
@@ -304,7 +344,7 @@ test("a Codex subagent in (or below) the person's orchestrator folder is trusted
   assert.deepEqual(requests.map((request) => request.trustedFolder), [docs, undefined]);
 });
 
-test("Claude's «✳» title is idle, and a hooked card's title defers to its hooks except for a turn starting", async (t) => {
+test("Claude titles defer to approval and completed-turn hooks while fresh prompt hooks start the next turn", async (t) => {
   const parser = createProviderLifecycleParser("claude");
   assert.equal(parser.push("\u001b]0;✳ Claude Code\u0007"), "idle");
   assert.equal(parser.push("\u001b]0;◑ Claude Code\u0007"), "working");
@@ -322,6 +362,15 @@ test("Claude's «✳» title is idle, and a hooked card's title defers to its ho
   terminals.applyProviderSignal(card.id, { kind: "lifecycle", state: "idle" });
   calls[0].print("\u001b]0;◐ Claude Code\u0007");
   assert.equal(status(), "working", "the title still reports a turn starting");
+  terminals.applyProviderSignal(card.id, { kind: "lifecycle", state: "idle", event: "Stop" });
+  assert.equal(terminals.getMetadata(card.id).turnCompleted, true);
+  calls[0].print("\u001b]0;◑ Claude Code\u0007");
+  calls[0].print("\u001b]0;✳ Claude Code\u0007");
+  assert.equal(status(), "idle", "a delayed spinner after Stop cannot leave the card working and block the next prompt");
+  assert.equal(terminals.getMetadata(card.id).turnCompleted, true);
+  terminals.applyProviderSignal(card.id, { kind: "lifecycle", state: "working", event: "UserPromptSubmit" });
+  assert.equal(status(), "working", "the next real prompt still starts a turn");
+  assert.equal(terminals.getMetadata(card.id).turnCompleted, false);
 });
 
 test("a restarted Claude card reads its new process's title until that process's own hooks report", async (t) => {

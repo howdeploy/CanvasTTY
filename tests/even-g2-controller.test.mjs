@@ -28,9 +28,11 @@ async function fixture(t, extra = {}) {
   const writes = [],
     closed = [],
     creates = [],
-    renames = [];
+    renames = [],
+    opened = [];
   const terminals = {
     listMetadata: () => sessions.map((s) => ({ ...s })),
+    getMetadata: (id) => sessions.find((s) => s.id === id) ?? null,
     geometry: () => ({ cols: 100, rows: 30 }),
     readBuffer: () => ({ buffer: "Ready\r\n", outputOffset: 7 }),
     inputChecked: (id, data) => {
@@ -75,10 +77,10 @@ async function fixture(t, extra = {}) {
     speechWorker: join(directory, "missing-worker.py"),
     port: 0,
     limits: async () => ({ fetchedAt: Date.now(), providers: [] }),
-    openBrowser: async () => ({
-      title: "Project",
-      url: "http://localhost:5173/page?secret=omit#omit",
-    }),
+    openBrowser: async (id) => {
+      opened.push(id);
+      return { title: "Project", url: "http://localhost:5173/page?secret=omit#omit" };
+    },
   };
   const controller = new EvenG2Controller(options);
   await controller.load();
@@ -153,6 +155,7 @@ async function fixture(t, extra = {}) {
     closed,
     creates,
     renames,
+    opened,
   };
 }
 
@@ -317,17 +320,16 @@ test("readonly scope is enforced even when a phone bypasses disabled buttons", a
     allowBrowser: false,
   });
   const { token } = await f.pair();
-  for (const [path, body] of [
-    ["control", { sessionId: "one", action: "text", text: "no" }],
-    ["session-close", { sessionId: "one" }],
-    ["create", { provider: "codex" }],
-    ["browser", { sessionId: "one" }],
-  ])
-    assert.ok(
-      (await f.call("/g2/api/" + path, { token, body })).status >= 400,
-      path,
-    );
-  assert.equal(f.writes.length + f.closed.length + f.creates.length, 0);
+  for (const [path, body, status, error] of [
+    ["control", { sessionId: "one", action: "text", text: "no" }, 403, "not-permitted"],
+    ["session-close", { sessionId: "one" }, 409, "request-failed"],
+    ["create", { provider: "codex" }, 409, "request-failed"],
+    ["browser", { sessionId: "one" }, 409, "request-failed"],
+  ]) {
+    const reply = await f.call("/g2/api/" + path, { token, body });
+    assert.deepEqual(reply, { status, data: { error } }, path);
+  }
+  assert.equal(f.writes.length + f.closed.length + f.creates.length + f.opened.length, 0);
 });
 
 test("peer persistence contains only a private token hash and revocation survives restart", async (t) => {
@@ -536,24 +538,16 @@ test("confirmed rename is idempotent and never becomes terminal input", async (t
     (await f.call("/g2/api/home", { token })).data.sessions[0].title,
     "Бот поддержки",
   );
-  for (const title of ["", "x".repeat(81), "\x1b[31m"])
-    assert.ok(
-      (
-        await f.call("/g2/api/session-rename", {
-          token,
-          body: { sessionId: "one", title },
-        })
-      ).status >= 400,
-    );
-  assert.ok(
-    (
-      await f.call("/g2/api/session-rename", {
-        token,
-        body: { sessionId: "private", title: "No" },
-      })
-    ).status >= 400,
-  );
+  // Legacy endpoints intentionally hide detailed CompanionError codes.
+  for (const rejected of [
+    ...["", "x".repeat(81), "\x1b[31m"].map((title) => ({ sessionId: "one", title })),
+    { sessionId: "private", title: "No" }
+  ]) {
+    assert.deepEqual(await f.call("/g2/api/session-rename", { token, body: rejected }),
+      { status: 409, data: { error: "request-failed" } });
+  }
   assert.equal(f.renames.length, 1);
+  assert.equal(f.writes.length, 0);
 });
 
 test("voice used for a rename is only a preview and cannot be replayed as a shell instruction", async (t) => {

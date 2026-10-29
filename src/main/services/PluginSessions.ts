@@ -13,7 +13,9 @@ import type {
   TerminalDataEvent
 } from "../../shared/contracts.ts";
 import { IPC } from "../../shared/contracts.ts";
-import { agentPromptInput } from "./codexInput.ts";
+import { isLaunchProfile, LAUNCH_PROFILES } from "../../shared/autoMode.ts";
+import type { InputDelivery } from "./TerminalManager.ts";
+import type { PromptDeliveryReceipt } from "./promptDelivery.ts";
 import type { PersistedEnvironmentRef } from "./TerminalSessionStore.ts";
 
 /** A card as plugin services see it (EP-4): metadata and where it runs, never screen text. */
@@ -58,7 +60,7 @@ interface TerminalPort {
   } | null;
   setPluginOwner(id: string, pluginId: string): void;
   readBuffer(id: string): TerminalBufferSnapshot;
-  deliverInput(id: string, text: string, waitMs?: number, signal?: AbortSignal, waitForCodexComposer?: boolean): Promise<{ delivered: boolean }>;
+  deliverPrompt(id: string, text: string, submit?: boolean, signal?: AbortSignal): Promise<InputDelivery>;
   dispose(id: string, options?: { keepEnvironmentData?: boolean }): void;
   redactSecrets(text: string): string;
   redactSecretsTail(text: string, maxChars: number): string;
@@ -80,7 +82,6 @@ interface Subscriber {
 const MAX_OWNED_PER_PLUGIN = 16;
 const MAX_SEND_CHARS = 16_000;
 const MAX_SCREEN_CHARS = 4_000;
-const PROFILES = new Set<LaunchProfileId>(["normal", "yolo", "auto", "acceptEdits", "plan"]);
 
 /**
  * Session events and plugin-owned session control (EP-4). A service subscribes to card events (metadata only;
@@ -224,7 +225,7 @@ export class PluginSessions {
     if (owned >= MAX_OWNED_PER_PLUGIN) throw new Error(`A plugin can run at most ${MAX_OWNED_PER_PLUGIN} cards of its own.`);
     if (typeof values.provider !== "string" || typeof values.cwd !== "string") throw new Error("provider and cwd are required.");
     const profile = values.profile === undefined ? "normal" : values.profile;
-    if (!PROFILES.has(profile as LaunchProfileId)) throw new Error("profile must be auto, normal, acceptEdits, plan or yolo.");
+    if (!isLaunchProfile(profile)) throw new Error(`profile must be one of: ${LAUNCH_PROFILES.join(", ")}.`);
     if (values.title !== undefined && (typeof values.title !== "string" || values.title.length > 80)) {
       throw new Error("title must be text of at most 80 characters.");
     }
@@ -247,17 +248,14 @@ export class PluginSessions {
   }
 
   /** `sent` confirms a PTY write, not provider submission/acceptance. */
-  private send(pluginId: string, values: Record<string, unknown>): Promise<{ sessionId: string; sent: boolean }> {
+  private send(pluginId: string, values: Record<string, unknown>): Promise<{ sessionId: string; sent: boolean; delivery?: PromptDeliveryReceipt }> {
     const sessionId = this.requireOwned(pluginId, values.sessionId);
     if (typeof values.text !== "string" || values.text.length === 0 || values.text.length > MAX_SEND_CHARS) {
       throw new Error(`text must be 1 to ${MAX_SEND_CHARS} characters.`);
     }
     const submit = values.submit === undefined ? true : values.submit === true;
-    const provider = this.deps.terminals.pluginContext(sessionId)?.metadata.provider;
-    const codex = provider === "codex";
-    const data = agentPromptInput(provider ?? "terminal", values.text, submit);
-    return this.deps.terminals.deliverInput(sessionId, data, undefined, undefined, codex)
-      .then((delivery) => ({ sessionId, sent: delivery.delivered }));
+    return this.deps.terminals.deliverPrompt(sessionId, values.text, submit)
+      .then((delivery) => ({ sessionId, sent: delivery.delivered, ...(delivery.receipt ? { delivery: delivery.receipt } : {}) }));
   }
 
   private stop(pluginId: string, values: Record<string, unknown>): { sessionId: string; stopped: true } {

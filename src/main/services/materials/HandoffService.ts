@@ -23,7 +23,7 @@ import type {
 import { IPC } from "../../../shared/contracts.ts";
 import { extensionForMime, materialType, HANDOFF_NOTE_LIMIT, handoffBlockFor } from "../../../shared/materials.ts";
 import { terminalFileQuotePath } from "../../../shared/terminalFileDrop.ts";
-import { codexComposerReady, codexContinuationIsEmpty, codexPlaceholderIsDim } from "../codexInput.ts";
+import { codexTerminalComposerReady } from "../codexInput.ts";
 import {
   handoffPointerText,
   handoffText,
@@ -52,6 +52,7 @@ const PASTE_END = "\x1b[201~";
 interface HandoffTerminalPort extends ScreenPort {
   listMetadata(): SessionMetadata[];
   launchPending(id: string): boolean;
+  codexUnstyledComposerAllowed?(id: string): boolean;
   deliverInput(id: string, data: string, waitMs?: number): Promise<{ delivered: true } | { delivered: false; reason: string }>;
   pluginContext(id: string): { workingDirectory: string; environment: unknown | null } | null;
 }
@@ -300,9 +301,13 @@ export class HandoffService {
 
   private async composerBlock(plan: HandoffPlan, screen: SessionScreen | null): Promise<HandoffBlock | null> {
     if (!screen) return null;
-    if (!await screen.inspect((terminal) => composerReady(plan.session.provider,
-      terminalScreenText(terminal, true), codexPlaceholderIsDim(terminal), codexContinuationIsEmpty(terminal)))) return "composer-not-ready";
-    if (plan.session.provider === "claude" && await screen.typedAfter("❯")) return "composer-not-ready";
+    if (plan.session.provider === "codex" && !await screen.inspect((terminal) => codexTerminalComposerReady(
+      terminal, this.options.terminals.codexUnstyledComposerAllowed?.(plan.session.id)))) return "composer-not-ready";
+    if (plan.session.provider === "claude") {
+      const prompt = await screen.inspect((terminal) => terminalScreenText(terminal, true).split("\n")
+        .filter((line) => /^\s*❯/u.test(line)).at(-1));
+      if (!prompt || /\[(?:Pasted text|Image) #\d+/u.test(prompt) || await screen.typedAfter("❯")) return "composer-not-ready";
+    }
     return null;
   }
 
@@ -686,13 +691,6 @@ function occurrences(text: string, part: string): number {
   let count = 0;
   for (let at = text.indexOf(part); at !== -1; at = text.indexOf(part, at + part.length)) count += 1;
   return count;
-}
-
-function composerReady(provider: SessionMetadata["provider"], screen: string, dimPlaceholder: boolean, emptyContinuation: boolean): boolean {
-  if (provider === "codex") return codexComposerReady(screen, dimPlaceholder, emptyContinuation);
-  if (provider !== "claude") return true;
-  const prompt = screen.split("\n").filter((line) => /^\s*❯/.test(line)).at(-1);
-  return prompt !== undefined && !/\[(?:Pasted text|Image) #\d+/.test(prompt);
 }
 
 function parseDraft(value: unknown): HandoffDraft | null {

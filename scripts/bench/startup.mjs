@@ -17,13 +17,14 @@
 //             terminals, the plugin and the browser card in the DOM, observed by the harness)
 //   renderer  rendererFirstPaint, firstStableFrame (no loader, real data), homeActionable,
 //             restoredTerminalInteractive (first restored xterm forwards input)
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { invalidateTrial, readTrial, reapTrial, successfulTrials } from "./trial.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const HERE = join(ROOT, "scripts", "bench");
@@ -66,24 +67,14 @@ function run(command, args, env, timeoutMs) {
     child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4000); });
     const kill = () => { try { process.kill(-child.pid, "SIGKILL"); } catch {} };
     const timer = setTimeout(kill, timeoutMs);
-    child.on("error", reject);
-    child.on("close", (code) => {
+    child.on("error", (error) => { clearTimeout(timer); reject(error); });
+    child.on("close", (code, signal) => {
       clearTimeout(timer);
       kill();
-      if (code === 0) resolvePromise();
-      else reject(new Error(`${command} exited ${code}: ${stderr.slice(-1500)}`));
+      if (code === 0 && signal === null) resolvePromise();
+      else reject(new Error(`${command} exited code=${code}, signal=${signal}: ${stderr.slice(-1500)}`));
     });
   });
-}
-
-function reap(marker) {
-  const rows = execFileSync("/bin/ps", ["-A", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).trim().split("\n");
-  for (const row of rows) {
-    const [, pid, command] = /^\s*(\d+)\s+(.*)$/u.exec(row) ?? [];
-    if (pid && Number(pid) !== process.pid && command.includes(marker)) {
-      try { process.kill(Number(pid), "SIGKILL"); } catch {}
-    }
-  }
 }
 
 /** One launch with a fresh short HOME; returns the harness report. */
@@ -102,19 +93,26 @@ async function launch(bench, phase, userData) {
     BENCH_PAGE_URL: bench.pageUrl,
     ...(bench.frames && phase === "measure" ? { BENCH_FRAMES: "1" } : {})
   };
+  let report;
   try {
     let exit = null;
     await run(electron, [bench.app], env, 120_000).catch((error) => { exit = error; });
-    const report = existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null;
-    if (!report?.done) throw exit ?? new Error("the startup harness wrote no report");
-    if (report.window?.visible || report.window?.focused || report.windowEnd?.visible || report.windowEnd?.focused) {
-      throw new Error("the app window was visible or focused");
+    report = readTrial(out, { exitError: exit,
+      requiredNumbers: phase === "seed" ? ["seeded"] : MARKS
+        .filter(([, name]) => !OPTIONAL_READINESS.has(name)).map(([side, name]) => `${side}.${name}`)
+    });
+    if (phase === "seed" && report.seeded !== 3) {
+      invalidateTrial(report, "the seed did not contain the three requested terminal sessions");
+    }
+    if (phase === "measure" && ![report.main?.criticalServicesReady, report.main?.coreServicesReady]
+      .some((value) => typeof value === "number" && Number.isFinite(value) && value >= 0)) {
+      invalidateTrial(report, "neither criticalServicesReady nor coreServicesReady was observed");
     }
     return report;
   } finally {
-    reap(userData);
-    reap(home);
-    rmSync(home, { recursive: true, force: true });
+    try { reapTrial([userData, home]); }
+    catch (error) { if (report) invalidateTrial(report, `process cleanup: ${error.message}`); else throw error; }
+    finally { rmSync(home, { recursive: true, force: true }); }
   }
 }
 
@@ -138,11 +136,14 @@ const MARKS = [
   ["main", "servicesReady"], ["main", "applicationLoaded"], ["renderer", "firstStableFrame"], ["renderer", "homeActionable"],
   ["renderer", "restoredTerminalInteractive"], ["main", "allSurfacesMounted"]
 ];
+// Older instrumented builds report one readiness group; require at least one, and label both optional columns.
+const OPTIONAL_READINESS = new Set(["criticalServicesReady", "coreServicesReady"]);
 function summarize(reports) {
   const rows = {};
+  const valid = successfulTrials(reports);
   for (const [side, name] of MARKS) {
-    const values = reports.map((report) => report[side]?.[name]).filter((value) => typeof value === "number");
-    rows[name] = { n: values.length, median: pct(values, 50), p90: pct(values, 90) };
+    const values = valid.map((report) => report[side]?.[name]).filter((value) => typeof value === "number" && Number.isFinite(value));
+    rows[name] = { n: values.length, median: pct(values, 50), p90: pct(values, 90), optional: OPTIONAL_READINESS.has(name) };
   }
   return rows;
 }
@@ -161,11 +162,11 @@ async function main() {
   const template = join(root, "t");
   mkdirSync(template, { recursive: true });
   writeFileSync(join(template, "settings.json"), JSON.stringify({ settingsVersion: 21, locale: "en", sessionRestoreMode: "reopen" }));
-  const result = { cold: [], warm: [], errors: [] };
+  const result = { cold: [], warm: [], errors: [], seed: null, warmup: null };
   try {
     await installPlugin(template);
-    const seeded = await launch(bench, "seed", template);
-    if (seeded.errors.length) throw new Error(`seed: ${seeded.errors.join("; ")}`);
+    const seeded = result.seed = await launch(bench, "seed", template);
+    if (!seeded.valid) throw new Error(`seed invalid: ${seeded.validationErrors.join("; ")}`);
     for (const cache of CHROMIUM_CACHES) await rm(join(template, cache), { recursive: true, force: true });
     const sessions = JSON.parse(await readFile(join(template, "terminal-sessions.json"), "utf8").catch(() => "{}"));
     process.stderr.write(`seeded: ${seeded.seeded} sessions; store: ${sessions.sessions?.length ?? "?"}\n`);
@@ -175,31 +176,42 @@ async function main() {
       await cp(template, userData, { recursive: true });
       const report = await launch(bench, "measure", userData);
       result.cold.push(report);
-      process.stderr.write(`cold ${i + 1}: ${JSON.stringify({ ...report.main, ...report.renderer })} ${report.errors.join("; ")}\n`);
+      process.stderr.write(`cold ${i + 1}: ${JSON.stringify({ ...report.main, ...report.renderer })} valid=${report.valid} ${report.validationErrors.join("; ")}\n`);
       await rm(userData, { recursive: true, force: true });
     }
     const warmData = join(root, "wd");
     await cp(template, warmData, { recursive: true });
-    await launch(bench, "measure", warmData); // fills Chromium's caches; not counted
+    result.warmup = await launch(bench, "measure", warmData); // fills Chromium's caches; not counted
+    if (!result.warmup.valid) throw new Error(`warmup invalid: ${result.warmup.validationErrors.join("; ")}`);
     for (let i = 0; i < settings.warm; i++) {
       const report = await launch(bench, "measure", warmData);
       result.warm.push(report);
-      process.stderr.write(`warm ${i + 1}: ${JSON.stringify({ ...report.main, ...report.renderer })} ${report.errors.join("; ")}\n`);
+      process.stderr.write(`warm ${i + 1}: ${JSON.stringify({ ...report.main, ...report.renderer })} valid=${report.valid} ${report.validationErrors.join("; ")}\n`);
     }
+  } catch (error) {
+    result.errors.push(error.message);
   } finally {
     server.close();
-    reap(root);
-    rmSync(root, { recursive: true, force: true });
+    try { reapTrial([root]); }
+    catch (error) { result.errors.push(`process cleanup: ${error.message}`); }
+    finally { rmSync(root, { recursive: true, force: true }); }
   }
+  const measured = [...result.cold, ...result.warm];
+  const all = [result.seed, result.warmup, ...measured].filter(Boolean);
   const summary = {
     cold: summarize(result.cold),
     warm: summarize(result.warm),
-    errors: [...result.cold, ...result.warm].flatMap((report) => report.errors),
-    ...(settings.frames ? { frames: [...result.cold, ...result.warm].map((report) => report.frames ?? []) } : {}),
-    rendererErrors: [...new Set([...result.cold, ...result.warm].flatMap((report) => report.rendererErrors))].slice(0, 10)
+    trials: Object.fromEntries(["cold", "warm"].map((phase) => [phase, {
+      requested: settings[phase], total: result[phase].length, valid: successfulTrials(result[phase]).length,
+      invalid: result[phase].filter((report) => !report.valid).length
+    }])),
+    errors: [...result.errors, ...all.flatMap((report) => report.validationErrors)],
+    ...(settings.frames ? { frames: successfulTrials(measured).map((report) => report.frames ?? []) } : {}),
+    rendererErrors: [...new Set(all.flatMap((report) => report.rendererErrors ?? []))].slice(0, 10)
   };
   if (settings.json) writeFileSync(settings.json, JSON.stringify({ summary, runs: result }, null, 1));
   console.log(JSON.stringify(summary, null, 1));
+  if (summary.errors.length) process.exitCode = 1;
 }
 
 await main();

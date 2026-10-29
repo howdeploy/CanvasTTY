@@ -657,7 +657,7 @@ test("the workspace keeps auto-sort out of the startup bundle, outlines sorted w
     assert.doesNotMatch(code, /^import (?!type)[^;]*from "\.\/(canvasAutoSort|CanvasAutoSortMenu|canvasAutoSortScope)";/m);
   }
   assert.doesNotMatch(canvas, /setMarqueeSelection\(new Set\((plan|restore)/, "a sort never turns its windows into a drag group");
-  assert.match(canvas, /groupSelected=\{marqueeSelection\.has\(terminalLayerId\(session\.id\)\) \|\| autoSortMarked\.has/);
+  assert.match(canvas, /groupSelected=\{!fullscreen && \(marqueeSelection\.has\(terminalLayerId\(session\.id\)\) \|\| autoSortMarked\.has/);
   assert.match(canvas, /element\?\.addEventListener\("pointerdown", clear, true\)/, "the next press clears the outline");
   assert.doesNotMatch(canvas, /key === "z"|KeyZ|"Mod\+Z"|ctrl\+z/i, "no global undo shortcut");
 });

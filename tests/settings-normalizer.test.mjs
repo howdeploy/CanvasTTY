@@ -58,7 +58,7 @@ const fallback = {
   terminalSkinAnimationEnabled: true,
   appSkin: "classic",
   snapToGrid: true,
-  invertTerminalWheel: true,
+  invertTerminalWheel: false,
   invertCanvasWheel: false,
   edgePan: true,
   edgePanSpeed: "normal",
@@ -94,6 +94,33 @@ const fallback = {
   browserRestoreTabs: true,
   browserPauseHiddenTabs: true
 };
+
+test("named copy presets migrate and persist without changing custom bindings", async () => {
+  for (const [platform, preset, savedCopy, expectedCopy] of [
+    ["win32", "windows", "Ctrl+Shift+C", "Ctrl+C"],
+    ["linux", "linux", "Ctrl+C", "Ctrl+Shift+C"],
+    ["win32", "custom", "Ctrl+Shift+C", "Ctrl+Shift+C"],
+    ["win32", "windows", "F9", "F9"]
+  ]) {
+    const dir = await mkdtemp(join(tmpdir(), "canvastty-copy-preset-"));
+    try {
+      const store = new SettingsStore(dir, "en", platform);
+      await store.load();
+      assert.equal(store.get().shortcuts.terminalCopy, platform === "win32" ? "Ctrl+C" : "Ctrl+Shift+C");
+      const settings = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
+      settings.keyboardPreset = preset;
+      settings.shortcuts.terminalCopy = savedCopy;
+      await writeFile(join(dir, "settings.json"), JSON.stringify(settings));
+      const restored = await new SettingsStore(dir, "en", platform).load();
+      assert.deepEqual(restored.shortcuts, { ...settings.shortcuts, terminalCopy: expectedCopy });
+      assert.equal(restored.keyboardPreset, preset);
+      const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
+      assert.equal(persisted.shortcuts.terminalCopy, expectedCopy);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
 
 test("appearance shortcut migration frees F8 without replacing customized bindings or design", async () => {
   const oldShortcuts = { ...keyboardPresetShortcuts("linux"), momEntered: "F8" };
@@ -139,17 +166,48 @@ test("appearance shortcut migration frees F8 without replacing customized bindin
   }
 });
 
-test("fresh profiles opt into protection while explicit existing choices survive reload", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "canvastty-protection-opt-in-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const store = new SettingsStore(dir, "en", "linux");
-  const fresh = await store.load();
-  assert.equal(fresh.baseProtectionEnabled, false);
-  assert.equal(fresh.agentIsolation, "off");
-  await store.update({ baseProtectionEnabled: true, agentIsolation: "on" });
-  const reloaded = await new SettingsStore(dir, "en", "linux").load();
-  assert.equal(reloaded.baseProtectionEnabled, true);
-  assert.equal(reloaded.agentIsolation, "on");
+test("protection and wheel inversion default off while explicit choices survive reload on every platform", async (t) => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const dir = await mkdtemp(join(tmpdir(), "canvastty-protection-opt-in-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const store = new SettingsStore(dir, "en", platform);
+    assert.equal(store.get().baseProtectionEnabled, false, `${platform}: constructor`);
+    assert.equal(store.get().agentIsolation, "off", `${platform}: constructor`);
+    assert.equal(store.get().invertTerminalWheel, false, `${platform}: constructor`);
+    assert.equal(store.get().invertCanvasWheel, false, `${platform}: constructor`);
+    const fresh = await store.load();
+    assert.equal(fresh.baseProtectionEnabled, false, `${platform}: fresh profile`);
+    assert.equal(fresh.agentIsolation, "off", `${platform}: fresh profile`);
+    assert.equal(fresh.invertTerminalWheel, false, `${platform}: fresh profile`);
+    assert.equal(fresh.invertCanvasWheel, false, `${platform}: fresh profile`);
+
+    for (const protection of [{}, { baseProtectionEnabled: "true", agentIsolation: true,
+      invertTerminalWheel: "true", invertCanvasWheel: "true" }]) {
+      await writeFile(join(dir, "settings.json"), JSON.stringify({ settingsVersion: 0, ...protection }));
+      const legacy = await new SettingsStore(dir, "en", platform).load();
+      assert.equal(legacy.baseProtectionEnabled, false, `${platform}: legacy profile`);
+      assert.equal(legacy.agentIsolation, "off", `${platform}: legacy profile`);
+      assert.equal(legacy.invertTerminalWheel, false, `${platform}: legacy profile`);
+      assert.equal(legacy.invertCanvasWheel, false, `${platform}: legacy profile`);
+      const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
+      assert.equal(persisted.baseProtectionEnabled, false);
+      assert.equal(persisted.agentIsolation, "off");
+      assert.equal(persisted.invertTerminalWheel, false);
+      assert.equal(persisted.invertCanvasWheel, false);
+    }
+
+    const restored = new SettingsStore(dir, "en", platform);
+    await restored.load();
+    for (const [enabled, isolation] of [[true, "on"], [false, "off"]]) {
+      await restored.update({ baseProtectionEnabled: enabled, agentIsolation: isolation,
+        invertTerminalWheel: enabled, invertCanvasWheel: enabled });
+      const reloaded = await new SettingsStore(dir, "en", platform).load();
+      assert.equal(reloaded.baseProtectionEnabled, enabled, `${platform}: explicit choice`);
+      assert.equal(reloaded.agentIsolation, isolation, `${platform}: explicit choice`);
+      assert.equal(reloaded.invertTerminalWheel, enabled, `${platform}: explicit choice`);
+      assert.equal(reloaded.invertCanvasWheel, enabled, `${platform}: explicit choice`);
+    }
+  }
 });
 
 test("persists ASCII scene settings and rejects invalid scene paths and brightness", () => {
@@ -823,7 +881,7 @@ test("fresh installs default to scroll pan and key-gated widget wheel input", as
     assert.equal(store.get().useScrollWheelToZoom, false);
     assert.equal(store.get().canvasWheelOverride, process.platform === "darwin" ? "Meta" : "Ctrl");
     assert.equal(store.get().canvasNavigationOverride, "Alt");
-    assert.equal(store.get().invertTerminalWheel, true);
+    assert.equal(store.get().invertTerminalWheel, false);
     assert.equal(store.get().invertCanvasWheel, false);
     assert.equal(store.get().focusActivation, "off");
     assert.equal(store.get().hoverFocus, false);

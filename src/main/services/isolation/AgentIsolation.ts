@@ -193,7 +193,7 @@ export class AgentIsolation {
         userDataPath: this.options.userDataPath,
         sessionId: launch.sessionId,
         ...(launch.grantedPrivate ? { grantedPrivate: launch.grantedPrivate } : {}),
-        ...(launch.profile === "plan" ? { readOnlyProject: true } : {})
+        ...(launch.profile === "plan" || launch.profile === "readOnly" ? { readOnlyProject: true } : {})
       });
       // `git init` and `git clone` copy git's template, sample hooks included: an empty one writes no hooks.
       const gitTemplate = join(folder, "git-template");

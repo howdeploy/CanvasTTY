@@ -11,8 +11,7 @@ import {
   IPC,
   type LocaleId,
   type PluginCanvasRequest,
-  type PluginServiceEvent,
-  type SessionStatus
+  type PluginServiceEvent
 } from "../shared/contracts";
 import { registerCriticalIpc, registerIpc } from "./ipc/registerIpc";
 import { IpcReadinessGate, type IpcRegistrar } from "./ipc/IpcReadinessGate";
@@ -30,6 +29,7 @@ import { SkinRegistry } from "./services/SkinRegistry";
 import { PixelSkinPackRegistry } from "./services/PixelSkinPackRegistry";
 import { TerminalManager, reachesObservers, reachesRenderer } from "./services/TerminalManager";
 import { TerminalRendererOutbox } from "./services/TerminalRendererOutbox";
+import { AttentionNotifications } from "./services/AttentionNotifications";
 import { AgentControlGateway } from "./services/agent-control/AgentControlGateway";
 import { TerminalSessionStore } from "./services/TerminalSessionStore";
 import { AgentChatHistoryService } from "./services/AgentChatHistoryService";
@@ -224,10 +224,7 @@ let observeMainWindowState: ((window: BrowserWindow | null) => void) | null = nu
 // destroyed"); a startup step that sees this flag must stop quietly, because
 // the user asked for a quit and there is no failure left to report.
 let mainWindowClosing = false;
-// Deduplicates attention notifications: the last status already announced per
-// session, so a burst of snapshots notifies once per transition. Cleared when
-// the session is removed (its removal event), never used as a status source.
-const notifiedAttentionStatus = new Map<string, SessionStatus>();
+let attentionNotifications: AttentionNotifications | null = null;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
@@ -607,6 +604,15 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   const rendererOutbox = new TerminalRendererOutbox((channel, payload) => {
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send(channel, payload);
   });
+  const notifications = new AttentionNotifications((id, status) => {
+    const session = terminalManager?.getMetadata(id);
+    if (!session || session.status !== status) return;
+    new Notification({
+      title: session.title || session.provider,
+      body: attentionStatusLabel(status, settings.get().locale)
+    }).show();
+  }, () => !shutdownRunning && settings.get().attentionNotifications && Notification.isSupported());
+  attentionNotifications = notifications;
   terminalManager = new TerminalManager((channel, payload) => {
     // Output produced while a card is hidden is addressed to the observers
     // only, and the replay when it is shown again to the renderer only; the
@@ -620,40 +626,27 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     }
     if (reachesRenderer(payload)) rendererOutbox.push(channel, payload);
     // Attention notifications ride the session-status stream, never the output
-    // stream: a transition into needs_approval/failed notifies once, and the
-    // removal event clears the dedup entry so a later session (or restart) can
-    // notify again. Failures are not all the same event, though, and status
-    // equality cannot tell them apart: the manager states whether a failure is
-    // re-derived state (a restored session, already on screen) or the outcome
-    // of a launch the user just asked for, which is news either way.
+    // stream. Approval notifications wait for a stable request; session status
+    // and the on-canvas queue still update immediately. Restore-derived failures
+    // stay silent, while a failed launch the user requested remains news.
     if (channel === IPC.terminalSession && "session" in payload) {
-      const { id, status, title, provider } = payload.session;
-      const previousStatus = notifiedAttentionStatus.get(id);
+      const { id, status, provider } = payload.session;
+      const previousStatus = notifications.status(id);
       if (previousStatus !== status) diagnostics.record(status === "failed" ? "error" : "info", "terminal", "session.state", {
         id, provider, status, exitCode: payload.session.exitCode
       });
-      notifiedAttentionStatus.set(id, status);
       const failureOrigin = status === "failed" ? terminalManager?.consumeFailureOrigin() ?? null : null;
-      if ((status === "needs_approval" || status === "failed")
-        && failureOrigin !== "restore"
-        && (failureOrigin === "user" || previousStatus !== status)
-        && settings.get().attentionNotifications
-        && Notification.isSupported()) {
-        new Notification({
-          title: title || provider,
-          body: attentionStatusLabel(status, settings.get().locale)
-        }).show();
-      }
+      notifications.observe(id, status, failureOrigin);
     } else if (channel === IPC.terminalRemoved && "id" in payload) {
       diagnostics.record("info", "terminal", "session.closed", { id: payload.id });
-      notifiedAttentionStatus.delete(payload.id);
+      notifications.forget(payload.id);
     }
   }, providerClis, agentBrowserBridge ?? undefined, agentRuntimeBridge ?? undefined, settings.get().agentLifecycleHooksEnabled);
   terminalManager.configureRedaction(redaction);
   terminalManager.setKeyboardShortcuts(settings.get().shortcuts);
   // The operating-system isolation layer (Settings → Agents → Agent isolation) and YOLO only where the person
   // acknowledged it: both decided here, in the main process, for every launch whoever asks for it.
-  terminalManager.configureIsolation(new AgentIsolation({ userDataPath, enabled: () => settings.get().agentIsolation !== "off" }));
+  terminalManager.configureIsolation(new AgentIsolation({ userDataPath, enabled: () => settings.get().agentIsolation === "on" }));
   terminalManager.configureYoloAcknowledgement((provider) => settings.get().acknowledgedDangerousProfiles.includes(provider as AgentProviderId));
   // OpenCode's auto profile runs shell commands without asking only while base protection guards them.
   terminalManager.configureBaseProtection(() => settings.get().baseProtectionEnabled);
@@ -829,7 +822,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   // folderPath on restore.
   const fileAccessService = new FileAccessService({
     resolveSessionCwd: (sessionId) =>
-      terminalManager?.listMetadata().find((session) => session.id === sessionId)?.cwd
+      terminalManager?.getMetadata(sessionId)?.cwd
   });
   materialService = new MaterialService({
     userDataPath: app.getPath("userData"),
@@ -1292,6 +1285,7 @@ void IPC.terminalData;
 
 async function shutdownServices(): Promise<void> {
   diagnostics.record("info", "application", "shutdown.started");
+  attentionNotifications?.dispose();
   mascotManager?.dispose();
   agentChatHistory?.dispose();
   if (agentControl) await Promise.allSettled([agentControl.close()]);

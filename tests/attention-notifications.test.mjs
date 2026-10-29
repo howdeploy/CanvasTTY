@@ -7,6 +7,81 @@ import { SettingsStore } from "../src/main/services/SettingsStore.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { TerminalSessionStore } from "../src/main/services/TerminalSessionStore.ts";
 import { IPC } from "../src/shared/contracts.ts";
+import { AttentionNotifications } from "../src/main/services/AttentionNotifications.ts";
+
+test("approval notifications need one uninterrupted second; duplicate snapshots do not postpone or repeat them", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const sent = [];
+  const notifications = new AttentionNotifications((id, status) => sent.push([id, status]), () => true);
+  t.after(() => notifications.dispose());
+
+  notifications.observe("brief", "needs_approval");
+  t.mock.timers.tick(800);
+  notifications.observe("brief", "working");
+  t.mock.timers.tick(1_000);
+  assert.deepEqual(sent, []);
+
+  notifications.observe("brief", "needs_approval");
+  t.mock.timers.tick(800);
+  notifications.observe("brief", "idle");
+  notifications.observe("brief", "needs_approval");
+  t.mock.timers.tick(200);
+  assert.deepEqual(sent, [], "a new approval request starts its own full waiting interval");
+  notifications.observe("brief", "done");
+
+  notifications.observe("real", "needs_approval");
+  t.mock.timers.tick(999);
+  notifications.observe("real", "needs_approval");
+  assert.deepEqual(sent, []);
+  t.mock.timers.tick(1);
+  notifications.observe("real", "needs_approval");
+  t.mock.timers.tick(2_000);
+  assert.deepEqual(sent, [["real", "needs_approval"]]);
+
+  notifications.observe("real", "idle");
+  notifications.observe("real", "needs_approval");
+  t.mock.timers.tick(1_000);
+  assert.equal(sent.length, 2, "a new genuine request can notify again");
+});
+
+test("closing, disabling notifications, and shutdown cancel pending approval alerts", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let enabled = true;
+  const sent = [];
+  const notifications = new AttentionNotifications((id) => sent.push(id), () => enabled);
+  t.after(() => notifications.dispose());
+
+  notifications.observe("closed", "needs_approval");
+  notifications.forget("closed");
+  notifications.observe("disabled", "needs_approval");
+  enabled = false;
+  notifications.observe("already-off", "needs_approval");
+  notifications.observe("muted-failure", "failed");
+  t.mock.timers.tick(1_000);
+  enabled = true;
+  notifications.observe("disabled", "needs_approval");
+  notifications.observe("shutdown", "needs_approval");
+  notifications.dispose();
+  t.mock.timers.tick(2_000);
+  assert.deepEqual(sent, []);
+});
+
+test("failures remain immediate, restore failures stay silent, and user-requested failed restarts notify again", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const sent = [];
+  const notifications = new AttentionNotifications((id, status) => sent.push([id, status]), () => true);
+  t.after(() => notifications.dispose());
+
+  notifications.observe("restored", "failed", "restore");
+  notifications.observe("restored", "failed");
+  notifications.observe("active", "needs_approval");
+  notifications.observe("active", "failed");
+  notifications.observe("active", "failed");
+  assert.deepEqual(sent, [["active", "failed"]]);
+  notifications.observe("active", "failed", "user");
+  t.mock.timers.tick(2_000);
+  assert.deepEqual(sent, [["active", "failed"], ["active", "failed"]]);
+});
 
 test("fresh installs enable attention notifications", async () => {
   const dir = await mkdtemp(join(tmpdir(), "canvastty-attention-"));
@@ -51,8 +126,8 @@ test("a malformed value falls back instead of leaking into settings", async () =
 // Not every failure is the same event. Notification policy is decided in the
 // main process, but "was this failure caused by the user or is it state we
 // re-derived?" is knowledge only the terminal manager has, so it announces it
-// with the snapshot. These tests pin that signal; the policy itself lives in
-// src/main/index.ts, which imports electron and has no seam to test directly.
+// with the snapshot. The manager tests below pin that signal; the policy tests
+// above exercise the same scheduler that main uses for OS notifications.
 
 const PERSISTED_SESSION = {
   id: "restored-session",

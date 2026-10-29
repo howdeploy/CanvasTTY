@@ -39,8 +39,8 @@ Module.registerHooks({
 app.commandLine.appendSwitch("use-mock-keychain");
 app.dock?.hide();
 app.setPath("userData", env.BENCH_USERDATA);
-process.on("uncaughtException", (error) => report.errors.push(`uncaught: ${error.message}`));
-process.on("unhandledRejection", (error) => report.errors.push(`rejection: ${error?.message ?? String(error)}`));
+process.on("uncaughtException", (error) => { report.errors.push(`uncaught: ${error.message}`); if (report.done) { report.valid = false; save(); } });
+process.on("unhandledRejection", (error) => { report.errors.push(`rejection: ${error?.message ?? String(error)}`); if (report.done) { report.valid = false; save(); } });
 
 let firstWindow = null;
 app.on("browser-window-created", (_event, window) => {
@@ -57,7 +57,7 @@ app.on("browser-window-created", (_event, window) => {
     window.webContents.once("did-finish-load", () => mark("firstLoadMs"));
   }
   window.webContents.on("console-message", (event) => {
-    if (event.level === "error") report.rendererErrors.push(String(event.message).slice(0, 300));
+    if (event.level === "error") { report.rendererErrors.push(String(event.message).slice(0, 300)); if (report.done) { report.valid = false; save(); } }
   });
 });
 
@@ -152,8 +152,8 @@ async function cpuWindow(label, seconds, during = async () => undefined) {
     for (const row of tree().values()) rss += row.rssKb;
     peak = Math.max(peak, rss / 1024);
   }, 2000);
-  await Promise.all([wait(seconds * 1000), during()]);
-  clearInterval(poll);
+  try { await Promise.all([wait(seconds * 1000), during()]); }
+  finally { clearInterval(poll); }
   const elapsed = (Date.now() - started) / 1000;
   const after = tree();
   const kinds = {};
@@ -260,6 +260,9 @@ async function scenario(win) {
   const countsBefore = await js("JSON.stringify(window.__benchRenderCounts ?? null)").then(JSON.parse);
   const timesBefore = await rendererTimes(win);
   const cameraBefore = await js("document.querySelector('.workspace')?.innerHTML.length ?? 0");
+  const sceneTransform = () => js("(() => { const scene = document.querySelector('.workspace__scene'); return scene ? getComputedStyle(scene).transform : null; })()");
+  const initialTransform = await sceneTransform();
+  let cameraMoved = false;
   const [width, height] = win.getContentSize();
   const x0 = Math.round(width / 2), y0 = Math.round(height / 2);
   const MOVES = 300;
@@ -269,6 +272,7 @@ async function scenario(win) {
     for (let i = 1; i <= MOVES; i++) {
       win.webContents.sendInputEvent({ type: "mouseMove", x: x0 + (i % 60) * 4, y: y0 + (i % 30) * 2, button: "middle", modifiers: ["middleButtonDown"] });
       await wait(16);
+      if (i === Math.floor(MOVES / 2)) cameraMoved = initialTransform !== null && (await sceneTransform()) !== initialTransform;
     }
     win.webContents.sendInputEvent({ type: "mouseUp", x: x0, y: y0, button: "middle", clickCount: 1 });
     for (let i = 0; i < WHEELS; i++) {
@@ -285,6 +289,7 @@ async function scenario(win) {
   const events = MOVES + WHEELS;
   report.pan = {
     events,
+    cameraMoved,
     domChanged: cameraBefore !== cameraAfter,
     commits: countsBefore && countsAfter ? countsAfter.commits - countsBefore.commits : null,
     componentRendersPerEvent: countsBefore && countsAfter ? r1((countsAfter.rendered - countsBefore.rendered) / events) : null,
@@ -295,6 +300,7 @@ async function scenario(win) {
       .filter(([, perEvent]) => perEvent > 0).sort((a, b) => b[1] - a[1]).slice(0, 8)) : null,
     rendererMsPerEvent: Object.fromEntries(Object.keys(timesAfter).map((key) => [key, Math.round((timesAfter[key] - timesBefore[key]) / events * 100) / 100]))
   };
+  if (!cameraMoved) report.errors.push("pan input did not move the actual workspace scene");
   await snapshot(win, "end");
   // Chromium keeps tiles rastered during a gesture in its resource pool for a few seconds after it ends;
   // this snapshot shows what navigation leaves behind once the canvas is still.
@@ -327,8 +333,9 @@ app.whenReady().then(() => {
     try { await scenario(win); } catch (error) { report.errors.push(`scenario: ${error.stack ?? error.message}`); }
     report.windowEnd = { visible: win.isVisible(), focused: win.isFocused() };
     report.done = true;
+    report.valid = report.errors.length === 0 && report.rendererErrors.length === 0;
     save();
-    setTimeout(() => app.exit(0), 8000);
+    setTimeout(() => { report.errors.push("forced shutdown after the quit deadline"); report.valid = false; save(); app.exit(1); }, 8000);
     app.quit();
   };
   void start();

@@ -21,6 +21,7 @@ import { cpus, release, totalmem, loadavg } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appSize, formatSize } from "./size.mjs";
+import { invalidateTrial, readTrial, reapTrial, successfulTrials } from "./trial.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const HERE = join(ROOT, "scripts", "bench");
@@ -58,9 +59,11 @@ function options(argv) {
  * versions/<version> like the native installer, so CanvasTTY reads its version from the path (HTTP hooks). */
 function stubBin(folder) {
   mkdirSync(join(folder, "versions"), { recursive: true });
+  const stub = join(folder, "fake-agent.mjs");
+  cpSync(join(HERE, "fake-agent.mjs"), stub);
   for (const provider of ["opencode", "claude"]) {
     const path = provider === "claude" ? join(folder, "versions", "2.1.281") : join(folder, provider);
-    writeFileSync(path, `#!/bin/sh\nBENCH_FAKE_PROVIDER=${provider} exec "${process.execPath}" "${join(HERE, "fake-agent.mjs")}" "$@"\n`);
+    writeFileSync(path, `#!/bin/sh\nBENCH_FAKE_PROVIDER=${provider} exec "${process.execPath}" "${stub}" "$@"\n`);
     chmodSync(path, 0o755);
   }
   symlinkSync(join(folder, "versions", "2.1.281"), join(folder, "claude"));
@@ -92,12 +95,12 @@ function run(command, args, env, timeoutMs) {
     child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4000); });
     const kill = () => { try { process.kill(-child.pid, "SIGKILL"); } catch {} };
     const timer = setTimeout(kill, timeoutMs);
-    child.on("error", reject);
-    child.on("close", (code) => {
+    child.on("error", (error) => { clearTimeout(timer); reject(error); });
+    child.on("close", (code, signal) => {
       clearTimeout(timer);
       kill(); // whatever the app left behind (shells, helpers) goes with its process group
-      if (code === 0) resolvePromise();
-      else reject(new Error(`${command} exited ${code}: ${stderr.slice(-1500)}`));
+      if (code === 0 && signal === null) resolvePromise();
+      else reject(new Error(`${command} exited code=${code}, signal=${signal}: ${stderr.slice(-1500)}`));
     });
   });
 }
@@ -114,6 +117,8 @@ async function appRun(mode, settings) {
   writeFileSync(join(home, ".zshrc"), "");
   appFolder(app);
   stubBin(bin);
+  const flood = join(base, "flood.mjs");
+  cpSync(join(ROOT, "scripts", "bench-runtime", "flood.mjs"), flood);
   writeFileSync(join(userData, "settings.json"), JSON.stringify({ settingsVersion: 21, locale: "en", sessionRestoreMode: "off" }));
   const out = join(base, "report.json");
   const env = {
@@ -122,7 +127,7 @@ async function appRun(mode, settings) {
     GROK_HOME: join(home, ".grok"), CODEX_HOME: join(home, ".codex"), CLAUDE_CONFIG_DIR: join(home, ".claude"),
     XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local/share"), XDG_STATE_HOME: join(home, ".local/state"),
     BENCH_MODE: mode, BENCH_ROOT: ROOT, BENCH_OUT: out, BENCH_USERDATA: userData, BENCH_WORK: work,
-    BENCH_NODE: process.execPath, BENCH_FLOOD: join(ROOT, "scripts", "bench-runtime", "flood.mjs"),
+    BENCH_NODE: process.execPath, BENCH_FLOOD: flood,
     BENCH_LADDER: settings.ladder, BENCH_IDLE_SECONDS: String(settings.idleSeconds), BENCH_LOAD_SECONDS: String(settings.loadSeconds),
     BENCH_KBPS: String(settings.kbps), BENCH_CHURN_PERIOD_MS: String(settings.churnPeriodMs), BENCH_SETTLE_MS: String(settings.settleMs),
     BENCH_SETTLED_MS: String(settings.settledMs),
@@ -130,33 +135,39 @@ async function appRun(mode, settings) {
     ...(settings.helpers === "auto" ? {} : { CANVASTTY_HELPERS: settings.helpers })
   };
   const started = Date.now();
+  let report;
   try {
     let exit = null;
     await run(electron, [app], env, 600_000).catch((error) => { exit = error; });
-    const report = existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null;
-    if (!report?.done) throw exit ?? new Error("the benchmark app wrote no report");
-    if (exit) report.exitAfterReport = exit.message.slice(0, 300);
-    if (report.window?.visible || report.window?.focused || report.windowEnd?.visible || report.windowEnd?.focused) {
-      throw new Error("the app window was visible or focused");
+    const ladder = settings.ladder.split(",").map(Number);
+    const labels = ["empty", ...ladder.map((n) => `n${n}`), "afterLoad", "end", "endSettled"];
+    if (mode !== "shell") labels.push(`n${ladder.at(-1)}+orchestrator`);
+    report = readTrial(out, { exitError: exit, requiredNumbers: [
+      ...["bootMs", "appReadyMs", "mainImportedMs", "windowCreatedMs", "firstLoadMs", "interactiveMs"].map((mark) => `startup.${mark}`),
+      ...labels.map((label) => `snapshots.${label}.total.rssMb`),
+      ...["idleEmpty", "idle60", "load", "panZoom"].map((label) => `cpu.${label}.seconds`),
+      "pan.events", "pan.commits", "pan.rendererMsPerEvent.task"
+    ] });
+    if (report.startup?.interactiveViaRaf !== true) {
+      invalidateTrial(report, "interactive readiness used the timer fallback, not an animation frame");
+    }
+    if (mode === "shell" && !(report.cpu?.load?.terminalDataToRendererMb > 0)) {
+      invalidateTrial(report, "the load delivered no terminal output to the renderer");
+    }
+    if (mode !== "shell") {
+      const entries = Array.isArray(report.agentLog) ? report.agentLog : [];
+      if (!entries.some((entry) => entry.turn !== undefined)) invalidateTrial(report, "the stub agents completed no workload turn");
+      for (const entry of entries) {
+        if (entry.error || entry.ok === false) invalidateTrial(report, `stub agent: ${entry.error ?? "MCP initialization failed"}`);
+      }
     }
     report.wallSeconds = Math.round((Date.now() - started) / 1000);
     report.load1 = loadavg()[0];
     return report;
   } finally {
-    reap(base);
-    rmSync(base, { recursive: true, force: true });
-  }
-}
-
-/** Kill anything the run left behind: helpers (their path is under the run folder), stubs and flood writers. */
-function reap(base) {
-  const rows = execFileSync("/bin/ps", ["-A", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).trim().split("\n");
-  for (const row of rows) {
-    const [, pid, command] = /^\s*(\d+)\s+(.*)$/u.exec(row) ?? [];
-    if (!pid || Number(pid) === process.pid) continue;
-    if (command.includes(base) || command.includes(join(HERE, "fake-agent.mjs")) || command.includes(join("bench-runtime", "flood.mjs"))) {
-      try { process.kill(Number(pid), "SIGKILL"); } catch {}
-    }
+    try { reapTrial([base]); }
+    catch (error) { if (report) invalidateTrial(report, `process cleanup: ${error.message}`); else throw error; }
+    finally { rmSync(base, { recursive: true, force: true }); }
   }
 }
 
@@ -207,6 +218,8 @@ function markdown(result) {
   for (const [mode, data] of Object.entries(result.modes)) {
     const m = data.median;
     lines.push(`\n### ${mode}\n`);
+    lines.push(`Valid trials: ${data.trials.valid}/${data.trials.total}; invalid trials remain in runs.`);
+    if (!m) { lines.push("No valid measurements."); continue; }
     lines.push(`Startup (ms from process start): ${JSON.stringify(m.startup)}\n`);
     const labels = Object.keys(m.snapshots ?? {});
     const kinds = [...new Set(labels.flatMap((label) => Object.keys(m.snapshots[label].kinds)))].sort();
@@ -223,7 +236,7 @@ function markdown(result) {
     row(["---", ...windows.map(() => "--:")]);
     for (const kind of cpuKinds) row([kind, ...windows.map((w) => m.cpu[w].percent[kind] ?? "–")]);
     row(["**total**", ...windows.map((w) => m.cpu[w].percent.total)]);
-    lines.push(`\nLoad: ${m.cpu?.load?.what ?? ""}${m.cpu?.load?.terminalDataToRendererMb !== undefined ? `, ${m.cpu.load.terminalDataToRendererMb} MB terminal data to the renderer` : ""}`);
+    lines.push(`\nLoad: ${m.cpu?.load?.what ?? ""}${m.cpu?.load?.terminalDataToRendererMb !== undefined ? `, ${m.cpu.load.terminalDataToRendererMb} Mi UTF-16 code units to the renderer` : ""}`);
     lines.push(`Pan/zoom: ${JSON.stringify(m.pan)}`);
     if (data.agent) lines.push(`Agents: ${JSON.stringify(data.agent)}`);
   }
@@ -246,24 +259,30 @@ async function main() {
       for (const mode of settings.modes) {
         process.stderr.write(`${mode} run ${i + 1}/${settings.runs}\n`);
         const report = await appRun(mode, settings);
-        if (report.errors.length) process.stderr.write(`  errors: ${JSON.stringify(report.errors).slice(0, 600)}\n`);
+        if (!report.valid) process.stderr.write(`  invalid trial: ${JSON.stringify(report.validationErrors)}\n`);
         (result.runs[mode] ??= []).push(report);
       }
     }
     for (const [mode, reports] of Object.entries(result.runs)) {
+      const valid = successfulTrials(reports);
       result.modes[mode] = {
-        median: medianOf(reports.map(({ startup, snapshots, cpu, pan }) => ({ startup, snapshots, cpu, pan }))),
-        agent: medianOf(reports.map((report) => agentSummary(report.agentLog)))
+        trials: { total: reports.length, valid: valid.length, invalid: reports.length - valid.length },
+        median: medianOf(valid.map(({ startup, snapshots, cpu, pan }) => ({ startup, snapshots, cpu, pan }))),
+        agent: medianOf(valid.map((report) => agentSummary(report.agentLog)))
       };
     }
   }
   if (settings.size) result.size = appSize(settings.size, ROOT);
   if (settings.json) {
     // Raw agent logs are large; keep their summaries.
-    for (const reports of Object.values(result.runs)) for (const report of reports) { report.agentSummary = agentSummary(report.agentLog); delete report.agentLog; }
+    for (const reports of Object.values(result.runs)) for (const report of reports) {
+      report.agentSummary = agentSummary(report.agentLog);
+      if (report.valid) delete report.agentLog;
+    }
     writeFileSync(settings.json, `${JSON.stringify(result, null, 1)}\n`);
   }
   process.stdout.write(`${JSON.stringify(result.machine)}\n${markdown(result)}\n`);
+  if (Object.values(result.runs).some((reports) => reports.some((report) => !report.valid))) process.exitCode = 1;
 }
 
 main().catch((error) => {

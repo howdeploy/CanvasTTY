@@ -70,6 +70,7 @@ async function run(mode) {
 const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 console.log(`${cards} cards, ${kbPerSecond} Ki UTF-16 units/s each for ${seconds} s, ${runs} interleaved runs (median); Node ${process.version} ${process.platform}/${process.arch}`);
 console.log(`CPU is the process total for all ${cards} cards, including final replay; this headless benchmark excludes DOM painting, WebGL and Electron IPC.`);
+console.log("ring-only is a diagnostic lower bound with intentionally incomplete replay, not a functionally equivalent optimization.");
 const results = { visible: [], "ring-only": [], whole: [] };
 for (let index = 0; index < runs; index++) {
   for (const mode of Object.keys(results)) results[mode].push(await run(mode));

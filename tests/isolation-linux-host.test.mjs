@@ -140,9 +140,20 @@ test("bubblewrap refuses a launch whose missing protected file it could not prot
 
 // The real layer, where the machine has a working bubblewrap (CI's Linux runner may): a fresh HOME, the agent tries
 // to create the protected file and to write its own state.
-const realBwrap = process.platform === "linux" && existsSync(BWRAP)
-  && spawnSync(BWRAP, ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "true"]).status === 0;
-test("bubblewrap (real): the agent cannot create the CLI's permission file but can write its own state", { skip: realBwrap ? false : "no working bubblewrap on this machine" }, async (t) => {
+const bwrapProbe = process.platform === "linux" && existsSync(BWRAP)
+  ? spawnSync(BWRAP, ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "true"], { encoding: "utf8", timeout: 10_000 })
+  : null;
+test("bubblewrap (real): the agent cannot create the CLI's permission file but can write its own state", async (t) => {
+  if (bwrapProbe?.status !== 0) {
+    t.diagnostic(`UNSUPPORTED: real Linux isolation was not exercised (${process.platform}; ${bwrapProbe?.error?.message ?? bwrapProbe?.stderr?.trim() ?? "bubblewrap unavailable"}).`);
+    assert.notEqual(process.env.CANVASTTY_REQUIRE_BWRAP, "1", "CI advertised working bubblewrap, so real enforcement must not be skipped");
+    if (process.platform === "linux" && process.env.GITHUB_ACTIONS === "true") {
+      console.log("::warning title=Linux isolation capability unsupported::The runner has no working bubblewrap; real isolation enforcement was not exercised. See the test diagnostic for the probe failure.");
+    }
+    t.skip("no working bubblewrap on this machine; enforcement unverified");
+    return;
+  }
+  t.diagnostic("SUPPORTED: the real bubblewrap enforcement probe is running.");
   const w = await freshHome(t);
   const script = [
     "echo 'approval_policy = \"never\"' > \"$HOME/.codex/config.toml\" 2>/dev/null && echo config-written || echo config-refused",

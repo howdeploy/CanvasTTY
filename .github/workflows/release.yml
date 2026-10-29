@@ -54,7 +54,23 @@ jobs:
         run: npm run audit:secrets
       - name: Build the native helper (the parity tests run it)
         run: npm run build:helpers -- --host
+      - name: Verify the tracked native catalog was already current
+        run: git diff --exit-code -- native/canvastty-helper/catalog.json
+      - name: Report Linux isolation capability without changing host security
+        if: runner.os == 'Linux'
+        id: linux-isolation
+        timeout-minutes: 1
+        run: |
+          if [ -x /usr/bin/bwrap ] && /usr/bin/bwrap --ro-bind / / --dev /dev --proc /proc true; then
+            echo "required=1" >> "$GITHUB_OUTPUT"
+            echo "Bubblewrap capability is available; the root suite must exercise real enforcement."
+          else
+            echo "required=0" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Linux isolation unsupported::This runner cannot exercise real bubblewrap enforcement. The root suite will report the capability as unsupported, not as an enforcement pass."
+          fi
       - name: Run tests
+        env:
+          CANVASTTY_REQUIRE_BWRAP: ${{ steps.linux-isolation.outputs.required }}
         run: npm test
       - name: Build installers
         if: runner.os != 'macOS'

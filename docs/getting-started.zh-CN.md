@@ -33,6 +33,13 @@ npm run dev
 
 启动模式有 **Auto**（默认）、**Manual**、**Accept edits**、**Plan** 与 **Bypass**，只在对应 CLI 支持时提供；它们外面的防护层见[安装与安全](installing-and-security.zh-CN.md#智能体防护层)。在服务商支持的情况下，**Bypass**（YOLO）会关闭其安全确认提示，但仍受已启用的基础防护与智能体隔离约束。对于 OpenCode，CanvasTTY 只在本次启动中添加 inline `permission: "allow"` override，并保留其余合并后的 OpenCode 配置；Hermes 接收原生 `--yolo`，Grok Build 接收原生 `--always-approve`，且都只作用于本次启动。CanvasTTY 会要求你为每个 CLI 确认一次，且不会交给子智能体；只在你愿意让智能体改动的目录中使用它。
 
+Kimi 2.4+ 提供四种启动选择：Auto（Ask When Needed，`--yolo`）、Manual、
+Plan（`--plan`）及 Bypass（Never Ask，`--auto`），没有独立的 Accept edits。
+另有 Cursor Read only（Ask）、显式审批、OMP 审批缓存、Claude/Grok/Codex
+No prompts，以及使用自身沙箱的 Devin Autonomous。
+仅能通过配置或插件使用的模式不会伪装成启动参数。
+参见[各智能体模式与验证范围](agent-launch-modes.md)，包括 Antigravity 的版本与沙箱要求。
+
 ## 终端动画背景
 
 在 **Settings → Appearance → Terminal backgrounds** 中选择背景。要在 OpenCode 中显示动画，必须选择其系统主题：在 OpenCode 中输入 `/theme` 并选择 **system**。该主题使用终端默认背景；普通 OpenCode 主题会在动画上绘制自己的不透明背景。参见 [OpenCode 主题文档](https://docs.opencode.ai/docs/themes/)。
@@ -49,7 +56,15 @@ npm run dev
 - 新配置中，在 canvas、unfocused widget 和不可聚焦 widget 上的普通 scroll 会沿两个轴移动 canvas，pinch 与 `Cmd/Ctrl + scroll` 会以指针为中心缩放。Focused input widget 在 Off 或 Key 未按下时保留普通 wheel/pinch；这也适用于 live Browser page，因此获得 focus 后页面会原生滚动。Unfocused Browser、On、激活的 Key binding、pinch 与 `Cmd/Ctrl + scroll` 会交给 canvas。Browser summary/placeholder 始终交给 canvas。**设置 → 控制 → Use scroll wheel to zoom** 可恢复普通 wheel zoom。新配置默认使用 Key，在 macOS 为 `Command`，其他平台为 `Ctrl`。独立的完整 canvas navigation override 默认使用 `Option`/`Alt`，允许单独 Command/Ctrl，还会接管 drag，并在按住时显示手形 cursor。
 - 终端滚动与画布导航的滚轮方向可以独立设置。Canvas inversion 同时作用于两个 pan 轴和普通 wheel zoom。
 - `Shift+Enter` 会发送带修饰符的 Enter，在兼容的智能体 prompt 中插入换行而不提交；普通 `Enter` 保持原有 PTY 行为。
-- 选中终端文字后，使用 `Ctrl+C`/`Ctrl+Shift+C` 或 `Cmd+C` 复制；使用 `Ctrl+Shift+V`、`Cmd+V` 或 `Shift+Insert` 粘贴。没有选中文字时，普通 `Ctrl+C` 仍是 PTY 中断。
+- 选中终端文字后，默认使用 Windows 的 `Ctrl+C`、Linux 的 `Ctrl+Shift+C` 或 macOS 的 `Cmd+C` 复制。默认粘贴快捷键为 Windows/Linux 的 `Ctrl+Shift+V` 和 macOS 的 `Cmd+V`，均可在设置中更改。没有选中文字时，普通 `Ctrl+C` 仍是 PTY 中断。
+
+### Codex 编辑器快捷键
+
+**设置 → 通用 → 键盘快捷键 → Codex** 中的发送和换行快捷键适用于新建或重启的 Codex 卡片，也支持普通 CLI。现有卡片保留启动时的绑定。CanvasTTY 将配置的物理组合（包括 Command/Meta 和非拉丁键盘布局）转换为发送或换行动作。终端搜索、复制、粘贴及重启优先于通用修饰 Enter 处理，因此释放的 Enter 组合可以分配给终端命令。
+
+普通 Codex 通过仅本次启动有效的 `-c tui.keymap` 参数，将发送固定为 Enter，并保留包括 Shift+Enter 在内的默认换行组合。本次启动中，这些参数优先于个人的发送和换行绑定；不会修改个人 `~/.codex/config.toml`。若没有 CanvasTTY 命令占用它们，原生 Enter 和 Shift+Enter 仍可使用；Codex 提示可能显示这些按键而非设置中的组合。配置已对照 Codex 0.163.0 源码核实，较旧版本尚未检查。这些设置不影响在普通 shell 卡片中手动启动的 Codex。
+
+普通 Codex 0.163.0 没有可配置的“全选草稿”动作；`Ctrl+A` 通常将光标移到行首。录制快捷键无法添加该动作，全选草稿需要兼容的内置前端。确认、语音输入等其他命令保留各自的 keymap。
 
 ## 浏览器控制与活动
 
@@ -85,7 +100,7 @@ npm run dev
 
 ### 服务商能启动，但限额不可用
 
-能用的 CLI 会话和可读取的订阅限额 API 是两项独立的能力。重新登录 CLI，然后查看 CanvasTTY 给出的具体原因。有些账户类型本身不提供订阅配额窗口；此时界面必须显示为不可用，而不是 `0%`。
+能用的 CLI 会话和可读取的订阅限额 API 是两项独立的能力。先查看 CanvasTTY 给出的原因；只有身份验证失败时才需要重新登录。即使 CLI 正常运行，Claude 的限额 API 也可能返回 HTTP 429。此时 CanvasTTY 会等待服务器指定的重试时间；如果服务器未提供有效时间，则等待五分钟，并将已有的上次读数标为过期。刷新 CLI 列表不会跳过等待。有些账户类型本身不提供订阅配额窗口；此时界面必须显示为不可用，而不是 `0%`。
 
 ### 终端已打开，却没有标记为“工作中”
 

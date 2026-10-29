@@ -402,12 +402,14 @@ export type CanvasTTYLaunchField =
   }
   | { key: string; label: string; kind: "text"; maxLength?: number; default?: string };
 
+export type CanvasTTYLaunchProfile = "normal" | "yolo" | "auto" | "acceptEdits" | "plan" | "ask" | "askCached" | "dontAsk" | "readOnly" | "autonomous";
+
 /** Params of the host request `canvastty.launch.prepare`: launches that chose this plugin, and with `policy` every agent launch. */
 export interface CanvasTTYLaunchContext {
   sessionId: string;
   provider: "terminal" | "codex" | "claude" | "qwen" | "kimi" | "opencode" | "hermes" | "grok" | "omp" | "pi" | "cursor" | "minimax" | "devin" | "antigravity";
-  /** "auto" only for agents with a native auto mode (Codex, Claude Code, Grok). */
-  profile: "normal" | "yolo" | "auto";
+  /** Supported profiles depend on the provider and whether CanvasTTY isolation is available. */
+  profile: CanvasTTYLaunchProfile;
   role: "agent" | "orchestrator" | "subagent";
   cwd: string;
   parentSessionId?: string;
@@ -496,13 +498,22 @@ export interface CanvasTTYServiceHostApi {
   "sessions.list"(params: { ownedOnly?: boolean }): { sessions: Array<CanvasTTYSessionSummary & { owned: boolean }> };
   /** Needs `sessions:launch`. An `agent` card through the normal launch pipeline; at most 16 per plugin. */
   "sessions.create"(params: {
-    provider: CanvasTTYProviderId; cwd: string; profile?: "normal" | "yolo" | "auto"; title?: string;
+    provider: CanvasTTYProviderId; cwd: string; profile?: CanvasTTYLaunchProfile; title?: string;
     launchOptions?: Record<string, Record<string, boolean | string>>;
     environment?: { pluginId: string; kind: string; options?: Record<string, boolean | string> };
   }): { sessionId: string };
   /** Needs `sessions:control`; only cards this plugin created. Enter is added unless `submit: false`. */
   /** Waits until a launch its plugins prepare has started; `sent` is false (and the text dropped) when it did not start. */
-  "sessions.send"(params: { sessionId: string; text: string; submit?: boolean }): { sessionId: string; sent: boolean };
+  "sessions.send"(params: { sessionId: string; text: string; submit?: boolean }): {
+    sessionId: string;
+    sent: boolean;
+    delivery?: {
+      stage: "not-written" | "pasted" | "submitted";
+      acceptance: "unconfirmed" | "confirmed";
+      evidence?: "hook" | "program-status" | "title";
+      reason?: string;
+    };
+  };
   /** Needs `sessions:control`; only cards this plugin created. Closes the card, keeps its environment data. */
   "sessions.stop"(params: { sessionId: string }): { sessionId: string; stopped: true };
   /** Needs `cards:decorate`. `null` removes this plugin's badge from the card. */

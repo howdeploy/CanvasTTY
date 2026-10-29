@@ -17,6 +17,7 @@ import { PluginSessions } from "../src/main/services/PluginSessions.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { AgentControlGateway } from "../src/main/services/agent-control/AgentControlGateway.ts";
 import { ScopedOrchestrationHandler } from "../src/main/services/agent-browser/OrchestrationTools.ts";
+import { echoPromptInput } from "./helpers/terminal.mjs";
 
 const at = { x: 0, y: 0 };
 const cwd = process.cwd();
@@ -36,15 +37,19 @@ function spawner(calls, readiness) {
     const exits = [];
     const call = { command, args, options, written: [], exit: (code) => exits.forEach((listener) => listener({ exitCode: code })) };
     calls.push(call);
-    return {
-      pid: 60_000 + calls.length, process: command, write(text) { call.written.push(text); }, resize() {}, kill() {}, pause() {}, resume() {},
+    const pty = {
+      pid: 60_000 + calls.length, process: command, write(text) { call.written.push(text); }, resize() {}, kill() { call.exit(0); }, pause() {}, resume() {},
+      emitData(text) { call.data(text); },
       onData(listener) {
         call.data = listener;
         if (command === "/resolved/codex" && readiness.auto) queueMicrotask(() => listener("\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n"));
+        if (command === "/resolved/claude") queueMicrotask(() => listener("\x1b[2J\x1b[H❯ "));
         return { dispose() {} };
       },
       onExit(listener) { exits.push(listener); return { dispose() {} }; }
     };
+    echoPromptInput(pty, command.split("/").at(-1), "\x1b[2J\x1b[HWorking…");
+    return pty;
   };
 }
 
@@ -110,7 +115,7 @@ test("spawn_agent with launchOptions and a prompt: the prompt reaches the PTY on
   const result = await spawned;
   assert.equal(result.sessionId, childId);
   const child = f.calls[1];
-  assert.deepEqual(child.written, ["\x1b[200~Fix the Button test\x1b[201~\r"], "exactly once, as one pasted task");
+  assert.deepEqual(child.written, ["\x1b[200~Fix the Button test\x1b[201~", "\r"], "exactly one paste followed by a separate submit");
 
   // A later restart of the same card gets nothing queued from the first launch.
   child.exit(0);
@@ -119,7 +124,7 @@ test("spawn_agent with launchOptions and a prompt: the prompt reaches the PTY on
   for (let i = 0; i < 50 && f.calls.length < 3; i++) await tick();
   assert.equal(f.calls.length, 3);
   assert.deepEqual(f.calls[2].written, []);
-  assert.deepEqual(child.written, ["\x1b[200~Fix the Button test\x1b[201~\r"]);
+  assert.deepEqual(child.written, ["\x1b[200~Fix the Button test\x1b[201~", "\r"]);
 });
 
 test("a launch policy alone (no launch options) also delays delivery; send_to_agent waits the same way", async (t) => {
@@ -134,11 +139,15 @@ test("a launch policy alone (no launch options) also delays delivery; send_to_ag
   assert.equal(policy.pluginId, "p.policy");
   assert.equal(policy.params.chosen, false);
   await spawned;
-  assert.deepEqual(f.calls[1].written, ["\x1b[200~Review the diff\x1b[201~\r"]);
+  assert.deepEqual(f.calls[1].written, ["\x1b[200~Review the diff\x1b[201~", "\r"]);
   assert.equal(await state(sent), "pending", "the unchanged composer cannot release another submitted task");
   f.calls[1].data("\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› Review the diff\r\n• Review complete.\r\n\r\n› \x1b[2mAsk a follow-up question\x1b[22m\r\n");
-  assert.deepEqual(await sent, { sessionId: childId, sent: true });
-  assert.deepEqual(f.calls[1].written, ["\x1b[200~Review the diff\x1b[201~\r", "\x1b[200~and the tests\x1b[201~\r"]);
+  const result = await sent;
+  assert.equal(result.sessionId, childId);
+  assert.equal(result.sent, true);
+  assert.equal(result.delivery.stage, "submitted");
+  assert.equal(result.delivery.acceptance, "unconfirmed");
+  assert.deepEqual(f.calls[1].written, ["\x1b[200~Review the diff\x1b[201~", "\r", "\x1b[200~and the tests\x1b[201~", "\r"]);
 });
 
 test("a refused launch is not a delivery: spawn_agent and send_to_agent fail with the reason and nothing is written later", async (t) => {
@@ -187,14 +196,21 @@ test("plugin sessions.send waits for the prepared launch and reports a refused o
   const sent = sessions.handle("p.owner", "svc", "sessions.send", { sessionId, text: "hello" }, permissions);
   assert.equal(await state(Promise.resolve(sent)), "pending");
   await f.answerNext(null);
-  assert.deepEqual(await sent, { sessionId, sent: true });
-  assert.deepEqual(f.calls[1].written, ["\x1b[200~hello\x1b[201~\r"]);
+  const delivered = await sent;
+  assert.equal(delivered.sessionId, sessionId);
+  assert.equal(delivered.sent, true);
+  assert.equal(delivered.delivery.stage, "submitted");
+  assert.equal(delivered.delivery.acceptance, "unconfirmed");
+  assert.deepEqual(f.calls[1].written, ["\x1b[200~hello\x1b[201~", "\r"]);
 
   const second = sessions.handle("p.owner", "svc", "sessions.create",
     { provider: "claude", cwd, launchOptions: { "p.accounts": { on: true } } }, permissions);
   const refused = sessions.handle("p.owner", "svc", "sessions.send", { sessionId: second.sessionId, text: "hello" }, permissions);
   await f.answerNext({ refuse: { reason: "no" } });
-  assert.deepEqual(await refused, { sessionId: second.sessionId, sent: false });
+  const rejected = await refused;
+  assert.equal(rejected.sessionId, second.sessionId);
+  assert.equal(rejected.sent, false);
+  assert.equal(rejected.delivery.stage, "not-written");
 });
 
 test("the control CLI says a starting session is not ready instead of claiming the terminal exited", localSocket, async (t) => {
@@ -233,7 +249,7 @@ test("a prompt queued during a prepared restart cannot use the previous Codex co
   assert.deepEqual(f.calls.at(-1).written, [], "a ready screen from the old process cannot release new input");
   f.calls.at(-1).data("\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
   await sent;
-  assert.deepEqual(f.calls.at(-1).written, ["\x1b[200~next task\x1b[201~\r"]);
+  assert.deepEqual(f.calls.at(-1).written, ["\x1b[200~next task\x1b[201~", "\r"]);
 });
 
 
@@ -250,12 +266,16 @@ test("plugin Codex sends wait beyond PTY creation and bracket multiline tasks an
   call.data("Press enter to confirm trust\r\n");
   assert.equal(await state(sending),"pending");assert.deepEqual(call.written,[]);
   call.data("\x1b[2J\x1b[H› \x1b[2mAsk Codex to do anything\x1b[22m\r\n");
-  assert.deepEqual(await sending,{sessionId,sent:true});
-  assert.deepEqual(call.written,[`\x1b[200~${text}\x1b[201~\r`]);
+  const submitted = await sending;
+  assert.equal(submitted.sessionId,sessionId);assert.equal(submitted.sent,true);
+  assert.equal(submitted.delivery.stage,"submitted");
+  assert.deepEqual(call.written,[`\x1b[200~${text}\x1b[201~`,"\r"]);
   const draft=sessions.handle("p.owner","svc","sessions.send",{sessionId,text:"draft",submit:false},permissions);
   assert.equal(await state(draft),"pending","a draft also waits for the previous submitted task's UI transition");
-  assert.deepEqual(call.written,[`\x1b[200~${text}\x1b[201~\r`]);
+  assert.deepEqual(call.written,[`\x1b[200~${text}\x1b[201~`,"\r"]);
   call.data("\x1b[2J\x1b[H› First line\r\n  Second line\r\n• Task complete.\r\n\r\n› \x1b[2mAsk a follow-up question\x1b[22m\r\n");
-  assert.deepEqual(await draft,{sessionId,sent:true});
+  const pasted = await draft;
+  assert.equal(pasted.sessionId,sessionId);assert.equal(pasted.sent,true);
+  assert.equal(pasted.delivery.stage,"pasted");
   assert.equal(call.written.at(-1),"\x1b[200~draft\x1b[201~");
 });

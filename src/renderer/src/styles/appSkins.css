@@ -781,14 +781,14 @@
 
 /* ==========================================================================
    9. Workspace Theme Backgrounds (CanvasTTY Pixel Themes)
-   Fixed viewport background for built-in pixel themes.
+   Background for the workspace box, outside the camera-transformed scene.
    ========================================================================== */
 
 .workspace[data-theme-background] {
   background-position: center center;
-  background-size: contain;
+  background-size: cover;
   background-repeat: no-repeat;
-  background-attachment: fixed;
+  background-attachment: scroll;
 }
 
 .workspace[data-theme-background]::before {

@@ -1001,6 +1001,10 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     if (!isMainRenderer(event, getMainWindow) || typeof id !== "string" || typeof visible !== "boolean") return;
     terminals.setVisible(id, visible);
   });
+  ipcMain.on(IPC.terminalOutputParsed, (event, id: unknown, outputOffset: unknown) => {
+    if (!isMainRenderer(event, getMainWindow) || typeof id !== "string" || typeof outputOffset !== "number") return;
+    terminals.acknowledgeOutput(id, outputOffset);
+  });
 
 }
 

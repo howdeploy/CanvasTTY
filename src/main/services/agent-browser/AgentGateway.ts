@@ -1,8 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import type { Server } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { BrowserActor, BrowserResult } from "../../../shared/contracts.ts";
 import { MAX_BRIDGE_PAYLOAD_BYTES } from "../../../agent-browser/tool-catalog.mjs";
 import {
@@ -31,10 +29,9 @@ import {
   type WindowsPipeHostTransportOptions
 } from "./WindowsPipeHostTransport.ts";
 import {
-  MAX_UNIX_SOCKET_PATH_BYTES,
+  createUnixEndpoint,
   closeServer,
   listenOnEndpoint,
-  makePrivateDirectory,
   removeEndpoint,
   tokenDigest,
   tokenMatches
@@ -217,7 +214,9 @@ export class AgentGateway {
     if (this.platform === "win32") return await this.startWindowsTransport();
 
     const generation = this.closeGeneration;
-    const { endpoint, ownedRuntimeDirectory } = await createEndpoint(
+    const { endpoint, ownedRuntimeDirectory } = await createUnixEndpoint(
+      `g-${randomBytes(2).toString("hex")}.sock`,
+      `ctty-${process.getuid?.() ?? "user"}-`,
       this.requestedRuntimeDirectory
     );
     if (generation !== this.closeGeneration) {
@@ -711,27 +710,4 @@ function clearLeaseSecrets(lease: CapabilityLease): void {
   lease.reconnectTokenDigest?.fill(0);
   lease.reconnectTokenDigest = null;
   lease.reconnectToken = null;
-}
-
-async function createEndpoint(
-  requestedRuntimeDirectory?: string
-): Promise<{ endpoint: string; ownedRuntimeDirectory: string | null }> {
-  const suffix = randomBytes(8).toString("hex");
-  if (requestedRuntimeDirectory) {
-    await makePrivateDirectory(requestedRuntimeDirectory, { recursive: true });
-    const endpoint = join(requestedRuntimeDirectory, `g-${randomBytes(2).toString("hex")}.sock`);
-    if (Buffer.byteLength(endpoint, "utf8") > MAX_UNIX_SOCKET_PATH_BYTES) {
-      throw new Error("Agent browser runtime directory is too long for a Unix domain socket.");
-    }
-    return { endpoint, ownedRuntimeDirectory: null };
-  }
-
-  let runtimeDirectory = join(tmpdir(), `ctty-${process.getuid?.() ?? "user"}-${suffix}`);
-  let endpoint = join(runtimeDirectory, "gateway.sock");
-  if (Buffer.byteLength(endpoint, "utf8") > MAX_UNIX_SOCKET_PATH_BYTES) {
-    runtimeDirectory = join("/tmp", `ctty-${process.getuid?.() ?? "user"}-${suffix}`);
-    endpoint = join(runtimeDirectory, "gateway.sock");
-  }
-  await makePrivateDirectory(runtimeDirectory);
-  return { endpoint, ownedRuntimeDirectory: runtimeDirectory };
 }

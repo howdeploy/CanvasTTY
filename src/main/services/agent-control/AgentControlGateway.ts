@@ -1,23 +1,24 @@
-import { terminalScreenText } from "../materials/sessionScreen.ts";
-import { codexComposerReady, codexContinuationIsEmpty, codexPlaceholderIsDim } from "../codexInput.ts";
+import { codexTerminalComposerReady } from "../codexInput.ts";
+import { codexPromptSubmit } from "../../../shared/codexKeyboard.ts";
+import type { InputDelivery } from "../TerminalManager.ts";
+import { claudeTerminalComposerReady, type PromptDeliveryReceipt } from "../promptDelivery.ts";
 import { kimiComposerReady } from "../kimiInput.ts";
 export { codexComposerReady } from "../codexInput.ts";
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { mkdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { lazyRequire } from "../../lazyRequire.ts";
 import { NdjsonLineReader } from "../../../agent-runtime/ndjson.mjs";
-import { MAX_UNIX_SOCKET_PATH_BYTES, closeServer, listenOnEndpoint, tokenDigest, tokenMatches } from "../gatewaySocket.ts";
+import { createUnixEndpoint, closeServer, listenOnEndpoint, tokenDigest, tokenMatches } from "../gatewaySocket.ts";
 import type { AgentProviderId, AppSettings, CreateSessionRequest, PixelSkinApertures, SessionMetadata, SessionSnapshot, TerminalBufferSnapshot } from "../../../shared/contracts.ts";
 import { IPC } from "../../../shared/contracts.ts";
 import type { RuntimeLifecycleSignal } from "../agent-runtime/RuntimeGateway.ts";
 import { WindowsPipeHostTransport, type AgentGatewaySocket } from "../agent-browser/WindowsPipeHostTransport.ts";
 import { CONTROL_PROVIDERS, controlCapabilities, isControlProvider } from "./controlCapabilities.ts";
-import { isLaunchProfile } from "../../../shared/autoMode.ts";
+import { isLaunchProfile, LAUNCH_PROFILES } from "../../../shared/autoMode.ts";
 import { LaunchRefusal } from "../launchRefusal.ts";
 import { MAX_PIXEL_SKIN_ARCHIVE_BYTES, type PixelSkinPackRegistry } from "../PixelSkinPackRegistry.ts";
 import type { SettingsStore } from "../SettingsStore.ts";
@@ -56,6 +57,10 @@ interface TerminalPort {
   listMetadata(): SessionMetadata[];
   readBuffer(id: string): TerminalBufferSnapshot;
   inputChecked(id: string, text: string): boolean;
+  deliverPrompt(id: string, text: string, submit?: boolean, signal?: AbortSignal,
+    options?: { bracketedPaste?: boolean; beforeSubmit?: () => boolean | void }): Promise<InputDelivery>;
+  codexUnstyledComposerAllowed?(id: string): boolean;
+  lastPromptDelivery?(id: string): PromptDeliveryReceipt | undefined;
   /** The launch still waits for its plugins: the card cannot take input yet. */
   launchPending?(id: string): boolean;
   /** The current OpenCode launch's native input view is up; not a composer/draft check. */
@@ -203,11 +208,8 @@ export class AgentControlGateway {
       }
       return endpoint;
     }
-    const directory = await mkdtemp(join(tmpdir(), "ctty-control-"));
-    this.socketDirectory = directory;
-    await chmod(directory, 0o700);
-    const endpoint = join(directory, "c.sock");
-    if (Buffer.byteLength(endpoint) > MAX_UNIX_SOCKET_PATH_BYTES) throw new Error("Agent control socket path is too long.");
+    const { endpoint, ownedRuntimeDirectory } = await createUnixEndpoint("c.sock", "ctty-control-");
+    this.socketDirectory = ownedRuntimeDirectory;
     const server = createServer((socket) => this.accept(socket));
     this.server = server;
     await listenOnEndpoint(server, endpoint, platform);
@@ -529,7 +531,7 @@ export class AgentControlGateway {
     if (request.method === "create") {
       fields(params, ["provider", "cwd", "title", "profile", "model", "effort"]);
       if (!isControlProvider(params.provider)) throw new ControlError("INVALID_PARAMS", `Unknown agent provider. Run the providers command to see which agents CanvasTTY can launch; provider must be one of: ${CONTROL_PROVIDERS.join(", ")}.`);
-      if (!isLaunchProfile(params.profile)) throw new ControlError("INVALID_PARAMS", "Specify an explicit launch profile: auto, normal, acceptEdits, plan or yolo.");
+      if (!isLaunchProfile(params.profile)) throw new ControlError("INVALID_PARAMS", `Specify an explicit launch profile: ${LAUNCH_PROFILES.join(", ")}.`);
       const provider = params.provider;
       const capabilities = controlCapabilities(provider);
       const requestedCwd = string(params.cwd, 4096, "cwd");
@@ -592,6 +594,7 @@ export class AgentControlGateway {
     if (!owned || owned.owner !== owner || !metadata) throw new ControlError("SESSION_NOT_FOUND", "No owned session has that ID.");
     if (metadata.startedAt !== owned.startedAt) throw new ControlError("STALE_SESSION", "Session restarted; its old control grant is no longer valid.");
     if (request.method === "status") return { session: this.redactMetadata(metadata), resultRevision: owned.resultRevision,
+      delivery: this.options.terminals.lastPromptDelivery?.(id) ?? null,
       turn: owned.turn ? { id: owned.turn.id, state: owned.turn.state } : null };
     if (request.method === "result") {
       const after = params.after === undefined ? 0 : params.after;
@@ -611,8 +614,9 @@ export class AgentControlGateway {
     }
     const capabilities = controlCapabilities(fresh.provider);
     const screen = viewport(owned.terminal, (text) => this.redact(text));
-    const composerReady = fresh.provider === "kimi" ? kimiComposerReady(owned.terminal) : capabilities.menus && codexComposerReady(
-      this.redact(terminalScreenText(owned.terminal, true)), codexPlaceholderIsDim(owned.terminal), codexContinuationIsEmpty(owned.terminal));
+    const composerReady = fresh.provider === "kimi" ? kimiComposerReady(owned.terminal)
+      : fresh.provider === "claude" ? claudeTerminalComposerReady(owned.terminal)
+        : capabilities.menus && codexTerminalComposerReady(owned.terminal, this.options.terminals.codexUnstyledComposerAllowed?.(id));
     if (request.method === "screen") return { sessionId: id, text: screen, revision: hash(screen), outputOffset: owned.outputOffset,
       interaction: capabilities.menus ? codexChoices(screen) : null, composerReady };
     if ((request.method === "choose" || request.method === "dismiss") && !capabilities.menus) {
@@ -662,14 +666,28 @@ export class AgentControlGateway {
       if (!["idle", "unavailable"].includes(fresh.status)) throw new ControlError("NOT_READY", "The session is not idle; inspect screen and wait for the current activity to finish.");
       if (capabilities.menus && !composerReady) throw new ControlError("NOT_READY", "Codex is not at an empty task composer; inspect screen and resolve startup or approvals without changing its sandbox.");
       if (fresh.provider === "kimi" && !composerReady) throw new ControlError("NOT_READY", "Kimi is not at a verified empty Kimi 2.x task composer; inspect screen and resolve startup or approvals. Nothing was written.");
+      if (fresh.provider === "claude" && !composerReady) throw new ControlError("NOT_READY", "Claude is not at an empty task composer; inspect screen and resolve startup or approvals. Nothing was written.");
       if (fresh.provider === "opencode" && this.options.terminals.startupReady?.(id) === false) throw new ControlError("NOT_READY", "OpenCode has not shown its startup input cursor; nothing was written. Inspect the card and wait for its input view.");
-      const previousTurn = owned.turn;
-      owned.turn = { id: request.id, state: "queued", sawWorking: false, nativeTurnId: null, interruptRequested: false, result: null };
-      if (!this.options.terminals.inputChecked(id, `\x1b[200~${text}\x1b[201~\r`)) {
-        owned.turn = previousTurn;
-        throw new ControlError("SESSION_EXITED", "The terminal no longer accepts input.");
+      if (fresh.provider === "codex" && codexPromptSubmit("\r", fresh.nativeEditor?.submit, fresh.nativeEditor?.submitSequence) === null) {
+        throw new ControlError("NOT_SUPPORTED", "The configured Codex submit shortcut cannot be encoded; nothing was written.");
       }
-      return { sessionId: id, turnId: request.id, resultRevisionBefore: owned.resultRevision, delivery: "written-to-pty" };
+      const previousTurn = owned.turn;
+      const resultRevisionBefore = owned.resultRevision;
+      const delivery = await this.options.terminals.deliverPrompt(id, text, true, undefined, {
+        bracketedPaste: true,
+        beforeSubmit: () => {
+          if (this.closed || this.sessions.get(id) !== owned || owned.owner !== owner
+            || this.options.terminals.listMetadata().find((session) => session.id === id)?.startedAt !== owned.startedAt) return false;
+          owned.turn = { id: request.id, state: "queued", sawWorking: false, nativeTurnId: null, interruptRequested: false, result: null };
+        }
+      });
+      if (!delivery.delivered) {
+        if (owned.turn?.id === request.id && !owned.turn.sawWorking) owned.turn = previousTurn;
+        throw new ControlError("NOT_READY", delivery.reason);
+      }
+      if (delivery.receipt?.stage !== "submitted" && owned.turn?.id === request.id && !owned.turn.sawWorking) owned.turn = previousTurn;
+      return { sessionId: id, turnId: owned.turn?.id === request.id ? request.id : null,
+        resultRevisionBefore, delivery: "written-to-pty", receipt: delivery.receipt };
     } finally { this.busy.delete(id); }
   }
 
@@ -677,7 +695,7 @@ export class AgentControlGateway {
   private async createSubagent(owner: string, parentSessionId: string, params: Record<string, unknown>): Promise<unknown> {
     fields(params, ["provider", "cwd", "title", "profile", "model", "effort"]);
     if (!isControlProvider(params.provider)) throw new ControlError("INVALID_PARAMS", `Unknown agent provider. Run the providers command to see which agents CanvasTTY can launch; provider must be one of: ${CONTROL_PROVIDERS.join(", ")}.`);
-    if (params.profile === "yolo") throw new ControlError("REFUSED", "YOLO (bypass) is never given to a subagent. Omit --profile to get this session's profile, or pass auto, normal, acceptEdits or plan.");
+    if (params.profile === "yolo") throw new ControlError("REFUSED", "YOLO (bypass) is never given to a subagent. Omit --profile to inherit this session's profile, or use a supported profile from providers.");
     if (!this.options.spawnSubagent) throw new ControlError("NOT_SUPPORTED", "This CanvasTTY cannot create subagents through the control endpoint; use the canvastty_agents spawn_agent tool.");
     if (!this.options.lifecycleEnabled()) throw new ControlError("LIFECYCLE_DISABLED", "Enable agent lifecycle hooks before creating controlled sessions.");
     // Subagents still starting hold their slot: concurrent creates cannot all pass this check and launch.

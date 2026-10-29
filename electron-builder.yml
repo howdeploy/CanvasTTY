@@ -1,5 +1,6 @@
 appId: io.github.howdeploy.canvastty
 productName: CanvasTTY
+electronVersion: 43.8.1
 
 directories:
   buildResources: build

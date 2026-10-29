@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {attachAsciiContextRecovery} from '../src/renderer/src/features/terminal/asciiContextRecovery.ts';
+test('lost background context pauses once and restores resources once without changing playback',()=>{
+ const canvas=new EventTarget();
+ const log=[];
+ const detach=attachAsciiContextRecovery(canvas,()=>log.push('pause'),()=>log.push('rebuild-and-resume'));
+ const lost=new Event('webglcontextlost',{cancelable:true});
+ canvas.dispatchEvent(lost);
+ canvas.dispatchEvent(new Event('webglcontextlost',{cancelable:true}));
+ assert.equal(lost.defaultPrevented,true,'allow the browser to restore this context');
+ assert.deepEqual(log,['pause']);
+ canvas.dispatchEvent(new Event('webglcontextrestored'));
+ canvas.dispatchEvent(new Event('webglcontextrestored'));
+ assert.deepEqual(log,['pause','rebuild-and-resume']);
+ canvas.dispatchEvent(new Event('webglcontextlost',{cancelable:true}));
+ canvas.dispatchEvent(new Event('webglcontextrestored'));
+ assert.equal(log.length,4,'repeated hide/resume does not accumulate handlers');
+ detach();
+ canvas.dispatchEvent(new Event('webglcontextlost',{cancelable:true}));
+ assert.equal(log.length,4);
+});

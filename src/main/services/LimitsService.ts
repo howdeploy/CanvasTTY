@@ -21,6 +21,7 @@ import { NdjsonLineReader } from "../../agent-runtime/ndjson.mjs";
 
 const CACHE_TTL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 15_000;
+const RATE_LIMIT_BACKOFF_MS = 5 * 60_000;
 // `codex app-server` holds about 55-60 MB while it runs. It is started by the
 // first Codex limits read and stopped after this long without one, so it is not
 // kept for the whole session when nothing reads limits (window hidden, no
@@ -95,6 +96,7 @@ export class LimitsService {
   private lastCodexConfiguration: string | null | undefined = undefined;
   private lastGoodCodex: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
   private lastGoodClaude: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
+  private claudeBackoff: { scope: string; retryAt: number } | null = null;
   private lastGoodKimi: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
   private lastGoodOpenCode: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
   private lastGoodGrok: Extract<ProviderLimitsSnapshot, { state: "available" }> | null = null;
@@ -288,12 +290,15 @@ export class LimitsService {
     if (this.providerClis.get("claude").state === "unavailable") {
       return unavailable("claude", "claude-usage-api", "cli-not-found", checkedAt);
     }
+    let accountScope: string | null = null;
     try {
-      let accountScope: string | null = null;
       const raw = await readClaudeUsage(this.clientVersion, {
         ...this.claudeOptions,
         onScope: (scope) => {
           accountScope = scope;
+          if (this.claudeBackoff?.scope === scope && this.claudeBackoff.retryAt > Date.now()) {
+            throw new LimitsAdapterError("rate-limited", this.claudeBackoff.retryAt);
+          }
         }
       });
       const windows = normalizeClaudeLimits(raw);
@@ -307,10 +312,16 @@ export class LimitsService {
         windows,
         accountScope
       };
+      this.claudeBackoff = null;
       this.lastGoodClaude = available;
       return available;
     } catch (error) {
       const reason = adapterReason(error);
+      if (reason === "rate-limited" && accountScope) {
+        this.claudeBackoff = { scope: accountScope,
+          retryAt: error instanceof LimitsAdapterError && error.retryAt !== undefined
+            ? error.retryAt : Date.now() + RATE_LIMIT_BACKOFF_MS };
+      }
       if (this.lastGoodClaude) {
         return {
           ...this.lastGoodClaude,
@@ -665,6 +676,14 @@ async function fetchUsageJson(
     });
     if (response.status === 401 || response.status === 403) {
       throw new LimitsAdapterError("not-authenticated");
+    }
+    if (response.status === 429) {
+      const now = Date.now();
+      const header = response.headers.get("retry-after");
+      const seconds = header === null ? NaN : Number(header);
+      const retryAt = Number.isFinite(seconds) ? now + seconds * 1_000 : Date.parse(header ?? "");
+      // Some usage responses say Retry-After: 0; avoid immediately repeating the throttled request.
+      throw new LimitsAdapterError("rate-limited", retryAt > now ? retryAt : now + RATE_LIMIT_BACKOFF_MS);
     }
     if (!response.ok) throw new LimitsAdapterError("protocol-error");
 
@@ -1090,10 +1109,12 @@ class CodexAppServerClient {
 
 class LimitsAdapterError extends Error {
   readonly reason: LimitUnavailableReason;
+  readonly retryAt?: number;
 
-  constructor(reason: LimitUnavailableReason) {
+  constructor(reason: LimitUnavailableReason, retryAt?: number) {
     super(reason);
     this.reason = reason;
+    this.retryAt = retryAt;
   }
 }
 

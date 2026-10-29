@@ -3,8 +3,7 @@ import { createServer as createHttpServer } from "node:http";
 import type { IncomingMessage, Server as HttpServer, ServerResponse } from "node:http";
 import { createServer } from "node:net";
 import type { AddressInfo, Server } from "node:net";
-import { tmpdir } from "node:os";
-import { join, posix, win32 } from "node:path";
+import { posix, win32 } from "node:path";
 import { AGENT_PROVIDERS, type ProviderId } from "../../../shared/contracts.ts";
 import {
   CLAUDE_HTTP_HOOK,
@@ -25,10 +24,9 @@ import {
   type WindowsPipeHostTransportOptions
 } from "../agent-browser/WindowsPipeHostTransport.ts";
 import {
-  MAX_UNIX_SOCKET_PATH_BYTES,
+  createUnixEndpoint,
   closeServer,
   listenOnEndpoint,
-  makePrivateDirectory,
   removeEndpoint,
   tokenDigest,
   tokenMatches
@@ -237,7 +235,11 @@ export class RuntimeGateway {
       }
     }
 
-    const created = await createEndpoint(this.requestedRuntimeDirectory);
+    const created = await createUnixEndpoint(
+      `r-${randomBytes(2).toString("hex")}.sock`,
+      `ctty-runtime-${process.getuid?.() ?? "user"}-`,
+      this.requestedRuntimeDirectory
+    );
     const server = createServer((socket) => this.accept(socket));
     this.server = server;
     this.endpoint = created.endpoint;
@@ -902,22 +904,4 @@ function isTurnStart(event: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-async function createEndpoint(requestedRuntimeDirectory?: string): Promise<{
-  endpoint: string;
-  ownedRuntimeDirectory: string | null;
-}> {
-  const suffix = randomBytes(8).toString("hex");
-  const runtimeDirectory = requestedRuntimeDirectory
-    ?? join(tmpdir(), `ctty-runtime-${process.getuid?.() ?? "user"}-${suffix}`);
-  await makePrivateDirectory(runtimeDirectory, { recursive: true });
-  const endpoint = join(runtimeDirectory, `r-${randomBytes(2).toString("hex")}.sock`);
-  if (Buffer.byteLength(endpoint, "utf8") > MAX_UNIX_SOCKET_PATH_BYTES) {
-    throw new Error("Agent runtime directory is too long for a Unix domain socket.");
-  }
-  return {
-    endpoint,
-    ownedRuntimeDirectory: requestedRuntimeDirectory ? null : runtimeDirectory
-  };
 }

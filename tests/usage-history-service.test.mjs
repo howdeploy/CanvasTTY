@@ -563,10 +563,14 @@ test("the real collector's cursors survive a reload of the history file unchange
       type: "assistant", timestamp: new Date(now - 3_600_000).toISOString(), sessionId: "session-a",
       message: { id: "message-a", usage: { input_tokens: 10, output_tokens: 2 } }
     })}\n`);
+    const restoredStates = [];
     const open = () => new UsageHistoryService({
       directory: join(directory, "data"),
       limits: noLimits(),
-      createCollector: (state) => new LocalUsageCollector(home, state, {}),
+      createCollector: (state) => {
+        restoredStates.push(structuredClone(state));
+        return new LocalUsageCollector(home, state, {});
+      },
       now: () => now + 3_600_000
     });
     const first = open();
@@ -574,11 +578,14 @@ test("the real collector's cursors survive a reload of the history file unchange
     await first.collect();
     const saved = JSON.parse(await readFile(join(directory, "data", FILE), "utf8"));
     assert.equal(Object.keys(saved.collector.files).length, 1);
+    restoredStates.length = 0;
     const reopened = open();
     await reopened.load();
     await reopened.collect();
+    assert.equal(restoredStates.length, 1, "the restored collector is constructed once");
+    assert.deepEqual(restoredStates[0], saved.collector, "saved cursors reach the collector unchanged, before it can rebuild them");
     const again = JSON.parse(await readFile(join(directory, "data", FILE), "utf8"));
-    assert.deepEqual(again.collector, { ...saved.collector, files: again.collector.files }, "no collector field is lost");
+    assert.deepEqual(again.collector, saved.collector, "an unchanged source preserves the full cursor values on disk");
     assert.deepEqual(Object.keys(again.collector.files), Object.keys(saved.collector.files), "cursors are kept, not dropped as invalid");
     assert.equal(reopened.get().coverage.some((line) => /invalid|dropped/i.test(line)), false);
   });

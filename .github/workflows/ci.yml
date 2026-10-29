@@ -24,6 +24,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Set up Node.js for the mascot player contract
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
       - name: Install mascot pipeline dependencies in a virtual environment
         run: |
           python3 -m venv .mascot-venv
@@ -32,6 +36,8 @@ jobs:
         run: .mascot-venv/bin/python -B assets/mascot-pipeline/tests/smoke_pipeline.py
       - name: Verify placement against bundled accepted artwork
         run: .mascot-venv/bin/python -B assets/mascot-pipeline/tests/placement_regression.py
+      - name: Verify mascot player transitions and stale selection handling
+        run: node assets/mascot-pipeline/tests/player-behavior.cjs
 
   verify:
     runs-on: ubuntu-latest
@@ -54,14 +60,31 @@ jobs:
         run: npm run audit:secrets
       - name: Build the native helper (the parity tests run it)
         run: npm run build:helpers -- --host
+      - name: Verify the tracked native catalog was already current
+        run: git diff --exit-code -- native/canvastty-helper/catalog.json
       - name: Vet the native helper for every release target
         working-directory: native/canvastty-helper
         run: |
           for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64; do
             GOOS="${target%/*}" GOARCH="${target#*/}" go vet ./...
           done
+      - name: Report Linux isolation capability without changing host security
+        id: linux-isolation
+        timeout-minutes: 1
+        run: |
+          if [ -x /usr/bin/bwrap ] && /usr/bin/bwrap --ro-bind / / --dev /dev --proc /proc true; then
+            echo "required=1" >> "$GITHUB_OUTPUT"
+            echo "Bubblewrap capability is available; the root suite must exercise real enforcement."
+          else
+            echo "required=0" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Linux isolation unsupported::This runner cannot exercise real bubblewrap enforcement. The root suite will report the capability as unsupported, not as an enforcement pass."
+          fi
       - name: Run tests
+        env:
+          CANVASTTY_REQUIRE_BWRAP: ${{ steps.linux-isolation.outputs.required }}
         run: npm test
+      - name: Verify benchmark trial validity and cleanup contracts without Electron
+        run: node --test scripts/bench/trial.test.mjs
       - name: Test Even G2 companion
         run: npm run test:even
       - name: Type-check
@@ -110,6 +133,8 @@ jobs:
         run: npm run build:helpers -- --host
         env:
           CANVASTTY_REQUIRE_NATIVE_HELPERS: "1"
+      - name: Verify the tracked native catalog was already current
+        run: git diff --exit-code -- native/canvastty-helper/catalog.json
       - name: Test the native helper's named-pipe transport
         working-directory: native/canvastty-helper
         run: go test ./...
@@ -140,6 +165,12 @@ jobs:
           cache: false
       - name: Install locked dependencies
         run: npm ci
+      - name: Build the native helper for macOS parity tests
+        run: npm run build:helpers -- --host
+      - name: Verify the tracked native catalog was already current
+        run: git diff --exit-code -- native/canvastty-helper/catalog.json
+      - name: Run root tests on macOS, including real seatbelt probes
+        run: npm test
       - name: Build the packaged macOS application
         # Public test key keeps fork PR packaging independent of release-owner configuration.
         # Only release.yml uses the owner's key to produce publishable artifacts.

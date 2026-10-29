@@ -876,10 +876,8 @@ button { border: 0; }
 .role-note { margin-top: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; border-radius: 12px; color: var(--text-dark); background: rgba(255,255,255,.34); font-size: 12px; line-height: 1.35; }
 .role-note--off { box-shadow: inset 0 0 0 2px rgba(227,97,94,.35); }
 .role-note__enable { align-self: flex-start; padding: 8px 14px; border-radius: 10px; color: white; background: var(--surface); font-weight: 800; cursor: pointer; }
-.profile-row { margin-top: 13px; display: flex; gap: 9px; }
-.profile-row > .profile-button { min-width: 0; flex: 1; }
-.profile-row > .launch-submit { flex: 0 0 96px; }
-.profile-row > .launch-submit:only-child { flex: 1; }
+.profile-row { margin-top: 13px; display: grid; gap: 9px; }
+.profile-row > .profile-button { min-width: 0; padding: 10px 6px; overflow-wrap: normal; word-break: normal; }
 .profile-button, .launch-submit { min-height: 70px; border-radius: 16px; cursor: pointer; font-weight: 900; transition: transform .15s ease, background .15s ease; }
 .profile-button { color: var(--text-dark); background: rgba(255,255,255,.38); }
 .profile-button:hover, .launch-submit:hover { transform: translateY(-2px); }

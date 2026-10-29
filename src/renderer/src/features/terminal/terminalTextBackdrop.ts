@@ -1,10 +1,11 @@
-import type { IBufferLine, Terminal } from "@xterm/xterm";
+import type { IBufferCell, IBufferLine, Terminal } from "@xterm/xterm";
 
 export function terminalTextRuns(line: IBufferLine | undefined, columns: number): [number, number][] {
   const runs: [number, number][] = [];
   let start = -1, end = 0;
+  let cell: IBufferCell | undefined;
   for (let column = 0; line && column < columns; column++) {
-    const cell = line.getCell(column);
+    cell = line.getCell(column, cell);
     // ANSI highlights already provide their own background and contrast.
     if (cell?.getChars().trim() && cell.isBgDefault() && !cell.isInverse()) {
       if (start < 0) start = column;

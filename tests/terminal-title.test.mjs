@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { transform } from "esbuild";
+import { createElement } from "react";
+import { findAll, tick } from "./helpers/fake-react.mjs";
 import { compactPath, renameCommit, visibleTerminalTitle } from "../src/renderer/src/features/terminal/terminalTitle.ts";
 
 const CWD_LABEL = "~/projects/canvas";
@@ -116,6 +120,77 @@ function card(session) {
   };
 }
 
+// Execute the production ref/commit/key handlers and JSX, not a second implementation of rename.
+// This source harness does not mount React or emulate DOM ref reconciliation.
+async function rendererCard(initial) {
+  const source = await readFile(new URL("../src/renderer/src/features/terminal/TerminalCard.tsx", import.meta.url), "utf8");
+  const select = (pattern) => { const match = source.match(pattern); assert.ok(match, String(pattern)); return match[0]; };
+  const bind = select(/^  const bindRenameInput = useCallback\([\s\S]*?^  \}, \[\]\);/m);
+  const commit = select(/^  const commitRename = async \([\s\S]*?^  \};/m);
+  const cancel = select(/^  const cancelRename = \([\s\S]*?^  \};/m);
+  const titles = select(/^  const titleSource = [\s\S]*?^  visibleTitleRef\.current = visibleTitle;/m);
+  const header = select(/^      <header[\s\S]*?^      <\/header>/m);
+  const summary = select(/^      <button\s+className="terminal-card__summary"[\s\S]*?^      <\/button>/m);
+  let session = { id: "rename-card", cwd: "/home/runner/projects/canvas", provider: "codex", status: "idle", ...initial };
+  let oscTitle = null;
+  let editing = false;
+  let ended = 0;
+  const renames = [];
+  const field = { value: "", focus() {}, select() {} };
+  const visibleTitleRef = { current: "" };
+  const noop = () => {};
+  const scope = {
+    createElement, visibleTerminalTitle, compactPath, renameCommit, visibleTitleRef,
+    useRef: () => visibleTitleRef, useCallback: (callback) => callback,
+    renameInput: { current: null }, renameInitial: { current: "" }, renameClosed: { current: false }, renameInFlight: { current: false },
+    terminalRef: { current: { blur: noop } }, session,
+    onRename: async (id, title) => { assert.equal(id, "rename-card"); renames.push(title); session = { ...session, title, titleCustomized: true }; },
+    onRenameEnd: () => { ended++; editing = false; },
+    startDrag: noop, drag: noop, endDrag: noop, cancelDrag: noop, activateSummary: noop, activateSummaryDouble: noop,
+    ProviderIcon: "provider-icon", pixelControls: null, terminalActions: null, pluginDecorations: { badges: [] },
+    t: (_locale, key) => key, locale: "en", focusActivation: "click", sessionStatusLabel: () => "idle"
+  };
+  const { code } = await transform(`${bind}\n${commit}\n${cancel}\nfunction renderTitle(session, oscTitle, renaming) {
+    ${titles}
+    return { header: (${header}), summary: (${summary}) };
+  }`, { loader: "tsx", target: "esnext", jsxFactory: "createElement" });
+  const actual = new Function(...Object.keys(scope), `${code}\nreturn { bindRenameInput, renderTitle };`)(...Object.values(scope));
+  const render = () => {
+    const tree = actual.renderTitle(session, oscTitle, editing);
+    if (editing) {
+      const fieldNode = findAll(tree.header, (node) => node.type === "input" && node.props["data-terminal-rename"] === "true")[0];
+      assert.equal(fieldNode.props.value, undefined, "rerenders must not control the user's rename draft");
+      assert.equal(fieldNode.props.defaultValue, undefined, "the ref, not a rerendered default, seeds the field");
+    }
+    return tree;
+  };
+  const input = () => findAll(render().header, (node) => node.type === "input" && node.props["data-terminal-rename"] === "true")[0];
+  render();
+  return {
+    renames, render,
+    get ended() { return ended; },
+    reportOsc(title) { oscTitle = title; render(); },
+    startRename() { editing = true; input().props.ref(field); return field.value; },
+    type(value) { field.value = value; },
+    fieldValue: () => field.value,
+    async commit() {
+      const node = input();
+      node.props.onKeyDown({ key: "Enter", stopPropagation: noop, preventDefault: noop });
+      await tick();
+      node.props.onBlur();
+      await tick();
+    },
+    cancel() {
+      const node = input();
+      node.props.onKeyDown({ key: "Escape", stopPropagation: noop, preventDefault: noop });
+      node.props.onBlur();
+    },
+    header: () => findAll(render().header, (node) => node.type === "strong")[0].props.children,
+    summary: () => findAll(render().summary, (node) => node.type === "strong")[0].props.children,
+    session: () => session
+  };
+}
+
 test("scenario: differing stored/OSC titles - rename starts from the OSC title and Enter without edits sends nothing", () => {
   const c = card({ title: "Codex · canvas", titleCustomized: false });
   c.reportOsc("vim README.md");
@@ -142,35 +217,39 @@ test("scenario: missing OSC title - rename starts from the cwd label, editing it
   assert.equal(c.startRename(), "api server");
 });
 
-test("scenario: OSC title changes while the rename field is open - the field keeps the user's text and unchanged stays unchanged", () => {
-  const c = card({ title: "Codex · canvas", titleCustomized: false });
+test("scenario: OSC title changes while the rename field is open - the field keeps the user's text and unchanged stays unchanged", async () => {
+  const c = await rendererCard({ title: "Codex · canvas", titleCustomized: false });
   c.reportOsc("vim README.md");
   assert.equal(c.startRename(), "vim README.md");
   c.reportOsc("bash");
   assert.equal(c.fieldValue(), "vim README.md", "field is not overwritten by the new OSC title");
-  assert.equal(c.commit().kind, "unchanged", "compared against the seeded snapshot, not the newer OSC title");
+  await c.commit();
   assert.deepEqual(c.renames, []);
+  assert.equal(c.ended, 1, "trailing blur must not commit a second time");
   assert.equal(c.header(), "bash", "after closing, the header follows the shell again");
 });
 
-test("scenario: OSC title changes while the user is typing - the typed text is what gets committed", () => {
-  const c = card({ title: "Codex · canvas", titleCustomized: false });
+test("scenario: OSC title changes while the user is typing - the typed text is what gets committed", async () => {
+  const c = await rendererCard({ title: "Codex · canvas", titleCustomized: false });
   c.reportOsc("vim README.md");
   c.startRename();
   c.type("notes");
   c.reportOsc("bash");
   assert.equal(c.fieldValue(), "notes");
-  assert.deepEqual(c.commit(), { kind: "rename", title: "notes" });
+  await c.commit();
+  assert.deepEqual(c.renames, ["notes"]);
+  assert.equal(c.ended, 1);
   assert.equal(c.header(), "notes");
 });
 
-test("scenario: Escape restores the visible title without any rename", () => {
-  const c = card({ title: "Codex · canvas", titleCustomized: false });
+test("scenario: Escape restores the visible title without any rename", async () => {
+  const c = await rendererCard({ title: "Codex · canvas", titleCustomized: false });
   c.reportOsc("vim README.md");
   c.startRename();
   c.type("half-typed");
   c.cancel();
   assert.deepEqual(c.renames, []);
+  assert.equal(c.ended, 1);
   assert.equal(c.header(), "vim README.md");
   assert.equal(c.session().titleCustomized, false);
 });
@@ -185,19 +264,20 @@ test("scenario: custom name - visible, seeded and summary text are all the custo
   assert.deepEqual(c.renames, []);
 });
 
-test("scenario: restore after restart - stored title/titleCustomized plus a new OSC title follow the same rules", () => {
+test("scenario: restore after restart - stored title/titleCustomized plus a new OSC title follow the same rules", async () => {
   // Restored uncustomized session: cwd label until the shell reports a title.
-  const restored = card({ title: "Codex · canvas", titleCustomized: false });
+  const restored = await rendererCard({ title: "Codex · canvas", titleCustomized: false });
   assert.equal(restored.header(), CWD_LABEL);
   assert.equal(restored.summary(), CWD_LABEL);
   restored.reportOsc("zsh");
   assert.equal(restored.header(), "zsh");
   assert.equal(restored.startRename(), "zsh");
-  assert.equal(restored.commit().kind, "unchanged");
+  await restored.commit();
+  assert.deepEqual(restored.renames, []);
   assert.equal(restored.session().titleCustomized, false);
 
   // Restored customized session: the stored name wins even once the shell reports.
-  const restoredCustom = card({ title: "prod db", titleCustomized: true });
+  const restoredCustom = await rendererCard({ title: "prod db", titleCustomized: true });
   assert.equal(restoredCustom.header(), "prod db");
   restoredCustom.reportOsc("zsh");
   assert.equal(restoredCustom.header(), "prod db");
@@ -205,16 +285,21 @@ test("scenario: restore after restart - stored title/titleCustomized plus a new 
   assert.equal(restoredCustom.startRename(), "prod db");
 });
 
-test("scenario: summary view shows the same name as the expanded header in every state", () => {
-  const c = card({ title: "Codex · canvas", titleCustomized: false });
-  assert.equal(c.summary(), c.header());
-  c.reportOsc("vim README.md");
-  assert.equal(c.summary(), c.header());
+test("actual header and summary JSX use the visible title and accessible summary name", async () => {
+  const c = await rendererCard({ title: "Codex · canvas", titleCustomized: false });
+  for (const [osc, expected] of [[null, CWD_LABEL], ["vim README.md", "vim README.md"], ["", CWD_LABEL]]) {
+    c.reportOsc(osc);
+    assert.equal(c.header(), expected);
+    assert.equal(c.summary(), expected);
+    assert.equal(c.render().summary.props.title, expected);
+    assert.equal(c.render().summary.props["aria-label"], expected);
+  }
   c.startRename();
-  c.type("renamed");
-  c.commit();
-  assert.equal(c.summary(), "renamed");
-  assert.equal(c.summary(), c.header());
+  c.type("My shell");
+  await c.commit();
+  c.reportOsc("new OSC title");
+  assert.equal(c.header(), "My shell");
+  assert.equal(c.summary(), "My shell");
 });
 
 test("the working-folder label shortens a home folder on Linux, macOS and Windows", () => {

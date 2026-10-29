@@ -219,3 +219,104 @@ index 7b4b9e1..557fdae 100644
  }
  #endif
  
+diff --git a/node_modules/node-pty/src/unixTerminal.ts b/node_modules/node-pty/src/unixTerminal.ts
+--- a/node_modules/node-pty/src/unixTerminal.ts
++++ b/node_modules/node-pty/src/unixTerminal.ts
+@@ -86,15 +86,29 @@
+         // From macOS High Sierra 10.13.2 sometimes the socket never gets
+         // closed. A timeout is applied here to avoid the terminal never being
+         // destroyed when this occurs.
+-        let timeout: NodeJS.Timeout | null = setTimeout(() => {
+-          timeout = null;
+-          // Destroying the socket now will cause the close event to fire
+-          this._socket.destroy();
+-        }, DESTROY_SOCKET_TIMEOUT_MS);
++        let timeout: NodeJS.Timeout | null = null;
++        const scheduleDestroy = (): void => {
++          // Parser backpressure must retain the unread tail after the producer exits.
++          if (this._socket.isPaused()) {
++            this._socket.once('resume', scheduleDestroy);
++            return;
++          }
++          timeout = setTimeout(() => {
++            timeout = null;
++            if (this._socket.isPaused()) {
++              this._socket.once('resume', scheduleDestroy);
++              return;
++            }
++            // A resumed socket still has the original bounded close fallback.
++            this._socket.destroy();
++          }, DESTROY_SOCKET_TIMEOUT_MS);
++        };
++        scheduleDestroy();
+         this.once('close', () => {
+           if (timeout !== null) {
+             clearTimeout(timeout);
+           }
++          this._socket.removeListener('resume', scheduleDestroy);
+           this.emit('exit', code, signal);
+         });
+         return;
+@@ -247,6 +261,8 @@
+   }
+ 
+   public kill(signal?: string): void {
++    // Release a paused stream even when its producer is already dead (ESRCH).
++    try { if (this._socket.isPaused()) this._socket.resume(); } catch (e) { /* already closed */ }
+     try {
+       process.kill(this.pid, signal || 'SIGHUP');
+     } catch (e) { /* swallow */ }
+diff --git a/node_modules/node-pty/lib/unixTerminal.js b/node_modules/node-pty/lib/unixTerminal.js
+--- a/node_modules/node-pty/lib/unixTerminal.js
++++ b/node_modules/node-pty/lib/unixTerminal.js
+@@ -73,15 +73,29 @@
+                 // From macOS High Sierra 10.13.2 sometimes the socket never gets
+                 // closed. A timeout is applied here to avoid the terminal never being
+                 // destroyed when this occurs.
+-                var timeout_1 = setTimeout(function () {
+-                    timeout_1 = null;
+-                    // Destroying the socket now will cause the close event to fire
+-                    _this._socket.destroy();
+-                }, DESTROY_SOCKET_TIMEOUT_MS);
++                var timeout_1 = null;
++                var scheduleDestroy_1 = function () {
++                    // Parser backpressure must retain the unread tail after the producer exits.
++                    if (_this._socket.isPaused()) {
++                        _this._socket.once('resume', scheduleDestroy_1);
++                        return;
++                    }
++                    timeout_1 = setTimeout(function () {
++                        timeout_1 = null;
++                        if (_this._socket.isPaused()) {
++                            _this._socket.once('resume', scheduleDestroy_1);
++                            return;
++                        }
++                        // A resumed socket still has the original bounded close fallback.
++                        _this._socket.destroy();
++                    }, DESTROY_SOCKET_TIMEOUT_MS);
++                };
++                scheduleDestroy_1();
+                 _this.once('close', function () {
+                     if (timeout_1 !== null) {
+                         clearTimeout(timeout_1);
+                     }
++                    _this._socket.removeListener('resume', scheduleDestroy_1);
+                     _this.emit('exit', code, signal);
+                 });
+                 return;
+@@ -224,6 +238,8 @@
+         this._writeStream.dispose();
+     };
+     UnixTerminal.prototype.kill = function (signal) {
++        // Release a paused stream even when its producer is already dead (ESRCH).
++        try { if (this._socket.isPaused()) this._socket.resume(); } catch (e) { /* already closed */ }
+         try {
+             process.kill(this.pid, signal || 'SIGHUP');
+         }
+@@ -343,4 +359,4 @@
+     };
+     return CustomWriteStream;
+ }());
+-//# sourceMappingURL=unixTerminal.js.map
+\ No newline at end of file
++//# sourceMappingURL=unixTerminal.js.map

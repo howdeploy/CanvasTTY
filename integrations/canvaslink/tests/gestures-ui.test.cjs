@@ -17,13 +17,9 @@ async function fixture(t,options={}) {
 }
 test('fit/mode/reset preserve instrumentation, labels, icons and publish view state',async t=>{
  const {page}=await fixture(t);
- await page.evaluate(()=>{
-  for(const [button,id,label]of [['fit','zoom-label','По размеру'],['mode','mode-label','Касание']]){
-   if(!document.getElementById(id))document.getElementById(button).innerHTML='<svg aria-hidden="true"></svg><span id="'+id+'">'+label+'</span>';
-  }
-  if(!document.getElementById('reset-view')){const b=document.createElement('button');b.id='reset-view';b.textContent='По размеру';document.querySelector('#controls').append(b);}
-  if(!document.getElementById('gesture-hint')){const p=document.createElement('p');p.id='gesture-hint';document.querySelector('#controls').append(p);}
- });
+ for(const selector of ['#fit #zoom-label','#mode #mode-label','#reset-view','#gesture-hint']){
+  assert.equal(await page.locator(selector).count(),1,`production markup must contain ${selector}`);
+ }
  await clear(page);await menu(page,'fit');
  const fit=await page.evaluate(()=>({matrix:getComputedStyle(document.getElementById('video')).transform,label:document.getElementById('zoom-label').textContent,view:__viewEvents.at(-1)}));
  assert.match(fit.matrix,/matrix\(2, 0, 0, 2,/);assert.match(fit.label,/200|2/);

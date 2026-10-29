@@ -8,11 +8,12 @@
 //   node scripts/bench-runtime.mjs [--runs 3] [--terminals 8] [--kbps 1024] [--flood-seconds 20]
 //                                  [--micro-only | --app-only | --pan-only] [--json report.json]
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir, cpus, totalmem, release } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { invalidateTrial, readTrial, reapTrial, successfulTrials } from "./bench/trial.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HERE = join(ROOT, "scripts", "bench-runtime");
@@ -55,17 +56,25 @@ function isolatedEnvironment(extra = {}) {
 
 function run(command, args, env, timeoutMs) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-    child.on("error", reject);
-    child.on("close", (code) => {
+    const kill = () => {
+      if (!child.pid) return;
+      try {
+        if (process.platform === "win32") child.kill("SIGKILL");
+        else process.kill(-child.pid, "SIGKILL");
+      } catch { /* The owned process group may already have exited. */ }
+    };
+    const timer = setTimeout(kill, timeoutMs);
+    child.on("error", (error) => { clearTimeout(timer); reject(error); });
+    child.on("close", (code, signal) => {
       clearTimeout(timer);
-      if (code === 0) resolvePromise(stdout);
-      else reject(new Error(`${command} exited ${code}: ${stderr.slice(-2000)}`));
+      kill();
+      if (code === 0 && signal === null) resolvePromise(stdout);
+      else reject(new Error(`${command} exited code=${code}, signal=${signal}: ${stderr.slice(-2000)}`));
     });
   });
 }
@@ -74,7 +83,14 @@ async function microRun() {
   const { home, env } = isolatedEnvironment();
   try {
     const stdout = await run(process.execPath, ["--experimental-strip-types", "--no-warnings", join(HERE, "micro.mjs"), ROOT], env, 300_000);
-    return JSON.parse(stdout.trim().split("\n").at(-1));
+    const measurements = JSON.parse(stdout.trim().split("\n").at(-1));
+    if (!measurements || typeof measurements !== "object" || Array.isArray(measurements)) throw new Error("the micro benchmark wrote no measurement object");
+    for (const field of ["orchestratorToolCallMs", "observeAgentMs", "listAgentsMs", "evenG2FeedMs", "kimiFirstLaunchBlockMs"]) {
+      if (!Number.isFinite(measurements[field])) throw new Error(`missing or invalid micro measurement: ${field}`);
+    }
+    return { ...measurements, valid: true };
+  } catch (error) {
+    return { valid: false, validationErrors: [error.message] };
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -84,25 +100,37 @@ async function appRun(settings) {
   const electron = createRequire(import.meta.url)("electron");
   const userData = mkdtempSync(join(TEMP, "ctb-u-"));
   const work = mkdtempSync(join(TEMP, "ctb-w-"));
+  const flood = join(work, "flood.mjs");
+  cpSync(join(HERE, "flood.mjs"), flood);
   const out = join(userData, "..", `${userData.split("/").at(-1)}-report.json`);
   writeFileSync(join(userData, "settings.json"), JSON.stringify({ settingsVersion: 21, locale: "en", sessionRestoreMode: "off" }));
   const { home, env } = isolatedEnvironment({
     BENCH_ROOT: ROOT, BENCH_OUT: out, BENCH_USERDATA: userData, BENCH_WORK: work,
-    BENCH_NODE: process.execPath, BENCH_FLOOD: join(HERE, "flood.mjs"), BENCH_KBPS: String(settings.kbps),
+    BENCH_NODE: process.execPath, BENCH_FLOOD: flood, BENCH_KBPS: String(settings.kbps),
     BENCH_TERMINALS: String(settings.terminals), BENCH_FLOOD_SECONDS: String(settings.floodSeconds),
     BENCH_PAN_ONLY: settings.panOnly ? "1" : "0"
   });
+  let report;
   try {
     let exit = null;
     await run(electron, [join(HERE, "app")], env, 240_000 + settings.floodSeconds * 1000).catch((error) => { exit = error; });
-    const report = existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null;
-    // A crash after the report was complete (while quitting) is recorded, not fatal.
-    if (!report?.done) throw exit ?? new Error("the benchmark app wrote no report");
-    if (exit) report.exitAfterReport = exit.message.slice(0, 300);
-    if (report.window?.visible || report.window?.focused) throw new Error("the app window was visible or focused");
+    report = readTrial(out, { exitError: exit, requiredNumbers: [
+      "readyAfterMs", "scenarios.pan.moves", "scenarios.pan.commits", "scenarios.pan.rendererMsPerMove.task",
+      ...(!settings.panOnly ? ["idle", "terminals", "flood", "after"].map((name) => `scenarios.${name}.rssMb.total`) : [])
+    ] });
+    if (!settings.panOnly && settings.terminals > 0 && !(report.scenarios?.flood?.terminalDataToRendererMb > 0)) {
+      invalidateTrial(report, "the flood delivered no terminal output to the renderer");
+    }
     return report;
   } finally {
-    for (const path of [userData, work, home, out]) rmSync(path, { recursive: true, force: true });
+    try {
+      if (process.platform !== "win32") reapTrial([userData, work, home]);
+    } catch (error) {
+      if (report) invalidateTrial(report, `process cleanup: ${error.message}`);
+      else throw error;
+    } finally {
+      for (const path of [userData, work, home, out]) rmSync(path, { recursive: true, force: true });
+    }
   }
 }
 
@@ -153,7 +181,7 @@ function table(result) {
     if (!s) continue;
     lines.push(`${name.padEnd(10)} RSS total ${s.rssMb.total} MB (electron ${s.rssMb.electron}, main ${s.rssMb.main}, renderer ${s.rssMb.renderer}, gpu ${s.rssMb.gpu}, pty ${s.rssMb.pty}) peak ${s.peakRssMb} MB | CPU main ${s.cpu.main}% renderer ${s.cpu.renderer}% gpu ${s.cpu.gpu}% utility ${s.cpu.utility}%`);
   }
-  if (scenarios.flood?.terminalDataToRendererMb !== undefined) lines.push(`flood      terminal:data to renderer ${scenarios.flood.terminalDataToRendererMb} MB`);
+  if (scenarios.flood?.terminalDataToRendererMb !== undefined) lines.push(`flood      terminal:data to renderer ${scenarios.flood.terminalDataToRendererMb} Mi UTF-16 code units`);
   if (scenarios.pan) lines.push(`pan        ${JSON.stringify(scenarios.pan)}`);
   if (result.micro) lines.push(`micro      ${JSON.stringify(result.micro)}`);
   if (result.bundle) lines.push(`bundle     ${JSON.stringify(result.bundle)}`);
@@ -169,20 +197,26 @@ async function main() {
   for (let i = 0; i < settings.runs; i++) {
     if (settings.micro) {
       process.stderr.write(`micro run ${i + 1}/${settings.runs}\n`);
-      result.runs.micro.push(await microRun());
+      const report = await microRun();
+      if (!report.valid) process.stderr.write(`  invalid trial: ${JSON.stringify(report.validationErrors)}\n`);
+      result.runs.micro.push(report);
     }
     if (settings.app) {
       process.stderr.write(`app run ${i + 1}/${settings.runs}\n`);
       const report = await appRun(settings);
-      if (report.errors.length || report.rendererErrors.length) process.stderr.write(`  errors: ${JSON.stringify([...report.errors, ...report.rendererErrors])}\n`);
+      if (!report.valid) process.stderr.write(`  invalid trial: ${JSON.stringify(report.validationErrors)}\n`);
       result.runs.app.push(report);
     }
   }
-  if (settings.micro) result.micro = medianOf(result.runs.micro);
-  if (settings.app) result.app = { scenarios: medianOf(result.runs.app.map((report) => report.scenarios)) };
+  result.trials = Object.fromEntries(Object.entries(result.runs).map(([kind, reports]) => [kind, {
+    total: reports.length, valid: successfulTrials(reports).length, invalid: reports.filter((report) => !report.valid).length
+  }]));
+  if (settings.micro) result.micro = medianOf(successfulTrials(result.runs.micro).map(({ valid, ...measurements }) => measurements)) ?? null;
+  if (settings.app) result.app = { scenarios: medianOf(successfulTrials(result.runs.app).map((report) => report.scenarios)) ?? null };
   result.bundle = bundle();
   if (settings.json) writeFileSync(settings.json, `${JSON.stringify(result, null, 1)}\n`);
-  process.stdout.write(`${JSON.stringify(result.machine)}\n${table(result)}\n`);
+  process.stdout.write(`${JSON.stringify(result.machine)}\nTrials: ${JSON.stringify(result.trials)}\n${table(result)}\n`);
+  if (Object.values(result.trials).some((counts) => counts.invalid > 0)) process.exitCode = 1;
 }
 
 main().catch((error) => {

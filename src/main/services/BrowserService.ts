@@ -158,6 +158,7 @@ export interface BrowserEngineHost {
 
 export class BrowserService {
   readonly core: BrowserCore;
+  private readonly downloadListener = (event: Electron.Event, item: DownloadItem, contents: WebContents): void => this.onDownload(event, item, contents);
   private readonly getOwner: () => BrowserWindow | null;
   private readonly now: () => number;
   private readonly canvasNavigationInput: CanvasNavigationInputController | null;
@@ -440,6 +441,12 @@ export class BrowserService {
       this.browserSession.unregisterPreloadScript(this.browserPagePreloadId);
       this.browserPagePreloadId = null;
     }
+    if (this.browserSession) {
+      this.browserSession.removeListener("will-download", this.downloadListener);
+      this.browserSession.setPermissionCheckHandler(() => false);
+      this.browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+      this.browserSession.setDevicePermissionHandler(() => false);
+    }
     this.hideClipView();
     this.destroyPresenceWindow();
     for (const waiter of this.downloadWaiters) {
@@ -587,6 +594,9 @@ export class BrowserService {
     this.visible = true;
     for (const [id, tab] of this.tabs) {
       if (tab.sleeping || !tab.view.webContents.isDestroyed()) continue;
+      // Keep the crashed tab's identity and latest URL until reload can replace its WebContents.
+      // BrowserCore also calls ensureRuntime before dispatching reload, so recovery must survive it.
+      if (tab.status === "crashed") continue;
       this.automation.unregister(id);
       this.tabs.delete(id);
     }
@@ -865,6 +875,7 @@ export class BrowserService {
       this.destroyTab(tab);
       tab = this.createRuntimeTab(tabId, url, nextRevision);
       void this.loadTab(tab, url);
+      this.syncViews();
     } else {
       tab.status = "loading";
       tab.loading = true;
@@ -1104,7 +1115,7 @@ export class BrowserService {
       callback(this.policy.permission(permission, contents.getURL()));
     });
     browserSession.setDevicePermissionHandler(() => false);
-    browserSession.on("will-download", (event, item, contents) => this.onDownload(event, item, contents));
+    browserSession.on("will-download", this.downloadListener);
   }
 
   private onDownload(
@@ -1313,6 +1324,11 @@ export class BrowserService {
       return;
     }
     this.observeOwner(owner);
+    if (!owner.isVisible() || owner.isMinimized()) {
+      this.hideClipView();
+      this.syncPresenceOverlay(null);
+      return;
+    }
     const content = owner.getContentBounds();
     const visibleRectangle = clipBrowserViewportBounds(this.viewport, content);
     const left = visibleRectangle?.x ?? 0;
@@ -1571,6 +1587,11 @@ export class BrowserService {
     owner.on("maximize", sync);
     owner.on("unmaximize", sync);
     owner.on("show", sync);
+    owner.on("minimize", () => {
+      this.canvasGestures.endSequence(false);
+      sync();
+    });
+    owner.on("restore", sync);
     owner.on("hide", () => {
       this.canvasGestures.endSequence(false);
       sync();

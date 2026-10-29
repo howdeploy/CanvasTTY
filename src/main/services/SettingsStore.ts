@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isHomeMediaPath } from "./homeMedia.ts";
@@ -125,6 +126,7 @@ export class SettingsStore {
   private value: AppSettings;
   private hasPersistedLegacyWheelCapture = false;
   private writeQueue = Promise.resolve();
+  private persistenceError: Error | null = null;
   private availableProviders: ReadonlySet<AgentProviderId>;
 
   constructor(userDataPath: string, systemLocale: string, platform: string = process.platform, availability?: AgentCliAvailability) {
@@ -137,9 +139,14 @@ export class SettingsStore {
   }
 
   async load(): Promise<AppSettings> {
+    let sourceRead = false;
     try {
       const raw = await readFile(this.filePath, "utf8");
       const candidate: unknown = JSON.parse(raw);
+      if ((!candidate || typeof candidate !== "object" || Array.isArray(candidate))) {
+        throw new SyntaxError("CanvasTTY settings root must be an object.");
+      }
+      sourceRead = true;
       const source = candidate && typeof candidate === "object" ? candidate as Record<string, unknown> : {};
       const persistedLauncherProviders = Array.isArray(source.homeLauncherProviders)
         ? source.homeLauncherProviders
@@ -148,6 +155,10 @@ export class SettingsStore {
         ? source.homeLimitProviders
         : null;
       const persistedVersion = typeof source.settingsVersion === "number" ? source.settingsVersion : 0;
+      const futureVersion = persistedVersion > SETTINGS_VERSION;
+      this.persistenceError = futureVersion
+        ? new Error(`CanvasTTY settings version ${persistedVersion} is newer than supported version ${SETTINGS_VERSION}; the original settings are preserved.`)
+        : null;
       const needsGrokLauncherMigration = persistedVersion < GROK_LAUNCHER_SETTINGS_VERSION
         && persistedLauncherProviders !== null
         && !persistedLauncherProviders.includes("grok");
@@ -168,6 +179,8 @@ export class SettingsStore {
         || !("keyboardPreset" in source)
         || (source.keyboardPreset === "linux"
           && (source.shortcuts as Partial<ShortcutBindings> | undefined)?.terminalCopy === "Ctrl+C")
+        || (source.keyboardPreset === "windows"
+          && (source.shortcuts as Partial<ShortcutBindings> | undefined)?.terminalCopy === "Ctrl+Shift+C")
         || !("canvasNavigationOverride" in source)
         || !("canvasWheelOverride" in source)
         || !("canvasWheelCaptureMode" in source)
@@ -260,10 +273,25 @@ export class SettingsStore {
       const availabilityChanged = providerSelectionsChanged(normalized, this.value);
       if (!this.value.persistCanvasRegions) this.value.canvasRegions = [];
       if (!this.value.persistStickyNotes) this.value.stickyNotes = [];
-      if (needsMigration || availabilityChanged) await this.queuePersist();
+      if (!futureVersion && (needsMigration || availabilityChanged)) await this.queuePersist();
     } catch (error) {
       if (isMissingFile(error)) {
+        this.persistenceError = null;
         await this.queuePersist();
+      } else if (!sourceRead) {
+        // Defaults may be used in memory, but never replace a source we could not read.
+        // A malformed file can be replaced only after its exact contents are kept aside.
+        this.persistenceError = new Error("CanvasTTY settings could not be loaded; the original settings are preserved.", { cause: error });
+        if (error instanceof SyntaxError) {
+          try {
+            await rename(this.filePath, `${this.filePath}.corrupt-${randomUUID()}`);
+            this.persistenceError = null;
+          } catch (backupError) {
+            this.persistenceError = new Error("CanvasTTY corrupt settings could not be preserved; writing is disabled.", { cause: backupError });
+          }
+          if (!this.persistenceError) await this.queuePersist();
+        }
+        console.warn("CanvasTTY settings could not be loaded; defaults are used.", error);
       } else {
         console.warn("CanvasTTY settings could not be loaded; defaults are used.", error);
       }
@@ -330,6 +358,7 @@ export class SettingsStore {
     value: AppSettings = this.value,
     hasPersistedLegacyWheelCapture = this.hasPersistedLegacyWheelCapture
   ): Promise<void> {
+    if (this.persistenceError) return Promise.reject(this.persistenceError);
     const persistedValue: Partial<AppSettings> & {
       settingsVersion: number;
       zoomOverApplications?: boolean;
@@ -422,7 +451,7 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     snapToGrid: true,
     copyOnSelect: false,
     terminalLinkOpenMode: "ask",
-    invertTerminalWheel: true,
+    invertTerminalWheel: false,
     invertCanvasWheel: false,
     edgePan: false,
     edgePanSpeed: "normal",
@@ -545,11 +574,13 @@ export function normalizeSettings(
       (provider): provider is AgentProviderId => AGENT_PROVIDER_SET.has(provider as AgentProviderId)
     )
     : fallback.acknowledgedDangerousProfiles;
-  // Only the named Linux preset inherits the corrected copy key; Custom keeps its saved binding.
+  // Correct named platform defaults; Custom keeps its saved binding.
   const shortcuts = normalizeShortcuts(
     source.keyboardPreset === "linux" && source.shortcuts?.terminalCopy === "Ctrl+C"
       ? { ...source.shortcuts, terminalCopy: "Ctrl+Shift+C" }
-      : source.shortcuts,
+      : source.keyboardPreset === "windows" && source.shortcuts?.terminalCopy === "Ctrl+Shift+C"
+        ? { ...source.shortcuts, terminalCopy: "Ctrl+C" }
+        : source.shortcuts,
     fallback.shortcuts
   );
   const navigationOverrideCandidate = source.canvasNavigationOverride === undefined
@@ -716,10 +747,10 @@ export function normalizeSettings(
       : fallback.terminalLinkOpenMode,
     invertTerminalWheel: typeof source.invertTerminalWheel === "boolean"
       ? source.invertTerminalWheel
-      : fallback.invertTerminalWheel,
+      : fallback.invertTerminalWheel ?? false,
     invertCanvasWheel: typeof source.invertCanvasWheel === "boolean"
       ? source.invertCanvasWheel
-      : fallback.invertCanvasWheel,
+      : fallback.invertCanvasWheel ?? false,
     edgePan: typeof source.edgePan === "boolean" ? source.edgePan : fallback.edgePan,
     edgePanSpeed: EDGE_PAN_SPEEDS.has(source.edgePanSpeed as EdgePanSpeed)
       ? source.edgePanSpeed as EdgePanSpeed

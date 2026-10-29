@@ -3,6 +3,7 @@ import { orchestrationBridgeError } from "./orchestration-protocol.ts";
 import type { AgentProviderId, ProviderId, SessionRole } from "../../../shared/contracts.ts";
 import { launchEffortProblem, launchModelProblem } from "../../../shared/launchModel.ts";
 import { PromptNotDeliveredError, type AgentControlService, type SpawnAgentRequest } from "../AgentControlService.ts";
+import type { PromptDeliveryReceipt } from "../promptDelivery.ts";
 import { LaunchRefusal } from "../launchRefusal.ts";
 import type { PluginAgentTools } from "../PluginAgentTools.ts";
 import {
@@ -169,10 +170,12 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       }
       throw canceledError();
     }
+    const delivery = this.control.delivery(created.id);
     return {
       sessionId: created.id,
       provider: created.provider,
       status: created.status,
+      ...(delivery ? { delivery } : {}),
       title: created.title,
       profile: created.profile,
       ...(profile.inherited ? { profileInherited: true } : {}),
@@ -183,8 +186,9 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
 
   private async send(orchestratorId: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     this.requireOwned(orchestratorId, args.sessionId as string);
+    let delivery: PromptDeliveryReceipt | undefined;
     try {
-      await this.control.send(
+      delivery = await this.control.send(
         args.sessionId as string,
         args.prompt as string,
         args.submit === undefined ? true : Boolean(args.submit),
@@ -196,7 +200,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     }
     if (signal?.aborted) throw canceledError();
     // Transport receipt only; an unavailable lifecycle hook cannot acknowledge native acceptance.
-    return { sessionId: args.sessionId as string, sent: true };
+    return { sessionId: args.sessionId as string, sent: true, ...(delivery ? { delivery } : {}) };
   }
 
   private observe(orchestratorId: string, args: Record<string, unknown>): Record<string, unknown> {

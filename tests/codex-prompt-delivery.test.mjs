@@ -3,7 +3,7 @@ import test from "node:test";
 import { codexComposerReady, codexPromptInput } from "../src/main/services/codexInput.ts";
 import { AgentControlService } from "../src/main/services/AgentControlService.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
-import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
+import { availableRegistry, echoPromptInput, fakeSpawner } from "./helpers/terminal.mjs";
 
 const READY = "\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n";
 const KIMI_READY = "\x1b[2J\x1b[HKimi Code 2.4.0\r\n╭──────────────────────╮\r\n│ >                    │\r\n╰──────────────────────╯\r\n\x1b[3;6H";
@@ -15,13 +15,10 @@ function fixture(t, autoReady = true) {
   const terminals = new TerminalManager(() => {}, availableRegistry(), undefined, undefined, true,
     (...args) => {
       const process = spawn(...args);
-      const ready = args[0].endsWith("/kimi") ? KIMI_READY : READY;
+      const provider = args[0].split("/").at(-1);
+      const ready = provider === "kimi" ? KIMI_READY : provider === "claude" ? "\x1b[2J\x1b[H❯ " : READY;
+      echoPromptInput(process, provider, ready);
       if (autoReady) {
-        const write = process.write;
-        process.write = (data) => {
-          write(data);
-          if (data.endsWith("\r")) queueMicrotask(() => process.emitData(ready));
-        };
         queueMicrotask(() => process.emitData(ready));
       }
       return process;
@@ -35,7 +32,7 @@ test("Codex spawn sends the initial multiline prompt as an explicit paste follow
   const f = fixture(t);
   const prompt = "Прочитай структуру проекта.\nНичего не изменяй.";
   await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan", initialPrompt: prompt });
-  assert.deepEqual(f.writes, [`\x1b[200~${prompt}\x1b[201~\r`]);
+  assert.deepEqual(f.writes, [`\x1b[200~${prompt}\x1b[201~`, "\r"]);
 });
 
 test("Codex follow-up submits after paste but submit=false only pastes", async (t) => {
@@ -43,7 +40,7 @@ test("Codex follow-up submits after paste but submit=false only pastes", async (
   const child = await f.control.spawn({ parentSessionId: f.parent.id, provider: "codex", cwd: process.cwd(), profile: "plan" });
   await f.control.send(child.id, "Первая строка\nВторая строка");
   await f.control.send(child.id, "Только вставить", false);
-  assert.deepEqual(f.writes, ["\x1b[200~Первая строка\nВторая строка\x1b[201~\r", "\x1b[200~Только вставить\x1b[201~"]);
+  assert.deepEqual(f.writes, ["\x1b[200~Первая строка\nВторая строка\x1b[201~", "\r", "\x1b[200~Только вставить\x1b[201~"]);
 });
 
 test("other providers retain their existing delivery bytes", async (t) => {
@@ -60,7 +57,7 @@ for (const provider of ["claude", "kimi"]) {
     const child = await f.control.spawn({ parentSessionId: f.parent.id, provider, cwd: process.cwd(), profile: "normal", initialPrompt: "first\nline" });
     await f.control.send(child.id, "next\nline");
     await f.control.send(child.id, "draft", false);
-    assert.deepEqual(f.writes, ["\x1b[200~first\nline\x1b[201~\r", "\x1b[200~next\nline\x1b[201~\r", "\x1b[200~draft\x1b[201~"]);
+    assert.deepEqual(f.writes, ["\x1b[200~first\nline\x1b[201~", "\r", "\x1b[200~next\nline\x1b[201~", "\r", "\x1b[200~draft\x1b[201~"]);
   });
 }
 
@@ -71,7 +68,7 @@ test("a newly spawned Codex receives no prompt before its task composer is ready
   assert.deepEqual(f.writes, [], "a running PTY is not a ready Codex composer");
   f.calls.at(-1).process.emitData(READY);
   await result;
-  assert.deepEqual(f.writes, ["\x1b[200~DIAGNOSTIC_OK\x1b[201~\r"]);
+  assert.deepEqual(f.writes, ["\x1b[200~DIAGNOSTIC_OK\x1b[201~", "\r"]);
 });
 
 test("a restarted Codex cannot become ready from the previous launch's screen", async (t) => {
@@ -87,7 +84,7 @@ test("a restarted Codex cannot become ready from the previous launch's screen", 
   assert.deepEqual(f.writes, [], "old scrollback is not readiness for the new process");
   f.calls.at(-1).process.emitData(READY);
   await sent;
-  assert.deepEqual(f.writes, ["\x1b[200~second\x1b[201~\r"]);
+  assert.deepEqual(f.writes, ["\x1b[200~second\x1b[201~", "\r"]);
 });
 
 test("startup readiness times out without writing any input", async (t) => {
@@ -255,7 +252,7 @@ test("every submitted task rechecks the active composer; later drafts and menus 
     f.calls.at(-1).process.emitData("\x1b[2J\x1b[H"+text+"\r\n");
     const result = await f.terminals.deliverInput(child.id,"second\r",30,undefined,true);
     assert.equal(result.delivered,false);
-    assert.equal(f.writes.length,1,"a completed earlier turn is no proof of current readiness");
+    assert.equal(f.writes.length,2,"a completed earlier turn is no proof of current readiness");
     f.calls.at(-1).process.emitData(READY);
     assert.equal((await f.terminals.deliverInput(child.id,"second\r",1000,undefined,true)).delivered,true);
   }

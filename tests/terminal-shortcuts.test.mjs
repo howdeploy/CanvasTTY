@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { keyboardPresetShortcuts } from "../src/shared/contracts.ts";
 import {
   CODEX_SELECT_ALL_SEQUENCE,
   SHIFT_ENTER_SEQUENCE,
@@ -64,6 +65,25 @@ test("copies a terminal selection with platform copy shortcuts", () => {
   assert.equal(shouldCopyTerminalSelection({ ...keydown, ctrlKey: true, shiftKey: true, key: "C" }, true), true);
   assert.equal(shouldCopyTerminalSelection({ ...keydown, ctrlKey: true, shiftKey: true, key: "С" }, true), true);
   assert.equal(shouldCopyTerminalSelection({ ...keydown, metaKey: true }, true), true);
+});
+
+test("configured platform copy bindings work with selection in English and Russian layouts", () => {
+  for (const [preset, binding, modifiers] of [
+    ["windows", "Ctrl+C", { ctrlKey: true }],
+    ["linux", "Ctrl+Shift+C", { ctrlKey: true, shiftKey: true }],
+    ["macos", "Meta+C", { metaKey: true }]
+  ]) {
+    const bindings = keyboardPresetShortcuts(preset);
+    assert.equal(bindings.terminalCopy, binding);
+    for (const key of ["c", "с"]) {
+      const event = { ...keydown, ...modifiers, key };
+      assert.equal(shouldCopyTerminalSelection(event, true, bindings), true, preset);
+      assert.equal(shouldCopyTerminalSelection(event, false, bindings), false, preset);
+      assert.equal(shouldCopyTerminalSelection({ ...event, type: "keyup" }, true, bindings), false, preset);
+      assert.equal(shouldCopyTerminalSelection({ ...event, altKey: true }, true, bindings), false, preset);
+    }
+  }
+  assert.equal(shouldCopyTerminalSelection({ ...keydown, ctrlKey: true }, true, keyboardPresetShortcuts("linux")), false);
 });
 
 test("leaves control-c without a selection and unrelated chords to the PTY", () => {

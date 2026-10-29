@@ -394,7 +394,8 @@ export class PluginServiceSupervisor {
       cwd: spec.root,
       env: pluginServiceEnvironment(this.options.environment),
       stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true
+      windowsHide: true,
+      ...(process.platform !== "win32" ? { detached: true } : {})
     });
     record.child = child;
     record.exited = new Promise((resolve) => {
@@ -451,6 +452,8 @@ export class PluginServiceSupervisor {
     signal: NodeJS.Signals | null,
     error?: Error
   ): void {
+    // POSIX services own their process group, including helpers that outlive the entry.
+    if (process.platform !== "win32") this.signalService(child, "SIGKILL");
     if (record.child !== child) return;
     record.child = null;
     this.options.host.stopped?.(record.spec.pluginId, record.spec.serviceId);
@@ -505,10 +508,24 @@ export class PluginServiceSupervisor {
     child.stdin?.end();
     const exited = record.exited ?? Promise.resolve();
     if (await settlesWithin(exited, this.options.stopGraceMs)) return;
-    child.kill("SIGTERM");
+    this.signalService(child, "SIGTERM");
     if (await settlesWithin(exited, this.options.stopGraceMs)) return;
-    child.kill("SIGKILL");
+    this.signalService(child, "SIGKILL");
     await settlesWithin(exited, this.options.stopGraceMs);
+  }
+
+  private signalService(child: ChildProcess, signal: NodeJS.Signals): void {
+    if (process.platform !== "win32" && child.pid) {
+      try {
+        process.kill(-child.pid, signal);
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+          console.warn("Plugin service process group could not be stopped.", error);
+        }
+      }
+    }
+    child.kill(signal);
   }
 
   /**

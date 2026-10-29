@@ -27,6 +27,7 @@ async function fixture(t) {
   const sessions = [{ id: "one", title: "One", provider: "terminal", status: "idle", startedAt: 100, exitCode: null, revision: 2 }];
   const terminals = {
     listMetadata: () => sessions.map((s) => ({ ...s, cwd: "/private/workspace" })),
+    getMetadata: (id) => sessions.find((s) => s.id === id) ?? null,
     geometry: () => ({ cols: 80, rows: 24 }),
     readBuffer: () => ({ buffer: "hello", outputOffset: 5 }),
     inputChecked: (id, data) => { writes.push({ id, data }); return true; },

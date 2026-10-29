@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { codexPromptSubmit } from "../../shared/codexKeyboard.ts";
 import { ORCHESTRATION_ENV } from "./agent-browser/orchestration-protocol.ts";
 import { connectedLaunchEnvironment } from "../../agent-runtime/launch-environment.mjs";
 import { instrumentShellCodex, resumeShellCodex } from "./shellCodexLaunch.ts";
@@ -63,9 +64,10 @@ import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from ".
 import { SecretRedactionRegistry } from "./safety/SecretRedaction.ts";
 import type { DecisionSession } from "./DecisionHooks.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
-import { SessionScreen, terminalScreenText } from "./materials/sessionScreen.ts";
+import { SessionScreen } from "./materials/sessionScreen.ts";
 import { TerminalReplayState } from "./terminalReplayState.ts";
-import { codexComposerReady, codexContinuationIsEmpty, codexPlaceholderIsDim } from "./codexInput.ts";
+import { codexPromptInput, codexTerminalComposerReady } from "./codexInput.ts";
+import { claudeTerminalComposerReady, promptComposer, promptPasteObserved, type PromptDeliveryReceipt } from "./promptDelivery.ts";
 import { kimiComposerReady } from "./kimiInput.ts";
 import { OpenCodeStartupReadiness, waitsForOpenCodeStartup } from "./openCodeInput.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
@@ -104,6 +106,9 @@ const OUTPUT_BATCH_MS = 16;
  * is flushed immediately instead of waiting for the timer.
  */
 const MAX_PENDING_OUTPUT_CHARS = 1_048_576;
+/** Bound the whole PTY -> IPC -> xterm parser queue, including hidden windows. */
+export const MAX_UNPARSED_OUTPUT_CHARS = 1_048_576;
+const RESUME_UNPARSED_OUTPUT_CHARS = 262_144;
 /** How long repeated setBounds/rename/etc. calls are coalesced before the session store is rewritten once. */
 const PERSISTENCE_DEBOUNCE_MS = 150;
 const DEFAULT_TERMINAL_SIZE = { width: 700, height: 430 };
@@ -122,6 +127,9 @@ interface ManagedSession {
   outputOffset: number;
   pendingOutput: string[];
   pendingOutputChars: number;
+  /** The renderer confirms bytes only after xterm's asynchronous parser consumed them. */
+  parsedOutputOffset?: number;
+  outputPausedProcess?: IPty;
   agentBrowser: PreparedAgentBrowserPtyLaunch | null;
   agentRuntime: PreparedAgentRuntimePtyLaunch | null;
   agentOrchestration: PreparedOrchestrationPtyLaunch | null;
@@ -132,7 +140,7 @@ interface ManagedSession {
   threadId?: string;
   nestedInvocationId?: string;
   captureResult: boolean;
-  /** Turns the agent started (its status became working) since launch. */
+  /** Observed turn starts, including a submitted follow-up while the CLI stays working. */
   turnStarts?: number;
   /** turnStarts when the last submitted prompt was delivered; undefined while none was. */
   promptTurnMark?: number;
@@ -159,6 +167,11 @@ interface ManagedSession {
   inputQueue?: Promise<InputDelivery>;
   /** Fresh output after a submitted write is required before reusing a gated composer; this is not an acceptance ack. */
   automatedSubmit?: { epoch: number; outputOffset: number };
+  manualInputRevision?: number;
+  cleanInputRevision?: number;
+  workingInputRevision?: number;
+  promptDelivery?: PromptDeliveryReceipt;
+  incompletePrompt?: boolean;
   /** Output from an earlier launch or restored replay cannot prove this process is ready. */
   launchOutputOffset?: number;
   /** OpenCode's current launch showed its text cursor in its full-screen input view. */
@@ -214,7 +227,16 @@ export const PTY_KILL_WAIT_MS = 1_000;
 export const LAUNCH_INPUT_WAIT_MS = 60_000;
 
 /** `delivered` acknowledges a PTY write, not the CLI accepting or submitting it. */
-export type InputDelivery = { delivered: true } | { delivered: false; reason: string };
+export type InputDelivery = ({ delivered: true } | { delivered: false; reason: string }) & { receipt?: PromptDeliveryReceipt };
+
+interface PromptInput {
+  startedAt: number;
+  text: string;
+  submit: boolean;
+  staged: boolean;
+  beforeSubmit?: () => boolean | void;
+  receipt: PromptDeliveryReceipt;
+}
 
 type LaunchContribution = Extract<PreparedLaunch, { ok: true }>;
 
@@ -246,6 +268,7 @@ export class TerminalManager {
   private readonly agentBrowser?: AgentBrowserLaunchCoordinator;
   private readonly agentRuntime?: AgentRuntimeLaunchCoordinator;
   private readonly spawnPty: typeof pty.spawn;
+  private readonly platform: NodeJS.Platform;
   // Renderer-reported card visibility, keyed by session and holding the
   // outputOffset at the moment it was hidden: the last offset the card saw.
   // Output keeps flowing through emit while hidden, addressed to the observers
@@ -280,6 +303,8 @@ export class TerminalManager {
   private readonly quitReleases: Promise<void>[] = [];
   // Every PTY started here whose exit has not been reported yet, closed cards included, with that exit.
   private readonly liveProcesses = new Map<IPty, Promise<void>>();
+  /** Closed POSIX cards retain only their own PTY's bounded hang-up escalation until exit. */
+  private readonly closedProcessTimers = new Map<IPty, ReturnType<typeof setTimeout>>();
   private suppressPersistence = false;
   // Coalesces rapid persistence requests (a drag fires setBounds many times a second) into one
   // normalize+stringify+atomic-write of the session store instead of one per call.
@@ -312,13 +337,15 @@ export class TerminalManager {
     agentBrowser?: AgentBrowserLaunchCoordinator,
     agentRuntime?: AgentRuntimeLaunchCoordinator,
     lifecycleHooksEnabled = true,
-    spawnPty: typeof pty.spawn = pty.spawn
+    spawnPty: typeof pty.spawn = pty.spawn,
+    platform: NodeJS.Platform = globalThis.process.platform
   ) {
     this.emit = emit;
     this.providerClis = providerClis;
     this.agentBrowser = agentBrowser;
     this.agentRuntime = agentRuntime;
     this.spawnPty = spawnPty;
+    this.platform = platform;
     this.lifecycleHooksEnabled = lifecycleHooksEnabled;
   }
 
@@ -608,6 +635,18 @@ export class TerminalManager {
     return this.sessions.get(id)?.outputOffset ?? null;
   }
 
+  /** Credit comes from xterm's write callback, never from merely receiving an IPC batch. */
+  acknowledgeOutput(id: string, outputOffset: number): void {
+    if (!Number.isSafeInteger(outputOffset)) return;
+    const session = this.sessions.get(id);
+    if (!session || outputOffset < (session.parsedOutputOffset ?? 0) || outputOffset > session.outputOffset) return;
+    session.parsedOutputOffset = outputOffset;
+    const process = session.outputPausedProcess;
+    if (!process || process !== session.process || !this.liveProcesses.has(process)
+      || session.outputOffset - outputOffset > RESUME_UNPARSED_OUTPUT_CHARS) return;
+    if (tryPtyOperation(() => process.resume())) session.outputPausedProcess = undefined;
+  }
+
   readBuffer(id: string): TerminalBufferSnapshot {
     const session = this.sessions.get(id);
     if (!session) throw new Error("Terminal session does not exist.");
@@ -718,7 +757,7 @@ export class TerminalManager {
       this.initialCodexInputs.set(id, { prompt: request.initialPrompt, imagePath: request.initialImagePath });
     }
     if (control.ownerPluginId !== undefined) this.startingOwners.set(id, control.ownerPluginId);
-    let launched: ReturnType<TerminalManager["spawnProcess"]> | { process: null; agentBrowser: null; agentRuntime: null; agentOrchestration: null; failure: null };
+    let launched: ReturnType<TerminalManager["spawnProcess"]>;
     try {
       launched = awaitMeasuredGrid || contributed
         ? { process: null, agentBrowser: null, agentRuntime: null, agentOrchestration: null, failure: null }
@@ -729,6 +768,7 @@ export class TerminalManager {
       this.startingModels.delete(id);
       this.startingOwners.delete(id);
     }
+    setEditorBindings(metadata, launched.nativeEditor);
     if (launched.failure) applyLaunchFailure(metadata, launched.failure);
     const configured = this.pendingConfiguredModes.get(id);
     this.pendingConfiguredModes.delete(id);
@@ -880,6 +920,7 @@ export class TerminalManager {
       session.metadata.parentSessionId,
       shellResume
     );
+    setEditorBindings(session.metadata, launched.nativeEditor);
     session.process = launched.process;
     session.agentBrowser = launched.agentBrowser;
     session.agentRuntime = launched.agentRuntime;
@@ -927,17 +968,34 @@ export class TerminalManager {
   }
 
   /**
-   * The one delivery rule for text another agent, a plugin or a controller sends to a card (spawn_agent's first
-   * prompt, send_to_agent, plugin sessions.send). A running card gets it at once. A card whose launch plugins are
-   * still preparing (launch options, a launch policy, an environment) or that waits for its grid gets it exactly
-   * once, when that launch has started. A launch that is refused, fails, is cancelled or superseded (closed,
-   * restarted), or does not start within LAUNCH_INPUT_WAIT_MS delivers nothing, says why, and drops the text:
-   * it never reaches a later launch of the card. An aborted `signal` (the sender cancelled) delivers nothing either.
-   * Automated Codex and Kimi prompts wait for their empty native composer; a PTY alone is not ready.
-   * OpenCode on macOS/Linux additionally waits for its current launch's native startup cursor sequence.
-   * Success means written to that PTY. Provider acceptance remains unconfirmed without native evidence.
+   * MCP, native control and plugins share one per-launch queue. Codex/Claude/Kimi wait for an empty composer,
+   * then acknowledge a paste before a separate submit. POSIX OpenCode retains its startup cursor gate.
+   * Cancellation, manual input or a superseded launch stops further writes; a paste already written is reported
+   * as partial and is never retried. The receipt distinguishes PTY writes from native acceptance evidence.
    */
-  async deliverInput(id: string, data: string, waitMs = LAUNCH_INPUT_WAIT_MS, signal?: AbortSignal, waitForCodexComposer = false): Promise<InputDelivery> {
+  deliverPrompt(id: string, text: string, submit = true, signal?: AbortSignal,
+    options: { waitMs?: number; bracketedPaste?: boolean; beforeSubmit?: () => boolean | void } = {}): Promise<InputDelivery> {
+    const provider = this.sessions.get(id)?.metadata.provider;
+    const staged = provider === "codex" || provider === "claude" || provider === "kimi";
+    const prompt: PromptInput = { text, submit, staged, beforeSubmit: options.beforeSubmit, startedAt: Date.now(),
+      receipt: { stage: "not-written", acceptance: "unconfirmed" } };
+    const data = staged || options.bracketedPaste ? codexPromptInput(text, false) : text;
+    return this.deliverInput(id, data, options.waitMs ?? LAUNCH_INPUT_WAIT_MS, signal, provider === "codex", prompt);
+  }
+
+  lastPromptDelivery(id: string): PromptDeliveryReceipt | undefined {
+    const receipt = this.sessions.get(id)?.promptDelivery;
+    return receipt ? { ...receipt } : undefined;
+  }
+
+  codexUnstyledComposerAllowed(id: string): boolean {
+    const session = this.sessions.get(id);
+    return Boolean(session && session.metadata.status === "idle" && ["idle", "done"].includes(session.lifecycle?.programStatus ?? "")
+      && (session.manualInputRevision ?? 0) === (session.cleanInputRevision ?? 0));
+  }
+
+  async deliverInput(id: string, data: string, waitMs = LAUNCH_INPUT_WAIT_MS, signal?: AbortSignal, waitForCodexComposer = false,
+    prompt?: PromptInput): Promise<InputDelivery> {
     if (signal?.aborted) return { delivered: false, reason: "The delivery was cancelled." };
     const session = this.sessions.get(id);
     if (!session) return { delivered: false, reason: "The session does not exist." };
@@ -953,7 +1011,7 @@ export class TerminalManager {
       if (signal?.aborted) return { delivered: false, reason: "The delivery was cancelled." };
       const remaining = deadline - Date.now();
       if (waitMs > 0 && remaining <= 0) return { delivered: false, reason: "The input timed out while waiting in the delivery queue." };
-      return this.deliverInputNow(id, data, waitMs <= 0 ? 0 : remaining, signal, waitForCodexComposer);
+      return this.deliverInputNow(id, data, waitMs <= 0 ? 0 : remaining, signal, waitForCodexComposer, prompt);
     };
     const queued = (session.inputQueue ?? Promise.resolve()).then(execute, execute);
     session.inputQueue = queued;
@@ -962,31 +1020,60 @@ export class TerminalManager {
     const interrupted = new Promise<InputDelivery>((resolve) => {
       queueTimer = setTimeout(() => resolve({ delivered: false, reason: "The input timed out while waiting in the delivery queue." }), Math.max(0, waitMs));
       if (signal) {
-        abort = () => resolve({ delivered: false, reason: "The delivery was cancelled." });
+        abort = () => {
+          if (prompt && prompt.receipt.stage !== "not-written") {
+            prompt.receipt.reason = "The delivery was cancelled after text was written; do not resend it blindly.";
+            resolve({ delivered: true, receipt: { ...prompt.receipt } });
+          } else resolve({ delivered: false, reason: "The delivery was cancelled." });
+        };
         signal.addEventListener("abort", abort, { once: true });
       }
     });
-    try { return await Promise.race([queued, interrupted]); }
+    try {
+      const result = await Promise.race([queued, interrupted]);
+      if (prompt && !result.delivered) {
+        prompt.receipt.reason = result.reason;
+        result.receipt = { ...prompt.receipt };
+      }
+      if (prompt) console.info("CanvasTTY prompt delivery", { sessionId: id, provider: session.metadata.provider,
+        ...prompt.receipt, elapsedMs: Date.now() - prompt.startedAt });
+      return result;
+    }
     finally {
       clearTimeout(queueTimer);
       if (abort) signal?.removeEventListener("abort", abort);
     }
   }
 
-  private async deliverInputNow(id: string, data: string, waitMs: number, signal: AbortSignal | undefined, waitForCodexComposer: boolean): Promise<InputDelivery> {
+  private async deliverInputNow(id: string, data: string, waitMs: number, signal: AbortSignal | undefined, waitForCodexComposer: boolean,
+    prompt?: PromptInput): Promise<InputDelivery> {
     const canceled: InputDelivery = { delivered: false, reason: "The delivery was cancelled." };
     if (signal?.aborted) return canceled;
     const session = this.sessions.get(id);
     if (!session) return { delivered: false, reason: "The session does not exist." };
     const epoch = session.launchEpoch;
     const deadline = Date.now() + waitMs;
-    const gated = waitForCodexComposer || session.metadata.provider === "kimi";
+    const gated = waitForCodexComposer || session.metadata.provider === "kimi" || Boolean(prompt && session.metadata.provider === "claude");
+    const manualRevision = session.manualInputRevision ?? 0;
+    const invalidated = (): string | null => signal?.aborted ? "The delivery was cancelled."
+      : this.sessions.get(id) !== session || session.launchEpoch !== epoch || session.metadata.exitCode !== null
+        ? "The session closed, exited or restarted during delivery."
+        : (session.manualInputRevision ?? 0) !== manualRevision ? "Manual input interrupted delivery; nothing further was sent."
+          : session.metadata.status === "needs_approval" ? "The agent is waiting for approval; nothing further was sent." : null;
+    if (prompt && session.incompletePrompt) return { delivered: false,
+      reason: "A previous prompt was pasted but not submitted. Inspect the card before sending another task." };
+    let cachedOutput: TerminalBufferSnapshot | undefined;
+    let cachedLaunchOutputOffset: number | undefined;
     const launchOutput = (): TerminalBufferSnapshot => {
+      if (cachedOutput && cachedOutput.outputOffset === session.outputOffset
+        && cachedLaunchOutputOffset === session.launchOutputOffset) return cachedOutput;
       const snapshot = this.readBuffer(id);
       const start = snapshot.outputOffset - snapshot.buffer.length;
       const skip = Math.max(0, (session.launchOutputOffset ?? 0) - start);
-      return { buffer: snapshot.buffer.slice(skip), outputOffset: snapshot.outputOffset,
+      cachedLaunchOutputOffset = session.launchOutputOffset;
+      cachedOutput = { buffer: snapshot.buffer.slice(skip), outputOffset: snapshot.outputOffset,
         ...(!skip && snapshot.restorePrefix ? { restorePrefix: snapshot.restorePrefix } : {}) };
+      return cachedOutput;
     };
     // Build the screen only after this launch has a PTY: a pending restart
     // still has its previous process's scrollback until bindProcess records the new offset.
@@ -996,14 +1083,17 @@ export class TerminalManager {
       const waiting = (): boolean => this.sessions.get(id) === session && session.launchEpoch === epoch
         && session.metadata.exitCode === null && (!this.startupReady(id) || !inputReady);
       while (waiting() && !signal?.aborted) {
+        const interrupted = invalidated();
+        if (interrupted) return { delivered: false, reason: interrupted };
         if (session.metadata.status === "needs_approval") return { delivered: false, reason: "The agent is waiting for an approval; automated prompt input was not written." };
         if (session.process && !inputReady) {
           screen ??= new SessionScreen({ geometry: (id) => this.geometry(id), readBuffer: launchOutput }, id);
           const snapshot = launchOutput();
           screen.feed({ id, data: snapshot.buffer, outputOffset: snapshot.outputOffset });
           const fresh = session.automatedSubmit?.epoch !== epoch || snapshot.outputOffset > session.automatedSubmit.outputOffset;
-          if (fresh && await screen.inspect((terminal) => session.metadata.provider === "kimi" ? kimiComposerReady(terminal) : codexComposerReady(
-            terminalScreenText(terminal, true), codexPlaceholderIsDim(terminal), codexContinuationIsEmpty(terminal)))) {
+          if (fresh && await screen.inspect((terminal) => session.metadata.provider === "kimi" ? kimiComposerReady(terminal)
+            : session.metadata.provider === "claude" ? claudeTerminalComposerReady(terminal)
+              : codexTerminalComposerReady(terminal, this.codexUnstyledComposerAllowed(id)))) {
             inputReady = true;
             continue;
           }
@@ -1011,7 +1101,7 @@ export class TerminalManager {
         const remaining = deadline - Date.now();
         if (remaining <= 0) {
           if (session.process && !this.startupReady(id)) return { delivered: false, reason: "OpenCode did not show its verified startup input cursor before the delivery deadline; nothing was written. A CLI without that sequence is unsupported by this readiness check." };
-          if (session.process && !inputReady) return { delivered: false, reason: `${session.metadata.provider === "kimi" ? "Kimi" : "Codex"} did not become ready for input within ${Math.round(waitMs / 1000)} s.${session.metadata.provider === "kimi" ? " Only the verified empty boxed Kimi 2.x composer is supported; no prompt was written." : ""}` };
+          if (session.process && !inputReady) return { delivered: false, reason: `${session.metadata.provider} did not become ready for input within ${Math.round(waitMs / 1000)} s; no prompt was written.` };
           return { delivered: false, reason: `The session did not start within ${Math.round(waitMs / 1000)} s.` };
         }
         await new Promise<void>((resolve) => {
@@ -1036,10 +1126,85 @@ export class TerminalManager {
       }
       if (session.metadata.status === "needs_approval") return { delivered: false, reason: "The agent is waiting for an approval; automated prompt input was not written." };
       if (waitMs > 0 && Date.now() >= deadline) return { delivered: false, reason: "The input timed out before the terminal became ready." };
+      const interrupted = invalidated();
+      if (interrupted) return { delivered: false, reason: interrupted };
+      if (prompt) {
+        session.promptDelivery = prompt.receipt;
+        const finish = (reason?: string): InputDelivery => {
+          if (reason) prompt.receipt.reason = reason;
+          return prompt.receipt.stage === "not-written"
+            ? { delivered: false, reason: reason ?? "No prompt was written.", receipt: { ...prompt.receipt } }
+            : { delivered: true, receipt: { ...prompt.receipt } };
+        };
+        const submitKey = session.metadata.provider === "codex"
+          ? codexPromptSubmit("\r", session.metadata.nativeEditor?.submit, session.metadata.nativeEditor?.submitSequence) : "\r";
+        if (prompt.submit && submitKey === null) return finish("The configured Codex submit shortcut cannot be encoded.");
+        if (!prompt.staged) {
+          if (prompt.submit && prompt.beforeSubmit?.() === false) return finish("The controller no longer owns this launch; nothing was submitted.");
+          prompt.receipt.stage = prompt.submit ? "submitted" : "pasted";
+          if (prompt.submit) session.promptTurnMark = session.turnStarts ?? 0;
+          if (!this.inputChecked(id, data + (prompt.submit ? submitKey! : ""), "automation")) {
+            prompt.receipt.stage = "not-written";
+            return finish("The terminal no longer accepts input.");
+          }
+          return finish();
+        }
+        screen ??= new SessionScreen({ geometry: (id) => this.geometry(id), readBuffer: launchOutput }, id);
+        const refresh = async (): Promise<string | null> => {
+          const snapshot = launchOutput();
+          screen!.feed({ id, data: snapshot.buffer, outputOffset: snapshot.outputOffset });
+          return screen!.inspect((terminal) => promptComposer(terminal, session.metadata.provider, true)?.text ?? null);
+        };
+        const baseline = await refresh();
+        const beforePaste = session.outputOffset;
+        if (invalidated()) return finish(invalidated()!);
+        if (!this.inputChecked(id, data, "automation")) return finish("The terminal no longer accepts input.");
+        prompt.receipt.stage = "pasted";
+        session.incompletePrompt = prompt.submit;
+        if (!prompt.submit) {
+          session.codexDraftEpoch = epoch;
+          return finish();
+        }
+        const pasteDeadline = Math.min(deadline, Date.now() + 5_000);
+        for (;;) {
+          const reason = invalidated();
+          if (reason) return finish(reason);
+          const composer = await refresh();
+          if (invalidated()) return finish(invalidated()!);
+          if (session.outputOffset > beforePaste && composer !== null
+            && promptPasteObserved(baseline ?? "", composer, prompt.text)) break;
+          if (Date.now() >= pasteDeadline) return finish("Text was written but its paste was not observed; Enter was not sent. Inspect the card before retrying.");
+          await new Promise<void>((resolve) => setTimeout(resolve, 25));
+        }
+        const reason = invalidated();
+        if (reason) return finish(reason);
+        if (Date.now() >= deadline) return finish("The delivery deadline expired after the paste; Enter was not sent.");
+        session.promptTurnMark = session.turnStarts ?? 0;
+        session.automatedSubmit = { epoch, outputOffset: session.outputOffset };
+        if (prompt.beforeSubmit?.() === false) return finish("The controller no longer owns this launch; Enter was not sent.");
+        prompt.receipt.stage = "submitted";
+        if (!this.inputChecked(id, submitKey!, "automation")) {
+          prompt.receipt.stage = "pasted";
+          return finish("The paste was observed but the submit key could not be written.");
+        }
+        session.incompletePrompt = false;
+        const acceptanceDeadline = Math.min(deadline, Date.now() + 1_000);
+        while (prompt.receipt.acceptance === "unconfirmed" && !invalidated() && Date.now() < acceptanceDeadline) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 25));
+        }
+        return finish(prompt.receipt.acceptance === "confirmed" ? undefined
+          : "The submit key was written; native task acceptance remains unconfirmed. Do not retry Enter blindly.");
+      }
       // A submitted prompt: the agent's next turn is the one that answers it (turnProgress).
       const mark = session.turnStarts ?? 0;
       const outputBeforeWrite = session.outputOffset;
-      if (!this.inputChecked(id, data)) return { delivered: false, reason: "The terminal no longer accepts input." };
+      const input = session.metadata.provider === "codex"
+        ? codexPromptSubmit(data, session.metadata.nativeEditor?.submit, session.metadata.nativeEditor?.submitSequence) : data;
+      if (input === null) return { delivered: false, reason: "The configured Codex submit shortcut cannot be encoded." };
+      if (!this.inputChecked(id, input, "automation")) return { delivered: false, reason: "The terminal no longer accepts input." };
+      // A material handoff reserves its draft across its existing paste/observe/Enter calls.
+      if (data.startsWith("\x1b[200~") && data.endsWith("\x1b[201~")) session.incompletePrompt = true;
+      else if (data.endsWith("\r")) session.incompletePrompt = false;
       if (gated && !data.endsWith("\r")) session.codexDraftEpoch = epoch;
       else delete session.codexDraftEpoch;
       if (data.endsWith("\r")) {
@@ -1056,13 +1221,18 @@ export class TerminalManager {
     for (const wake of [...session.launchWaiters]) wake();
   }
 
-  inputChecked(id: string, data: string): boolean {
+  inputChecked(id: string, data: string, origin: "person" | "automation" | "protocol" = "person"): boolean {
     if (typeof data !== "string" || data.length === 0) return false;
     const session = this.sessions.get(id);
     if (!session || session.metadata.exitCode !== null || !session.process) return false;
     const process = session.process;
     const written = tryPtyOperation(() => process.write(data));
-    if (written) delete session.codexDraftEpoch;
+    if (written && origin !== "protocol") delete session.codexDraftEpoch;
+    if (written && origin === "person") {
+      session.manualInputRevision = (session.manualInputRevision ?? 0) + 1;
+      session.incompletePrompt = false;
+      this.wakeLaunchWaiters(session);
+    }
     if (written && ANSWERS_PROMPT.test(data)) this.settleAnsweredPrompt(id, session);
     return written;
   }
@@ -1159,7 +1329,7 @@ export class TerminalManager {
     }
   }
 
-  applyProviderSignal(id: string, signal: ProviderLifecycleSignal, source: "hook" | "title" = "hook"): void {
+  applyProviderSignal(id: string, signal: ProviderLifecycleSignal, source: "hook" | "title" | "program-status" = "hook"): void {
     const session = this.sessions.get(id);
     if (!this.lifecycleHooksEnabled || !session || session.metadata.status === "done" || session.metadata.status === "failed") return;
     if (source === "hook") session.hookSignals = (session.hookSignals ?? 0) + 1;
@@ -1172,8 +1342,22 @@ export class TerminalManager {
     }
 
     const nextStatus = signal.state;
+    const submittedTurn = source === "hook" && signal.event === "UserPromptSubmit"
+      && session.promptDelivery?.stage === "submitted" && session.promptDelivery.acceptance === "unconfirmed";
+    if (nextStatus === "working") {
+      if (session.metadata.status !== "working" || submittedTurn) session.workingInputRevision = session.manualInputRevision ?? 0;
+      if (session.promptDelivery?.stage === "submitted" && (source === "hook"
+        ? signal.event === "UserPromptSubmit" : session.metadata.status !== "working")) {
+        session.promptDelivery.acceptance = "confirmed";
+        session.promptDelivery.evidence = source;
+        delete session.promptDelivery.reason;
+      }
+    } else if (nextStatus === "idle" && session.workingInputRevision !== undefined) {
+      if (session.workingInputRevision === (session.manualInputRevision ?? 0)) session.cleanInputRevision = session.workingInputRevision;
+      delete session.workingInputRevision;
+    }
     // A turn starts when the agent moves to working; wait_for_agent compares it with the last delivered prompt.
-    if (nextStatus === "working" && session.metadata.status !== "working") session.turnStarts = (session.turnStarts ?? 0) + 1;
+    if (nextStatus === "working" && (session.metadata.status !== "working" || submittedTurn)) session.turnStarts = (session.turnStarts ?? 0) + 1;
     // A new turn: the previous answer is no longer this turn's.
     if (nextStatus === "working") session.answer = undefined;
     const completed = nextStatus === "idle" && ["Stop", "StopFailure", "StopCancelled"].includes(signal.event ?? "");
@@ -1311,6 +1495,18 @@ export class TerminalManager {
         session.process.kill();
       } catch (error) {
         console.warn(`PTY ${id} could not be killed cleanly.`, error);
+      }
+      // A card can close long before the app quits. A CLI may ignore SIGHUP,
+      // so the quit-only wait cannot be its only escalation. Capture this PTY
+      // object: another card (or a later launch) must never be signalled here.
+      const process = session.process;
+      if (this.platform !== "win32" && !this.quitting && this.liveProcesses.has(process)) {
+        const timer = setTimeout(() => {
+          this.closedProcessTimers.delete(process);
+          if (this.liveProcesses.has(process)) tryPtyOperation(() => process.kill("SIGKILL"));
+        }, PTY_EXIT_WAIT_MS);
+        timer.unref();
+        this.closedProcessTimers.set(process, timer);
       }
     }
     const environment = session.extras.environment;
@@ -1454,6 +1650,7 @@ export class TerminalManager {
         } finally {
           this.startingModels.delete(descriptor.id);
         }
+        setEditorBindings(metadata, launched.nativeEditor);
         process = launched.process;
         agentBrowser = launched.agentBrowser;
         agentRuntime = launched.agentRuntime;
@@ -1650,6 +1847,7 @@ export class TerminalManager {
         null,
         session.metadata.parentSessionId
       );
+      setEditorBindings(session.metadata, launched.nativeEditor);
       session.process = launched.process;
       session.agentBrowser = launched.agentBrowser;
       session.agentRuntime = launched.agentRuntime;
@@ -1692,6 +1890,7 @@ export class TerminalManager {
     shellResume?: NestedCodexSession
   ): {
     process: IPty | null;
+    nativeEditor?: SessionMetadata["nativeEditor"];
     agentBrowser: PreparedAgentBrowserPtyLaunch | null;
     agentRuntime: PreparedAgentRuntimePtyLaunch | null;
     agentOrchestration: PreparedOrchestrationPtyLaunch | null;
@@ -1723,6 +1922,8 @@ export class TerminalManager {
       this.launchContexts.set(id, { cwd: planned.cwd, configDir: planned.env.CLAUDE_CONFIG_DIR ?? null });
       return {
         process,
+        ...(planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD
+          ? { nativeEditor: JSON.parse(planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD) as SessionMetadata["nativeEditor"] } : {}),
         agentBrowser: planned.agentBrowser,
         agentRuntime: planned.agentRuntime,
         agentOrchestration: planned.agentOrchestration,
@@ -1926,7 +2127,8 @@ export class TerminalManager {
       }
       this.initialCodexInputs.delete(id);
       const session = this.sessions.get(id);
-      if (session) setAutoDowngraded(session.metadata, profile === "auto" && contribution?.thirdPartyModel === true);
+      if (session) setAutoDowngraded(session.metadata, profile === "auto" && contribution?.thirdPartyModel === true
+        && profileAvailable(provider, "acceptEdits", false));
       // A plugin may add to the person's environment, never replace what the core sets for this launch.
       const contributedEnvironment = contribution?.env ?? {};
       const coreNames = new Set([...Object.keys(providerEnvironment), ...Object.keys(launch.environment ?? {})].map((key) => envKey(key)));
@@ -2215,11 +2417,8 @@ export class TerminalManager {
       return "failed";
     }
     session.process = process;
-    if (planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD) {
-      metadata.nativeEditor = JSON.parse(planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD);
-    } else {
-      delete metadata.nativeEditor;
-    }
+    setEditorBindings(metadata, planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD
+      ? JSON.parse(planned.launchEnvironment.CANVASTTY_CODEX_KEYBOARD) : undefined);
     this.launchContexts.set(id, { cwd: spawn.cwd, configDir: spawn.env.CLAUDE_CONFIG_DIR ?? null });
     session.agentBrowser = planned.agentBrowser;
     session.agentRuntime = planned.agentRuntime;
@@ -2251,6 +2450,7 @@ export class TerminalManager {
   }
 
   private bindProcess(id: string, session: ManagedSession, process: IPty): void {
+    session.outputPausedProcess = undefined;
     session.launchOutputOffset = session.outputOffset;
     session.openCodeStartup = waitsForOpenCodeStartup(session.metadata.provider) ? new OpenCodeStartupReadiness() : undefined;
     session.agentBrowser?.retainUntilExit?.();
@@ -2259,21 +2459,38 @@ export class TerminalManager {
       if (!current || current !== session || current.process !== process) return;
 
       if (current.openCodeStartup && !current.openCodeStartup.ready && current.openCodeStartup.push(data)) this.wakeLaunchWaiters(current);
+      const workingReports = current.lifecycle?.workingReports ?? 0;
       const lifecycleState = current.lifecycle?.push(data);
+      const reply = current.lifecycle?.takeReply?.();
+      if (reply) this.inputChecked(id, reply, "protocol");
+      // A fast turn may report working and idle in the same PTY chunk.
+      if (lifecycleState !== "working" && (current.lifecycle?.workingReports ?? 0) > workingReports
+        && !titleDefersToHooks(current, "working")) {
+        this.applyProviderSignal(id, { kind: "lifecycle", state: "working" }, "program-status");
+      }
       if (lifecycleState) current.titleState = lifecycleState;
       if (lifecycleState && !titleDefersToHooks(current, lifecycleState)) {
-        this.applyProviderSignal(id, { kind: "lifecycle", state: lifecycleState }, "title");
+        this.applyProviderSignal(id, { kind: "lifecycle", state: lifecycleState },
+          current.lifecycle?.programStatus ? "program-status" : "title");
       }
+      if (current.launchWaiters.size) this.wakeLaunchWaiters(current);
       this.keepHiddenCardWhole(id, current, data);
       appendScrollback(current, data);
       this.keepHiddenCardWhole(id, current, null, data);
       this.queueOutput(id, current, data);
+      if (!current.outputPausedProcess
+        && current.outputOffset - (current.parsedOutputOffset ?? 0) >= MAX_UNPARSED_OUTPUT_CHARS) {
+        if (tryPtyOperation(() => process.pause())) current.outputPausedProcess = process;
+      }
     });
 
     let exited!: () => void;
     this.liveProcesses.set(process, new Promise<void>((resolve) => { exited = resolve; }));
     process.onExit(({ exitCode }) => {
       this.liveProcesses.delete(process);
+      clearTimeout(this.closedProcessTimers.get(process));
+      this.closedProcessTimers.delete(process);
+      if (session.outputPausedProcess === process) session.outputPausedProcess = undefined;
       exited();
       const current = this.sessions.get(id);
       if (!current || current !== session || current.process !== process) return;
@@ -2397,8 +2614,8 @@ function environmentBadge(environment: PersistedEnvironmentRef): NonNullable<Ses
 /**
  * Claude's title shows the same «✳» when its turn ended and while its permission prompt waits, and it can reach main
  * before or after the hook that tells them apart (Stop, PermissionRequest). Once Claude's hooks have reported for this
- * card they alone end a turn; the title only reports one starting. Without them (hooks off, or a remote run without a
- * bridge) the title's idle stands.
+ * card they alone end a turn. After a confirmed end, a delayed spinner cannot start it again; the next prompt hook
+ * starts the next turn. Without hooks (or a remote run without a bridge) the title's idle stands.
  */
 function resetLaunchSignals(session: ManagedSession): void {
   // Nor is its conversation: its answer and turn counts would answer a wait for the new one.
@@ -2408,12 +2625,20 @@ function resetLaunchSignals(session: ManagedSession): void {
   delete session.hookSignals;
   delete session.titleState;
   delete session.openCodeStartup;
+  delete session.manualInputRevision;
+  delete session.cleanInputRevision;
+  delete session.workingInputRevision;
+  delete session.promptDelivery;
+  delete session.incompletePrompt;
+  delete session.codexDraftEpoch;
+  delete session.automatedSubmit;
   if (session.answeredPromptTimer) clearTimeout(session.answeredPromptTimer);
   session.answeredPromptTimer = undefined;
 }
 
 function titleDefersToHooks(session: ManagedSession, state: "idle" | "working" | "needs_approval"): boolean {
-  return state !== "working" && session.metadata.provider === "claude" && session.hookSignals !== undefined;
+  return session.metadata.provider === "claude" && session.hookSignals !== undefined
+    && (state !== "working" || session.metadata.turnCompleted === true);
 }
 
 /** Keys that answer a prompt: Enter, a lone Esc, or a choice digit. */
@@ -2432,6 +2657,11 @@ function missingLaunchPlugins(pluginIds: readonly string[]): string {
 
 function failWith(message: string): never {
   throw new Error(message);
+}
+
+function setEditorBindings(metadata: SessionMetadata, bindings: SessionMetadata["nativeEditor"]): void {
+  if (bindings) metadata.nativeEditor = bindings;
+  else delete metadata.nativeEditor;
 }
 
 function applyLaunchFailure(metadata: SessionMetadata, failure: LaunchFailure): void {

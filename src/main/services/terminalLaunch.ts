@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import type { ProviderId, ShortcutBindings } from "../../shared/contracts.ts";
+import { CODEX_KEYMAP_NEWLINE_SEQUENCE, CODEX_KEYMAP_SUBMIT_SEQUENCE } from "../../shared/codexKeyboard.ts";
 import { normalizeThreadId } from "../../agent-runtime/runtime-protocol.mjs";
 import { openCodeAutoEnvironment, openCodeYoloEnvironment } from "./openCodeConfig.ts";
-import { autoKind, CLAUDE_SANDBOX_SETTINGS, profileArguments, type LaunchProfile } from "../../shared/autoMode.ts";
+import { autoKind, CLAUDE_SANDBOX_SETTINGS, profileArguments, profileAvailable, type LaunchProfile } from "../../shared/autoMode.ts";
 import { providerEffortArguments, providerModelArguments, type ReasoningEffort } from "../../shared/launchModel.ts";
 import {
   providerTerminalBatchCommandLine,
@@ -77,6 +78,7 @@ export function resolveTerminalLaunch(
   if (containedAuto && options.isolated !== true) {
     throw new Error(`${provider} has no auto mode of its own; its auto runs only inside CanvasTTY's agent isolation.`);
   }
+  if (!profileAvailable(provider, profile, options.isolated === true)) throw new Error(`${provider} has no ${profile} mode.`);
   const launchEnvironment = provider !== "opencode" ? undefined
     : profile === "yolo" ? openCodeYoloEnvironment({ ...environment, ...providerCli.environment })
       : profile === "auto" || profile === "acceptEdits" ? openCodeAutoEnvironment({ ...environment, ...providerCli.environment }, {
@@ -89,6 +91,27 @@ export function resolveTerminalLaunch(
   // Claude Code's own sandbox where CanvasTTY's layer does not run (and the CLI has one on this platform).
   const claudeSandbox = provider === "claude" && (profile === "auto" || profile === "acceptEdits") && options.isolated !== true
     && (platform === "darwin" || platform === "linux");
+  const resourcesPath = options.resourcesPath ?? process.resourcesPath;
+  const bundledDirectory = provider === "codex" && (platform === "darwin" || platform === "linux") && resourcesPath
+    ? posix.join(resourcesPath, "codex-native-tui") : undefined;
+  const bundledFrontend = bundledDirectory ? posix.join(bundledDirectory, "canvastty-codex-tui") : undefined;
+  const bundledLauncher = bundledDirectory ? posix.join(bundledDirectory, "codex-tui-launch.mjs") : undefined;
+  const qaFrontend = environment.CANVASTTY_CODEX_TUI_QA;
+  const frontend = qaFrontend || (bundledFrontend && bundledLauncher
+    && (fileExists(bundledFrontend) || fileExists(bundledLauncher)) ? bundledFrontend : undefined);
+  const keyboard = provider === "codex" && options.shortcuts ? {
+    submit: options.shortcuts.codexSubmit,
+    submitAlternate: options.shortcuts.codexSubmitAlternate,
+    submitSuper: options.shortcuts.codexSubmitSuper,
+    newline: options.shortcuts.codexNewline,
+    // Stock Codex has no select-all editor action.
+    selectAll: frontend ? options.shortcuts.codexSelectAll : "",
+    ...(!frontend ? { submitSequence: CODEX_KEYMAP_SUBMIT_SEQUENCE, newlineSequence: CODEX_KEYMAP_NEWLINE_SEQUENCE } : {})
+  } : undefined;
+  const keymapArgs = keyboard && !frontend ? [
+    "-c", 'tui.keymap.composer.submit=["enter"]',
+    "-c", 'tui.keymap.editor.insert_newline=["ctrl-j","ctrl-m","enter","shift-enter","alt-enter"]'
+  ] : [];
   const providerArgs = [
     ...(provider === "codex" && agentBrowserArgs.includes("-c") ? ["--no-daemon"] : []),
     ...((profile === "yolo" || containedAuto) && provider !== "opencode" ? DANGEROUS_ARGUMENTS[provider] : []),
@@ -100,6 +123,7 @@ export function resolveTerminalLaunch(
     ...(provider === "claude"
       ? mergeClaudeInlineSettings(claudeSandbox ? [...agentBrowserArgs, "--settings", JSON.stringify({ sandbox: CLAUDE_SANDBOX_SETTINGS })] : agentBrowserArgs)
       : agentBrowserArgs),
+    ...keymapArgs,
     ...providerModelArguments(provider, options.model),
     ...providerEffortArguments(provider, options.effort),
     ...(options.resumePrevious ? resolveResumeArguments(provider, options.resumeThreadId) : []),
@@ -108,16 +132,9 @@ export function resolveTerminalLaunch(
   ];
   const combinedEnvironment = {
     ...providerCli.environment,
-    ...launchEnvironment
+    ...launchEnvironment,
+    ...(keyboard ? { CANVASTTY_CODEX_KEYBOARD: JSON.stringify(keyboard) } : {})
   };
-  const resourcesPath = options.resourcesPath ?? process.resourcesPath;
-  const bundledDirectory = provider === "codex" && (platform === "darwin" || platform === "linux") && resourcesPath
-    ? posix.join(resourcesPath, "codex-native-tui") : undefined;
-  const bundledFrontend = bundledDirectory ? posix.join(bundledDirectory, "canvastty-codex-tui") : undefined;
-  const bundledLauncher = bundledDirectory ? posix.join(bundledDirectory, "codex-tui-launch.mjs") : undefined;
-  const qaFrontend = environment.CANVASTTY_CODEX_TUI_QA;
-  const frontend = qaFrontend || (bundledFrontend && bundledLauncher
-    && (fileExists(bundledFrontend) || fileExists(bundledLauncher)) ? bundledFrontend : undefined);
   if (provider === "codex" && frontend) {
     const launcher = qaFrontend ? environment.CANVASTTY_CODEX_TUI_LAUNCHER_QA : bundledLauncher;
     if ((platform !== "darwin" && platform !== "linux") || providerCli.launcher !== "native"
@@ -129,14 +146,7 @@ export function resolveTerminalLaunch(
       command: process.execPath,
       args: [launcher, "--backend", providerCli.executable, "--frontend", frontend, "--", ...providerArgs],
       environment: {
-        ...combinedEnvironment, ELECTRON_RUN_AS_NODE: "1",
-        ...(options.shortcuts ? { CANVASTTY_CODEX_KEYBOARD: JSON.stringify({
-          submit: options.shortcuts.codexSubmit,
-          submitAlternate: options.shortcuts.codexSubmitAlternate,
-          submitSuper: options.shortcuts.codexSubmitSuper,
-          newline: options.shortcuts.codexNewline,
-          selectAll: options.shortcuts.codexSelectAll
-        }) } : {})
+        ...combinedEnvironment, ELECTRON_RUN_AS_NODE: "1"
       }
     };
   }
@@ -165,7 +175,7 @@ export function resolveTerminalLaunch(
  * layer (the project is not writable in plan).
  */
 export function codexInsideIsolation(profile: LaunchProfile, thirdPartyModel: boolean): string[] {
-  const base = ["--sandbox", "danger-full-access", "--ask-for-approval", "on-request"];
+  const base = ["--sandbox", "danger-full-access", "--ask-for-approval", profile === "dontAsk" ? "never" : "on-request"];
   if (profile === "auto" && !thirdPartyModel) return [...base, "-c", 'approvals_reviewer="auto_review"'];
   return base;
 }
@@ -247,7 +257,7 @@ const DANGEROUS_ARGUMENTS: Record<Exclude<ProviderId, "terminal" | "opencode">, 
   codex: ["--dangerously-bypass-approvals-and-sandbox"],
   claude: ["--dangerously-skip-permissions"],
   qwen: ["--yolo"],
-  kimi: ["--yolo"],
+  kimi: ["--auto"],
   hermes: ["--yolo"],
   grok: ["--always-approve"],
   // Measured on omp 18.1.19: `omp --help` documents `--auto-approve` ("Auto-approve all
@@ -263,9 +273,7 @@ const DANGEROUS_ARGUMENTS: Record<Exclude<ProviderId, "terminal" | "opencode">, 
   // Permission modes (default/auto/bypassPermissions/off) are settings.json and
   // TUI state (/permission, Alt+M) only, so YOLO launches the stock CLI.
   minimax: [],
-  // Devin CLI documents --permission-mode; `dangerous` (aliases yolo/bypass)
-  // auto-approves every tool call. `smart` (an AI gatekeeper that approves only
-  // clearly-safe actions) is a supervised mode, deliberately NOT mapped here.
+  // Devin's "dangerous" (aliases yolo/bypass) skips approvals; "smart" is the separate Auto profile.
   devin: ["--permission-mode", "dangerous"],
   // Documented on antigravity.google/docs/cli: --dangerously-skip-permissions
   // and --sandbox exist; no --yolo spelling.

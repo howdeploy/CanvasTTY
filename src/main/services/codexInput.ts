@@ -1,4 +1,6 @@
-// Every nonempty suggestion needs native placeholder styling, including exact matches.
+import { terminalScreenText } from "./materials/sessionScreen.ts";
+
+// Unstyled suggestions additionally require native lifecycle and input-ownership evidence.
 const EMPTY_COMPOSER_PLACEHOLDERS = new Set([
   "", "Ask Codex to do anything", "Ask a follow-up question",
   "Find and fix a bug in @filename", "Implement {feature}", "Summarize recent commits",
@@ -117,4 +119,19 @@ export function codexPlaceholderIsDim(terminal: import("@xterm/headless").Termin
     sawText = true;
   }
   return sawText;
+}
+
+/** A known unstyled placeholder needs native idle, input ownership and a cursor at its start. */
+export function codexTerminalComposerReady(terminal: import("@xterm/headless").Terminal, allowUnstyled = false): boolean {
+  const screen = terminalScreenText(terminal, true);
+  const continuation = codexContinuationIsEmpty(terminal);
+  if (codexComposerReady(screen, codexPlaceholderIsDim(terminal), continuation)) return true;
+  if (!allowUnstyled || !continuation) return false;
+  const buffer = terminal.buffer.active;
+  const row = composerRow(terminal);
+  const line = buffer.getLine(row)?.translateToString(true) ?? "";
+  const match = line.match(/^(\s*›\s?)(.*?)\s*$/u);
+  return Boolean(match && EMPTY_COMPOSER_PLACEHOLDERS.has(match[2]!)
+    && buffer.baseY + buffer.cursorY === row && buffer.cursorX === match[1]!.length
+    && codexComposerReady(screen, true, continuation));
 }

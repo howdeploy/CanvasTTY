@@ -4,6 +4,7 @@ import test from "node:test";
 import * as terminalShortcuts from "../src/renderer/src/features/terminal/terminalShortcuts.ts";
 import { keyboardPresetShortcuts } from "../src/shared/contracts.ts";
 import { matchesShortcut } from "../src/renderer/src/lib/shortcuts.ts";
+import { transform } from "esbuild";
 
 const terminalCardPath = new URL(
   "../src/renderer/src/features/terminal/TerminalCard.tsx",
@@ -58,7 +59,7 @@ test("actual Codex handler preserves Enter modifiers before xterm can collapse t
   assert.deepEqual(writes, []);
 });
 
-test("Command+A dispatches native Codex selection and leaves other providers and CLI keys alone", async () => {
+test("Command+A forwards Codex bytes without claiming stock draft selection and leaves other providers alone", async () => {
   const source = await readFile(terminalCardPath, "utf8");
   const body = source.match(/terminal\.attachCustomKeyEventHandler\(\(event\) => \{([\s\S]*?)^    \}\);/m)?.[1];
   assert.ok(body, "the terminal's actual keyboard handler must be located");
@@ -88,6 +89,64 @@ test("Command+A dispatches native Codex selection and leaves other providers and
     { key: "Home", code: "Home", metaKey: false }
   ]) assert.equal(codex({ ...event, ...change }), true);
   assert.deepEqual(calls, []);
+});
+
+test("the actual editor routing uses launch transports, preserves bundled keys and yields freed chords to search", async () => {
+  const source = await readFile(terminalCardPath, "utf8");
+  const body = source.match(/terminal\.attachCustomKeyEventHandler\(\(event\) => \{([\s\S]*?)^    \}\);/m)?.[1];
+  assert.ok(body);
+  const stock = {
+    submit: "F5", submitAlternate: "Ctrl+Enter", submitSuper: "Meta+Enter", newline: "F6", selectAll: "",
+    submitSequence: "\r", newlineSequence: "\u001b[13;2u"
+  };
+  const bundled = { submit: "F5", submitAlternate: "Ctrl+Enter", submitSuper: "Meta+Enter", newline: "F6", selectAll: "Meta+A" };
+  const fixture = (editor) => {
+    const calls = [];
+    const shortcutsRef = { current: { ...keyboardPresetShortcuts("macos"), terminalSearch: "Ctrl+Enter" } };
+    const handler = terminalKeyHandler(body, {
+      nativeEditorRef: { current: editor }, shortcutsRef,
+      window: { canvasTTY: { window: { isMacOS: true }, terminal: { input: (id, data) => calls.push([id, data]) } } },
+      session: { id: "draft", provider: "codex" },
+      terminal: { hasSelection: () => false, clearSelection: () => calls.push("clear") },
+      searchOpenRef: { current: false }, setSearchOpen: (open) => calls.push(["search", open])
+    });
+    const event = (patch = {}) => ({
+      type: "keydown", key: "Enter", code: "Enter", ctrlKey: false, shiftKey: false, metaKey: false, altKey: false,
+      preventDefault: () => calls.push("prevent"), stopPropagation: () => calls.push("stop"), ...patch
+    });
+    return { calls, handler, event, shortcutsRef };
+  };
+  for (const [editor, rows] of [
+    [stock, [[{ key: "F5", code: "F5" }, "\r"], [{ ctrlKey: true }, "\r"], [{ metaKey: true }, "\r"],
+      [{ key: "F6", code: "F6" }, "\u001b[13;2u"]]],
+    [bundled, [[{ key: "F5", code: "F5" }, "\u001b[15;1~"], [{ ctrlKey: true }, "\u001b[13;5u"],
+      [{ metaKey: true }, "\u001b[13;9u"], [{ key: "F6", code: "F6" }, "\u001b[17;1~"]]]
+  ]) {
+    for (const [patch, sequence] of rows) {
+      const f = fixture(editor);
+      assert.equal(f.handler(f.event(patch)), false);
+      assert.deepEqual(f.calls, ["prevent", "stop", ["draft", sequence]]);
+    }
+  }
+  const live = fixture(stock);
+  live.shortcutsRef.current = { ...live.shortcutsRef.current, codexSubmit: "F8" };
+  live.handler(live.event({ key: "F5", code: "F5" }));
+  assert.deepEqual(live.calls, ["prevent", "stop", ["draft", "\r"]], "settings cannot rewrite the launch snapshot");
+  const freed = fixture({ ...stock, submitAlternate: "F7" });
+  assert.equal(freed.handler(freed.event({ ctrlKey: true })), false);
+  assert.deepEqual(freed.calls, ["prevent", "stop", ["search", true]], "freed Ctrl+Enter belongs to search, not the generic Enter fallback");
+  const selection = fixture(bundled);
+  selection.handler(selection.event({ key: "ф", code: "KeyA", metaKey: true }));
+  assert.deepEqual(selection.calls, ["prevent", "stop", "clear", ["draft", "\u001b[97;9u"]]);
+  for (const patch of [
+    { key: "F5", code: "F5", type: "keyup" }, { key: "F5", code: "F5", isComposing: true },
+    { key: "ф", code: "KeyA", metaKey: true, isComposing: true }, { ctrlKey: true, isComposing: true },
+    { key: "F2", code: "F2" }
+  ]) {
+    const f = fixture({ ...stock, submitAlternate: "F7" });
+    assert.equal(f.handler(f.event(patch)), true, "keyup, composition and unrelated keys remain with xterm/IME");
+    assert.deepEqual(f.calls, []);
+  }
 });
 
 test("clipboard replies cannot paste into a restarted or exited session while normal text and image paste stay intact", async () => {
@@ -187,10 +246,40 @@ test("clipboard replies cannot paste into a restarted or exited session while no
 test("palette changes retheme the live xterm without recreating it", async () => {
   const source = await readFile(terminalCardPath, "utf8");
   const mountDependencies = effectDependenciesContaining(source, "new Terminal({");
-
   assert.equal(mountDependencies, "session.id");
-  assert.match(source, /terminal\.options\.theme = terminalTheme\(palette, pixelSkinTheme(?:, hasAsciiBackground)?\)/);
-  assert.match(source, /\}, \[palette, pixelSkinTheme(?:, hasAsciiBackground, backgroundReadability, backgroundReadabilityStrength)?\]\);/);
+  const marker = source.indexOf("terminal.options.theme =");
+  assert.notEqual(marker, -1);
+  const start = source.lastIndexOf("  useEffect(() => {", marker);
+  const end = source.indexOf("]);", marker);
+  assert.ok(start >= 0 && end > marker);
+  const effect = source.slice(start, end + 3);
+  const dependencies = effectDependenciesContaining(source, "terminal.options.theme =").split(",").map((value) => value.trim());
+  for (const dependency of ["palette", "pixelSkinTheme", "hasAsciiBackground"]) {
+    assert.ok(dependencies.includes(dependency), `${dependency} must invalidate the theme effect`);
+  }
+  const theme = source.match(/^function terminalTheme\([\s\S]*?^\}/m)?.[0];
+  assert.ok(theme);
+  const { code } = await transform(`${theme}\n${effect}`, { loader: "ts", target: "esnext" });
+  const renderEffect = new Function("useEffect", "terminalRef", "palette", "pixelSkinTheme", "hasAsciiBackground",
+    "backgroundReadability", "backgroundReadabilityStrength", code);
+  const refreshes = [];
+  const terminal = { options: {}, rows: 24, refresh: (...args) => refreshes.push(args) };
+  const terminalRef = { current: terminal };
+  // Execute the actual effect callback; mount identity is guarded separately above, not simulated here.
+  for (const [palette, skin, ascii, background, cursor] of [
+    ["night", null, false, "#171a24", "#b8cf99"],
+    ["lilac", null, false, "#202430", "#bfc9ee"],
+    ["night", "pixel:sakura", false, "#00000000", "#b8cf99"],
+    ["night", null, true, "#00000000", "#b8cf99"]
+  ]) {
+    renderEffect((callback) => callback(), terminalRef, palette, skin, ascii, true, 0.7);
+    assert.strictEqual(terminalRef.current, terminal);
+    assert.deepEqual(terminal.options.theme, { background, foreground: "#f7f4ec", cursor, selectionBackground: "#7b789966" });
+  }
+  assert.deepEqual(refreshes, [[0, 23], [0, 23], [0, 23], [0, 23]]);
+  terminalRef.current = null;
+  renderEffect((callback) => callback(), terminalRef, "night", null, false, false, 0);
+  assert.equal(refreshes.length, 4, "an unmounted terminal must not refresh");
 });
 
 test("terminal copy shortcuts write the xterm selection without reaching the PTY", async () => {
@@ -269,15 +358,6 @@ test("programmatic hover focus does not leak focus reports into the agent TUI", 
   assert.match(source, /suppressFocusReport\.current/);
   assert.match(source, /TERMINAL_FOCUS_IN/);
   assert.match(source, /TERMINAL_FOCUS_OUT/);
-});
-
-test("PTY output is batched before crossing into the renderer", async () => {
-  const source = await readFile(terminalManagerPath, "utf8");
-
-  assert.match(source, /const OUTPUT_BATCH_MS = 16/);
-  assert.match(source, /session\.pendingOutput\.push\(data\)/);
-  assert.match(source, /session\.pendingOutput\.join\(""\)/);
-  assert.match(source, /bufferChunks\.slice\(session\.bufferStart\)\.join\(""\)/);
 });
 
 test("session metadata revisions advance before lifecycle events cross IPC", async () => {

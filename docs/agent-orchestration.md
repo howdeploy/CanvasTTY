@@ -16,11 +16,11 @@ A session launched from the desktop with the **Orchestrator** role gets the `can
 
 ### Subagent profiles
 
-`spawn_agent` takes an optional `profile`: `auto`, `normal` (manual: the CLI asks the person as usual), `acceptEdits` or `plan`, where the subagent's CLI has it (`list_providers` lists each provider's `profiles`). A subagent never gets more than its orchestrator (plan < normal < acceptEdits < auto) and never YOLO; asking for more is refused with the reason. Without `profile` it gets its orchestrator's profile, or the next lower one its CLI has, so a person who runs the orchestrator in auto is not asked about every step of its subagents. A YOLO orchestrator's subagents run in auto at most. The answer and the card show the profile the subagent actually got (`profile`, `profileInherited`).
+`spawn_agent` takes an optional `profile` from the provider's `profiles` in `list_providers`; the [launch-mode matrix](agent-launch-modes.md) explains each mapping. A subagent never gets more than its orchestrator: plan/readOnly < normal/ask/askCached < acceptEdits/dontAsk < auto/autonomous, and never YOLO. Asking for more is refused with the reason. Without `profile` it inherits its orchestrator's profile, or a supported profile no higher than it. If none exists, launch is refused rather than falling back to a higher mode. A YOLO orchestrator's subagents run in auto at most. The answer and card show the actual profile (`profile`, `profileInherited`).
 
 ### OpenCode auto
 
-OpenCode has no auto flag, so its auto profile is a per-run `OPENCODE_CONFIG_CONTENT` (nothing is written to `~/.config/opencode`). The rules go under `agent.build`, OpenCode's default agent, which OpenCode appends after the top-level rules (the last matching rule wins), so the person's own rules for every other tool stay as they are:
+OpenCode's native `--auto` skips approvals, so CanvasTTY's supervised auto profile instead uses a per-run `OPENCODE_CONFIG_CONTENT` (nothing is written to `~/.config/opencode`). The rules go under `agent.build`, OpenCode's default agent, which OpenCode appends after the top-level rules (the last matching rule wins), so the person's own rules for every other tool stay as they are:
 
 - `read`, `glob`, `grep`, `list`: allowed, except `.env` files, which still ask (OpenCode's own default).
 - `edit` (OpenCode's edit, write and patch tools): allowed.
@@ -30,7 +30,7 @@ OpenCode has no auto flag, so its auto profile is a per-run `OPENCODE_CONFIG_CON
 
 A launch contributor that puts OpenCode on another model keeps `bash` asking, like accept-edits for the other CLIs.
 
-The control CLI's `create --profile auto|normal|acceptEdits|plan|yolo` is the equivalent for its workers (from the person's own terminal it defaults to YOLO, which needs the person's acknowledgement for that CLI).
+The control CLI's `create --profile` accepts `auto`, `normal`, `ask`, `askCached`, `acceptEdits`, `dontAsk`, `autonomous`, `plan`, `readOnly`, and `yolo`, where the provider supports them. See the [complete launch-mode matrix](agent-launch-modes.md) for native mappings and restrictions. From the person's own terminal it defaults to YOLO, which needs the person's acknowledgement for that CLI; subagents never receive YOLO.
 
 The workflow is `list_providers` → `spawn_agent` (one per part) → `wait_for_agent` → `get_agent_result`. Agents should not explore the filesystem for agent CLIs or their configuration; the MCP server's instructions, the tool descriptions and the refusal messages say so.
 
@@ -114,22 +114,32 @@ The default private controller file is next to the connection descriptor. Use a 
 - `status` returns the native session state plus the controller-submitted turn, if any.
 - Before its first prompt a ready provider can still report `unavailable`; inspect `screen`. Startup/authentication/trust menus require resolution before tasks. Task delivery never doubles as menu confirmation.
 - `send` accepts at most 16,000 characters of task text. It rejects slash commands, terminal control sequences and input while a submitted turn is active. It does not offer automatic permission approval.
-- A successful send confirms a PTY write. It does not acknowledge that the CLI accepted or started the task; inspect the corresponding lifecycle, answer or screen before claiming progress. Never retry Enter blindly.
+- A successful send confirms a PTY write. Native `send` returns a `receipt`; MCP and plugin sends return `delivery`. Its `stage` is `not-written`, `pasted`, or `submitted`; `acceptance` is `confirmed` only after an observed submission hook or a new native working transition. `reason` explains a partial or unconfirmed delivery. `status`, MCP observation and wait results expose the latest receipt. Never retry text or Enter blindly after a partial write.
 - A result becomes fresh only after a corresponding working-to-idle lifecycle transition. Provider turn IDs, when present, reject stale completion signals.
 - `resultRevision` counts completed observations. A previous completed answer is kept separate from the active turn. `result --after N` returns `fresh: false` until a newer result exists.
 - Only controlled Codex sessions opt into the Stop hook's final-message capture. Text is bounded to 4,096 UTF-16 code units, with a `truncated` flag. Ordinary sessions continue reporting lifecycle without capturing their answers.
 - `no_result` means a turn became idle without a final-message payload. Inspect files and screen; do not report success from that state alone.
 - `interrupt` returns `stopped: false` because Ctrl-C delivery is only a request. Confirm the resulting lifecycle before proceeding.
 
-Human changes to an owned window still matter. Do not submit work while someone is editing its composer. Composer checks recognize Codex and Kimi 2.x, not arbitrary provider TUIs.
+Human changes to an owned window still matter. Do not submit work while someone is editing its composer. Composer checks recognize Codex, Claude and Kimi 2.x, not arbitrary provider TUIs.
 
-Automated Codex and Kimi 2.x delivery waits for the current launch's empty composer,
-including multiline draft checks. Codex, Claude and Kimi task text uses explicit
-paste boundaries before Enter. Per-card automated deliveries are ordered and
-remain bound to the launch that accepted the request. A new output frame after
-submission prevents reuse of the same stale empty screen; that frame alone is
-not an acknowledgement of acceptance. Startup output and a previous launch's
-screen do not count as composer readiness.
+Automated Codex, Claude and Kimi 2.x delivery waits for the current launch's empty composer,
+including multiline draft checks. One per-card queue holds the entire operation:
+bracketed paste, observation of new text or a new collapsed-paste marker in the active
+input field, then a separate submit key using the launch's keymap. Transcript echoes
+do not acknowledge a paste. MCP, native control CLI and plugin sends use the same path.
+Manual input, cancellation, exit or restart before submission stops further writes.
+An unobserved paste remains `pasted` and blocks a new automatic task until the person
+resolves the card; `submit:false` retains an automation-owned draft that can be extended.
+Fresh output alone never acknowledges acceptance. Startup output and a previous launch's
+screen do not prove readiness.
+
+Codex and Claude root OSC 7501 reports supplement lifecycle hooks; child records do not
+change the root state, and `done`/`error` do not imply PTY exit or a captured final answer.
+The parser answers capability queries without echoing report content. Hooks retain priority
+over Claude title fallback. Codex's unstyled known placeholder requires native idle,
+a cursor at the input start and no intervening untrusted input; arbitrary matching drafts
+and clipped unstyled hints remain blocked. See the [program status protocol](https://www.superlogical.com/rex/docs/build/program-status).
 
 On macOS/Linux, OpenCode delivery waits for its current launch's alternate-screen then visible-cursor sequence; CLIs without that sequence fail without a write, Windows retains its existing ungated startup behavior, and this startup check does not protect an OpenCode human draft or acknowledge acceptance.
 

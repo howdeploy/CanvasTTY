@@ -65,7 +65,7 @@ export interface DecisionRequest {
   truncated: boolean;
   /** How long CanvasTTY waits for this answer (the service's `decide.timeoutMs`, capped by the session's gate). */
   budgetMs: number;
-  /** The card's launch profile (auto, normal, acceptEdits, plan, yolo). */
+  /** The card's launch profile from shared/autoMode.ts. */
   profile: LaunchProfileId | null;
   /** The agent can put an "ask" in front of the person; false: an ask is turned into a deny with its reason. */
   canAsk: boolean;

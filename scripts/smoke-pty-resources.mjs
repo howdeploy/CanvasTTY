@@ -201,12 +201,21 @@ async function runWorker(config) {
     for (let fd = 0; fd < 3; fd++) if (config.stdioMask & (1 << fd)) closeSync(fd);
 
     async function cycle(stop = false) {
-      const terminal = pty.spawn(stop ? "/bin/sleep" : "/usr/bin/printf", stop ? ["30"] : ["PTY_CYCLE_OK\n"], {
+      // Keep the resource probe alive until real output is read, independently of exit-drain timing.
+      const terminal = pty.spawn(stop ? "/bin/sleep" : "/bin/sh", stop ? ["30"] : ["-c",
+        'printf "PTY_CYCLE_OK\\n" && IFS= read -r reply && test "$reply" = PTY_CYCLE_ACK'], {
         name: "xterm-256color", cols: 80, rows: 24, cwd: process.cwd(), env: { PATH: "/usr/bin:/bin", TERM: "xterm-256color" }
       });
       activeTerminal = terminal;
       let output = "";
-      const data = terminal.onData((text) => { output = (output + text).slice(-1024); });
+      let acknowledged = false;
+      const data = terminal.onData((text) => {
+        output = (output + text).slice(-1024);
+        if (!stop && !acknowledged && output.includes("PTY_CYCLE_OK")) {
+          acknowledged = true;
+          terminal.write("PTY_CYCLE_ACK\n");
+        }
+      });
       let ended = false;
       let timer;
       let subscription;

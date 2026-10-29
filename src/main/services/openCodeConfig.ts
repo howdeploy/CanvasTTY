@@ -80,7 +80,7 @@ export function openCodeYoloEnvironment(
 }
 
 /**
- * OpenCode's "auto" profile for this run (OpenCode 1.18 has no auto flag). How OpenCode 1.18.33 decides
+ * OpenCode's supervised "auto" profile for this run (the CLI's --auto skips approvals). How OpenCode 1.18.33 decides
  * (packages/opencode/src/agent/agent.ts, permission/index.ts): the build agent's rules are its defaults, then the
  * merged top-level `permission`, then the merged `agent.build.permission`; Permission.evaluate takes the LAST rule
  * whose permission key and pattern both match (`*` and `?` wildcards, the key included, so `"*": "deny"` covers

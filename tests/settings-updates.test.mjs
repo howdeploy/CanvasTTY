@@ -1,84 +1,162 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { updaterPresentation } from "../src/renderer/src/features/settings/updaterPresentation.ts";
+import { findAll, importWithFakeReact, tick } from "./helpers/fake-react.mjs";
 
 const settingsPanelPath = new URL("../src/renderer/src/features/settings/SettingsPanel.tsx", import.meta.url);
 const updatesPath = new URL("../src/renderer/src/features/settings/UpdateSettings.tsx", import.meta.url);
 const appStylesPath = new URL("../src/renderer/src/styles/app.css", import.meta.url);
 
-const VERSION = "1.4.0";
+const { UpdatesSettings, __render, __flush, __reset, __unmount, __pending } = await importWithFakeReact(
+  "src/renderer/src/features/settings/UpdatesSettings.tsx", "UpdatesSettings"
+);
 
-test("idle: version shown, only Check is offered", () => {
-  const view = updaterPresentation({ status: "idle" }, "en", VERSION);
-  assert.equal(view.title, "No update found");
-  assert.equal(view.detail, "Current version: v1.4.0");
-  assert.equal(view.progress, null);
-  assert.deepEqual(view.actions, { check: "enabled", download: false, install: false });
-});
+function content(node) {
+  if (Array.isArray(node)) return node.map(content).join("");
+  if (node && typeof node === "object") return content(node.props?.children);
+  return node == null || typeof node === "boolean" ? "" : String(node);
+}
 
-test("checking: Check is disabled and nothing else appears", () => {
-  const view = updaterPresentation({ status: "checking" }, "ru", VERSION);
-  assert.equal(view.title, "Проверяем обновления…");
-  assert.equal(view.tone, "busy");
-  assert.deepEqual(view.actions, { check: "disabled", download: false, install: false });
-});
+function updates(t, actionResult = () => Promise.resolve()) {
+  const previousWindow = globalThis.window;
+  const initial = Promise.withResolvers();
+  const version = Promise.withResolvers();
+  const calls = [];
+  let listener;
+  let unsubscribed = 0;
+  globalThis.window = { canvasTTY: {
+    appVersion: () => version.promise,
+    update: {
+      status: () => initial.promise,
+      onStatus: (callback) => { listener = callback; return () => { unsubscribed++; }; },
+      check: () => { calls.push(["check"]); return actionResult(); },
+      download: () => { calls.push(["download"]); return actionResult(); },
+      install: () => { calls.push(["install"]); return actionResult(); }
+    },
+    external: { openUrl: (url) => { calls.push(["openUrl", url]); return actionResult(); } }
+  } };
+  __reset();
+  const props = { locale: "en" };
+  let tree = __render(UpdatesSettings, props);
+  const render = () => { __flush(); tree = __render(UpdatesSettings, props); return tree; };
+  t.after(() => { __unmount(); globalThis.window = previousWindow; });
+  return {
+    calls, initial, version, props, render,
+    deliver: (status) => listener(status),
+    emit(status) { listener(status); return render(); },
+    unmount: __unmount,
+    get unsubscribed() { return unsubscribed; },
+    get tree() { return tree; },
+    button: (label) => findAll(tree, (node) => node.type === "button" && content(node) === label)[0]
+  };
+}
 
-test("available: the version is named, Download is explicit and Check is hidden (it would download)", () => {
-  const view = updaterPresentation({ status: "available", version: "1.5.0" }, "en", VERSION);
-  assert.equal(view.title, "Update available · v1.5.0");
-  assert.match(view.detail, /press Download/);
-  assert.deepEqual(view.actions, { check: "hidden", download: true, install: false });
-  assert.equal(view.progress, null);
-});
-
-test("downloading: percent only when the updater reported one, never invented", () => {
-  const known = updaterPresentation({ status: "downloading", version: "1.5.0", percent: 42 }, "en", VERSION);
-  assert.equal(known.title, "Downloading update · 42%");
-  assert.equal(known.progress, 42);
-  assert.deepEqual(known.actions, { check: "disabled", download: false, install: false });
-
-  const unknown = updaterPresentation({ status: "downloading", version: "1.5.0", percent: null }, "en", VERSION);
-  assert.equal(unknown.title, "Downloading update — progress not reported yet");
-  assert.equal(unknown.progress, null);
-  assert.doesNotMatch(unknown.title, /\d+%/);
-});
-
-test("downloaded: Install and restart is the only action and warns about the restart", () => {
-  const view = updaterPresentation({ status: "downloaded", version: "1.5.0" }, "en", VERSION);
-  assert.equal(view.title, "Update ready · v1.5.0");
-  assert.match(view.detail, /restarts/);
-  assert.deepEqual(view.actions, { check: "hidden", download: false, install: true });
-});
-
-test("install is never offered before the download finished", () => {
-  const states = [
-    { status: "idle" },
-    { status: "checking" },
-    { status: "available", version: "1.5.0" },
-    { status: "downloading", version: "1.5.0", percent: 99 },
-    { status: "unavailable", reason: "dev" },
-    { status: "unavailable", reason: "offline" },
-    { status: "unavailable", reason: "error" }
-  ];
-  for (const state of states) {
-    assert.equal(updaterPresentation(state, "en", VERSION).actions.install, false, state.status);
+test("the current Updates component renders its status matrix and gates install and download", async (t) => {
+  const view = updates(t);
+  view.version.resolve("1.8.5");
+  await tick();
+  view.render();
+  assert.match(content(view.tree), /Current version: 1\.8\.5/);
+  for (const [status, message, checkDisabled, extra] of [
+    [{ type: "idle" }, "CanvasTTY updates", false, []],
+    [{ type: "checking" }, "Checking for updates…", true, []],
+    [{ type: "upToDate" }, "You have the latest version.", false, []],
+    [{ type: "available", version: "1.9.0", notes: "Release notes" }, "Available version: 1.9.0Release notes", false, ["Download"]],
+    [{ type: "available", version: "1.9.0", manualUrl: "https://example.invalid/release" }, "Available version: 1.9.0", false, ["Open release"]],
+    [{ type: "downloading", percent: 42.4 }, "Downloading… 42%", true, []],
+    [{ type: "downloading" }, "Downloading…", true, []],
+    [{ type: "ready", version: "1.9.0" }, "Version 1.9.0 is ready to install.", true, ["Restart to update"]],
+    [{ type: "installing" }, "Installing update…", true, []],
+    [{ type: "error", message: "offline" }, "Update error: offline", false, []]
+  ]) {
+    view.emit(status);
+    assert.ok(content(view.tree).includes(message), status.type);
+    assert.deepEqual(findAll(view.tree, (node) => node.type === "button").map(content), ["Check for updates", ...extra]);
+    assert.equal(view.button("Check for updates").props.disabled, checkDisabled);
+    if (status.type === "idle") {
+      assert.deepEqual(findAll(view.tree, (node) => node.type === "p").map(content), ["Current version: 1.8.5"]);
+    }
+    const progress = findAll(view.tree, (node) => node.type === "progress");
+    assert.equal(progress.length, status.type === "downloading" ? 1 : 0);
+    if (status.type === "downloading") {
+      assert.equal(progress[0].props.max, 100);
+      assert.equal(progress[0].props.value, status.percent);
+      if (status.percent === undefined) assert.doesNotMatch(content(view.tree), /\d+%/);
+    }
   }
+  view.props.locale = "ru";
+  view.emit({ type: "error", message: "Нет соединения" });
+  assert.match(content(view.tree), /Ошибка обновления: Нет соединения/);
+  view.emit({ type: "ready", version: "1.9.0" });
+  assert.ok(view.button("Установить и перезапустить"));
+  assert.deepEqual(view.calls, [], "status changes never download or install implicitly");
 });
 
-test("unavailable: dev, offline and error each get their own truthful explanation", () => {
-  const dev = updaterPresentation({ status: "unavailable", reason: "dev" }, "en", VERSION);
-  assert.equal(dev.title, "Updates unavailable");
-  assert.match(dev.detail, /development/);
-  assert.equal(dev.actions.check, "disabled");
+test("the current Updates buttons invoke distinct check, download, manual-link and install actions", async (t) => {
+  const view = updates(t);
+  view.initial.resolve({ type: "upToDate" });
+  await tick();
+  view.render();
+  assert.match(content(view.tree), /You have the latest version\./, "initial status is used before any event");
+  view.button("Check for updates").props.onClick();
+  view.emit({ type: "available", version: "1.9.0" });
+  view.button("Download").props.onClick();
+  assert.equal(view.button("Restart to update"), undefined);
+  view.emit({ type: "available", version: "1.9.0", manualUrl: "https://example.invalid/release" });
+  assert.equal(view.button("Download"), undefined);
+  view.button("Open release").props.onClick();
+  view.emit({ type: "ready", version: "1.9.0" });
+  view.button("Restart to update").props.onClick();
+  await tick();
+  assert.deepEqual(view.calls, [["check"], ["download"], ["openUrl", "https://example.invalid/release"], ["install"]]);
+});
 
-  const offline = updaterPresentation({ status: "unavailable", reason: "offline" }, "en", VERSION);
-  assert.match(offline.detail, /connection/);
-  assert.equal(offline.actions.check, "enabled");
+test("Updates status events beat a late initial reply and unmount unsubscribes and ignores late callbacks", async (t) => {
+  const view = updates(t);
+  view.emit({ type: "ready", version: "1.9.0" });
+  view.initial.resolve({ type: "idle" });
+  await tick();
+  view.render();
+  assert.ok(view.button("Restart to update"), "a stale initial reply cannot replace a newer event");
+  assert.equal(view.unsubscribed, 0);
+  view.unmount();
+  assert.equal(view.unsubscribed, 1);
+  view.version.resolve("late version");
+  // Exercise the captured callback even if a transport delivers one after unsubscribe.
+  view.deliver({ type: "error", message: "late event" });
+  await tick();
+  assert.equal(__pending(), 0);
+});
 
-  const error = updaterPresentation({ status: "unavailable", reason: "error" }, "ru", VERSION);
-  assert.equal(error.detail, "Проверка обновлений завершилась ошибкой. Попробуйте позже.");
-  assert.equal(error.actions.check, "enabled");
+test("Updates observes rejected actions without inventing success or losing the current status", async (t) => {
+  let rejection;
+  const view = updates(t, () => {
+    rejection = Promise.withResolvers();
+    return rejection.promise;
+  });
+  const expectedCalls = [];
+  for (const [status, label, expectedCall, message] of [
+    [{ type: "idle" }, "Check for updates", ["check"], "CanvasTTY updates"],
+    [{ type: "available", version: "1.9.0" }, "Download", ["download"], "Available version: 1.9.0"],
+    [{ type: "available", version: "1.9.0", manualUrl: "https://example.invalid/release" }, "Open release",
+      ["openUrl", "https://example.invalid/release"], "Available version: 1.9.0"],
+    [{ type: "ready", version: "1.9.0" }, "Restart to update", ["install"], "Version 1.9.0 is ready to install."]
+  ]) {
+    view.emit(status);
+    const before = content(view.tree);
+    assert.ok(before.includes(message));
+    view.button(label).props.onClick();
+    expectedCalls.push(expectedCall);
+    assert.deepEqual(view.calls, expectedCalls);
+    // No test-side rejection handler: a missing UI handler must surface to node:test while this case is active.
+    rejection.reject(new Error("action failed"));
+    await tick();
+    view.render();
+    assert.ok(view.button(label));
+    assert.equal(content(view.tree), before, "failure must not invent success or reset the current status");
+    assert.equal(view.button("Check for updates").props.disabled, status.type === "ready");
+    assert.equal(findAll(view.tree, (node) => node.props.role === "alert").length, 0);
+  }
 });
 
 test("Updates is its own top-level section directly above About, and General no longer hosts the row", async () => {

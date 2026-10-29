@@ -24,6 +24,12 @@ async function bundleApp() {
       splitting: true,
       platform: "browser",
       format: "esm",
+      // Match the production React branch and electron-vite 5's fallback renderer target.
+      minify: true,
+      define: { "process.env.NODE_ENV": '"production"' },
+      legalComments: "none",
+      target: "chrome142",
+      charset: "utf8",
       outdir,
       write: true,
       metafile: true,
@@ -79,13 +85,16 @@ test("Settings and the launch/link dialogs are split out of the app's static imp
   assert.ok(!eagerPaths.has(paletteChunk), "the command palette must only be reachable through a dynamic import()");
   assert.ok(!eagerPaths.has(contextMenuChunk), "the canvas context menu must only be reachable through a dynamic import()");
 
-  const settingsBytes = metafile.outputs[settingsPath].bytes;
-  assert.ok(settingsBytes > 100_000, `SettingsPanel chunk should carry real weight, got ${settingsBytes} bytes`);
+  const settingsInputs = new Set([...staticallyReachableBytes(metafile, settingsPath).paths]
+    .flatMap((path) => Object.keys(metafile.outputs[path].inputs)));
+  for (const module of ["SettingsPanel", "UpdateSettings"]) {
+    assert.ok([...settingsInputs].some((path) => path.endsWith(`/features/settings/${module}.tsx`)),
+      `${module} must belong to the lazy settings graph`);
+  }
 
-  // Before this change, App.tsx bundled to a single ~1.6 MB chunk with no on-demand chunk for
-  // Settings, materials, and Files have on-demand UI, so first-paint code stays bounded.
+  // Keep the PR's production first-paint budget; development React code is not shipped.
   assert.ok(
-    eagerBytes < 1_700_000,
+    eagerBytes < 1_100_000,
     `code statically reachable from App.js should stay bounded now that heavy UI loads on demand, got ${eagerBytes} bytes`
   );
 });

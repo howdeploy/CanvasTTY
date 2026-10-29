@@ -23,6 +23,9 @@ const CLAUDE_TITLES: TitleGrammar = { working: [...WORKING_PREFIXES, "◑\uFE0E 
 
 export interface ProviderLifecycleParser {
   push(data: string): Extract<SessionStatus, "idle" | "working" | "needs_approval"> | null;
+  programStatus?: "idle" | "working" | "blocked" | "done" | "error" | null;
+  workingReports?: number;
+  takeReply?(): string | null;
 }
 
 export function initialSessionStatus(provider: ProviderId): SessionStatus {
@@ -30,19 +33,32 @@ export function initialSessionStatus(provider: ProviderId): SessionStatus {
 }
 
 export function createProviderLifecycleParser(provider: ProviderId, cwd = ""): ProviderLifecycleParser | null {
-  if (provider !== "claude" && provider !== "qwen") return null;
+  if (provider !== "claude" && provider !== "qwen" && provider !== "codex") return null;
   const project = basename(cwd);
-  return new OscTitleLifecycleParser(provider === "qwen" && project ? `Qwen - ${project}` : null, provider === "claude" ? CLAUDE_TITLES : QWEN_TITLES);
+  return new OscTitleLifecycleParser(provider === "qwen" && project ? `Qwen - ${project}` : null,
+    provider === "claude" ? CLAUDE_TITLES : provider === "qwen" ? QWEN_TITLES : null,
+    provider === "claude" ? "claude-code" : provider === "codex" ? "codex" : null);
 }
 
 class OscTitleLifecycleParser implements ProviderLifecycleParser {
   private pending = "";
   private activeBaseTitle: string | null;
-  private readonly grammar: TitleGrammar;
+  private readonly grammar: TitleGrammar | null;
+  private readonly app: string | null;
+  private replyPending = false;
+  programStatus: ProviderLifecycleParser["programStatus"] = null;
+  workingReports = 0;
 
-  constructor(initialBaseTitle: string | null, grammar: TitleGrammar) {
+  constructor(initialBaseTitle: string | null, grammar: TitleGrammar | null, app: string | null) {
     this.activeBaseTitle = initialBaseTitle;
     this.grammar = grammar;
+    this.app = app;
+  }
+
+  takeReply(): string | null {
+    if (!this.replyPending) return null;
+    this.replyPending = false;
+    return "\u001b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\u001b\\";
   }
 
   push(data: string): Extract<SessionStatus, "idle" | "working" | "needs_approval"> | null {
@@ -72,7 +88,25 @@ class OscTitleLifecycleParser implements ProviderLifecycleParser {
       const separator = payload.indexOf(";");
       if (separator < 0) continue;
       const command = payload.slice(0, separator);
-      if (command !== "0" && command !== "2") continue;
+      if (command === "7501" && this.app) {
+        const body = payload.slice(separator + 1);
+        if (body === "?") { this.replyPending = true; continue; }
+        if (body.length > MAX_PENDING_CHARS || !/^[a-z]+=[A-Za-z0-9_.,+/=-]*(?::[a-z]+=[A-Za-z0-9_.,+/=-]*)*$/u.test(body)) continue;
+        const fields = new Map(body.split(":").map((part) => {
+          const at = part.indexOf("=");
+          return [part.slice(0, at), part.slice(at + 1)];
+        }));
+        // Child tasks and other programs cannot change this CLI's root state.
+        if (fields.has("id") || fields.get("app") !== this.app) continue;
+        const state = fields.get("state");
+        if (state === "clear") { this.programStatus = null; continue; }
+        if (state !== "idle" && state !== "working" && state !== "blocked" && state !== "done" && state !== "error") continue;
+        this.programStatus = state;
+        if (state === "working") this.workingReports++;
+        latest = state === "working" ? "working" : state === "blocked" ? "needs_approval" : "idle";
+        continue;
+      }
+      if (!this.grammar || (command !== "0" && command !== "2")) continue;
       const state = this.readTitle(payload.slice(separator + 1).trimEnd());
       if (state) latest = state;
     }
@@ -81,6 +115,7 @@ class OscTitleLifecycleParser implements ProviderLifecycleParser {
   }
 
   private readTitle(title: string): Extract<SessionStatus, "idle" | "working" | "needs_approval"> | null {
+    if (!this.grammar || this.programStatus !== null) return null;
     const workingPrefix = this.grammar.working.find((prefix) => title.startsWith(prefix));
     if (workingPrefix) {
       this.activeBaseTitle = title.slice(workingPrefix.length);

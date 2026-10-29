@@ -6,7 +6,7 @@ import test from "node:test";
 import { openCodeAutoEnvironment, openCodePersonRules } from "../src/main/services/openCodeConfig.ts";
 import { permissionConfigProblem } from "../src/main/services/LaunchPipeline.ts";
 import { coreOwnedLaunchArgument, resolveTerminalLaunch } from "../src/main/services/terminalLaunch.ts";
-import { availableProfiles, BYPASS_CHANGES_NOTHING, profileAvailable } from "../src/shared/autoMode.ts";
+import { availableProfiles, BYPASS_CHANGES_NOTHING, profileAvailable, resolveDefaultLaunchProfile } from "../src/shared/autoMode.ts";
 import { availableRegistry } from "./helpers/terminal.mjs";
 
 
@@ -475,15 +475,28 @@ test("core-owned flags: cursor's --force/-f/--yolo/--approve-mcps and mode switc
 });
 
 test("the profiles each CLI offers; YOLO that changes nothing is known", () => {
-  assert.deepEqual(availableProfiles("claude", false), ["auto", "normal", "acceptEdits", "plan", "yolo"]);
-  assert.deepEqual(availableProfiles("codex", false), ["auto", "normal", "acceptEdits", "plan", "yolo"]);
+  for (const provider of ["claude", "grok"]) assert.deepEqual(availableProfiles(provider, false), ["auto", "normal", "ask", "acceptEdits", "dontAsk", "plan", "yolo"]);
+  assert.deepEqual(availableProfiles("codex", false), ["auto", "normal", "acceptEdits", "dontAsk", "plan", "yolo"]);
   assert.deepEqual(availableProfiles("opencode", false), ["auto", "normal", "acceptEdits", "plan", "yolo"]);
-  assert.deepEqual(availableProfiles("qwen", false), ["normal", "yolo"], "no auto of its own and no isolation layer");
-  assert.deepEqual(availableProfiles("qwen", true), ["auto", "normal", "yolo"], "a contained auto inside the layer");
-  assert.deepEqual(availableProfiles("cursor", true), ["auto", "normal", "plan", "yolo"]);
+  for (const provider of ["qwen", "antigravity"]) {
+    assert.deepEqual(availableProfiles(provider, false), ["auto", "normal", "ask", "acceptEdits", "plan", "yolo"]);
+    assert.deepEqual(availableProfiles(provider, true), availableProfiles(provider, false));
+  }
+  assert.deepEqual(availableProfiles("kimi", false), ["auto", "normal", "plan", "yolo"]);
+  assert.deepEqual(availableProfiles("devin", false), ["auto", "normal", "ask", "acceptEdits", "autonomous", "yolo"]);
+  assert.deepEqual(availableProfiles("omp", false), ["normal", "ask", "askCached", "acceptEdits", "yolo"]);
+  assert.deepEqual(availableProfiles("omp", true), ["auto", "normal", "ask", "askCached", "acceptEdits", "yolo"]);
+  assert.deepEqual(availableProfiles("hermes", false), ["normal", "yolo"]);
+  assert.deepEqual(availableProfiles("hermes", true), ["auto", "normal", "yolo"]);
+  for (const provider of ["pi", "minimax"]) assert.deepEqual(availableProfiles(provider, false), ["normal", "yolo"]);
+  assert.deepEqual(availableProfiles("cursor", false), ["normal", "plan", "readOnly", "yolo"]);
+  assert.deepEqual(availableProfiles("cursor", true), ["auto", "normal", "plan", "readOnly", "yolo"]);
   assert.deepEqual(availableProfiles("terminal", true), ["normal"]);
   assert.equal(profileAvailable("kimi", "acceptEdits", true), false);
   assert.deepEqual([...BYPASS_CHANGES_NOTHING].sort(), ["minimax", "pi"]);
+  assert.equal(resolveDefaultLaunchProfile("omp", { defaultLaunchProfile: "auto", defaultLaunchProfiles: { omp: "askCached" } }, false), "askCached");
+  assert.equal(resolveDefaultLaunchProfile("cursor", { defaultLaunchProfile: "readOnly", defaultLaunchProfiles: {} }, false), "readOnly");
+  assert.equal(resolveDefaultLaunchProfile("claude", { defaultLaunchProfile: "readOnly", defaultLaunchProfiles: {} }, false), "plan");
 });
 
 test("a contributor's configuration path that is a FIFO or oversized is refused at once, never read blocking the app", { skip: process.platform === "win32" }, async (t) => {

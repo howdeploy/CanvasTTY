@@ -14,6 +14,7 @@ import { AgentControlService } from "../src/main/services/AgentControlService.ts
 import { codexInsideIsolation } from "../src/main/services/terminalLaunch.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
+import { isolationAvailable } from "../src/shared/autoMode.ts";
 
 const at = { x: 0, y: 0 };
 const mac = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
@@ -63,6 +64,12 @@ function run(w, script, { provider = "codex", env = {}, granted } = {}) {
 }
 
 test("the isolation decision: delegated and non-manual launches, the person's setting, missing layers and environments", () => {
+  for (const platform of ["darwin", "linux", "win32"]) {
+    for (const value of [undefined, null, "off", true, "on"]) {
+      assert.equal(isolationAvailable({ agentIsolation: value }, platform),
+        value === "on" && platform !== "win32", `${platform}: ${String(value)}`);
+    }
+  }
   const on = new AgentIsolation({ userDataPath: "/u", enabled: () => true, platform: "darwin", exists: () => true });
   assert.deepEqual(on.decide({ provider: "codex", profile: "normal", delegated: false }), { apply: false, profile: "normal" }, "manual: the person answers");
   assert.deepEqual(on.decide({ provider: "terminal", profile: "normal", delegated: true }), { apply: false, profile: "normal" });
@@ -77,10 +84,11 @@ test("the isolation decision: delegated and non-manual launches, the person's se
   const off = new AgentIsolation({ userDataPath: "/u", enabled: () => false, platform: "darwin", exists: () => true });
   assert.deepEqual(off.decide({ provider: "claude", profile: "auto", delegated: false }),
     { apply: false, profile: "auto", isolation: { state: "off", reason: "agent isolation is off in Settings → Agents." } });
-  assert.match(off.decide({ provider: "qwen", profile: "auto", delegated: false }).refuse, /qwen has no auto mode of its own; its auto runs only inside/u);
+  assert.match(off.decide({ provider: "hermes", profile: "auto", delegated: false }).refuse, /hermes has no auto mode of its own; its auto runs only inside/u);
   // Off is the person's opt-in: a subagent keeps its profile (a contained auto, a bypass, still becomes normal).
   assert.deepEqual(off.decide({ provider: "codex", profile: "auto", delegated: true }).profile, "auto");
-  assert.deepEqual(off.decide({ provider: "qwen", profile: "auto", delegated: true }).profile, "normal");
+  assert.deepEqual(off.decide({ provider: "qwen", profile: "auto", delegated: true }).profile, "auto");
+  assert.deepEqual(off.decide({ provider: "hermes", profile: "auto", delegated: true }).profile, "normal");
 
   const windows = new AgentIsolation({ userDataPath: "C:\\u", enabled: () => true, platform: "win32" });
   const sub = windows.decide({ provider: "codex", profile: "auto", delegated: true });
@@ -310,7 +318,7 @@ test("the launch: wrapped when the layer applies, refused (never unwrapped) when
   assert.equal(calls.at(-1).command, "/resolved/claude", "a manual launch by the person is not wrapped");
   assert.equal(manual.isolation, undefined);
   // A contained auto (no auto of its own) exists only inside the layer.
-  terminals.create({ provider: "qwen", profile: "auto", cwd: w.project, position: at });
+  terminals.create({ provider: "hermes", profile: "auto", cwd: w.project, position: at });
   assert.ok(calls.at(-1).args.includes("--yolo"));
   const count = calls.length;
   failing = true;
@@ -336,7 +344,7 @@ test("without a layer a subagent runs in normal (it asks) and the card says why"
   assert.equal(child.profile, "normal");
   assert.equal(child.isolation.state, "unavailable");
   assert.ok(!calls.at(-1).args.includes("--approve-for-me"));
-  assert.throws(() => terminals.create({ provider: "qwen", profile: "auto", cwd: w.project, position: at }), /qwen has no auto mode of its own/u);
+  assert.throws(() => terminals.create({ provider: "hermes", profile: "auto", cwd: w.project, position: at }), /hermes has no auto mode of its own/u);
 });
 
 test("seatbelt, for real: writes stay in the project, secrets stay unread, nothing leaves through daemons", onMac, async (t) => {

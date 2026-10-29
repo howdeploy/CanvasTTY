@@ -26,7 +26,7 @@ export async function smokeAppImage(appImagePath, options = {}) {
   let child;
 
   try {
-    child = spawn(appImagePath, [
+    child = (options.spawn ?? spawn)(appImagePath, [
       "--disable-gpu",
       `--user-data-dir=${userData}`
     ], {
@@ -65,11 +65,14 @@ export async function smokeAppImage(appImagePath, options = {}) {
         reject(new Error(`AppImage exited before rendering (code=${code}, signal=${signal}). Output:\n${output}`));
       });
     });
-    await waitForExit(child, 5_000);
+    const exit = await waitForExit(child, 5_000);
+    if (exit.code !== 0 || exit.signal !== null) {
+      throw new Error(`AppImage exited unsuccessfully (code=${exit.code}, signal=${exit.signal}). Output:\n${output}`);
+    }
 
     return { elapsedMs, output };
   } finally {
-    if (child && child.exitCode === null) {
+    if (child && child.exitCode === null && child.signalCode === null) {
       child.kill("SIGTERM");
       await waitForExit(child, 2_000).catch(() => child.kill("SIGKILL"));
     }
@@ -78,15 +81,17 @@ export async function smokeAppImage(appImagePath, options = {}) {
 }
 
 function waitForExit(child, timeoutMs) {
-  if (child.exitCode !== null) return Promise.resolve();
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  }
   return new Promise((resolveExit, reject) => {
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error(`AppImage process did not exit within ${timeoutMs} ms.`));
     }, timeoutMs);
-    const onExit = () => {
+    const onExit = (code, signal) => {
       cleanup();
-      resolveExit();
+      resolveExit({ code, signal });
     };
     const cleanup = () => {
       clearTimeout(timer);

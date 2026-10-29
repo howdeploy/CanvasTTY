@@ -148,7 +148,7 @@ providers
   The agents CanvasTTY can create workers for: id (the --provider value), name,
   installed/available, signIn (ok, signed_out, expired or unknown). Run it first;
   do not search the filesystem for agent CLIs or their configuration.
-create --cwd <directory> [--provider <id>] [--title <name>] [--yolo | --profile auto|normal|acceptEdits|plan]
+create --cwd <directory> [--provider <id>] [--title <name>] [--yolo | --profile auto|normal|ask|askCached|acceptEdits|dontAsk|autonomous|plan|readOnly]
        [--model <id>] [--effort <level>]
   provider: an id from providers; codex (default), claude, qwen, kimi, opencode,
   hermes, grok, omp, pi, cursor, minimax, devin, antigravity.

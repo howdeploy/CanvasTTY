@@ -964,7 +964,7 @@
       },
       {
         "name": "spawn_agent",
-        "description": "Launch another provider's agent as a CanvasTTY subagent of this session and optionally deliver a first prompt. Returns the new session id. provider must be an id from list_providers (known ids: codex, claude, qwen, kimi, opencode, hermes, grok, omp, pi, cursor, minimax, devin, antigravity); call list_providers first to see which are installed and signed in. Give each subagent one self-contained part of the task and an absolute cwd. If the person names a model, pass it as model in the format list_providers gives for that provider (OpenCode: provider/model); effort sets the reasoning effort where that CLI has one (list_providers shows its efforts). An unsupported model or effort is refused with the reason. profile: without it the subagent gets this session's launch profile, or the next lower one its CLI has; a subagent never gets more than this session (plan < normal < acceptEdits < auto) and never YOLO. \"auto\" lets it work without asking the person for each edit or command inside the project; CanvasTTY's agent isolation and base protection apply when enabled in Settings. The answer says the profile it got. cwd must be this project's folder or a folder inside it. launchOptions passes plugin launch options exactly as a plugin tool gives them (for example the account a plugin picked), for plugins that allow an orchestrator to choose them. Refusals say why (a limit the person set, a folder outside the project, a profile above this session's): change the request instead of retrying it. Then call wait_for_agent and get_agent_result.",
+        "description": "Launch another provider's agent as a CanvasTTY subagent of this session and optionally deliver a first prompt. Returns the new session id. provider must be an id from list_providers (known ids: codex, claude, qwen, kimi, opencode, hermes, grok, omp, pi, cursor, minimax, devin, antigravity); call list_providers first to see which are installed and signed in. Give each subagent one self-contained part of the task and an absolute cwd. If the person names a model, pass it as model in the format list_providers gives for that provider (OpenCode: provider/model); effort sets the reasoning effort where that CLI has one (list_providers shows its efforts). An unsupported model or effort is refused with the reason. profile: without it the subagent inherits this session's profile, or a supported profile no higher than it; if none exists the launch is refused. The ceiling is plan/readOnly < normal/ask/askCached < acceptEdits/dontAsk < auto/autonomous; subagents never get YOLO. Only request profiles listed for that provider. normal retains CLI configuration; ask explicitly selects native approvals; askCached is OMP's approval cache; dontAsk refuses actions needing approval rather than bypassing them; readOnly is Cursor Ask; autonomous is Devin's own sandbox mode. auto uses supervised automation or, for CLIs without it, bypass only inside CanvasTTY isolation. CanvasTTY isolation and base protection apply when enabled in Settings. The answer says the profile it got. cwd must be this project's folder or a folder inside it. launchOptions passes plugin launch options exactly as a plugin tool gives them (for example the account a plugin picked), for plugins that allow an orchestrator to choose them. Refusals say why (a limit the person set, a folder outside the project, a profile above this session's): change the request instead of retrying it. Then call wait_for_agent and get_agent_result.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1008,8 +1008,13 @@
               "enum": [
                 "auto",
                 "normal",
+                "ask",
+                "askCached",
                 "acceptEdits",
-                "plan"
+                "dontAsk",
+                "autonomous",
+                "plan",
+                "readOnly"
               ]
             },
             "model": {
@@ -1045,7 +1050,7 @@
       },
       {
         "name": "send_to_agent",
-        "description": "Write a prompt into one of this session's subagents. sent: true confirms a PTY write, not that the CLI accepted or started the task. Use wait_for_agent and inspect its answer or screen to confirm progress; never retry Enter blindly. Plain terminal sessions are not agents.",
+        "description": "Write a prompt into one of this session's subagents. sent: true confirms a PTY write. Inspect delivery.stage (pasted or submitted), delivery.acceptance (confirmed or unconfirmed), and delivery.reason; a partial paste must not be resent blindly. Codex, Claude and Kimi receive a separate submit key only after the paste appears in their input field. Use wait_for_agent and inspect its answer or screen to confirm progress; never retry Enter blindly. Plain terminal sessions are not agents.",
         "inputSchema": {
           "type": "object",
           "properties": {

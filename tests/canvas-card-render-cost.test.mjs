@@ -34,11 +34,11 @@ test("TerminalCard is memoized and the workspace hands it callbacks that stay th
   assert.match(card, /export const TerminalCard = memo\(TerminalCardView, canvasCardPropsEqual\)/u);
   const workspace = await readFile(new URL("../src/renderer/src/features/workspace/WorkspaceCanvas.tsx", import.meta.url), "utf8");
   const cards = [...workspace.matchAll(/<TerminalCard\b([\s\S]*?)\/>/gu)].map((match) => match[1]);
-  assert.equal(cards.length, 2, "the canvas card and the fullscreen card");
+  assert.equal(cards.length, 1, "canvas and fullscreen share one persistent card factory");
   for (const body of cards) {
     // A new arrow function per render would defeat the memo: every callback comes from the stable set.
     assert.doesNotMatch(body, /\bon[A-Z]\w*=\{[^}]*=>/u);
-    assert.match(body, /\{\.\.\.terminalCardCallbacks\.(canvas|fullscreen)\}/u);
+    assert.match(body, /\{\.\.\.\(fullscreen \? terminalCardCallbacks\.fullscreen : terminalCardCallbacks\.canvas\)\}/u);
     assert.match(body, /onToggleFullscreen=\{toggleFullscreenFor\(session\.id\)\}/u);
   }
   assert.match(workspace, /const terminalCardCallbacks = useMemo\(\(\) => \{[\s\S]*?\}, \[\]\);/u);

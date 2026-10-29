@@ -323,6 +323,7 @@ const api: CanvasTTYApi = {
     setRestore: (id: string, restore: boolean) => ipcRenderer.invoke(IPC.terminalSetRestore, id, restore),
     dispose: (id: string, options?: { keepEnvironmentData?: boolean }) => ipcRenderer.invoke(IPC.terminalDispose, id, options),
     setVisible: (id: string, visible: boolean) => ipcRenderer.send(IPC.terminalSetVisible, id, visible),
+    acknowledgeOutput: (id: string, outputOffset: number) => ipcRenderer.send(IPC.terminalOutputParsed, id, outputOffset),
     onData: (listener: (event: TerminalDataEvent) => void, id?: string) => terminalData.subscribe(listener, id),
     onSession: (listener: (event: SessionEvent) => void) => subscribe(IPC.terminalSession, listener),
     onRemoved: (listener: (event: SessionRemovedEvent) => void) => subscribe(IPC.terminalRemoved, listener),

@@ -71,11 +71,13 @@ and Codex editor actions, including alternate submit keys. Optional actions can
 be disabled. Duplicate bindings are rejected within the context that handles
 them. Canvas focus shortcuts yield to focused terminal and text inputs.
 
-Canvas and terminal shortcuts update immediately. Codex editor shortcuts apply
-only to new or restarted cards using the optional native frontend: each running
-card retains the editor bindings with which its process started. Other CLIs
-retain their own editor keymaps. The Windows preset configures CanvasTTY actions,
-but this optional POSIX frontend has not been ported to Windows.
+Canvas and terminal shortcuts update immediately. Codex submit/newline shortcuts
+apply to new or restarted cards, including the ordinary CLI; each running card
+retains its launch bindings. Whole-draft selection requires the optional native
+frontend described here and is unavailable in stock Codex. See
+[Codex editor shortcuts](getting-started.md#codex-editor-shortcuts) for transport
+keys, native aliases and version limits. Other CLIs retain their own editor
+keymaps. This optional POSIX frontend has not been ported to Windows.
 
 ## Manual behavior to check
 

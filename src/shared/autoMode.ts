@@ -5,37 +5,47 @@
  *
  * - normal ("Manual"): the CLI asks as its own configuration says.
  * - acceptEdits: edits inside the project run, anything else asks.
- * - plan: the CLI plans or reads without changing files.
+ * - plan/readOnly: native planning or read-only operation, according to the CLI.
+ * - ask/askCached: explicit native approvals, optionally with OMP's remembered grants.
+ * - dontAsk: refuse actions needing approval instead of prompting; not an approval bypass.
+ * - autonomous: Devin's native sandboxed execution mode.
  * - auto: see AUTO_KIND.
  * - yolo ("Bypass"): every approval skipped; still inside the outer layers, never for a subagent, and only after the
  *   person acknowledged it for that CLI.
  *
  * Every entry is a per-run flag or inline setting; no CLI configuration file is written. Verified against the installed
- * CLIs' `--help` under a fake HOME (Claude Code 2.1.281, codex-cli 0.156.1, grok 1.0.41, opencode 1.18.33).
+ * CLIs' `--help` under a fake HOME and upstream command references; see docs/agent-launch-modes.md.
  */
 import type { ProviderId } from "./providerCatalog.ts";
 import type { AppSettings } from "./contracts.ts";
 
-export type LaunchProfile = "normal" | "yolo" | "auto" | "acceptEdits" | "plan";
+export type LaunchProfile = "normal" | "yolo" | "auto" | "acceptEdits" | "plan" | "ask" | "askCached" | "dontAsk" | "readOnly" | "autonomous";
 export type DefaultLaunchProfile = Exclude<LaunchProfile, "yolo">;
 /** The order the launcher offers them in. */
-export const LAUNCH_PROFILES: readonly LaunchProfile[] = ["auto", "normal", "acceptEdits", "plan", "yolo"];
+export const LAUNCH_PROFILES: readonly LaunchProfile[] = ["auto", "normal", "ask", "askCached", "acceptEdits", "dontAsk", "autonomous", "plan", "readOnly", "yolo"];
 export const isLaunchProfile = (value: unknown): value is LaunchProfile => typeof value === "string" && (LAUNCH_PROFILES as readonly string[]).includes(value);
 export const isDefaultLaunchProfile = (value: unknown): value is DefaultLaunchProfile => isLaunchProfile(value) && value !== "yolo";
 
 /**
  * How much a profile lets an agent do without the person: a subagent never gets more than its orchestrator.
- * plan < normal < acceptEdits < auto < yolo.
+ * Read-only/planning < manual approvals < automatic edits < supervised automation < bypass.
  */
-export const PROFILE_RANK: Readonly<Record<LaunchProfile, number>> = Object.freeze({ plan: 0, normal: 1, acceptEdits: 2, auto: 3, yolo: 4 });
+export const PROFILE_RANK: Readonly<Record<LaunchProfile, number>> = Object.freeze({
+  plan: 0, readOnly: 0, normal: 1, ask: 1, askCached: 1, acceptEdits: 2, dontAsk: 2, auto: 3, autonomous: 3, yolo: 4
+});
 
 export interface AutoModeFlags {
-  /** Native full auto, inside the CLI's own sandbox. */
-  readonly auto: readonly string[];
-  /** Accept-edits inside the same sandbox: edits in the project run, anything else asks or stays in the sandbox. */
-  readonly acceptEdits: readonly string[];
-  /** Planning / read-only. */
-  readonly plan: readonly string[];
+  /** Native supervised automation; containment and approval semantics depend on the CLI. */
+  readonly auto?: readonly string[];
+  /** Project edits proceed automatically, other actions require approval. */
+  readonly acceptEdits?: readonly string[];
+  /** Native planning or a read-only sandbox, according to the CLI. */
+  readonly plan?: readonly string[];
+  readonly ask?: readonly string[];
+  readonly askCached?: readonly string[];
+  readonly dontAsk?: readonly string[];
+  readonly readOnly?: readonly string[];
+  readonly autonomous?: readonly string[];
 }
 
 /** The native flag table. Claude's sandbox is not a flag but an inline settings block (CLAUDE_SANDBOX_SETTINGS). */
@@ -43,6 +53,8 @@ export const AUTO_MODE: Readonly<Partial<Record<ProviderId, AutoModeFlags>>> = O
   // claude --help: `--permission-mode <mode>` (choices: "acceptEdits", "auto", "bypassPermissions", "manual",
   // "dontAsk", "plan").
   claude: {
+    ask: ["--permission-mode", "manual"],
+    dontAsk: ["--permission-mode", "dontAsk"],
     auto: ["--permission-mode", "auto"],
     acceptEdits: ["--permission-mode", "acceptEdits"],
     plan: ["--permission-mode", "plan"]
@@ -52,6 +64,7 @@ export const AUTO_MODE: Readonly<Partial<Record<ProviderId, AutoModeFlags>>> = O
   // `-a, --ask-for-approval <on-request|never>`. Accept-edits: workspace-write, the model asks for anything beyond it.
   // Codex has no plan permission mode; its read-only sandbox (every change asks) is the honest equivalent.
   codex: {
+    dontAsk: ["--sandbox", "workspace-write", "--ask-for-approval", "never"],
     auto: ["--approve-for-me"],
     acceptEdits: ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"],
     plan: ["--sandbox", "read-only", "--ask-for-approval", "on-request"]
@@ -60,9 +73,48 @@ export const AUTO_MODE: Readonly<Partial<Record<ProviderId, AutoModeFlags>>> = O
   // `--sandbox <PROFILE>` does not list its profiles, so no Grok sandbox is relied on: its auto is its classifier only,
   // and CanvasTTY's isolation layer is what contains it.
   grok: {
+    ask: ["--permission-mode", "default"],
+    dontAsk: ["--permission-mode", "dontAsk"],
     auto: ["--permission-mode", "auto"],
     acceptEdits: ["--permission-mode", "acceptEdits"],
     plan: ["--permission-mode", "plan"]
+  },
+  // Qwen's five approval modes are independent of CanvasTTY's optional isolation.
+  qwen: {
+    ask: ["--approval-mode", "default"],
+    auto: ["--approval-mode", "auto"],
+    acceptEdits: ["--approval-mode", "auto-edit"],
+    plan: ["--approval-mode", "plan"]
+  },
+  // Kimi 2.4: --yolo is Ask When Needed, whereas --auto is Never Ask (our Bypass).
+  // Kimi has no edit-only mode; its built-in Ask When Needed rules also apply on third-party models.
+  kimi: {
+    auto: ["--yolo"],
+    plan: ["--plan"]
+  },
+  // Devin's native classifier is "smart". Plan is documented as a slash command, not a startup flag.
+  devin: {
+    ask: ["--permission-mode", "normal"],
+    autonomous: ["--sandbox", "--permission-mode", "autonomous"],
+    auto: ["--permission-mode", "smart"],
+    acceptEdits: ["--permission-mode", "accept-edits"]
+  },
+  // OMP --plan selects a model, not the read-only plan mode. "write" is its edit-only approval tier.
+  omp: {
+    ask: ["--approval-mode", "always-ask"],
+    askCached: ["--approval-mode", "always-ask-cached"],
+    acceptEdits: ["--approval-mode", "write"]
+  },
+  // Auto requires Antigravity's own terminal sandbox (Linux/macOS >=1.3.5, Windows >=1.4.4).
+  antigravity: {
+    ask: ["--mode", "default"],
+    auto: ["--mode", "auto"],
+    acceptEdits: ["--mode", "accept-edits"],
+    plan: ["--mode", "plan"]
+  },
+  cursor: {
+    plan: ["--mode", "plan"],
+    readOnly: ["--mode", "ask"]
   }
 });
 
@@ -75,14 +127,12 @@ export const AUTO_MODE: Readonly<Partial<Record<ProviderId, AutoModeFlags>>> = O
 export const CLAUDE_SANDBOX_SETTINGS = Object.freeze({ enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false });
 
 /**
- * Agents whose modes are a per-run permission configuration instead of a flag: OpenCode (1.18) has no auto flag, so its
+ * Agents whose supervised modes use per-run permission configuration: OpenCode's --auto skips approvals, so our
  * auto and accept-edits are an inline OPENCODE_CONFIG_CONTENT (openCodeAutoEnvironment in openCodeConfig.ts); its plan
  * is its built-in `plan` agent (`--agent plan`).
  */
 export const CONFIG_AUTO_MODE: ReadonlySet<ProviderId> = new Set<ProviderId>(["opencode"]);
 const OPENCODE_PLAN = ["--agent", "plan"];
-/** A plan mode without an auto mode: cursor-agent --help `--mode <mode>` (plan: read-only/planning, no edits). */
-const PLAN_ONLY: Readonly<Partial<Record<ProviderId, readonly string[]>>> = Object.freeze({ cursor: ["--mode", "plan"] });
 
 /**
  * What "auto" is for each agent:
@@ -95,7 +145,7 @@ export type AutoKind = "native" | "config" | "contained";
 
 export function autoKind(provider: ProviderId): AutoKind | null {
   if (provider === "terminal") return null;
-  if (AUTO_MODE[provider]) return "native";
+  if (AUTO_MODE[provider]?.auto) return "native";
   if (CONFIG_AUTO_MODE.has(provider)) return "config";
   return "contained";
 }
@@ -116,9 +166,9 @@ export function profileAvailable(provider: ProviderId, profile: LaunchProfile, c
     case "normal": return true;
     case "yolo": return true;
     case "auto": return hasAutoMode(provider) || containment;
-    case "acceptEdits": return Boolean(AUTO_MODE[provider]) || CONFIG_AUTO_MODE.has(provider);
-    case "plan": return Boolean(AUTO_MODE[provider]) || CONFIG_AUTO_MODE.has(provider) || Boolean(PLAN_ONLY[provider]);
-    default: return false;
+    case "acceptEdits": return Boolean(AUTO_MODE[provider]?.acceptEdits) || CONFIG_AUTO_MODE.has(provider);
+    case "plan": return Boolean(AUTO_MODE[provider]?.plan) || CONFIG_AUTO_MODE.has(provider);
+    default: return Boolean(AUTO_MODE[provider]?.[profile]);
   }
 }
 
@@ -129,10 +179,10 @@ export function availableProfiles(provider: ProviderId, containment: boolean): L
 
 /** Agent isolation can contain an agent on systems with a supported OS layer. */
 export function isolationAvailable(settings: Pick<AppSettings, "agentIsolation">, platform: string): boolean {
-  return settings.agentIsolation !== "off" && (platform === "darwin" || platform === "linux");
+  return settings.agentIsolation === "on" && (platform === "darwin" || platform === "linux");
 }
 
-/** Resolve the first available launch mode at or after the requested default. */
+/** Keep a supported personal default; otherwise prefer a supported mode no higher than it. */
 export function resolveDefaultLaunchProfile(
   provider: ProviderId,
   settings: Pick<AppSettings, "defaultLaunchProfile" | "defaultLaunchProfiles">,
@@ -146,13 +196,13 @@ export function resolveDefaultLaunchProfile(
     : isDefaultLaunchProfile(settings.defaultLaunchProfile)
       ? settings.defaultLaunchProfile
       : "auto";
-  const order: DefaultLaunchProfile[] = ["auto", "acceptEdits", "normal", "plan"];
-  return order.slice(order.indexOf(wanted)).find((profile) => profileAvailable(provider, profile, containment)) ?? "normal";
+  const order: DefaultLaunchProfile[] = [wanted, "auto", "acceptEdits", "normal", "plan", "readOnly"];
+  return order.find((profile) => PROFILE_RANK[profile] <= PROFILE_RANK[wanted] && profileAvailable(provider, profile, containment)) ?? "normal";
 }
 
 /**
- * Bypass that changes nothing: the CLI has no approvals to skip (pi 0.85 has no permission system, MiniMax's modes
- * are settings/TUI state only), so its YOLO launches the stock CLI.
+ * No launch-time approval mapping: pi 0.85 has no permission system, and MiniMax's approval modes are settings/TUI
+ * state only. Their existing YOLO choice retains the stock CLI's permission behavior.
  */
 export const BYPASS_CHANGES_NOTHING: ReadonlySet<ProviderId> = new Set<ProviderId>(["pi", "minimax"]);
 
@@ -160,26 +210,30 @@ export const BYPASS_CHANGES_NOTHING: ReadonlySet<ProviderId> = new Set<ProviderI
  * The flags a profile adds (YOLO and a contained auto use the bypass table in terminalLaunch.ts). `thirdPartyModel`
  * (a launch contributor ran the CLI on another model, e.g. an API or Ollama account) turns auto into accept-edits:
  * the native auto reviewer would then be that same model, and a weak model's own classifier is not a safety boundary.
+ * This fallback applies where the CLI has an edit-only mode; Kimi keeps its own Ask When Needed rules.
  */
 export function profileArguments(provider: ProviderId, profile: LaunchProfile, thirdPartyModel: boolean): string[] {
   if (profile === "normal" || profile === "yolo") return [];
-  if (CONFIG_AUTO_MODE.has(provider)) return profile === "plan" ? [...OPENCODE_PLAN] : [];
-  const flags = AUTO_MODE[provider];
-  if (!flags) {
-    if (profile === "auto") return [];
-    if (profile === "plan" && PLAN_ONLY[provider]) return [...PLAN_ONLY[provider]!];
+  if (CONFIG_AUTO_MODE.has(provider)) {
+    if (profile === "plan") return [...OPENCODE_PLAN];
+    if (profile === "auto" || profile === "acceptEdits") return [];
     throw new Error(`${provider} has no ${profile} mode.`);
   }
-  if (profile === "auto") return [...(thirdPartyModel ? flags.acceptEdits : flags.auto)];
-  return [...flags[profile]];
+  const flags = AUTO_MODE[provider];
+  const args = flags?.[profile];
+  if (!args) {
+    if (profile === "auto") return [];
+    throw new Error(`${provider} has no ${profile} mode.`);
+  }
+  if (profile === "auto" && thirdPartyModel && flags?.acceptEdits) return [...flags.acceptEdits];
+  return [...args];
 }
 
 /** Kept for callers of the auto flags alone. */
 export function autoModeArguments(provider: ProviderId, thirdPartyModel: boolean): string[] {
   if (CONFIG_AUTO_MODE.has(provider)) return [];
-  const flags = AUTO_MODE[provider];
-  if (!flags) throw new Error(`${provider} has no auto mode; use the normal profile.`);
-  return [...(thirdPartyModel ? flags.acceptEdits : flags.auto)];
+  if (!AUTO_MODE[provider]?.auto) throw new Error(`${provider} has no auto mode; use the normal profile.`);
+  return profileArguments(provider, "auto", thirdPartyModel);
 }
 
 /** The most a subagent of an orchestrator in `parent` may run in: never YOLO, never more than its orchestrator. */

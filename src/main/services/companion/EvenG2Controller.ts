@@ -9,6 +9,7 @@ import { readFile, writeFile, mkdir, rename, stat, rm } from "node:fs/promises";
 import { readFileSync, existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
 import { isPathInside } from "../../../agent-runtime/path-inside.mjs";
+import { codexPromptSubmit } from "../../../shared/codexKeyboard.ts";
 import { hostname } from "node:os";
 import type { TerminalManager } from "../TerminalManager.ts";
 import type { LimitsSnapshot, ProviderId } from "../../../shared/contracts.ts";
@@ -48,6 +49,7 @@ import { SpeechSetup } from "./SpeechSetup.ts";
 type Terminals = Pick<
   TerminalManager,
   | "listMetadata"
+  | "getMetadata"
   | "geometry"
   | "readBuffer"
   | "create"
@@ -218,7 +220,8 @@ export class EvenG2Controller {
         }) as Record<ProviderId, boolean>,
         read: (id) => this.presentation.read(id),
         input: (id, data) => {
-          const written = this.terminals.inputChecked(id, data);
+          const written = data.startsWith("\x1b[200~") && data.endsWith("\x1b[201~\r")
+            ? this.inputPrompt(id, data) : this.terminals.inputChecked(id, data);
           if (written) this.presentation.pending(id);
           return written;
         },
@@ -310,6 +313,13 @@ export class EvenG2Controller {
       }
     }
   }
+  private inputPrompt(id: string, data: string): boolean {
+    const session = this.terminals.getMetadata(id);
+    const input = session?.provider === "codex"
+      ? codexPromptSubmit(data, session.nativeEditor?.submit, session.nativeEditor?.submitSequence) : data;
+    return input !== null && this.terminals.inputChecked(id, input);
+  }
+
   observe(channel: string, payload: unknown): void {
     if (this.config.enabled) this.presentation.observe(channel, payload);
   }
@@ -1191,7 +1201,7 @@ export class EvenG2Controller {
             if (/[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(text))
               throw new Error("invalid-transcript");
             if (
-              !this.terminals.inputChecked(
+              !this.inputPrompt(
                 id,
                 "\x1b[200~" + text + "\x1b[201~\r",
               )

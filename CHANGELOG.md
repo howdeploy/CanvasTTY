@@ -2,6 +2,24 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## 1.8.5-beta2
+
+Beta candidate continuing the optimization round. Runtime validation and macOS performance measurements are still pending; this does not claim to resolve every reported slowdown.
+
+- Avoid repeated terminal-cell allocation, unchanged pinned-input DOM rebuilds, repeated delivery-buffer copies and redundant session/result lookups.
+- Apply configured submit/newline shortcuts to new or restarted ordinary Codex cards, and use the launch keymap for native control CLI submission. Whole-draft selection still requires the compatible bundled frontend.
+- Prevent delayed Claude spinner titles from restarting a completed hooked turn. Report quota HTTP 429 as throttling, respect retry delays and retain previous readings as stale.
+- Suppress fleeting approval notifications: wait one second and cancel if the agent continues or the card closes; session status remains immediate.
+- Restore `Ctrl+C` for copying selected terminal text in the Windows preset, including existing profiles that inherited Linux's `Ctrl+Shift+C`. Preserve custom bindings and the no-selection interrupt.
+- Unify MCP, native control CLI and plugin prompt delivery: observe Codex/Claude/Kimi pastes before a separate submit, retain partial-delivery receipts and stop on manual input or restart. Recognize guarded unstyled Codex placeholders and root OSC 7501 status reports. Native Windows/macOS verification remains pending.
+- Adapt [PR #170](https://github.com/howdeploy/CanvasTTY/pull/170) fixes across macOS, Linux and Windows: finalize fast gestures, retain xterm during fullscreen changes, apply parser backpressure, preserve newer note edits and settings files, release background/browser resources, recover crashed browser tabs, and protect plugin installation ownership. POSIX process cleanup and Windows directory installation use their native paths. Pin Electron 43.8.1 for all platforms; combined-tree and native validation remain pending. See [integration decisions](docs/pr-170-integration.md).
+- Default new profiles to non-inverted terminal/canvas scrolling and disabled CanvasTTY protection layers, preserving explicit saved choices.
+- Retain paused Unix PTY output after process exit and resume before explicit termination; make the PTY resource smoke acknowledge actual output before its child exits. Windows ConPTY is unchanged.
+- Keep Unix gateway sockets in short private temporary directories when profile or temporary paths are too long, instead of failing application startup.
+- Fill the workspace with proportionally scaled canvas backgrounds in ordinary and ultrawide windows, allowing edge cropping; size them to the area below the title bar, independently of camera zoom. Keep launch-mode labels intact and the narrower launch action on the same row.
+- Review all 13 agent CLIs and expand native launch modes without adding adapters: Kimi Ask When Needed/Never Ask, Qwen/Antigravity Auto, Cursor Ask, explicit approval modes, OMP cached approvals, Claude/Grok/Codex no-prompt modes, and Devin Autonomous. Share choices across launcher, defaults, plugins and orchestration; refuse inherited profiles that would exceed the parent. Document modes that require additional integration.
+- Replace selected weak test assertions and add CI/benchmark validity checks. The deeper case-by-case test audit remains deferred. Known issues listed under `1.8.5-beta.1` remain open.
+
 ## 1.8.5-beta.1
 
 Prerelease for collecting feedback; known issues below remain open. The initial `1.8.5-beta` installer workflow stopped at tests and did not publish a release.

@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { once } from "node:events";
+import { createConnection } from "node:net";
+import { createInterface } from "node:readline";
 import test from "node:test";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { AgentControlService } from "../src/main/services/AgentControlService.ts";
@@ -69,8 +72,9 @@ test("only orchestrator sessions receive the orchestration capability environmen
   terminals.disposeAll();
 });
 
-test("disposing an orchestrator session revokes its capability", async (t) => {
-  const { terminals, gateway } = await fixture(t);
+test("disposing an orchestrator session revokes its capability", { timeout: 15_000 }, async (t) => {
+  const { terminals, calls } = await fixture(t);
+  t.after(() => terminals.disposeAll());
   const orchestrator = terminals.create({
     provider: "claude",
     cwd: process.cwd(),
@@ -78,11 +82,34 @@ test("disposing an orchestrator session revokes its capability", async (t) => {
     position: { x: 0, y: 0 },
     role: "orchestrator"
   });
+  const env = calls[0].options.env;
+  const authenticate = async (token) => {
+    const socket = createConnection(env.CANVASTTY_ORCHESTRATION_ADDRESS);
+    t.after(() => socket.destroy());
+    socket.setTimeout(5_000, () => socket.destroy(new Error("orchestration authentication timed out")));
+    const lines = createInterface({ input: socket });
+    t.after(() => lines.close());
+    const replies = lines[Symbol.asyncIterator]();
+    await once(socket, "connect");
+    const next = replies.next();
+    socket.write(JSON.stringify({
+      v: 1, type: "authenticate", connectionId: env.CANVASTTY_ORCHESTRATION_CONNECTION_ID,
+      terminalSessionId: orchestrator.id, capabilityToken: token
+    }) + "\n");
+    const reply = await next;
+    assert.equal(reply.done, false, "authentication produces a protocol response");
+    return { socket, reply: JSON.parse(reply.value) };
+  };
+  const connected = await authenticate(env.CANVASTTY_ORCHESTRATION_CAPABILITY);
+  assert.equal(connected.reply.type, "authenticated", "the original launch capability works before disposal");
+  assert.equal(typeof connected.reply.reconnectToken, "string");
+  const closed = once(connected.socket, "close");
   terminals.dispose(orchestrator.id);
-  // The session id is free again: a fresh registration succeeds.
-  const capability = gateway.registerOrchestrator({ terminalSessionId: orchestrator.id });
-  assert.ok(capability.capabilityToken);
-  gateway.revokeTerminalSession(orchestrator.id);
+  await closed;
+  // Re-registering would itself revoke the old lease and hide a missing dispose cleanup.
+  const refused = await authenticate(connected.reply.reconnectToken);
+  assert.equal(refused.reply.type, "error");
+  assert.equal(refused.reply.error.code, "AUTH_INVALID");
 });
 
 test("browser capabilities are retained only after PTY spawn and released on exit", (t) => {

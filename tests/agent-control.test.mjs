@@ -11,7 +11,7 @@ import test from "node:test";
 import { controlRequest, parseArguments, runCli } from "../scripts/canvastty-control.mjs";
 import xterm from "@xterm/headless";
 import { AgentControlGateway, CONTROL_REFUSAL_MESSAGE, codexComposerReady } from "../src/main/services/agent-control/AgentControlGateway.ts";
-import { IPC } from "../src/shared/contracts.ts";
+import { IPC, DEFAULT_SHORTCUTS } from "../src/shared/contracts.ts";
 import { PixelSkinPackRegistry } from "../src/main/services/PixelSkinPackRegistry.ts";
 import { SettingsStore } from "../src/main/services/SettingsStore.ts";
 import { TerminalManager, terminalEnvironment } from "../src/main/services/TerminalManager.ts";
@@ -27,7 +27,7 @@ import {
   MAX_RESULT_CHARS,
   MAX_RUNTIME_MESSAGE_BYTES
 } from "../src/agent-runtime/runtime-protocol.mjs";
-import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
+import { availableRegistry, echoPromptInput, fakeSpawner } from "./helpers/terminal.mjs";
 
 const localSocket = { skip: process.platform === "win32" ? "Unix socket tests; native Windows pipe relay has its own suite." : false };
 const PROMPT = "\x1b[2J\x1b[H>_ OpenAI Codex\r\nmodel: test\r\npermissions: YOLO mode\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m";
@@ -37,17 +37,22 @@ function registry() {
     environment: {}, checked: [] }), snapshot: () => ({}) };
 }
 
-async function fixture(t, gatewayOptions = {}) {
+async function fixture(t, gatewayOptions = {}, agentBrowser) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "ctty-control-test-")));
   const calls = [];
   let gateway;
-  const terminals = new TerminalManager((channel, payload) => gateway?.observe(channel, payload), registry(), undefined, undefined, true,
+  const terminals = new TerminalManager((channel, payload) => gateway?.observe(channel, payload), registry(), agentBrowser, undefined, true,
     (command, args, options) => {
       let onData = () => {};
       let onExit = () => {};
       const pty = { write(text) { this.writes.push(text); }, writes: [], resize() {}, kill() {},
         onData(fn) { onData = fn; }, onExit(fn) { onExit = fn; },
-        data(text) { onData(text); }, exit(code) { onExit({ exitCode: code }); } };
+        data(text) {
+          if (text.includes("│ >")) this.provider = "kimi";
+          else if (text.includes("❯")) this.provider = "claude";
+          onData(text);
+        }, exit(code) { onExit({ exitCode: code }); } };
+      echoPromptInput(pty, "codex", PROMPT);
       calls.push({ command, args, options, pty });
       return pty;
     });
@@ -160,7 +165,7 @@ test("request receipts are bounded without locking the gateway, and a refused re
   // BUSY wrote nothing, so the same request id is performed on retry instead of replaying BUSY.
   const retried = await f.request("send", { sessionId: session.id, text: "second" }, "send-second");
   assert.equal(retried.sessionId, session.id);
-  assert.equal(f.calls[0].pty.writes.length, 2);
+  assert.equal(f.calls[0].pty.writes.length, 4);
 });
 
 test("a create whose controller setup fails closes the card instead of leaving it running unowned", localSocket, async (t) => {
@@ -322,7 +327,7 @@ test("literal prompt delivery, busy guard, result revisions and stale-result sep
   const text = 'Check "$1" and $(literal text)\nsecond line';
   const first = await f.request("send", { sessionId: session.id, text }, "send-one");
   await f.request("send", { sessionId: session.id, text }, "send-one");
-  assert.deepEqual(f.calls[0].pty.writes, [`\x1b[200~${text}\x1b[201~\r`]);
+  assert.deepEqual(f.calls[0].pty.writes, [`\x1b[200~${text}\x1b[201~`, "\r"]);
   assert.equal(first.resultRevisionBefore, 0);
   assert.equal((await f.request("result", { sessionId: session.id })).fresh, false);
   f.signal(session.id, "idle", "old-turn", { text: "stale", truncated: false });
@@ -341,6 +346,54 @@ test("literal prompt delivery, busy guard, result revisions and stale-result sep
   assert.equal(old.turn.id, "send-one");
   assert.equal(old.turn.state, "completed");
   assert.equal((await f.request("result", { sessionId: session.id, after: 1 })).fresh, false);
+});
+
+test("native control preserves and replays a partial paste without duplicating it or queuing a turn", localSocket, async t => {
+  const f = await fixture(t), { session } = await f.create();
+  await f.ready(session.id);
+  const pty = f.calls.at(-1).pty;
+  pty.write = text => pty.writes.push(text); // This CLI never redraws its pasted input.
+  const deliver = f.terminals.deliverPrompt.bind(f.terminals);
+  f.terminals.deliverPrompt = (id, text, submit, signal, options) => deliver(id, text, submit, signal, { ...options, waitMs: 150 });
+  const request = { sessionId: session.id, text: "one task" };
+  const first = await f.request("send", request, "partial-task");
+  assert.equal(first.receipt.stage, "pasted");
+  assert.equal(first.turnId, null);
+  assert.deepEqual(await f.request("send", request, "partial-task"), first);
+  assert.equal((await f.request("status", { sessionId: session.id })).delivery.stage, "pasted");
+  await assert.rejects(f.request("send", { ...request, text: "second task" }), e => e.code === "NOT_READY");
+  assert.deepEqual(pty.writes, ["\x1b[200~one task\x1b[201~"]);
+});
+
+test("control CLI submit follows the launched Codex keymap and refuses unencodable input before queuing a turn", localSocket, async (t) => {
+  const environment = {};
+  const f = await fixture(t, {}, { prepareLaunch: () => ({ args: [], environment, cleanup() {} }) });
+  const frontend = join(f.root, "frontend");
+  const launcher = join(f.root, "launch.mjs");
+  await writeFile(frontend, "fixture frontend; the PTY is not executed");
+  await writeFile(launcher, "fixture launcher; the PTY is not executed");
+  Object.assign(environment, { CANVASTTY_CODEX_TUI_QA: frontend, CANVASTTY_CODEX_TUI_LAUNCHER_QA: launcher });
+  f.terminals.setKeyboardShortcuts({ ...DEFAULT_SHORTCUTS, codexSubmit: "F5" });
+  const { session } = await f.create();
+  assert.equal(session.nativeEditor.submit, "F5");
+  assert.equal(session.nativeEditor.submitSequence, undefined, "bundled frontend uses the recorded key itself");
+  f.terminals.setKeyboardShortcuts({ ...DEFAULT_SHORTCUTS, codexSubmit: "F6" });
+  await f.ready(session.id);
+  const text = "Keep the prompt literal\nsecond line";
+  const sent = await f.request("send", { sessionId: session.id, text }, "keymap-send");
+  await f.request("send", { sessionId: session.id, text }, "keymap-send");
+  assert.equal(sent.delivery, "written-to-pty");
+  assert.deepEqual(f.calls[0].pty.writes, [`\x1b[200~${text}\x1b[201~`, "\x1b[15;1~"],
+    "only the submit suffix is translated, once, using the launch snapshot rather than new settings");
+
+  f.terminals.setKeyboardShortcuts({ ...DEFAULT_SHORTCUTS, codexSubmit: "Ctrl+," });
+  const { session: invalid } = await f.create();
+  await f.ready(invalid.id);
+  await assert.rejects(f.request("send", { sessionId: invalid.id, text: "task" }),
+    (error) => error.code === "NOT_SUPPORTED" && /cannot be encoded/.test(error.message));
+  assert.deepEqual(f.calls[1].pty.writes, []);
+  assert.equal((await f.request("status", { sessionId: invalid.id })).turn, null,
+    "a refused submit must not leave a queued turn that blocks future input");
 });
 
 test("interrupt affects one owned turn and reports completion only after lifecycle confirmation", localSocket, async (t) => {
@@ -562,10 +615,13 @@ test("every agent provider can be a worker, with Codex-only result capture and m
   await assert.rejects(f.request("choose", { sessionId: claude.session.id, choice: 1, revision: screen.revision }), (e) => e.code === "NOT_SUPPORTED");
   await assert.rejects(f.request("dismiss", { sessionId: claude.session.id, revision: screen.revision }), (e) => e.code === "NOT_SUPPORTED");
 
-  // send needs only an idle/unavailable status without an active turn; the screen is the sole evidence.
+  await assert.rejects(f.request("send", { sessionId: claude.session.id, text: "must not answer the menu" }), e => e.code === "NOT_READY");
+  assert.deepEqual(pty.writes, []);
+  pty.data("\x1b[2J\x1b[H❯ ");
+  for (let i = 0; i < 30 && !(await f.request("screen", { sessionId: claude.session.id })).composerReady; i++) await delay(5);
   const sent = await f.request("send", { sessionId: claude.session.id, text: "summarise the repository" });
   assert.equal(sent.delivery, "written-to-pty");
-  assert.ok(pty.writes.at(-1).includes("summarise the repository"));
+  assert.deepEqual(pty.writes, ["\x1b[200~summarise the repository\x1b[201~", "\r"]);
   await assert.rejects(f.request("send", { sessionId: claude.session.id, text: "again" }), (e) => e.code === "BUSY");
   f.signal(claude.session.id, "working");
   f.signal(claude.session.id, "idle");
@@ -608,7 +664,7 @@ test("native Kimi control requires its active empty composer before any PTY writ
   await observed(screen => screen.composerReady);
   const result = await f.request("send", { sessionId: id, text: "READY_TASK" });
   assert.equal(result.delivery, "written-to-pty");
-  assert.deepEqual(pty.writes, ["\x1b[200~READY_TASK\x1b[201~\r"]);
+  assert.deepEqual(pty.writes, ["\x1b[200~READY_TASK\x1b[201~", "\r"]);
 });
 
 test("native OpenCode control refuses startup without a write, then accepts its observed input view", localSocket, async t => {
@@ -747,6 +803,69 @@ test("send appends submit unless told otherwise and rejects exited sessions", as
   const sent = [...writes.values()].flat().join("");
   assert.match(sent, /run the tests\r --quiet/u);
   terminals.disposeAll();
+});
+
+test("programmatic submit uses each launch's transport and preserves prompt bytes", { timeout: 15_000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "ctty-submit-keymap-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const frontend = join(directory, "frontend");
+  const launcher = join(directory, "launch.mjs");
+  await writeFile(frontend, "fake frontend; the PTY spawner never executes it");
+  await writeFile(launcher, "fake launcher; the PTY spawner never executes it");
+  const modes = process.platform === "win32" ? ["stock"] : ["stock", "bundled"];
+  if (process.platform === "win32") t.diagnostic("Bundled Codex TUI is supported only on macOS/Linux; stock delivery is covered here.");
+  for (const mode of modes) {
+    const calls = [];
+    const written = [];
+    const environment = {
+      CANVASTTY_CODEX_TUI_QA: mode === "bundled" ? frontend : "",
+      CANVASTTY_CODEX_TUI_LAUNCHER_QA: mode === "bundled" ? launcher : ""
+    };
+    const browser = { prepareLaunch: () => ({ args: [], environment, cleanup() {} }) };
+    const terminals = new TerminalManager(() => undefined, availableRegistry(), browser, undefined, true,
+      fakeSpawner(calls, { onWrite: (data) => written.push(data) }));
+    t.after(() => terminals.disposeAll());
+    const control = new AgentControlService(terminals);
+    const create = (provider) => terminals.create({ provider, profile: "normal", cwd: directory, position: { x: 0, y: 0 } });
+    terminals.setKeyboardShortcuts({ ...DEFAULT_SHORTCUTS, codexSubmit: "Alt+S" });
+    const original = create("codex");
+    terminals.setKeyboardShortcuts({ ...DEFAULT_SHORTCUTS, codexSubmit: "Ctrl+J" });
+    const next = create("codex");
+    const deliveries = [
+      [original, calls[0], mode === "bundled" ? "\x1b[115;3u" : "\r"],
+      [next, calls[1], mode === "bundled" ? "\x1b[106;5u" : "\r"]
+    ];
+    if (mode === "bundled") {
+      terminals.setKeyboardShortcuts({ ...DEFAULT_SHORTCUTS, codexSubmit: "Ctrl+Comma" });
+      deliveries.push([create("codex"), calls[2], "\x1b[44;5u"]);
+    }
+    for (const [session, call, suffix] of deliveries) {
+      echoPromptInput(call.process, "codex", PROMPT);
+      call.process.emitData(PROMPT);
+      const body = "line one\r\nline two\r";
+      written.length = 0;
+      await control.send(session.id, body, false, t.signal);
+      assert.deepEqual(written, [`\x1b[200~${body}\x1b[201~`], `${mode}: paste-only never gains a submit key`);
+      await control.send(session.id, body, true, t.signal);
+      assert.deepEqual(written, [`\x1b[200~${body}\x1b[201~`, `\x1b[200~${body}\x1b[201~`, suffix],
+        `${mode}: only the final submit suffix follows this launch's keymap`);
+    }
+    if (mode === "bundled") {
+      // Invalid/stale internal metadata: validated settings use Comma, not a literal comma.
+      terminals.setKeyboardShortcuts({ ...DEFAULT_SHORTCUTS, codexSubmit: "Ctrl+," });
+      const invalid = create("codex");
+      written.length = 0;
+      assert.deepEqual(await terminals.deliverInput(invalid.id, "\x1b[200~task\x1b[201~\r", 0, t.signal),
+        { delivered: false, reason: "The configured Codex submit shortcut cannot be encoded." });
+      assert.deepEqual(written, [], "an unencodable submit refuses delivery without a PTY write or rejection");
+    }
+    const other = create("qwen");
+    written.length = 0;
+    await control.send(other.id, "line one\nline two", true, t.signal);
+    await control.send(other.id, "\runchanged", false, t.signal);
+    assert.deepEqual(written, ["line one\nline two\r", "\runchanged"], `${mode}: other providers keep their input semantics`);
+    terminals.disposeAll();
+  }
 });
 
 test("observe returns a capped terminal tail and result reflects exit state", () => {
@@ -931,7 +1050,7 @@ test("native control handles soft-wrapped and dim clipped placeholders", localSo
       await delay(5);
     }
     await f.request("send", { sessionId: session.id, text: "task" });
-    assert.deepEqual(f.calls.at(-1).pty.writes, ["\x1b[200~task\x1b[201~\r"]);
+    assert.deepEqual(f.calls.at(-1).pty.writes, ["\x1b[200~task\x1b[201~", "\r"]);
   }
 });
 
@@ -1002,7 +1121,7 @@ test("native control rejects multiline drafts below a blank first composer row",
   await delay(20);
   assert.equal((await f.request("screen", { sessionId: session.id })).composerReady, true);
   await f.request("send", { sessionId: session.id, text: "task" });
-  assert.deepEqual(pty.writes, ["\x1b[200~task\x1b[201~\r"]);
+  assert.deepEqual(pty.writes, ["\x1b[200~task\x1b[201~", "\r"]);
 });
 
 test("native control recognizes animated placeholders without accepting animated drafts", localSocket, async t => {
@@ -1016,5 +1135,5 @@ test("native control recognizes animated placeholders without accepting animated
     if (!dim) await assert.rejects(f.request("send", { sessionId: session.id, text: "task" }), e => e.code === "NOT_READY");
     else await f.request("send", { sessionId: session.id, text: "task" });
   }
-  assert.deepEqual(pty.writes, ["\x1b[200~task\x1b[201~\r"]);
+  assert.deepEqual(pty.writes, ["\x1b[200~task\x1b[201~", "\r"]);
 });

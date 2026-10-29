@@ -598,6 +598,29 @@ test("plugin download retries transient failures but not permanent ones", async 
   }
 });
 
+test("all platforms accept a compressible 42 MB asset pack and still reject oversized inflation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ctty-pack-size-"));
+  const originalFetch = globalThis.fetch;
+  const pack = (files) => gzipSync(tarArchive(Array.from({ length: files }, (_, i) => ({
+    name: `repository-hash/data/${i}.json`, type: "0", content: Buffer.alloc(7 * 1024 * 1024, 32)
+  }))));
+  try {
+    const valid = pack(6);
+    globalThis.fetch = async () => new Response(valid);
+    await downloadGithubRepository("https://github.com/example/backgrounds", directory);
+    assert.equal((await stat(join(directory, "data/5.json"))).size, 7 * 1024 * 1024);
+    const oversized = pack(10);
+    globalThis.fetch = async () => new Response(oversized);
+    await assert.rejects(() => downloadGithubRepository("https://github.com/example/backgrounds", directory),
+      /64 MB unpacked limit/);
+    globalThis.fetch = async () => new Response("not gzip");
+    await assert.rejects(() => downloadGithubRepository("https://github.com/example/backgrounds", directory), /valid bounded gzip/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("manifest-only preview retries GitHub API and raw downloads and rejects foreign redirects", async () => {
   const userData = await mkdtemp(join(tmpdir(), "canvastty-plugin-manifest-retry-"));
   const core = Buffer.from("<h1>Core</h1>");

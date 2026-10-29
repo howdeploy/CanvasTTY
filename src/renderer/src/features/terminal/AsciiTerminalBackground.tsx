@@ -64,7 +64,7 @@ export function AsciiTerminalBackground({ scene, brightness, contrast, saturatio
     canvas.width = initialSize.width;
     canvas.height = initialSize.height;
     const offscreen = canvas.transferControlToOffscreen();
-    worker.postMessage({ type: "init", canvas: offscreen, scene, pixelRatio: initialSize.pixelRatio } satisfies BackgroundWorkerMessage, [offscreen]);
+    worker.postMessage({ type: "init", canvas: offscreen, scene, pixelRatio: initialSize.pixelRatio, recoverContext: window.canvasTTY.window.isMacOS } satisfies BackgroundWorkerMessage, [offscreen]);
     worker.onmessage = (event) => {
       if (event.data?.type === "error") {
         console.warn("ASCII background load failed:", scene, event.data.error);

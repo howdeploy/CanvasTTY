@@ -1,3 +1,4 @@
+import { attachAsciiContextRecovery } from "./asciiContextRecovery";
 import type { AsciiPiece } from "../../../../shared/terminalBackground";
 import { drawAsciiFrame } from "./asciiFrameCanvas";
 import { createAsciiGpuRenderer } from "./asciiFrameGpu";
@@ -5,7 +6,7 @@ import { synchronizedBackgroundDelay, synchronizedBackgroundTime, type Backgroun
 import type { AsciiFrameTransform } from "./asciiFrameBounds";
 
 export type BackgroundWorkerMessage =
-  | { type: "init"; canvas: OffscreenCanvas; scene: string; pixelRatio?: number }
+  | { type: "init"; canvas: OffscreenCanvas; scene: string; pixelRatio?: number; recoverContext?: boolean }
   | { type: "resize"; width: number; height: number; pixelRatio?: number }
   | { type: "speed"; value: number }
   | { type: "transform"; value: AsciiFrameTransform }
@@ -25,9 +26,10 @@ let speed = 1;
 let syncClock: BackgroundSyncClock | null = null;
 let transform: AsciiFrameTransform = { scale: 100, offsetX: 0, offsetY: 0 };
 let timer: ReturnType<typeof setTimeout> | undefined;
+let contextLost = false;
 
 function draw(advance = true): void {
-  if (!frame || (!ctx && !gpu)) return;
+  if (contextLost || !frame || (!ctx && !gpu)) return;
   try {
     if (advance || text === undefined) text = frame(time, { paper: false, color });
     if (gpu) gpu(text, color, pixelRatio, transform);
@@ -50,7 +52,7 @@ function advanceTime(now: number): void {
 
 function tick(): void {
   timer = undefined;
-  if (!playing || !frame) return;
+  if (contextLost || !playing || !frame) return;
   const start = performance.now();
   advanceTime(start);
   draw();
@@ -65,7 +67,7 @@ function tick(): void {
 function run(): void {
   clearTimeout(timer);
   timer = undefined;
-  if (playing && frame && piece.meta.fps !== 0) {
+  if (!contextLost && playing && frame && piece.meta.fps !== 0) {
     last = performance.now();
     timer = setTimeout(tick, 0);
   }
@@ -87,7 +89,25 @@ self.onmessage = async ({ data }: MessageEvent<BackgroundWorkerMessage>): Promis
         return;
       }
     }
-    if (typeof canvas.addEventListener === "function") {
+    if (data.recoverContext && typeof canvas.addEventListener === "function") {
+      attachAsciiContextRecovery(canvas, () => {
+        contextLost = true;
+        clearTimeout(timer);
+        timer = undefined;
+        gpu = null;
+        ctx = null;
+      }, () => {
+        try {
+          gpu = createAsciiGpuRenderer(canvas, piece.meta);
+          if (!gpu) throw new Error("WebGL background restoration failed.");
+          contextLost = false;
+          draw(false);
+          run();
+        } catch (error) {
+          self.postMessage({ type: "error", error: error instanceof Error ? error.message : String(error) });
+        }
+      });
+    } else if (typeof canvas.addEventListener === "function") {
       canvas.addEventListener("webglcontextlost", (event) => {
         event.preventDefault();
         gpu = null;

@@ -2099,6 +2099,8 @@ export interface CanvasTTYApi {
     dispose(id: string, options?: { keepEnvironmentData?: boolean }): Promise<void>;
     /** Report whether the card renders live output; hidden cards keep history but skip streaming. */
     setVisible(id: string, visible: boolean): void;
+    /** macOS output flow control: called after xterm parsed this absolute output offset. */
+    acknowledgeOutput?(id: string, outputOffset: number): void;
     /** With `id`, only that session's output (one context-bridge call per batch instead of one per card). */
     onData(listener: (event: TerminalDataEvent) => void, id?: string): () => void;
     onSession(listener: (event: SessionEvent) => void): () => void;
@@ -2297,6 +2299,7 @@ export const IPC = {
   terminalData: "terminal:data",
   /** Main -> renderer: the TerminalDataEvents of one output flush, in order (see TerminalRendererOutbox). */
   terminalDataBatch: "terminal:data-batch",
+  terminalOutputParsed: "terminal:output-parsed",
   terminalSession: "terminal:session",
   terminalRemoved: "terminal:removed",
   terminalGitRisk: "terminal:git-risk",

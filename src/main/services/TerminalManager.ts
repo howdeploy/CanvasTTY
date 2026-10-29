@@ -104,6 +104,9 @@ const OUTPUT_BATCH_MS = 16;
  * is flushed immediately instead of waiting for the timer.
  */
 const MAX_PENDING_OUTPUT_CHARS = 1_048_576;
+/** macOS: bound the whole PTY -> IPC -> xterm parser queue, including hidden windows. */
+export const MAX_UNPARSED_OUTPUT_CHARS = 1_048_576;
+const RESUME_UNPARSED_OUTPUT_CHARS = 262_144;
 /** How long repeated setBounds/rename/etc. calls are coalesced before the session store is rewritten once. */
 const PERSISTENCE_DEBOUNCE_MS = 150;
 const DEFAULT_TERMINAL_SIZE = { width: 700, height: 430 };
@@ -122,6 +125,9 @@ interface ManagedSession {
   outputOffset: number;
   pendingOutput: string[];
   pendingOutputChars: number;
+  /** The renderer confirms bytes only after xterm's asynchronous parser consumed them. */
+  parsedOutputOffset?: number;
+  outputPausedProcess?: IPty;
   agentBrowser: PreparedAgentBrowserPtyLaunch | null;
   agentRuntime: PreparedAgentRuntimePtyLaunch | null;
   agentOrchestration: PreparedOrchestrationPtyLaunch | null;
@@ -246,6 +252,7 @@ export class TerminalManager {
   private readonly agentBrowser?: AgentBrowserLaunchCoordinator;
   private readonly agentRuntime?: AgentRuntimeLaunchCoordinator;
   private readonly spawnPty: typeof pty.spawn;
+  private readonly platform: NodeJS.Platform;
   // Renderer-reported card visibility, keyed by session and holding the
   // outputOffset at the moment it was hidden: the last offset the card saw.
   // Output keeps flowing through emit while hidden, addressed to the observers
@@ -312,13 +319,15 @@ export class TerminalManager {
     agentBrowser?: AgentBrowserLaunchCoordinator,
     agentRuntime?: AgentRuntimeLaunchCoordinator,
     lifecycleHooksEnabled = true,
-    spawnPty: typeof pty.spawn = pty.spawn
+    spawnPty: typeof pty.spawn = pty.spawn,
+    platform: NodeJS.Platform = globalThis.process.platform
   ) {
     this.emit = emit;
     this.providerClis = providerClis;
     this.agentBrowser = agentBrowser;
     this.agentRuntime = agentRuntime;
     this.spawnPty = spawnPty;
+    this.platform = platform;
     this.lifecycleHooksEnabled = lifecycleHooksEnabled;
   }
 
@@ -606,6 +615,18 @@ export class TerminalManager {
   /** The session's output offset without copying its scrollback; null when it does not exist. */
   outputOffset(id: string): number | null {
     return this.sessions.get(id)?.outputOffset ?? null;
+  }
+
+  /** Credit comes from xterm's write callback, never from merely receiving an IPC batch. */
+  acknowledgeOutput(id: string, outputOffset: number): void {
+    if (this.platform !== "darwin" || !Number.isSafeInteger(outputOffset)) return;
+    const session = this.sessions.get(id);
+    if (!session || outputOffset < (session.parsedOutputOffset ?? 0) || outputOffset > session.outputOffset) return;
+    session.parsedOutputOffset = outputOffset;
+    const process = session.outputPausedProcess;
+    if (!process || process !== session.process || !this.liveProcesses.has(process)
+      || session.outputOffset - outputOffset > RESUME_UNPARSED_OUTPUT_CHARS) return;
+    if (tryPtyOperation(() => process.resume())) session.outputPausedProcess = undefined;
   }
 
   readBuffer(id: string): TerminalBufferSnapshot {
@@ -2251,6 +2272,7 @@ export class TerminalManager {
   }
 
   private bindProcess(id: string, session: ManagedSession, process: IPty): void {
+    session.outputPausedProcess = undefined;
     session.launchOutputOffset = session.outputOffset;
     session.openCodeStartup = waitsForOpenCodeStartup(session.metadata.provider) ? new OpenCodeStartupReadiness() : undefined;
     session.agentBrowser?.retainUntilExit?.();
@@ -2268,12 +2290,17 @@ export class TerminalManager {
       appendScrollback(current, data);
       this.keepHiddenCardWhole(id, current, null, data);
       this.queueOutput(id, current, data);
+      if (this.platform === "darwin" && !current.outputPausedProcess
+        && current.outputOffset - (current.parsedOutputOffset ?? 0) >= MAX_UNPARSED_OUTPUT_CHARS) {
+        if (tryPtyOperation(() => process.pause())) current.outputPausedProcess = process;
+      }
     });
 
     let exited!: () => void;
     this.liveProcesses.set(process, new Promise<void>((resolve) => { exited = resolve; }));
     process.onExit(({ exitCode }) => {
       this.liveProcesses.delete(process);
+      if (session.outputPausedProcess === process) session.outputPausedProcess = undefined;
       exited();
       const current = this.sessions.get(id);
       if (!current || current !== session || current.process !== process) return;

@@ -15,9 +15,9 @@ function replayGapNotice(missing: number, message: (missing: number) => string):
 
 /** Subscribe before reading history, then discard the overlap with batched live output. */
 export function attachTerminalOutput(
-  api: Pick<CanvasTTYApi["terminal"], "onData" | "readBuffer">,
+  api: Pick<CanvasTTYApi["terminal"], "onData" | "readBuffer" | "acknowledgeOutput">,
   id: string,
-  write: (data: string) => void,
+  write: (data: string, parsed?: () => void) => void,
   onError: (error: unknown) => void,
   gapNotice: (missing: number) => string
 ): () => void {
@@ -25,6 +25,9 @@ export function attachTerminalOutput(
   let outputOffset: number | undefined;
   let liveOnly = false;
   const queuedLiveOutput: TerminalDataEvent[] = [];
+  const parsed = (offset: number): (() => void) | undefined => api.acknowledgeOutput
+    ? () => { if (!disposed) api.acknowledgeOutput!(id, offset); }
+    : undefined;
   const writeLive = (event: TerminalDataEvent): void => {
     const start = event.outputOffset - event.data.length;
     // A replay longer than the ring starts after the last offset written here.
@@ -32,7 +35,7 @@ export function attachTerminalOutput(
     // the tail still lands exactly where the session produced it.
     if (start > outputOffset!) write(replayGapNotice(start - outputOffset!, gapNotice));
     const data = event.data.slice(Math.max(0, outputOffset! - start));
-    if (data) write(data);
+    if (data) write(data, parsed(event.outputOffset));
     outputOffset = Math.max(outputOffset!, event.outputOffset);
   };
   const unsubscribe = api.onData((event) => {
@@ -52,8 +55,9 @@ export function attachTerminalOutput(
   void api.readBuffer(id).then((snapshot) => {
     if (disposed) return;
     // Parser state is synthetic metadata; it must never count towards the producer's byte offsets.
-    if (snapshot.restorePrefix) write(snapshot.restorePrefix);
-    if (snapshot.buffer) write(snapshot.buffer);
+    if (snapshot.restorePrefix) write(snapshot.restorePrefix, snapshot.buffer ? undefined : parsed(snapshot.outputOffset));
+    if (snapshot.buffer) write(snapshot.buffer, parsed(snapshot.outputOffset));
+    else if (!snapshot.restorePrefix) parsed(snapshot.outputOffset)?.();
     outputOffset = snapshot.outputOffset;
     for (const event of queuedLiveOutput) writeLive(event);
     queuedLiveOutput.length = 0;

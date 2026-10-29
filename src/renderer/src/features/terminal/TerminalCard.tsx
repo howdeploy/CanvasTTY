@@ -587,10 +587,10 @@ function TerminalCardView({
     const unsubscribe = attachTerminalOutput(
       window.canvasTTY.terminal,
       session.id,
-      (data) => {
+      (data, parsed) => {
         pool.touch(session.id);
         backgroundOutputActivity.current?.();
-        terminal.write(data);
+        terminal.write(data, parsed);
       },
       (error) => {
         console.error("CanvasTTY could not load terminal history.", error);

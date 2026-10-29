@@ -24,6 +24,14 @@ async function bundleApp() {
       splitting: true,
       platform: "browser",
       format: "esm",
+      // Match production's minified React branch, Vite's UTF-8/comment settings and
+      // electron-vite 5's Chrome 142 renderer target for the pinned Electron major.
+      // Development code and comments do not belong in the first-paint size budget.
+      minify: true,
+      define: { "process.env.NODE_ENV": '"production"' },
+      legalComments: "none",
+      target: "chrome142",
+      charset: "utf8",
       outdir,
       write: true,
       metafile: true,
@@ -80,12 +88,14 @@ test("Settings and the launch/link dialogs are split out of the app's static imp
   assert.ok(!eagerPaths.has(contextMenuChunk), "the canvas context menu must only be reachable through a dynamic import()");
 
   const settingsBytes = metafile.outputs[settingsPath].bytes;
-  assert.ok(settingsBytes > 100_000, `SettingsPanel chunk should carry real weight, got ${settingsBytes} bytes`);
+  // The production-like Settings chunk is about 212 kB: keep enough real UI here
+  // to reject an empty facade while allowing ordinary minifier improvements.
+  assert.ok(settingsBytes > 150_000, `SettingsPanel chunk should carry real weight, got ${settingsBytes} bytes`);
 
-  // Before this change, App.tsx bundled to a single ~1.6 MB chunk with no on-demand chunk for
-  // Settings, materials, and Files have on-demand UI, so first-paint code stays bounded.
+  // The production-like eager graph is about 1.032 MB. Keep roughly 6.6% headroom
+  // while guarding the first-paint code now that heavy UI loads on demand.
   assert.ok(
-    eagerBytes < 1_700_000,
+    eagerBytes < 1_100_000,
     `code statically reachable from App.js should stay bounded now that heavy UI loads on demand, got ${eagerBytes} bytes`
   );
 });

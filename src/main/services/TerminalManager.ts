@@ -1004,8 +1004,10 @@ export class TerminalManager {
     const deadline = Date.now() + waitMs;
     let queueTimer: ReturnType<typeof setTimeout> | undefined;
     let abort: (() => void) | undefined;
+    let queueInterrupted: InputDelivery | undefined;
     const execute = (): Promise<InputDelivery> | InputDelivery => {
       clearTimeout(queueTimer);
+      if (queueInterrupted) return queueInterrupted;
       if (this.sessions.get(id) !== session) return { delivered: false, reason: "The session was closed before delivery." };
       if (session.launchEpoch !== epoch) return { delivered: false, reason: "The session was restarted before delivery." };
       if (signal?.aborted) return { delivered: false, reason: "The delivery was cancelled." };
@@ -1018,13 +1020,13 @@ export class TerminalManager {
     const clearQueue = (): void => { if (session.inputQueue === queued) delete session.inputQueue; };
     void queued.then(clearQueue, clearQueue);
     const interrupted = new Promise<InputDelivery>((resolve) => {
-      queueTimer = setTimeout(() => resolve({ delivered: false, reason: "The input timed out while waiting in the delivery queue." }), Math.max(0, waitMs));
+      queueTimer = setTimeout(() => resolve(queueInterrupted = { delivered: false, reason: "The input timed out while waiting in the delivery queue." }), Math.max(0, waitMs));
       if (signal) {
         abort = () => {
           if (prompt && prompt.receipt.stage !== "not-written") {
             prompt.receipt.reason = "The delivery was cancelled after text was written; do not resend it blindly.";
-            resolve({ delivered: true, receipt: { ...prompt.receipt } });
-          } else resolve({ delivered: false, reason: "The delivery was cancelled." });
+            resolve(queueInterrupted = { delivered: true, receipt: { ...prompt.receipt } });
+          } else resolve(queueInterrupted = { delivered: false, reason: "The delivery was cancelled." });
         };
         signal.addEventListener("abort", abort, { once: true });
       }

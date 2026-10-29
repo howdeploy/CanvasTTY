@@ -71,6 +71,9 @@ test("OpenCode zero-wait input fails immediately during startup, then succeeds w
 });
 
 test("OpenCode queue time and cancellation stay bounded while its first send waits for startup", POSIX, async t => {
+  // A timer may expire before the wall-clock deadline; a reported timeout must still be final.
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
   const f = fixture(t), abort = new AbortController();
   const first = send(f, "FIRST\r"), timed = send(f, "TIMED\r", 20), cancelled = send(f, "CANCELLED\r", 200, abort.signal);
   abort.abort(); assert.equal((await cancelled).delivered, false);

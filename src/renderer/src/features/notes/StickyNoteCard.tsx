@@ -62,6 +62,7 @@ export function StickyNoteCard({
   const textSaveTimer = useRef<number | null>(null);
   const persistedText = useRef(note.text);
   const pendingText = useRef(note.text);
+  const receivedText = useRef(note.text);
   const onTextChangeRef = useRef(onTextChange);
   const initialBounds = { position: note.position, size: note.size };
   const liveBounds = useRef<SessionBounds>(initialBounds);
@@ -78,6 +79,13 @@ export function StickyNoteCard({
   }, [note.position, note.size]);
 
   useEffect(() => {
+    const previousText = receivedText.current;
+    receivedText.current = note.text;
+    // A settings response can acknowledge an earlier save while the editor already
+    // contains newer input. Keep that draft (and its debounce) until it is saved.
+    if (window.canvasTTY.window.isMacOS
+      && pendingText.current !== previousText
+      && pendingText.current !== note.text) return;
     persistedText.current = note.text;
     pendingText.current = note.text;
     setText(note.text);

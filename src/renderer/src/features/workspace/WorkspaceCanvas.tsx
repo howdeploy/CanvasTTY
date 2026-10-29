@@ -51,6 +51,7 @@ import { useRemarkDraft } from "../materials/useRemarkDraft";
 import { stickyNoteAtPoint } from "../notes/stickyNoteBounds";
 import { PluginCanvasCard } from "../plugins/PluginCanvasCard";
 import { TerminalCard } from "../terminal/TerminalCard";
+import { PersistentTerminalCardHost } from "../terminal/PersistentTerminalCardHost";
 import { shouldTogglePixelSkinMasterView } from "../terminal/terminalShortcuts";
 import { isPixelSkinThemeId } from "../skins/skinCatalog";
 import { isPixelSkinPackId, usePixelSkinPackAssets } from "../skins/SkinAssets";
@@ -309,6 +310,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     onSendMaterialRemarks, onSendAllRemarks, surfacesMounted = true
   } = props;
   const viewport = useRef<HTMLDivElement>(null);
+  const preserveTerminalFullscreen = window.canvasTTY.window.isMacOS;
+  const [fullscreenLayer, setFullscreenLayer] = useState<HTMLDivElement | null>(null);
   const [contextMenu, setContextMenu] = useState<CanvasMenuState | null>(null);
   const [regionEditor, setRegionEditor] = useState<RegionEditorState | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -1107,6 +1110,40 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     };
   };
 
+  const renderTerminalCard = (session: SessionSnapshot, fullscreen: boolean): React.JSX.Element => (
+    <TerminalCard
+      key={session.id}
+      session={withGroupNudge(terminalLayerId(session.id), session)}
+      shortcuts={settings.shortcuts}
+      locale={settings.locale}
+      palette={settings.palette}
+      borderSkin={settings.terminalBorderSkin}
+      {...getTerminalBackground(session.id)}
+      backgroundsSuspended={backgroundsSuspended}
+      skinDetail={settings.terminalSkinDetail}
+      camera={fullscreen ? FULLSCREEN_CAMERA : camera}
+      stackIndex={fullscreen ? 9999 : canvasLayerZIndex(layerOrder, terminalLayerId(session.id))}
+      snapEnabled={!fullscreen && settings.snapToGrid}
+      focusActivation={settings.focusActivation}
+      invertTerminalWheel={settings.invertTerminalWheel}
+      copyOnSelect={settings.copyOnSelect}
+      captureCanvasWheelOverWidgets={!fullscreen && (routeWidgetWheelToCanvas || widgetFocus.id !== terminalCanvasWidgetId(session.id))}
+      focused={widgetFocus.id === terminalCanvasWidgetId(session.id)}
+      focusChangeSource={widgetFocus.source}
+      focusRevision={widgetFocus.id === terminalCanvasWidgetId(session.id) ? widgetFocus.revision : 0}
+      selected={activeSessionId === session.id}
+      forceMasterDetail={fullscreen || masterPixelSkinSessionIds.has(session.id)}
+      groupSelected={!fullscreen && (marqueeSelection.has(terminalLayerId(session.id)) || autoSortMarked.has(terminalLayerId(session.id)))}
+      renaming={renamingSessionId === session.id}
+      fullscreen={fullscreen}
+      hidden={!fullscreen && homeEditing}
+      onToggleFullscreen={toggleFullscreenFor(session.id)}
+      getSnapTargets={fullscreen ? NO_SNAP_TARGETS : snapTargets.forLayer(terminalLayerId(session.id))}
+      {...(fullscreen ? terminalCardCallbacks.fullscreen : terminalCardCallbacks.canvas)}
+      restoreEnabled={settings.sessionRestoreMode !== "off"}
+    />
+  );
+
   return (
     <div
       ref={viewport}
@@ -1256,39 +1293,13 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           onPluginCanvasWheel={wheelNavigation.applyCanvasWheel}
         />
         <div className={`workspace__windows ${homeEditing ? "workspace__windows--hidden" : ""}`} aria-hidden={homeEditing}>
-          {surfacesMounted && renderedSessions.filter((session) => fullscreenSessionId !== session.id).map((session) => (
-            <TerminalCard
-              key={session.id}
-              session={withGroupNudge(terminalLayerId(session.id), session)}
-              shortcuts={settings.shortcuts}
-              locale={settings.locale}
-              palette={settings.palette}
-              borderSkin={settings.terminalBorderSkin}
-              {...getTerminalBackground(session.id)}
-              backgroundsSuspended={backgroundsSuspended}
-              skinDetail={settings.terminalSkinDetail}
-              camera={camera}
-              stackIndex={canvasLayerZIndex(layerOrder, terminalLayerId(session.id))}
-              snapEnabled={settings.snapToGrid}
-              focusActivation={settings.focusActivation}
-              invertTerminalWheel={settings.invertTerminalWheel}
-              copyOnSelect={settings.copyOnSelect}
-              captureCanvasWheelOverWidgets={routeWidgetWheelToCanvas || widgetFocus.id !== terminalCanvasWidgetId(session.id)}
-              focused={widgetFocus.id === terminalCanvasWidgetId(session.id)}
-              focusChangeSource={widgetFocus.source}
-              focusRevision={widgetFocus.id === terminalCanvasWidgetId(session.id) ? widgetFocus.revision : 0}
-              selected={activeSessionId === session.id}
-              forceMasterDetail={masterPixelSkinSessionIds.has(session.id)}
-              groupSelected={marqueeSelection.has(terminalLayerId(session.id)) || autoSortMarked.has(terminalLayerId(session.id))}
-              renaming={renamingSessionId === session.id}
-              fullscreen={fullscreenSessionId === session.id}
-              hidden={homeEditing}
-              onToggleFullscreen={toggleFullscreenFor(session.id)}
-              getSnapTargets={snapTargets.forLayer(terminalLayerId(session.id))}
-              {...terminalCardCallbacks.canvas}
-              restoreEnabled={settings.sessionRestoreMode !== "off"}
-            />
-          ))}
+          {surfacesMounted && renderedSessions
+            .filter((session) => preserveTerminalFullscreen || fullscreenSessionId !== session.id)
+            .map((session) => preserveTerminalFullscreen ? (
+              <PersistentTerminalCardHost key={session.id} fullscreen={fullscreenSessionId === session.id} fullscreenLayer={fullscreenLayer}>
+                {renderTerminalCard(session, fullscreenSessionId === session.id)}
+              </PersistentTerminalCardHost>
+            ) : renderTerminalCard(session, false))}
           {surfacesMounted && renderedPluginCanvas.map((instance) => {
             const plugin = plugins.find((candidate) => candidate.manifest.id === instance.pluginId && candidate.enabled);
             const contribution = plugin?.manifest.contributions.find((candidate) => candidate.id === instance.contributionId);
@@ -1448,41 +1459,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       </div>
 
       {/* Fullscreen layer: rendered outside workspace__scene to avoid camera transformation */}
-      <div className="workspace__fullscreen-layer">
-        {surfacesMounted && renderedSessions
+      <div className="workspace__fullscreen-layer" ref={preserveTerminalFullscreen ? setFullscreenLayer : undefined}>
+        {surfacesMounted && !preserveTerminalFullscreen && renderedSessions
           .filter((session) => fullscreenSessionId === session.id)
-          .map((session) => (
-            <TerminalCard
-              key={session.id}
-              session={withGroupNudge(terminalLayerId(session.id), session)}
-              shortcuts={settings.shortcuts}
-              locale={settings.locale}
-              palette={settings.palette}
-              borderSkin={settings.terminalBorderSkin}
-              {...getTerminalBackground(session.id)}
-              backgroundsSuspended={backgroundsSuspended}
-              skinDetail={settings.terminalSkinDetail}
-              camera={FULLSCREEN_CAMERA}
-              stackIndex={9999}
-              snapEnabled={false}
-              focusActivation={settings.focusActivation}
-              invertTerminalWheel={settings.invertTerminalWheel}
-              copyOnSelect={settings.copyOnSelect}
-              captureCanvasWheelOverWidgets={false}
-              focused={widgetFocus.id === terminalCanvasWidgetId(session.id)}
-              focusChangeSource={widgetFocus.source}
-              focusRevision={widgetFocus.id === terminalCanvasWidgetId(session.id) ? widgetFocus.revision : 0}
-              selected={activeSessionId === session.id}
-              forceMasterDetail={true}
-              groupSelected={false}
-              renaming={renamingSessionId === session.id}
-              fullscreen={true}
-              onToggleFullscreen={toggleFullscreenFor(session.id)}
-              getSnapTargets={NO_SNAP_TARGETS}
-              {...terminalCardCallbacks.fullscreen}
-              restoreEnabled={settings.sessionRestoreMode !== "off"}
-            />
-          ))}
+          .map((session) => renderTerminalCard(session, true))}
       </div>
 
       {popoverMaterial && (popoverRect || remarkDraft?.picking) && (

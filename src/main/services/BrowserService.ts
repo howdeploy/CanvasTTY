@@ -158,6 +158,7 @@ export interface BrowserEngineHost {
 
 export class BrowserService {
   readonly core: BrowserCore;
+  private readonly downloadListener = (event: Electron.Event, item: DownloadItem, contents: WebContents): void => this.onDownload(event, item, contents);
   private readonly getOwner: () => BrowserWindow | null;
   private readonly now: () => number;
   private readonly canvasNavigationInput: CanvasNavigationInputController | null;
@@ -439,6 +440,12 @@ export class BrowserService {
     if (this.browserSession && this.browserPagePreloadId) {
       this.browserSession.unregisterPreloadScript(this.browserPagePreloadId);
       this.browserPagePreloadId = null;
+    }
+    if (process.platform === "darwin" && this.browserSession) {
+      this.browserSession.removeListener("will-download", this.downloadListener);
+      this.browserSession.setPermissionCheckHandler(null);
+      this.browserSession.setPermissionRequestHandler(null);
+      this.browserSession.setDevicePermissionHandler(null);
     }
     this.hideClipView();
     this.destroyPresenceWindow();
@@ -1104,7 +1111,7 @@ export class BrowserService {
       callback(this.policy.permission(permission, contents.getURL()));
     });
     browserSession.setDevicePermissionHandler(() => false);
-    browserSession.on("will-download", (event, item, contents) => this.onDownload(event, item, contents));
+    browserSession.on("will-download", this.downloadListener);
   }
 
   private onDownload(

@@ -230,8 +230,15 @@ export function useCanvasPointerNavigation({
   }, [cameraRef, viewport]);
 
   const finishGroupDrag = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
-    const state = groupDrag.current;
+    let state = groupDrag.current;
     if (!state || state.pointerId !== event.pointerId) return;
+    // macOS can deliver the travel only on pointerup. Activate the same group
+    // basis here, before the pressed card can commit a move on its own. Capture
+    // is unnecessary at release: there will be no more moves to redirect.
+    if (window.canvasTTY.window.isMacOS && !state.active) {
+      state = advanceCanvasGroupDrag(state, event);
+      if (state.active) onGroupDragStartRef.current(state.layerId);
+    }
     groupDrag.current = null;
     // A press that never travelled is a plain click: the card keeps its own
     // pointer-up path, and nothing is suppressed.

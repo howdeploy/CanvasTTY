@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { transformSync } from "esbuild";
 import { constrainCanvasRegionBounds, snapCanvasRegionBounds } from "../src/renderer/src/features/workspace/canvasRegions.ts";
+import { canvasWorldRect } from "../src/renderer/src/features/workspace/canvasSelectionGesture.ts";
 import { snapMove } from "../src/renderer/src/features/workspace/snap.ts";
 
 // Execute the production handlers, including pointer-id, cancellation and snapping paths.
@@ -108,4 +109,26 @@ test("Mac region drag, cancellation and legacy platform resize remain distinct",
   legacy.resize(event(50, 60));
   legacy.endResize(event(100, 120, { buttons: 0 }));
   assert.deepEqual(legacy.commits[0].bounds.size, { width: 850, height: 560 });
+});
+
+test("Mac marquee includes a note reached only by the release event", async () => {
+  const source = await readFile(new URL("../src/renderer/src/features/workspace/useCanvasPointerNavigation.ts", import.meta.url), "utf8");
+  const start = source.indexOf("  const finishMarquee =");
+  const end = source.indexOf("  const updateGroupDrag =", start);
+  const code = transformSync(source.slice(start, end), { loader: "ts" }).code;
+  for (const isMacOS of [false, true]) {
+    const state = { current: { pointerId: 1, start: { x: 0, y: 0 }, current: { x: 200, y: 200 }, moved: true } };
+    const selected = [];
+    const update = (event) => { state.current.current = { x: event.clientX, y: event.clientY }; };
+    const finish = new Function("window", "useCallback", "marqueeState", "viewport", "setMarquee", "suppressClick", "onMarqueeSelectionRef", "cameraRef", "canvasWorldRect", "updateMarquee",
+      code + ";return finishMarquee;")(
+        { canvasTTY: { window: { isMacOS } }, setTimeout() {} }, (fn) => fn, state,
+        { current: null }, () => {}, { current: false }, { current: (rect) => selected.push(rect) },
+        { current: { x: 0, y: 0, zoom: 1 } }, canvasWorldRect, update);
+    finish(event(400, 400, { buttons: 0 }));
+    const rect = selected[0];
+    const note = { position: { x: 350, y: 350 }, size: { width: 40, height: 40 } };
+    assert.equal(rect.position.x + rect.size.width >= note.position.x, isMacOS);
+    assert.equal(state.current, null);
+  }
 });

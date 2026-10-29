@@ -192,6 +192,7 @@ export function useCanvasPointerNavigation({
   }, [localPoint]);
 
   const finishMarquee = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
+    if (window.canvasTTY.window.isMacOS && marqueeState.current?.pointerId === event.pointerId) updateMarquee(event);
     const state = marqueeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
     marqueeState.current = null;
@@ -203,7 +204,7 @@ export function useCanvasPointerNavigation({
     suppressClick.current = true;
     window.setTimeout(() => { suppressClick.current = false; }, 0);
     onMarqueeSelectionRef.current(canvasWorldRect(state.start, state.current, cameraRef.current));
-  }, [cameraRef, viewport]);
+  }, [cameraRef, viewport, updateMarquee]);
 
   const updateGroupDrag = useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
     const state = groupDrag.current;

@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isHomeMediaPath } from "./homeMedia.ts";
@@ -125,6 +126,7 @@ export class SettingsStore {
   private value: AppSettings;
   private hasPersistedLegacyWheelCapture = false;
   private writeQueue = Promise.resolve();
+  private persistenceError: Error | null = null;
   private availableProviders: ReadonlySet<AgentProviderId>;
 
   constructor(userDataPath: string, systemLocale: string, platform: string = process.platform, availability?: AgentCliAvailability) {
@@ -137,9 +139,14 @@ export class SettingsStore {
   }
 
   async load(): Promise<AppSettings> {
+    let sourceRead = false;
     try {
       const raw = await readFile(this.filePath, "utf8");
       const candidate: unknown = JSON.parse(raw);
+      if (this.platform === "darwin" && (!candidate || typeof candidate !== "object" || Array.isArray(candidate))) {
+        throw new SyntaxError("CanvasTTY settings root must be an object.");
+      }
+      sourceRead = true;
       const source = candidate && typeof candidate === "object" ? candidate as Record<string, unknown> : {};
       const persistedLauncherProviders = Array.isArray(source.homeLauncherProviders)
         ? source.homeLauncherProviders
@@ -148,6 +155,10 @@ export class SettingsStore {
         ? source.homeLimitProviders
         : null;
       const persistedVersion = typeof source.settingsVersion === "number" ? source.settingsVersion : 0;
+      const futureVersion = this.platform === "darwin" && persistedVersion > SETTINGS_VERSION;
+      this.persistenceError = futureVersion
+        ? new Error(`CanvasTTY settings version ${persistedVersion} is newer than supported version ${SETTINGS_VERSION}; the original settings are preserved.`)
+        : null;
       const needsGrokLauncherMigration = persistedVersion < GROK_LAUNCHER_SETTINGS_VERSION
         && persistedLauncherProviders !== null
         && !persistedLauncherProviders.includes("grok");
@@ -260,10 +271,25 @@ export class SettingsStore {
       const availabilityChanged = providerSelectionsChanged(normalized, this.value);
       if (!this.value.persistCanvasRegions) this.value.canvasRegions = [];
       if (!this.value.persistStickyNotes) this.value.stickyNotes = [];
-      if (needsMigration || availabilityChanged) await this.queuePersist();
+      if (!futureVersion && (needsMigration || availabilityChanged)) await this.queuePersist();
     } catch (error) {
       if (isMissingFile(error)) {
+        this.persistenceError = null;
         await this.queuePersist();
+      } else if (this.platform === "darwin" && !sourceRead) {
+        // Defaults may be used in memory, but never replace a source we could not read.
+        // A malformed file can be replaced only after its exact contents are kept aside.
+        this.persistenceError = new Error("CanvasTTY settings could not be loaded; the original settings are preserved.", { cause: error });
+        if (error instanceof SyntaxError) {
+          try {
+            await rename(this.filePath, `${this.filePath}.corrupt-${randomUUID()}`);
+            this.persistenceError = null;
+          } catch (backupError) {
+            this.persistenceError = new Error("CanvasTTY corrupt settings could not be preserved; writing is disabled.", { cause: backupError });
+          }
+          if (!this.persistenceError) await this.queuePersist();
+        }
+        console.warn("CanvasTTY settings could not be loaded; defaults are used.", error);
       } else {
         console.warn("CanvasTTY settings could not be loaded; defaults are used.", error);
       }
@@ -330,6 +356,7 @@ export class SettingsStore {
     value: AppSettings = this.value,
     hasPersistedLegacyWheelCapture = this.hasPersistedLegacyWheelCapture
   ): Promise<void> {
+    if (this.persistenceError) return Promise.reject(this.persistenceError);
     const persistedValue: Partial<AppSettings> & {
       settingsVersion: number;
       zoomOverApplications?: boolean;

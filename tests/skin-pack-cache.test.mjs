@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { resolveObjectURL } from "node:buffer";
 import { createReleasingCache } from "../src/renderer/src/features/skins/releasingCache.ts";
 
 function fakeTimers() {
@@ -52,4 +53,66 @@ test("a release then a new acquire within the delay keeps the entry", async () =
   two.release();
   timers.runAll();
   assert.equal(cache.size(), 0);
+});
+
+test("Mac cache releases real Blob URLs when a load completes after eviction", async () => {
+  const timers = fakeTimers();
+  let finish;
+  let disposed = 0;
+  const cache = createReleasingCache({
+    load: () => new Promise((resolve) => { finish = resolve; }),
+    dispose: (url) => { disposed++; URL.revokeObjectURL(url); },
+    disposeLateLoads: true, delayMs: 30_000, timers
+  });
+  const handle = cache.acquire("pack");
+  handle.release();
+  timers.runAll();
+  assert.equal(cache.size(), 0);
+  const url = URL.createObjectURL(new Blob(["skin image"]));
+  try {
+    finish(url);
+    assert.equal(await handle.value, url);
+    assert.equal(disposed, 1);
+    assert.equal(resolveObjectURL(url), undefined);
+    handle.release();
+    timers.runAll();
+    assert.equal(disposed, 1);
+  } finally { URL.revokeObjectURL(url); }
+});
+
+test("a late old load cannot dispose or evict a replacement Mac cache entry", async () => {
+  const timers = fakeTimers();
+  const finish = [];
+  const disposed = [];
+  const cache = createReleasingCache({
+    load: () => new Promise((resolve) => finish.push(resolve)),
+    dispose: (value) => disposed.push(value),
+    disposeLateLoads: true, delayMs: 30_000, timers
+  });
+  const old = cache.acquire("pack");
+  old.release(); timers.runAll();
+  const fresh = cache.acquire("pack");
+  finish[1]("fresh"); await fresh.value;
+  finish[0]("old"); await old.value;
+  assert.deepEqual(disposed, ["old"]);
+  assert.equal(cache.size(), 1);
+  fresh.release(); timers.runAll();
+  assert.deepEqual(disposed, ["old", "fresh"]);
+});
+
+test("reacquiring a pending Mac load before expiry keeps its value alive", async () => {
+  const timers = fakeTimers();
+  let finish;
+  const disposed = [];
+  const cache = createReleasingCache({
+    load: () => new Promise((resolve) => { finish = resolve; }),
+    dispose: (value) => disposed.push(value),
+    disposeLateLoads: true, delayMs: 30_000, timers
+  });
+  const first = cache.acquire("pack"); first.release();
+  const second = cache.acquire("pack"); timers.runAll();
+  finish("shared"); await second.value;
+  assert.deepEqual(disposed, []);
+  second.release(); timers.runAll();
+  assert.deepEqual(disposed, ["shared"]);
 });

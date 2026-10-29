@@ -66,7 +66,8 @@ const packs = createReleasingCache<PixelTerminalBorderSkinId, PixelSkinPackUrls>
     ])) as Record<PixelSkinSlot, string>;
   },
   dispose: (urls) => Object.values(urls).forEach((url) => URL.revokeObjectURL(url)),
-  delayMs: 30_000
+  delayMs: 30_000,
+  disposeLateLoads: window.canvasTTY.window.isMacOS
 });
 
 function acquirePixelSkinPack(id: PixelTerminalBorderSkinId): { urls: Promise<PixelSkinPackUrls>; release(): void } {

@@ -430,6 +430,7 @@ function TerminalCardView({
   };
 
   useEffect(() => {
+    if (window.canvasTTY.window.isMacOS && (dragState.current || resizeState.current)) return;
     const bounds = { position: session.position, size: session.size };
     liveBounds.current = bounds;
     setPosition(bounds.position);
@@ -983,11 +984,11 @@ function TerminalCardView({
     };
   };
 
-  const drag = (event: React.PointerEvent<HTMLElement>): void => {
+  const drag = (event: React.PointerEvent<HTMLElement>, final = false): void => {
     const state = dragState.current;
     if (!state || state.pointerId !== event.pointerId) return;
     // A buttonless move is a hover, not a drag.
-    if (event.buttons === 0) return;
+    if (event.buttons === 0 && !final) return;
     const rawPosition = {
       x: state.startBounds.position.x + (event.clientX - state.startClient.x) / camera.get().zoom,
       y: state.startBounds.position.y + (event.clientY - state.startClient.y) / camera.get().zoom
@@ -1000,6 +1001,7 @@ function TerminalCardView({
 
   const endDrag = (event: React.PointerEvent<HTMLElement>): void => {
     if (!dragState.current || dragState.current.pointerId !== event.pointerId) return;
+    if (window.canvasTTY.window.isMacOS) drag(event, true);
     dragState.current = null;
     onBoundsChange(session.id, liveBounds.current);
   };

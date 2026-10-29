@@ -2248,7 +2248,7 @@ async function readGzipTarball(body: ReadableStream<Uint8Array>): Promise<Buffer
       maxOutputLength: MAX_UNPACKED_PACKAGE_BYTES + MAX_PACKAGE_ENTRIES * 1_024
     });
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ERR_BUFFER_TOO_LARGE") {
+    if (process.platform === "darwin" && error instanceof Error && "code" in error && error.code === "ERR_BUFFER_TOO_LARGE") {
       throw new Error(`Plugin archive exceeds the ${MAX_UNPACKED_PACKAGE_BYTES / (1024 * 1024)} MB unpacked limit.`, { cause: error });
     }
     throw new Error("GitHub plugin archive is not a valid bounded gzip tarball.", { cause: error });

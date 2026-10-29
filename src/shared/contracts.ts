@@ -2041,6 +2041,7 @@ export interface CanvasTTYApi {
     onStorageChanged(listener: (event: PluginStorageChangeEvent) => void): () => void;
   };
   browser: {
+    openWindow?(url?: string): Promise<void>;
     getState(): Promise<BrowserSnapshot>;
     open(url?: string): Promise<BrowserSnapshot>;
     close(): Promise<void>;
@@ -2235,6 +2236,7 @@ export const IPC = {
   evenG2BrowserResponse: "even-g2:browser-response",
   browserGetState: "browser:get-state",
   browserOpen: "browser:open",
+  browserOpenWindow: "browser:open-window",
   browserClose: "browser:close",
   browserCloseAllTabs: "browser:close-all-tabs",
   browserNewTab: "browser:new-tab",

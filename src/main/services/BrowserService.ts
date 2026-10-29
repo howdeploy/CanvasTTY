@@ -135,6 +135,8 @@ interface DownloadWaiter {
 
 export interface BrowserServiceOptions {
   userDataPath?: string;
+  /** A separate in-memory session for an additional macOS browser window. */
+  sessionPartition?: string;
   downloadRoot?: string;
   uploadRoots?: readonly string[];
   restoreTabs?: boolean;
@@ -158,6 +160,7 @@ export interface BrowserEngineHost {
 
 export class BrowserService {
   readonly core: BrowserCore;
+  private readonly sessionPartition: string;
   private readonly downloadListener = (event: Electron.Event, item: DownloadItem, contents: WebContents): void => this.onDownload(event, item, contents);
   private readonly getOwner: () => BrowserWindow | null;
   private readonly now: () => number;
@@ -215,6 +218,7 @@ export class BrowserService {
 
   constructor(getOwner: () => BrowserWindow | null, options: BrowserServiceOptions = {}) {
     this.getOwner = getOwner;
+    this.sessionPartition = process.platform === "darwin" && options.sessionPartition ? options.sessionPartition : BROWSER_PARTITION;
     this.now = options.now ?? Date.now;
     this.canvasNavigationInput = options.canvasNavigationInput ?? null;
     const userDataPath = options.userDataPath ?? app.getPath("userData");
@@ -396,6 +400,10 @@ export class BrowserService {
 
   setCanvasWheelCaptureMode(mode: CanvasWheelCaptureMode): void {
     this.canvasGestures.setCaptureMode(mode);
+  }
+
+  ownsPage(sender: WebContents): boolean {
+    return [...this.tabs.values()].some((tab) => tab.view.webContents === sender);
   }
 
   decidePageWheel(sender: WebContents, input: unknown): BrowserPageWheelReply {
@@ -891,7 +899,7 @@ export class BrowserService {
   ): BrowserTab {
     const view = existingContents
       ? new WebContentsView({ webContents: existingContents })
-      : new WebContentsView({ webPreferences: remoteBrowserWebPreferences() });
+      : new WebContentsView({ webPreferences: remoteBrowserWebPreferences(this.sessionPartition) });
     // Electron's `view.webContents` getter returns undefined once the WebContents is closed (a sleeping or destroyed
     // tab), and every `tab.view.webContents.isDestroyed()` check would throw. Pin the object: closed, it still answers.
     Object.defineProperty(view, "webContents", { value: view.webContents, configurable: true, enumerable: true });
@@ -936,7 +944,7 @@ export class BrowserService {
         outlivesOpener: true,
         overrideBrowserWindowOptions: {
           show: false,
-          webPreferences: remoteBrowserWebPreferences()
+          webPreferences: remoteBrowserWebPreferences(this.sessionPartition)
         },
         createWindow: (options) => {
           // window.open already owns a guest WebContents. Electron requires this
@@ -1098,7 +1106,7 @@ export class BrowserService {
 
   private configureSession(): void {
     if (this.browserSession) return;
-    const browserSession = session.fromPartition(BROWSER_PARTITION);
+    const browserSession = session.fromPartition(this.sessionPartition);
     this.browserSession = browserSession;
     this.browserPagePreloadId = browserSession.registerPreloadScript({
       type: "frame",
@@ -1816,9 +1824,9 @@ function downloadStatus(state: string): BrowserDownloadStatus {
   return "interrupted";
 }
 
-function remoteBrowserWebPreferences(): WebPreferences {
+function remoteBrowserWebPreferences(partition = BROWSER_PARTITION): WebPreferences {
   return {
-    partition: BROWSER_PARTITION,
+    partition,
     sandbox: true,
     contextIsolation: true,
     nodeIntegration: false,

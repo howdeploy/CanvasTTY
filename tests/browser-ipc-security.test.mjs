@@ -4,14 +4,19 @@ import test from "node:test";
 
 const ipcPath = new URL("../src/main/ipc/registerIpc.ts", import.meta.url);
 
-test("privileged browser IPC validates the trusted main renderer", async () => {
+test("privileged browser IPC validates an owned top-level renderer", async () => {
   const source = await readFile(ipcPath, "utf8");
 
   assert.match(source, /function assertMainRenderer/);
   assert.match(source, /event\.sender !== expected\.webContents/);
   assert.match(source, /event\.senderFrame !== expected\.webContents\.mainFrame/);
 
+  assert.match(source, /event\.senderFrame === event\.sender\.mainFrame/);
+  assert.match(source, /macBrowserWindows\?\.forRenderer\(event\.sender\)/);
+  const guard = source.slice(source.indexOf("const browserForRenderer"), source.indexOf("ipcMain.handle(IPC.browserOpenWindow"));
+  assert.match(guard, /assertMainRenderer\(event, getMainWindow\)/, "unknown senders fall back to the strict main-window guard");
   for (const channel of [
+    "browserOpenWindow",
     "browserGetState",
     "browserOpen",
     "browserClose",
@@ -26,7 +31,7 @@ test("privileged browser IPC validates the trusted main renderer", async () => {
     "browserSetViewport"
   ]) {
     const handler = source.slice(source.indexOf(`IPC.${channel}`), source.indexOf(`IPC.${channel}`) + 320);
-    assert.match(handler, /(assertMainRenderer|isMainRenderer)\(event, getMainWindow\)/, `${channel} must validate its sender`);
+    assert.match(handler, /browserForRenderer\(event\)/, `${channel} must validate its sender`);
   }
 });
 

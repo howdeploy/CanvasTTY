@@ -435,6 +435,10 @@ export function BrowserCard({
             <small title={activeTab?.title}>{activeTab?.title || t(locale, "newTab")}</small>
           </span>
         </span>
+        {window.canvasTTY.browser.openWindow && navigator.platform.startsWith("Mac") && <button type="button"
+          title={locale === "ru" ? "Новое окно браузера" : "New browser window"}
+          aria-label={locale === "ru" ? "Новое окно браузера" : "New browser window"}
+          onClick={() => run(() => window.canvasTTY.browser.openWindow!())}>↗</button>}
         <button className="browser-card__hide" type="button" onClick={onClose} title={t(locale, "hideBrowser")} aria-label={t(locale, "hideBrowser")}>
           <UiIcon name="close" size="1.23em" />
         </button>

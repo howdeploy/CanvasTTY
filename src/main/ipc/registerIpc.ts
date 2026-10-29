@@ -1,3 +1,4 @@
+import type { MacBrowserWindows } from "../services/MacBrowserWindows";
 import { realpath } from "node:fs/promises";
 import { app, BrowserWindow, clipboard, dialog, shell } from "electron";
 import type { IpcMainEvent, IpcMainInvokeEvent, OpenDialogOptions, WebContents } from "electron";
@@ -75,6 +76,7 @@ interface Dependencies {
   pluginSecrets: PluginSecretsService;
   providerSecrets: ProviderSecretsService;
   browser: BrowserService;
+  macBrowserWindows?: MacBrowserWindows;
   files: FileAccessService;
   githubAuth: GithubAuthService;
   hermesHud: HermesHudService;
@@ -220,6 +222,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   pluginSecrets,
   providerSecrets,
   browser,
+  macBrowserWindows,
   files,
   githubAuth,
   hermesHud,
@@ -828,80 +831,93 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     return pluginBrowserOpenBroker.complete(pluginBrowserOpenResponse(response));
   });
 
-  ipcMain.handle(IPC.browserGetState, (event) => {
+  const browserForRenderer = (event: IpcMainEvent | IpcMainInvokeEvent): BrowserService => {
+    const extra = process.platform === "darwin" && event.senderFrame === event.sender.mainFrame
+      ? macBrowserWindows?.forRenderer(event.sender) : null;
+    if (extra) return extra;
     assertMainRenderer(event, getMainWindow);
-    return browser.getState();
+    return browser;
+  };
+  ipcMain.handle(IPC.browserOpenWindow, (event, url?: string) => {
+    browserForRenderer(event);
+    if (!macBrowserWindows || process.platform !== "darwin") throw new Error("Additional browser windows require macOS.");
+    if (url !== undefined && typeof url !== "string") throw new Error("Invalid browser URL.");
+    return macBrowserWindows.open(url);
+  });
+  ipcMain.handle(IPC.browserGetState, (event) => {
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.getState();
   });
   ipcMain.handle(IPC.browserOpen, (event, url?: string) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.open(url);
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.open(url);
   });
   ipcMain.handle(IPC.browserClose, (event) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.close();
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.close();
   });
   ipcMain.handle(IPC.browserCloseAllTabs, (event) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.closeAllTabs();
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.closeAllTabs();
   });
   ipcMain.handle(IPC.browserNewTab, (event, url?: string) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.newTab(url);
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.newTab(url);
   });
   ipcMain.handle(IPC.browserSelectTab, (event, id: string) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.selectTab(id);
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.selectTab(id);
   });
   ipcMain.handle(IPC.browserCloseTab, (event, id: string) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.closeTab(id);
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.closeTab(id);
   });
   ipcMain.handle(IPC.browserNavigate, (event, id: string, value: string) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.navigate(id, value);
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.navigate(id, value);
   });
   ipcMain.handle(IPC.browserBack, (event, id: string) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.back(id);
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.back(id);
   });
   ipcMain.handle(IPC.browserForward, (event, id: string) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.forward(id);
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.forward(id);
   });
   ipcMain.handle(IPC.browserReload, (event, id: string) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.reload(id);
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.reload(id);
   });
   ipcMain.handle(IPC.browserExecute, (event, command: BrowserCommand) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.executeHuman(command);
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.executeHuman(command);
   });
   ipcMain.handle(IPC.browserGetActivity, (event, sinceSequence?: number) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.getActivity(sinceSequence);
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.getActivity(sinceSequence);
   });
   ipcMain.handle(IPC.browserClearData, (event) => {
-    assertMainRenderer(event, getMainWindow);
-    return browser.clearData();
+    const targetBrowser = browserForRenderer(event);
+    return targetBrowser.clearData();
   });
   ipcMain.on(IPC.browserFocus, (event) => {
-    assertMainRenderer(event, getMainWindow);
-    browser.focus();
+    const targetBrowser = browserForRenderer(event);
+    targetBrowser.focus();
   });
   ipcMain.on(IPC.browserSetInputFocused, (event, focused: unknown) => {
-    assertMainRenderer(event, getMainWindow);
-    browser.setInputFocused(focused === true);
+    const targetBrowser = browserForRenderer(event);
+    targetBrowser.setInputFocused(focused === true);
     event.returnValue = true;
   });
   ipcMain.on(IPC.browserSetViewport, (event, bounds) => {
-    assertMainRenderer(event, getMainWindow);
-    browser.setViewport(bounds, event.sender.getZoomFactor());
+    const targetBrowser = browserForRenderer(event);
+    targetBrowser.setViewport(bounds, event.sender.getZoomFactor());
   });
   ipcMain.on(IPC.browserPageWheelDecision, (event, input: unknown) => {
-    event.returnValue = browser.decidePageWheel(event.sender, input);
+    event.returnValue = (macBrowserWindows?.forPage(event.sender) ?? browser).decidePageWheel(event.sender, input);
   });
   ipcMain.on(IPC.browserPageWheel, (event, input: unknown) => {
-    browser.handlePageWheel(event.sender, input);
+    (macBrowserWindows?.forPage(event.sender) ?? browser).handlePageWheel(event.sender, input);
   });
 
   ipcMain.handle(IPC.githubAuthStatus, (event) => {

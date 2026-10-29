@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { cpSync, mkdirSync } from "node:fs";
 import react from "@vitejs/plugin-react";
+import { build as buildPreload } from "esbuild";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 
 export default defineConfig({
@@ -27,7 +28,15 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin(), {
+      name: "standalone-sandbox-preload",
+      async closeBundle() {
+        // Each sandboxed preload must be self-contained: its require cannot load local chunks.
+        await buildPreload({ entryPoints: [resolve("src/preload/browserWindow.ts")],
+          outfile: resolve("out/preload/browserWindow.cjs"), bundle: true,
+          platform: "node", format: "cjs", external: ["electron"] });
+      }
+    }],
     build: {
       rollupOptions: {
         input: {
@@ -49,7 +58,8 @@ export default defineConfig({
     // electron-vite leaves every bundle unminified; the renderer's (React, xterm and the app, about 1.8 MB)
     // is parsed on every window load, so it is minified. Source maps stay off, as before.
     build: {
-      minify: "esbuild"
+      minify: "esbuild",
+      rollupOptions: { input: { index: resolve("src/renderer/index.html"), browserWindow: resolve("src/renderer/browser-window.html") } }
     }
   }
 });

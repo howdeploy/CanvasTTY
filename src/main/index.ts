@@ -1,3 +1,4 @@
+import { MacBrowserWindows } from "./services/MacBrowserWindows";
 import "./stdio";
 import appIcon from "../../build/icon.png?asset";
 import appManifest from "../../package.json";
@@ -195,6 +196,7 @@ let providerSecretsService: ProviderSecretsService | null = null;
 let hermesHudService: HermesHudService | null = null;
 let agentChatHistory: AgentChatHistoryService | null = null;
 let browserService: BrowserService | null = null;
+const macBrowserWindows = new MacBrowserWindows();
 let canvasNavigationInput: CanvasNavigationInputController | null = null;
 let agentGateway: AgentGateway | null = null;
 let orchestrationGateway: OrchestrationGateway | null = null;
@@ -878,6 +880,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     pluginSecrets: pluginSecretsService,
     providerSecrets: providerSecretsService!,
     browser: browserService,
+    macBrowserWindows,
     files: fileAccessService,
     githubAuth: githubAuth!,
     hermesHud: hermesHudService,
@@ -1311,6 +1314,7 @@ async function shutdownServices(): Promise<void> {
   await usageHistoryClosed;
   if (agentGateway) await Promise.allSettled([agentGateway.close()]);
   if (runtimeGateway) await Promise.allSettled([runtimeGateway.close()]);
+  await macBrowserWindows.dispose();
   if (browserService) await Promise.allSettled([browserService.dispose()]);
   if (pluginServices) await Promise.allSettled([pluginServices.dispose()]);
   if (pluginManager) await Promise.allSettled([pluginManager.dispose()]);

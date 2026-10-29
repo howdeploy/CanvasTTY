@@ -287,6 +287,8 @@ export class TerminalManager {
   private readonly quitReleases: Promise<void>[] = [];
   // Every PTY started here whose exit has not been reported yet, closed cards included, with that exit.
   private readonly liveProcesses = new Map<IPty, Promise<void>>();
+  /** macOS closed cards retain only their own PTY's bounded hang-up escalation until exit. */
+  private readonly closedProcessTimers = new Map<IPty, ReturnType<typeof setTimeout>>();
   private suppressPersistence = false;
   // Coalesces rapid persistence requests (a drag fires setBounds many times a second) into one
   // normalize+stringify+atomic-write of the session store instead of one per call.
@@ -1333,6 +1335,18 @@ export class TerminalManager {
       } catch (error) {
         console.warn(`PTY ${id} could not be killed cleanly.`, error);
       }
+      // A card can close long before the app quits. A CLI may ignore SIGHUP,
+      // so the quit-only wait cannot be its only escalation. Capture this PTY
+      // object: another card (or a later launch) must never be signalled here.
+      const process = session.process;
+      if (this.platform === "darwin" && !this.quitting && this.liveProcesses.has(process)) {
+        const timer = setTimeout(() => {
+          this.closedProcessTimers.delete(process);
+          if (this.liveProcesses.has(process)) tryPtyOperation(() => process.kill("SIGKILL"));
+        }, PTY_EXIT_WAIT_MS);
+        timer.unref();
+        this.closedProcessTimers.set(process, timer);
+      }
     }
     const environment = session.extras.environment;
     if (environment && this.environments) {
@@ -2300,6 +2314,8 @@ export class TerminalManager {
     this.liveProcesses.set(process, new Promise<void>((resolve) => { exited = resolve; }));
     process.onExit(({ exitCode }) => {
       this.liveProcesses.delete(process);
+      clearTimeout(this.closedProcessTimers.get(process));
+      this.closedProcessTimers.delete(process);
       if (session.outputPausedProcess === process) session.outputPausedProcess = undefined;
       exited();
       const current = this.sessions.get(id);

@@ -8,6 +8,12 @@ import { BrowserService } from "./BrowserService";
 export class MacBrowserWindows {
   private readonly windows = new Map<BrowserWindow, BrowserService>();
   private readonly closing = new Set<Promise<unknown>>();
+  private pauseHiddenTabs = true;
+
+  setPauseHiddenTabs(enabled: boolean): void {
+    this.pauseHiddenTabs = enabled;
+    for (const browser of this.windows.values()) browser.setPauseHiddenTabs(enabled);
+  }
 
   forRenderer(sender: WebContents): BrowserService | null {
     for (const [window, browser] of this.windows) if (window.webContents === sender) return browser;
@@ -30,7 +36,8 @@ export class MacBrowserWindows {
         contextIsolation: true, nodeIntegration: false }
     });
     const browser = new BrowserService(() => window.isDestroyed() ? null : window, {
-      userDataPath: root, restoreTabs: false, sessionPartition: `canvastty-window-${id}`
+      userDataPath: root, restoreTabs: false, sessionPartition: `canvastty-window-${id}`,
+      pauseHiddenTabs: this.pauseHiddenTabs
     });
     this.windows.set(window, browser);
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));

@@ -466,6 +466,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     });
   }
 
+  macBrowserWindows.setPauseHiddenTabs(settings.get().browserPauseHiddenTabs);
   browserService = new BrowserService(() => mainWindow, {
     userDataPath,
     restoreTabs: settings.get().browserRestoreTabs,
@@ -899,6 +900,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
         console.warn("CanvasTTY browser tab restore setting could not be applied.", error);
       });
       browserService?.setPauseHiddenTabs(next.browserPauseHiddenTabs);
+      macBrowserWindows.setPauseHiddenTabs(next.browserPauseHiddenTabs);
       browserService?.cancelCanvasNavigationGesture();
       browserService?.setCanvasWheelCaptureMode(next.canvasWheelCaptureMode);
       canvasNavigationInput?.setBindings({

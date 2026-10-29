@@ -2,10 +2,11 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
-## 1.8.5-beta
+## 1.8.5-beta.1
 
-Prerelease for collecting feedback; known issues below remain open.
+Prerelease for collecting feedback; known issues below remain open. The initial `1.8.5-beta` installer workflow stopped at tests and did not publish a release.
 
+- Correct the macOS temporary-directory and Windows pipe-host test fixtures and align the background test with the existing `contain` behavior.
 - Open terminal file links with the operating system's default application instead of requiring VS Code. Directory, device and nonexistent targets stay inactive; line/column navigation is not passed to the system application.
 - Preserve native ANSI menu colors, isolate readability masks from animated backgrounds, clear preserved WebGL frames, and avoid duplicated pinned input.
 - Separate background/classic-appearance shortcuts, improve the background catalog's scrolling, and add region-scoped sorting with independent undo.

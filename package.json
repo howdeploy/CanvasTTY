@@ -1,6 +1,6 @@
 {
   "name": "canvastty",
-  "version": "1.8.5-beta",
+  "version": "1.8.5-beta.1",
   "private": true,
   "description": "A spatial desktop for local AI agents and real terminal sessions.",
   "desktopName": "CanvasTTY",

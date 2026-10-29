@@ -41,6 +41,7 @@ export function CanvasRegionCard({
   const resizeState = useRef<ResizeState | null>(null);
 
   useEffect(() => {
+    if (window.canvasTTY.window.isMacOS && (dragState.current || resizeState.current)) return;
     const next = { position: region.position, size: region.size };
     liveBounds.current = next;
     setBounds(next);
@@ -64,11 +65,11 @@ export function CanvasRegionCard({
     onMovePreview(region.id, liveBounds.current);
   };
 
-  const drag = (event: React.PointerEvent<HTMLButtonElement>): void => {
+  const drag = (event: React.PointerEvent<HTMLButtonElement>, final = false): void => {
     const state = dragState.current;
     if (!state || state.pointerId !== event.pointerId) return;
     // A buttonless move is a hover, not a drag.
-    if (event.buttons === 0) return;
+    if (event.buttons === 0 && !final) return;
     const rawPosition = {
       x: state.startBounds.position.x + (event.clientX - state.startClient.x) / camera.get().zoom,
       y: state.startBounds.position.y + (event.clientY - state.startClient.y) / camera.get().zoom
@@ -85,6 +86,7 @@ export function CanvasRegionCard({
     if (dragState.current?.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
+    if (window.canvasTTY.window.isMacOS) drag(event, true);
     dragState.current = null;
     onBoundsChange(region.id, liveBounds.current, "move");
     onMovePreview(region.id, null);
@@ -112,11 +114,11 @@ export function CanvasRegionCard({
     };
   };
 
-  const resize = (event: React.PointerEvent<HTMLDivElement>): void => {
+  const resize = (event: React.PointerEvent<HTMLDivElement>, final = false): void => {
     const state = resizeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
     // A buttonless move is a hover, not a resize.
-    if (event.buttons === 0) return;
+    if (event.buttons === 0 && !final) return;
     event.preventDefault();
     event.stopPropagation();
     const deltaX = (event.clientX - state.startClient.x) / camera.get().zoom;
@@ -142,6 +144,7 @@ export function CanvasRegionCard({
     if (resizeState.current?.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
+    if (window.canvasTTY.window.isMacOS) resize(event, true);
     resizeState.current = null;
     onBoundsChange(region.id, liveBounds.current, "resize");
   };

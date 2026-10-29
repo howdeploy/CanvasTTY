@@ -1035,11 +1035,11 @@ function TerminalCardView({
     };
   };
 
-  const resizeCard = (event: React.PointerEvent<HTMLDivElement>): void => {
+  const resizeCard = (event: React.PointerEvent<HTMLDivElement>, final = false): void => {
     const state = resizeState.current;
     if (!state || state.pointerId !== event.pointerId) return;
     // A buttonless move is a hover, not a resize.
-    if (event.buttons === 0) return;
+    if (event.buttons === 0 && !final) return;
     event.preventDefault();
     event.stopPropagation();
     const deltaX = (event.clientX - state.startClient.x) / camera.get().zoom;
@@ -1065,6 +1065,7 @@ function TerminalCardView({
   const endResize = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (!resizeState.current || resizeState.current.pointerId !== event.pointerId) return;
     event.stopPropagation();
+    if (window.canvasTTY.window.isMacOS) resizeCard(event, true);
     resizeState.current = null;
     onBoundsChange(session.id, liveBounds.current);
   };

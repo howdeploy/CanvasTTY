@@ -16,7 +16,7 @@ async function terminalHandlers(isMacOS, zoom = 1) {
   const liveBounds = { current: initial };
   const commits = [];
   const handlers = new Function("window", "dragState", "resizeState", "liveBounds", "session", "camera", "snapEnabled", "getSnapTargets", "snapMove", "setPosition", "setSize", "onBoundsChange",
-    code + ";return {startDrag, drag, endDrag, cancelDrag};")(
+    code + ";return {startDrag, drag, endDrag, cancelDrag, startResize, endResize};")(
       { canvasTTY: { window: { isMacOS } } }, { current: null }, { current: null }, liveBounds,
       { id: "own-test", ...initial }, { get: () => ({ zoom }) }, false, () => [], snapMove,
       () => {}, () => {}, (id, bounds) => commits.push({ id, bounds }));
@@ -61,6 +61,22 @@ test("other platforms keep the existing pointermove finalization", async () => {
   h.drag(event(50, 60));
   h.endDrag(event(100, 120, { buttons: 0 }));
   assert.deepEqual(h.commits[0].bounds.position, { x: 150, y: 260 });
+});
+
+test("Mac pointercancel discards a gesture instead of saving its synthetic release coordinates", async () => {
+  const drag = await terminalHandlers(true);
+  drag.startDrag(event(200, 300));
+  drag.drag(event(400, 500));
+  drag.endDrag(event(0, 0, { buttons: 0, type: "pointercancel" }));
+  assert.deepEqual(drag.liveBounds.current, drag.initial);
+  assert.deepEqual(drag.commits, []);
+  const resize = await terminalHandlers(true);
+  resize.startResize(event(200, 300), "se");
+  resize.endResize(event(0, 0, { buttons: 0, type: "pointercancel", pointerId: 2 }));
+  assert.deepEqual(resize.commits, [], "another pointer cannot cancel the active resize");
+  resize.endResize(event(0, 0, { buttons: 0, type: "pointercancel" }));
+  assert.deepEqual(resize.liveBounds.current, resize.initial);
+  assert.deepEqual(resize.commits, []);
 });
 
 async function regionHandlers(isMacOS, zoom = 1) {

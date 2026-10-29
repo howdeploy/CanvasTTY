@@ -1001,6 +1001,10 @@ function TerminalCardView({
 
   const endDrag = (event: React.PointerEvent<HTMLElement>): void => {
     if (!dragState.current || dragState.current.pointerId !== event.pointerId) return;
+    if (window.canvasTTY.window.isMacOS && event.type === "pointercancel") {
+      cancelDrag();
+      return;
+    }
     if (window.canvasTTY.window.isMacOS) drag(event, true);
     dragState.current = null;
     onBoundsChange(session.id, liveBounds.current);
@@ -1064,6 +1068,10 @@ function TerminalCardView({
 
   const endResize = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (!resizeState.current || resizeState.current.pointerId !== event.pointerId) return;
+    if (window.canvasTTY.window.isMacOS && event.type === "pointercancel") {
+      cancelResize();
+      return;
+    }
     event.stopPropagation();
     if (window.canvasTTY.window.isMacOS) resizeCard(event, true);
     resizeState.current = null;

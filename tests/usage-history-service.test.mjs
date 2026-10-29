@@ -559,8 +559,9 @@ test("the real collector's cursors survive a reload of the history file unchange
     await mkdir(project, { recursive: true });
     await mkdir(join(directory, "data"));
     const now = Date.now();
+    // Preserve actual pending usage, rather than an empty reader object that normalization omits.
     await writeFile(join(project, "session-a.jsonl"), `${JSON.stringify({
-      type: "assistant", timestamp: new Date(now - 3_600_000).toISOString(), sessionId: "session-a",
+      type: "assistant", timestamp: new Date(now).toISOString(), sessionId: "session-a",
       message: { id: "message-a", usage: { input_tokens: 10, output_tokens: 2 } }
     })}\n`);
     const restoredStates = [];
@@ -571,13 +572,14 @@ test("the real collector's cursors survive a reload of the history file unchange
         restoredStates.push(structuredClone(state));
         return new LocalUsageCollector(home, state, {});
       },
-      now: () => now + 3_600_000
+      now: () => now
     });
     const first = open();
     await first.load();
     await first.collect();
     const saved = JSON.parse(await readFile(join(directory, "data", FILE), "utf8"));
     assert.equal(Object.keys(saved.collector.files).length, 1);
+    assert.ok(Object.values(saved.collector.files)[0].claude?.pending, "unfinished usage is kept in the cursor");
     restoredStates.length = 0;
     const reopened = open();
     await reopened.load();

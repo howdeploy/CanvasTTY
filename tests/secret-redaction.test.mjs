@@ -161,6 +161,7 @@ test("the vault hands every value it reads or writes to the registry; agent-read
   const control = new AgentControlService({
     getMetadata: (id) => (id === "s1" ? { id: "s1", provider: "claude", status: "working", exitCode: null } : null),
     readBuffer: () => ({ buffer: `env OPENAI=${value}\n${secrets.github}\n` }),
+    lastPromptDelivery: () => undefined,
     redactSecrets: (text) => manager.redactSecrets(text)
   });
   const observed = control.observe("s1").output;

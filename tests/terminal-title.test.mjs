@@ -131,7 +131,7 @@ async function rendererCard(initial) {
   const titles = select(/^  const titleSource = [\s\S]*?^  visibleTitleRef\.current = visibleTitle;/m);
   const header = select(/^      <header[\s\S]*?^      <\/header>/m);
   const summary = select(/^      <button\s+className="terminal-card__summary"[\s\S]*?^      <\/button>/m);
-  let session = { id: "rename-card", cwd: "/home/runner/projects/canvas", provider: "codex", status: "idle", ...initial };
+  let session = { id: "rename-card", cwd: "/home/runner/projects/canvas", provider: "codex", profile: "normal", status: "idle", ...initial };
   let oscTitle = null;
   let editing = false;
   let ended = 0;

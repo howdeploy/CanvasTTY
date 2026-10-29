@@ -79,6 +79,21 @@ test("Mac note retains its newer submitted text when an earlier save responds", 
   } finally { h.unmount(); }
 });
 
+test("Mac note preserves a newer edit that returns to the original empty text", () => {
+  const h = noteEditor();
+  try {
+    h.type("A"); h.debounce();
+    h.type("");
+    h.acknowledge("A");
+    assert.equal(h.editor().props.value, "");
+    h.editor().props.onBlur();
+    assert.deepEqual(h.saves.map(({ text }) => text), ["A", ""]);
+    h.acknowledge("");
+    h.acknowledge("external update");
+    assert.equal(h.editor().props.value, "external update");
+  } finally { h.unmount(); }
+});
+
 for (const platform of ["win32", "linux"]) {
   test(`${platform} keeps its existing note synchronization behavior`, () => {
     const h = noteEditor(platform);

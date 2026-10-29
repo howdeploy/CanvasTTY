@@ -1949,6 +1949,14 @@ export function App(): React.JSX.Element {
         return;
       }
       if (event.repeat) return;
+      // A focused xterm textarea is still the selected window on macOS.
+      if (window.canvasTTY.window.isMacOS && event.target instanceof Element
+        && event.target.closest(".xterm") && matchesShortcut(event, settings.shortcuts.renameWindow)) {
+        event.preventDefault();
+        event.stopPropagation();
+        performShortcut("renameWindow");
+        return;
+      }
       if (shouldKeepNativeKeyboardInput(event.target, window.canvasTTY.window.isMacOS, event)) return;
       if (matchesShortcut(event, settings.shortcuts.toggleFullscreen)) {
         event.preventDefault();

@@ -254,6 +254,25 @@ test("App restores native Command+A before its native-input guard without interc
   handler(repeated);
   assert.deepEqual(repeated.state, { prevented: true, stopped: true });
   assert.deepEqual(actions, ["home", "toggleFullscreen"]);
+  actions.length = 0;
+  for (const isMacOS of [false, true]) {
+    window.canvasTTY.window.isMacOS = isMacOS;
+    const rename = event(terminal, { key: "F2", code: "F2", metaKey: false });
+    handler(rename);
+    assert.deepEqual(rename.state, { prevented: isMacOS, stopped: isMacOS });
+    assert.deepEqual(actions, isMacOS ? ["renameWindow"] : []);
+  }
+  actions.length = 0;
+  settings.shortcuts.renameWindow = "Meta+R";
+  handler(event(terminal, { key: "r", code: "KeyR" }));
+  assert.deepEqual(actions, ["renameWindow"], "the configured Mac rename binding works in xterm");
+  actions.length = 0;
+  for (const changes of [
+    { key: "ArrowUp", code: "ArrowUp", metaKey: false },
+    { key: "r", code: "KeyR", repeat: true }
+  ]) handler(event(terminal, changes));
+  handler(event(new InputTarget(), { key: "r", code: "KeyR" }));
+  assert.deepEqual(actions, [], "history, repeats, and regular fields retain native input");
 });
 
 test("terminal keyboard focus is reported on change only; a plugin iframe or app field is not a terminal", async (t) => {

@@ -201,12 +201,26 @@ async function runWorker(config) {
     for (let fd = 0; fd < 3; fd++) if (config.stdioMask & (1 << fd)) closeSync(fd);
 
     async function cycle(stop = false) {
-      const terminal = pty.spawn(stop ? "/bin/sleep" : "/usr/bin/printf", stop ? ["30"] : ["PTY_CYCLE_OK\n"], {
+      // This smoke measures resource ownership, so keep a normal child alive
+      // until its actual output reached the consumer. node-pty forcibly closes
+      // its socket 200 ms after an early exit; an instantaneous printf can lose
+      // unread data under scheduling pressure even though its exit code is zero.
+      // The ACK differs from the marker, so terminal input echo cannot pass the
+      // output check. Missing output still times out and fails this cycle.
+      const terminal = pty.spawn(stop ? "/bin/sleep" : "/bin/sh", stop ? ["30"] : ["-c",
+        'printf "PTY_CYCLE_OK\\n" && IFS= read -r reply && test "$reply" = PTY_CYCLE_ACK'], {
         name: "xterm-256color", cols: 80, rows: 24, cwd: process.cwd(), env: { PATH: "/usr/bin:/bin", TERM: "xterm-256color" }
       });
       activeTerminal = terminal;
       let output = "";
-      const data = terminal.onData((text) => { output = (output + text).slice(-1024); });
+      let acknowledged = false;
+      const data = terminal.onData((text) => {
+        output = (output + text).slice(-1024);
+        if (!stop && !acknowledged && output.includes("PTY_CYCLE_OK")) {
+          acknowledged = true;
+          terminal.write("PTY_CYCLE_ACK\n");
+        }
+      });
       let ended = false;
       let timer;
       let subscription;

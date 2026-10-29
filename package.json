@@ -24,7 +24,7 @@
     "package:linux": "npm run build && electron-builder --linux AppImage deb --publish never",
     "prepackage:win": "node scripts/build-windows-agent-pipe-host.mjs --require-windows --self-test",
     "package:win": "npm run build && electron-builder --win nsis portable --publish never",
-    "package:mac": "npm run build:mac-updater && npm run build && electron-builder --mac dmg zip --arm64 --publish never",
+    "package:mac": "npm run build:mac-updater && npm run build && electron-builder --mac dmg zip --arm64 --config.electronVersion=43.8.1 --publish never",
     "build:mac-updater": "node scripts/build-mac-updater.mjs",
     "smoke:browser": "node scripts/smoke-browser-electron.mjs",
     "smoke:browser:providers": "node scripts/smoke-browser-providers.mjs --deterministic",

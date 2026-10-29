@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, rmdir, unlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rmdir, unlink } from "node:fs/promises";
 import type { Server } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // What the four local gateways (agent browser, orchestration, agent runtime,
 // agent control) share: how a capability token is checked, and how a Unix
@@ -30,6 +32,33 @@ export function tokenMatches(token: string, expected: Buffer | null | undefined)
 export async function makePrivateDirectory(directory: string, options: { recursive?: boolean } = {}): Promise<void> {
   await mkdir(directory, { recursive: options.recursive ?? false, mode: 0o700 });
   await chmod(directory, 0o700);
+}
+
+/** Keep long profile paths out of sockaddr_un; only the temporary fallback is owned by the gateway. */
+export async function createPrivateUnixEndpoint(
+  requestedDirectory: string | undefined,
+  socketName: string,
+  prefix: string
+): Promise<{ endpoint: string; ownedRuntimeDirectory: string | null }> {
+  if (requestedDirectory) {
+    const endpoint = join(requestedDirectory, socketName);
+    if (Buffer.byteLength(endpoint, "utf8") <= MAX_UNIX_SOCKET_PATH_BYTES) {
+      await makePrivateDirectory(requestedDirectory, { recursive: true });
+      return { endpoint, ownedRuntimeDirectory: null };
+    }
+  }
+  const template = `${prefix}${process.getuid?.() ?? "user"}-`;
+  const base = Buffer.byteLength(join(tmpdir(), `${template}XXXXXX`, socketName), "utf8") <= MAX_UNIX_SOCKET_PATH_BYTES
+    ? tmpdir() : "/tmp";
+  // mkdtemp creates a fresh owner-only directory atomically instead of reusing a guessed path.
+  const directory = await mkdtemp(join(base, template));
+  try {
+    await chmod(directory, 0o700);
+    return { endpoint: join(directory, socketName), ownedRuntimeDirectory: directory };
+  } catch (error) {
+    await rmdir(directory).catch(() => undefined);
+    throw error;
+  }
 }
 
 /** Listens on a Unix socket (or named pipe) endpoint and, off Windows, restricts the socket file to its owner. */

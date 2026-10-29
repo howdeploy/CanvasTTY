@@ -3,7 +3,7 @@ import { EventEmitter, once } from "node:events";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { MAX_BRIDGE_PAYLOAD_BYTES } from "../src/agent-browser/tool-catalog.mjs";
@@ -28,6 +28,25 @@ const POSIX_GATEWAY_TEST = {
     ? "POSIX socket behavior is covered on Unix; Windows named pipes have dedicated transport tests."
     : false
 };
+
+test("long Unicode browser runtime paths use a private removable socket directory", { skip: process.platform !== "darwin" }, async (t) => {
+  const root = await fixture(t, "ctty-long-browser-");
+  const runtimeDirectory = join(root, "профиль".repeat(12), "browser", "runtime");
+  const gateway = await startedGateway(t, core(), { runtimeDirectory });
+  const capability = gateway.registerAgent({ terminalSessionId: "long-path", provider: "codex", cwd: root });
+  const address = capability.address;
+  assert.ok(Buffer.byteLength(address, "utf8") <= 100);
+  assert.notEqual(dirname(address), runtimeDirectory);
+  assert.equal((await stat(dirname(address))).mode & 0o777, 0o700);
+  assert.equal((await stat(address)).mode & 0o777, 0o600);
+  const client = await connectClient(address);
+  t.after(() => client.destroy());
+  client.send(authMessage(capability));
+  await client.next((message) => message.type === "authenticated");
+  client.destroy();
+  await gateway.close();
+  await assert.rejects(stat(dirname(address)), { code: "ENOENT" });
+});
 
 async function fixture(t, prefix) {
   const root = await mkdtemp(join(tmpdir(), prefix));

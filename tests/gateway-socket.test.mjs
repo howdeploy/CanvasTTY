@@ -6,12 +6,42 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   closeServer,
+  createPrivateUnixEndpoint,
   listenOnEndpoint,
   makePrivateDirectory,
   removeEndpoint,
   tokenDigest,
   tokenMatches
 } from "../src/main/services/gatewaySocket.ts";
+
+test("a short requested endpoint directory remains caller-owned", { skip: process.platform === "win32" }, async (t) => {
+  const root = await mkdtemp("/tmp/ctty-requested-");
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const created = await createPrivateUnixEndpoint(root, "g.sock", "ctty-test-");
+  assert.equal(created.endpoint, join(root, "g.sock"));
+  assert.equal(created.ownedRuntimeDirectory, null);
+  await removeEndpoint(created.endpoint, created.ownedRuntimeDirectory, { socketFile: true });
+  assert.equal((await stat(root)).mode & 0o777, 0o700);
+});
+
+test("a long TMPDIR falls back to a short private directory without reusing another gateway", { skip: process.platform === "win32" }, async () => {
+  const previous = process.env.TMPDIR;
+  const created = [];
+  try {
+    process.env.TMPDIR = `/tmp/${"long-".repeat(25)}`;
+    created.push(await createPrivateUnixEndpoint(undefined, "r.sock", "ctty-test-"));
+    created.push(await createPrivateUnixEndpoint(undefined, "r.sock", "ctty-test-"));
+    assert.notEqual(created[0].ownedRuntimeDirectory, created[1].ownedRuntimeDirectory);
+    for (const value of created) {
+      assert.ok(Buffer.byteLength(value.endpoint, "utf8") <= 100);
+      assert.equal((await stat(value.ownedRuntimeDirectory)).mode & 0o777, 0o700);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previous;
+    for (const value of created) await removeEndpoint(value.endpoint, value.ownedRuntimeDirectory, { socketFile: true });
+  }
+});
 
 test("a token matches only its own digest, and a missing digest never matches", () => {
   const digest = tokenDigest("secret-token");

@@ -29,6 +29,7 @@ import {
   closeServer,
   listenOnEndpoint,
   makePrivateDirectory,
+  createPrivateUnixEndpoint,
   removeEndpoint,
   tokenDigest,
   tokenMatches
@@ -908,6 +909,10 @@ async function createEndpoint(requestedRuntimeDirectory?: string): Promise<{
   endpoint: string;
   ownedRuntimeDirectory: string | null;
 }> {
+  // macOS sockaddr_un cannot hold long user profile paths. Other platforms retain their existing endpoints.
+  if (process.platform === "darwin") {
+    return createPrivateUnixEndpoint(requestedRuntimeDirectory, `r-${randomBytes(2).toString("hex")}.sock`, "ctty-runtime-");
+  }
   const suffix = randomBytes(8).toString("hex");
   const runtimeDirectory = requestedRuntimeDirectory
     ?? join(tmpdir(), `ctty-runtime-${process.getuid?.() ?? "user"}-${suffix}`);

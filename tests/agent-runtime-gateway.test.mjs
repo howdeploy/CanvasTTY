@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import {
@@ -20,6 +20,26 @@ const POSIX_RUNTIME_GATEWAY_TEST = {
     ? "POSIX socket behavior is covered on Unix; Windows named pipes have dedicated transport tests."
     : false
 };
+
+test("long Unicode lifecycle runtime paths still deliver authenticated hooks and clean up", { skip: process.platform !== "darwin" }, async (t) => {
+  const root = await fixture(t);
+  const signals = [];
+  const runtimeDirectory = join(root, "профиль".repeat(12), "lifecycle", "runtime");
+  const gateway = new RuntimeGateway({ runtimeDirectory, onSignal: (id, signal) => signals.push({ id, signal }) });
+  t.after(() => gateway.close());
+  const address = await gateway.start();
+  assert.ok(Buffer.byteLength(address, "utf8") <= 100);
+  assert.notEqual(dirname(address), runtimeDirectory);
+  assert.equal((await stat(dirname(address))).mode & 0o777, 0o700);
+  assert.equal((await stat(address)).mode & 0o777, 0o600);
+  const capability = gateway.registerSession("long-path", "codex");
+  await send(address, message(capability, "working", "UserPromptSubmit", "long-path-turn"));
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0].id, "long-path");
+  assert.equal(signals[0].signal.turnId, "long-path-turn");
+  await gateway.close();
+  await assert.rejects(stat(dirname(address)), { code: "ENOENT" });
+});
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "canvastty-runtime-gateway-"));

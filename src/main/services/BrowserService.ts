@@ -234,6 +234,7 @@ export class BrowserService {
       stateChanged: (tabId, state) => this.lifecycleChanged(tabId, state)
     }, {
       enabled: options.pauseHiddenTabs ?? true,
+      resumePendingFreezeOnDisable: process.platform === "darwin",
       ...options.tabLifecycle
     });
     this.store = new BrowserStore(userDataPath);

@@ -31,6 +31,8 @@ export interface TabLifecycleHost {
 
 export interface TabLifecycleOptions {
   enabled?: boolean;
+  /** Queue a wake when pausing is disabled while a freeze may still be in flight. */
+  resumePendingFreezeOnDisable?: boolean;
   freezeAfterMs?: number;
   discardAfterMs?: number;
   maxLiveHiddenTabs?: number;
@@ -73,12 +75,14 @@ export class BrowserTabLifecycle {
   private readonly setTimer: (callback: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
   private readonly onError: (error: unknown) => void;
+  private readonly resumePendingFreezeOnDisable: boolean;
   private enabled: boolean;
   private disposed = false;
 
   constructor(host: TabLifecycleHost, options: TabLifecycleOptions = {}) {
     this.host = host;
     this.enabled = options.enabled ?? true;
+    this.resumePendingFreezeOnDisable = options.resumePendingFreezeOnDisable ?? false;
     this.freezeAfterMs = options.freezeAfterMs ?? TAB_FREEZE_AFTER_MS;
     this.discardAfterMs = options.discardAfterMs ?? TAB_DISCARD_AFTER_MS;
     this.maxLiveHiddenTabs = options.maxLiveHiddenTabs ?? MAX_LIVE_HIDDEN_TABS;
@@ -190,7 +194,11 @@ export class BrowserTabLifecycle {
       this.resetRetries(entry);
       if (!enabled) {
         this.cancelTimer(entry);
-        if (entry.state === "frozen") void this.ensureLive(entry.id).catch(this.onError);
+        // A pending freeze still reports active. A wake on its queue waits for it before resuming;
+        // sleeping tabs deliberately remain asleep until they are next shown or used.
+        if (entry.state === "frozen" || (this.resumePendingFreezeOnDisable && entry.state === "active")) {
+          void this.ensureLive(entry.id).catch(this.onError);
+        }
       } else {
         // Idle time counts from now: turning the setting on must not put long-hidden tabs to sleep at once.
         entry.lastUsedAt = this.now();

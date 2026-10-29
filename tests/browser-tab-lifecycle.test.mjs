@@ -315,6 +315,33 @@ test("turning the setting off resumes paused tabs and stops scheduling; on again
   assert.equal(lifecycle.state("tab"), "frozen");
 });
 
+test("Mac disabling pause waits for an in-flight freeze and resumes it without waking sleeping tabs", async () => {
+  const { clock, log, gates, lifecycle } = fixture({ resumePendingFreezeOnDisable: true });
+  lifecycle.track("sleeping", false);
+  await clock.tick(600_000);
+  assert.equal(lifecycle.state("sleeping"), "discarded");
+  lifecycle.track("pending", false);
+  gates.freeze = deferred();
+  await clock.tick(30_000);
+  assert.equal(lifecycle.state("pending"), "active", "the freeze has started but has not completed");
+
+  lifecycle.setEnabled(false);
+  await flush();
+  assert.equal(log.includes("resume:pending"), false, "the resume cannot overtake the freeze");
+  gates.freeze.resolve();
+  await flush();
+
+  assert.deepEqual(log.slice(-5), [
+    "freeze:pending", "frozen:pending", "state:pending:frozen", "resume:pending", "state:pending:active"
+  ]);
+  assert.equal(lifecycle.state("pending"), "active");
+  assert.equal(lifecycle.state("sleeping"), "discarded");
+  assert.equal(log.includes("restore:sleeping"), false);
+  assert.equal(clock.timers.size, 0);
+  await clock.tick(3_600_000);
+  assert.equal(lifecycle.state("pending"), "active", "disabled pausing never schedules another freeze");
+});
+
 test("an untracked (closed) tab is left alone even when its freeze was in flight", async () => {
   const { clock, log, gates, lifecycle } = fixture();
   lifecycle.track("tab", false);

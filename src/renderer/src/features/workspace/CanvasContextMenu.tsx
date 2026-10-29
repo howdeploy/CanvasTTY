@@ -23,7 +23,7 @@ import type { CanvasAutoSortHost } from "./canvasAutoSortScope";
 import { CANVAS_REGION_COLORS } from "./canvasRegions";
 
 type ToolsMenu = typeof import("./CanvasAutoSortMenu").CanvasAutoSortMenu;
-/** The Tools submenu body: loaded when the empty-canvas menu opens (or by Tools) and kept for later menus. */
+/** The Tools submenu body: loaded when a canvas or region menu opens (or by Tools) and kept for later menus. */
 let loadedToolsMenu: ToolsMenu | null = null;
 let toolsMenuLoad: Promise<ToolsMenu> | null = null;
 function loadToolsMenu(): Promise<ToolsMenu> {
@@ -118,7 +118,7 @@ export function CanvasContextMenu({
 
   // Tools is opened from this menu: its body loads while the menu is open, so the submenu shows at once.
   useEffect(() => {
-    if (kind !== "empty") return;
+    if (kind !== "empty" && kind !== "region") return;
     // Loaded since this menu's first render (by an earlier menu): copy it in, nothing else will.
     if (loadedToolsMenu) {
       setToolsMenu(() => loadedToolsMenu);
@@ -210,6 +210,27 @@ export function CanvasContextMenu({
       });
     }
   };
+
+  const tools = (
+    <div className="canvas-menu__submenu-anchor">
+      <CanvasMenuRow
+        icon="wrench"
+        right={<CanvasMenuChevron side={submenuSide} />}
+        role="menuitem"
+        aria-haspopup="menu"
+        aria-expanded={toolsOpen}
+        onClick={toggleTools}
+      >{t(locale, "canvasMenuTools")}</CanvasMenuRow>
+      {toolsOpen && ToolsMenu && (
+        <ToolsMenu
+          host={autoSort}
+          locale={locale}
+          className={`canvas-menu canvas-menu__submenu canvas-menu__submenu--${submenuSide} ${toolsUp ? "canvas-menu__submenu--up" : ""}`}
+          onDone={onClose}
+        />
+      )}
+    </div>
+  );
 
   return (
     <div
@@ -305,24 +326,7 @@ export function CanvasContextMenu({
           <CanvasMenuRow icon="folder" role="menuitem" onClick={onOpenFiles}>
             {t(locale, "files")}
           </CanvasMenuRow>
-          <div className="canvas-menu__submenu-anchor">
-            <CanvasMenuRow
-              icon="wrench"
-              right={<CanvasMenuChevron side={submenuSide} />}
-              role="menuitem"
-              aria-haspopup="menu"
-              aria-expanded={toolsOpen}
-              onClick={toggleTools}
-            >{t(locale, "canvasMenuTools")}</CanvasMenuRow>
-            {toolsOpen && ToolsMenu && (
-              <ToolsMenu
-                host={autoSort}
-                locale={locale}
-                className={`canvas-menu canvas-menu__submenu canvas-menu__submenu--${submenuSide} ${toolsUp ? "canvas-menu__submenu--up" : ""}`}
-                onDone={onClose}
-              />
-            )}
-          </div>
+          {tools}
           <CanvasMenuDivider />
           <CanvasMenuRow
             icon="settings"
@@ -365,6 +369,7 @@ export function CanvasContextMenu({
           <CanvasMenuRow icon="image-plus" role="menuitem" onClick={onAddFiles}>
             {t(locale, "materialsAddFiles")}
           </CanvasMenuRow>
+          {tools}
           <CanvasMenuDivider />
           <CanvasMenuRow icon="trash" danger role="menuitem" onClick={onDeleteRegion}>
             {t(locale, "canvasMenuDeleteRegion")}

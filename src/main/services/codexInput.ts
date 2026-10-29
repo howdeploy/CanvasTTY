@@ -97,6 +97,12 @@ export function codexPromptInput(text: string, submit = true): string {
   return `\x1b[200~${text}\x1b[201~${submit ? "\r" : ""}`;
 }
 
+/** These TUIs need explicit paste boundaries to keep task text separate from the submit key. */
+export function agentPromptInput(provider: string, text: string, submit = true): string {
+  return provider === "codex" || provider === "claude" || provider === "kimi"
+    ? codexPromptInput(text, submit) : `${text}${submit ? "\r" : ""}`;
+}
+
 /** Codex draws placeholders dim; never accept a clipped human draft as a suggestion. */
 export function codexPlaceholderIsDim(terminal: import("@xterm/headless").Terminal): boolean {
   const buffer = terminal.buffer.active;

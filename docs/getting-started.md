@@ -31,7 +31,7 @@ npm run dev
 5. Zoom out to use semantic summaries as navigation targets; zoom back in to interact with xterm or the native browser page.
 6. Return to Home to inspect real sessions, connected browser agents, and any provider quota windows that their adapters expose.
 
-Launch modes are **Auto** (the default), **Manual**, **Accept edits**, **Plan** and **Bypass**, each offered only where that CLI supports it; the protection layers around them are described in [Installing and security](installing-and-security.md#agent-protection-layers). **Bypass** (YOLO) disables provider safety prompts where the provider supports such a mode, still inside base protection and agent isolation. For OpenCode, CanvasTTY applies a launch-only inline `permission: "allow"` override while preserving the rest of the merged OpenCode configuration. Hermes receives its native `--yolo` flag, while Grok Build receives its native `--always-approve` flag for that launch. CanvasTTY asks you to acknowledge it once per CLI and never gives it to a subagent; use it only in a directory you are willing to let the agent modify.
+Launch modes are **Auto** (the default), **Manual**, **Accept edits**, **Plan** and **Bypass**, each offered only where that CLI supports it; the protection layers around them are described in [Installing and security](installing-and-security.md#agent-protection-layers). **Bypass** (YOLO) disables provider safety prompts where the provider supports such a mode, still subject to base protection and agent isolation when enabled. For OpenCode, CanvasTTY applies a launch-only inline `permission: "allow"` override while preserving the rest of the merged OpenCode configuration. Hermes receives its native `--yolo` flag, while Grok Build receives its native `--always-approve` flag for that launch. CanvasTTY asks you to acknowledge it once per CLI and never gives it to a subagent; use it only in a directory you are willing to let the agent modify.
 
 ## Animated terminal backgrounds
 
@@ -53,9 +53,9 @@ For other TUI agents that paint their own screen background, choose the equivale
 
 ## File links
 
-Click a local file reference such as `src/main.ts:42:7` in terminal or agent output to open it in VS Code at that line and column. CanvasTTY reuses the last active VS Code window. Absolute paths, quoted paths containing spaces, and local `file://` or `vscode://file/` hyperlinks are supported; relative paths use the terminal session's launch directory. The target must be an existing regular file.
+Click a local file reference such as `src/main.ts:42:7` in terminal or agent output to open the file in the default application configured in your operating system. Absolute paths, quoted paths containing spaces, and local `file://` or `vscode://file/` hyperlinks are supported; relative paths use the terminal session's launch directory. The target must be an existing regular file.
 
-VS Code must be installed. CanvasTTY checks its standard macOS and Windows installation locations and the shell's `PATH`. HTTP(S) links continue to use the browser selected in Settings.
+Choose your preferred application through your operating system's file associations. CanvasTTY does not select an editor or pass line/column positions to the system application. HTTP(S) links continue to use the browser selected in Settings.
 
 ## Browser controls and activity
 

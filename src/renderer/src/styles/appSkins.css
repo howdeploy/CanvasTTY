@@ -786,7 +786,7 @@
 
 .workspace[data-theme-background] {
   background-position: center center;
-  background-size: cover;
+  background-size: contain;
   background-repeat: no-repeat;
   background-attachment: fixed;
 }

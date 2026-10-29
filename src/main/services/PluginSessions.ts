@@ -13,7 +13,7 @@ import type {
   TerminalDataEvent
 } from "../../shared/contracts.ts";
 import { IPC } from "../../shared/contracts.ts";
-import { codexPromptInput } from "./codexInput.ts";
+import { agentPromptInput } from "./codexInput.ts";
 import type { PersistedEnvironmentRef } from "./TerminalSessionStore.ts";
 
 /** A card as plugin services see it (EP-4): metadata and where it runs, never screen text. */
@@ -246,15 +246,16 @@ export class PluginSessions {
     return { sessionId: created.id };
   }
 
-  /** `sent` is true once the text reached the card's agent (after a launch its plugins prepared has started). */
+  /** `sent` confirms a PTY write, not provider submission/acceptance. */
   private send(pluginId: string, values: Record<string, unknown>): Promise<{ sessionId: string; sent: boolean }> {
     const sessionId = this.requireOwned(pluginId, values.sessionId);
     if (typeof values.text !== "string" || values.text.length === 0 || values.text.length > MAX_SEND_CHARS) {
       throw new Error(`text must be 1 to ${MAX_SEND_CHARS} characters.`);
     }
     const submit = values.submit === undefined ? true : values.submit === true;
-    const codex = this.deps.terminals.pluginContext(sessionId)?.metadata.provider === "codex";
-    const data = codex ? codexPromptInput(values.text, submit) : submit ? `${values.text}\r` : values.text;
+    const provider = this.deps.terminals.pluginContext(sessionId)?.metadata.provider;
+    const codex = provider === "codex";
+    const data = agentPromptInput(provider ?? "terminal", values.text, submit);
     return this.deps.terminals.deliverInput(sessionId, data, undefined, undefined, codex)
       .then((delivery) => ({ sessionId, sent: delivery.delivered }));
   }

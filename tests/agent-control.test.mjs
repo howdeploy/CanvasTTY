@@ -586,6 +586,46 @@ test("CLI rejects inapplicable flags and never sends malformed result revisions"
   await assert.rejects(runCli(["send", "session", "--text", "one", "--prompt-file", "two"]), /exactly one/);
 });
 
+test("native Kimi control requires its active empty composer before any PTY write", localSocket, async t => {
+  const f = await fixture(t);
+  const created = await f.request("create", { provider: "kimi", profile: "yolo", cwd: f.root });
+  const id = created.session.id, pty = f.calls.at(-1).pty;
+  const observed = async predicate => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const screen = await f.request("screen", { sessionId: id });
+      if (predicate(screen)) return screen;
+      await delay(5);
+    }
+    assert.fail("synthetic Kimi output did not reach the gateway");
+  };
+  await assert.rejects(f.request("send", { sessionId: id, text: "STARTUP" }), error => error.code === "NOT_READY");
+  const ready = "\x1b[2J\x1b[HKimi Code 2.4.0\r\n╭────────────────────────────╮\r\n│ >                          │\r\n╰────────────────────────────╯\r\nfooter\x1b[2A\x1b[6G\x1b[?25l";
+  pty.data(ready.replace("│ >                          │", "│ > human draft              │"));
+  await observed(screen => screen.text.includes("human draft"));
+  await assert.rejects(f.request("send", { sessionId: id, text: "DO_NOT_APPEND" }), error => error.code === "NOT_READY");
+  assert.deepEqual(pty.writes, []);
+  pty.data(ready);
+  await observed(screen => screen.composerReady);
+  const result = await f.request("send", { sessionId: id, text: "READY_TASK" });
+  assert.equal(result.delivery, "written-to-pty");
+  assert.deepEqual(pty.writes, ["\x1b[200~READY_TASK\x1b[201~\r"]);
+});
+
+test("native OpenCode control refuses startup without a write, then accepts its observed input view", localSocket, async t => {
+  const f = await fixture(t);
+  const created = await f.request("create", { provider: "opencode", profile: "normal", cwd: f.root });
+  const id = created.session.id, pty = f.calls.at(-1).pty;
+  for (const output of ["Ask anything", "\x1b[?25h", "\x1b[?1049h\x1b[?25l"]) {
+    pty.data(output);
+    await assert.rejects(f.request("send", { sessionId: id, text: "NOT_YET" }), error => error.code === "NOT_READY");
+    assert.deepEqual(pty.writes, []);
+  }
+  pty.data("\x1b[?25h");
+  const result = await f.request("send", { sessionId: id, text: "READY_TASK" });
+  assert.equal(result.delivery, "written-to-pty");
+  assert.deepEqual(pty.writes, ["\x1b[200~READY_TASK\x1b[201~\r"]);
+});
+
 test("opt-in hook result capture is authenticated, bounded and absent for ordinary sessions", localSocket, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "ctty-control-result-"));
   const signals = [];

@@ -122,7 +122,7 @@ test("the canvas renders the menu and the palette through the preloaded surfaces
   assert.match(source, /usePreloadedSurface\(canvasContextMenuSurface, contextMenu !== null\)/u);
   assert.match(source, /usePreloadedSurface\(canvasCommandPaletteSurface, commandPaletteOpen\)/u);
   assert.match(source, /preloadWhenIdle\(\[canvasContextMenuSurface, canvasCommandPaletteSurface\]\)/u);
-  assert.match(source, /\{contextMenu && CanvasContextMenu && \(\n\s*<CanvasContextMenu\n/u);
+  assert.match(source, /\{contextMenu && CanvasContextMenu && (?:\(contextMenu.kind !== "region" \|\| contextRegion\) && )?\(\n\s*<CanvasContextMenu\n/u);
   assert.match(source, /\{commandPaletteOpen && CanvasCommandPalette && \(\n\s*<CanvasCommandPalette\n/u);
 });
 

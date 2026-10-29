@@ -3,8 +3,18 @@ import { findTerminalFileLinks } from "../../../../shared/terminalFileLink.ts";
 
 export function terminalFileLinkProvider(
   terminal: Pick<Terminal, "buffer" | "cols">,
-  activate: (event: MouseEvent, reference: string) => void
+  activate: (event: MouseEvent, reference: string) => void,
+  canOpen?: (reference: string) => Promise<boolean>
 ): ILinkProvider {
+  const checks = new Map<string, { time: number; result: Promise<boolean> }>();
+  const isFile = (reference: string): Promise<boolean> => {
+    const cached = checks.get(reference);
+    if (cached && Date.now() - cached.time < 1_000) return cached.result;
+    if (checks.size >= 128) checks.delete(checks.keys().next().value!);
+    const result = canOpen!(reference).catch(() => false);
+    checks.set(reference, { time: Date.now(), result });
+    return result;
+  };
   return {
     provideLinks(lineNumber, callback) {
       const buffer = terminal.buffer.active;
@@ -37,7 +47,7 @@ export function terminalFileLinkProvider(
         callback(undefined);
         return;
       }
-      callback(findTerminalFileLinks(text).flatMap((link) => {
+      const links = findTerminalFileLinks(text).flatMap((link) => {
         const start = cells[link.start];
         const end = cells[link.end - 1];
         if (!start || !end || lineNumber < start.y || lineNumber > end.y) return [];
@@ -46,7 +56,10 @@ export function terminalFileLinkProvider(
           range: { start: { x: start.x, y: start.y }, end: { x: end.x + end.width - 1, y: end.y } },
           activate: (event: MouseEvent) => activate(event, link.text)
         }];
-      }));
+      });
+      if (!canOpen) callback(links);
+      else void Promise.all(links.map(async (link) => await isFile(link.text) ? [link] : []))
+        .then((valid) => callback(valid.flat()));
     }
   };
 }

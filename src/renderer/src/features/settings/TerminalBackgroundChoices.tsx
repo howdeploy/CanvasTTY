@@ -194,8 +194,21 @@ export function TerminalBackgroundChoices({ locale, value, paused, favorites, on
   const [focused, setFocused] = useState<TerminalBackgroundId | null>(null);
   const [query, setQuery] = useState("");
   const [scrolling, setScrolling] = useState(false);
+  const catalogRef = useRef<HTMLDivElement>(null);
   const scrollTimer = useRef<ReturnType<typeof window.setTimeout> | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(scrollTimer.current), []);
+  useEffect(() => {
+    const viewport = catalogRef.current?.closest(".settings-panel__content");
+    const pausePreview = (): void => {
+      setScrolling(true);
+      window.clearTimeout(scrollTimer.current);
+      scrollTimer.current = window.setTimeout(() => setScrolling(false), 150);
+    };
+    viewport?.addEventListener("scroll", pausePreview, { passive: true });
+    return () => {
+      viewport?.removeEventListener("scroll", pausePreview);
+      window.clearTimeout(scrollTimer.current);
+    };
+  }, []);
   const [category, setCategory] = useState<string>(() =>
     TERMINAL_BACKGROUND_CATALOG.find((piece) => piece.id === value)?.category ?? "scenes");
   const search = query.trim().toLowerCase();
@@ -211,7 +224,7 @@ export function TerminalBackgroundChoices({ locale, value, paused, favorites, on
     return (category === "favorites" ? favoriteIds.has(piece.id) : piece.category === category)
       && `${piece.name} ${piece.id} ${piece.note} ${RUSSIAN_NAMES[piece.id] ?? ""}`.toLowerCase().includes(search);
   });
-  return <div className="terminal-background-catalog">
+  return <div ref={catalogRef} className="terminal-background-catalog">
     <div className="terminal-background-toolbar">
       <select className="terminal-background-search" value={category}
         aria-label={locale === "ru" ? "Категория фонов" : "Background category"}
@@ -249,12 +262,7 @@ export function TerminalBackgroundChoices({ locale, value, paused, favorites, on
       </div>
     </div>
     <div key={category} className="terminal-background-results" role="region"
-      onScroll={() => {
-        setScrolling(true);
-        window.clearTimeout(scrollTimer.current);
-        scrollTimer.current = window.setTimeout(() => setScrolling(false), 150);
-      }}
-      aria-label={locale === "ru" ? "Фоны выбранной категории" : "Backgrounds in the selected category"} tabIndex={0}>
+      aria-label={locale === "ru" ? "Фоны выбранной категории" : "Backgrounds in the selected category"}>
       <div className="border-skin-choices" role="group" aria-label={locale === "ru" ? "Выбор фона" : "Choose a background"}>
           {matches.map(({ id, name }) => <div key={id} className="terminal-background-tile">
             <button type="button" className="border-skin-choice" aria-pressed={value === id}

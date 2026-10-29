@@ -15,7 +15,7 @@ import {
 import { parseCanvasLayerId, pluginLayerId, terminalLayerId } from "./canvasSelectionGesture";
 
 /**
- * The body of the empty-canvas Tools submenu. The context menu loads it, with the layout code,
+ * The body of the canvas and region Tools submenu. The context menu loads it, with the layout code,
  * the first time Tools opens, so none of it is in the startup bundle.
  */
 const LABELS = {
@@ -35,19 +35,24 @@ export function canvasAutoSortIds(host: CanvasAutoSortHost): string[] {
     const kind = parseCanvasLayerId(id)?.kind;
     if (kind) candidates.push({ id, kind, bounds, decorative: mascots.has(id) });
   }
-  return canvasAutoSortScope(candidates, host.selection, host.regions);
+  return canvasAutoSortScope(candidates, host.selection, host.regions, host.region);
 }
 
 /**
  * Sort by `mode` and remember the step for undo; the criterion is kept only once a sort happened.
  * A sort that moves nothing (the layout already follows the criterion) keeps the earlier undo step.
  */
-export function runCanvasAutoSort(host: CanvasAutoSortHost, mode: CanvasAutoSortMode): void {
-  const plan = planCanvasAutoSort(canvasAutoSortIds(host), host.bounds, host.sessions, terminalLayerId, mode, {
+export function runCanvasAutoSort(host: CanvasAutoSortHost, mode: CanvasAutoSortMode, locale: LocaleId): void {
+  const ids = canvasAutoSortIds(host);
+  const plan = planCanvasAutoSort(ids, host.bounds, host.sessions, terminalLayerId, mode, {
     avoid: [host.home, ...host.regions],
-    snapToGrid: host.snapToGrid
+    snapToGrid: host.snapToGrid,
+    within: host.region
   });
-  if (!plan) return;
+  if (!plan) {
+    if (host.region && ids.length >= 2) host.onError(t(locale, "canvasAutoSortRegionNoSpace"));
+    return;
+  }
   if (!canvasAutoSortMoves(plan)) {
     if (mode !== host.state.mode) host.setState({ mode, undo: host.state.undo });
     return;
@@ -60,7 +65,7 @@ export function runCanvasAutoSort(host: CanvasAutoSortHost, mode: CanvasAutoSort
 /** Put back the windows that are still where the last sort placed them. */
 export function undoCanvasAutoSort(host: CanvasAutoSortHost): void {
   if (!host.state.undo) return;
-  const restore = canvasAutoSortUndoTargets(host.state.undo, host.bounds);
+  const restore = canvasAutoSortUndoTargets(host.state.undo, host.bounds, host.region, host.regions);
   host.setState({ mode: host.state.mode, undo: null });
   if (restore.size === 0) return;
   host.commit(restore);
@@ -74,7 +79,7 @@ export function CanvasAutoSortMenu({ host, locale, className, onDone }: {
   onDone(): void;
 }): React.JSX.Element {
   const available = canvasAutoSortIds(host).length >= 2;
-  const undoAvailable = host.state.undo !== null && canvasAutoSortUndoTargets(host.state.undo, host.bounds).size > 0;
+  const undoAvailable = host.state.undo !== null && canvasAutoSortUndoTargets(host.state.undo, host.bounds, host.region, host.regions).size > 0;
   const run = (action: () => void): void => {
     try {
       action();
@@ -98,7 +103,7 @@ export function CanvasAutoSortMenu({ host, locale, className, onDone }: {
               <span className="canvas-menu__check" aria-hidden="true"><UiIcon name="done" size="1em" /></span>
             ) : undefined}
             key={mode}
-            onClick={() => run(() => runCanvasAutoSort(host, mode))}
+            onClick={() => run(() => runCanvasAutoSort(host, mode, locale))}
           >{t(locale, LABELS[mode])}</CanvasMenuRow>
         ))}
         {!available && <p className="canvas-menu__hint">{t(locale, "canvasAutoSortUnavailable")}</p>}

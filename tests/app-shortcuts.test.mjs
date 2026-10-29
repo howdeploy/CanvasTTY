@@ -72,6 +72,27 @@ test("a shortcut survives a non-Latin layout by preferring the physical key", ()
   assert.equal(matchesPhysicalOrLayoutKey({ key: "л", code: "KeyX" }, "KeyK", "k"), false);
 });
 
+test("clipboard shortcut diagnostics record physical keys without recording layout text", async () => {
+  const source = await readFile(new URL("../src/main/index.ts", import.meta.url), "utf8");
+  const body = source.match(/window\.webContents\.on\("before-input-event", \(_event, input\) => \{([\s\S]*?)^  \}\);/m)?.[1];
+  assert.ok(body);
+  const handle = new Function("diagnostics", "window", "input", body);
+  const records = [];
+  const diagnostics = { record: (...args) => records.push(args) };
+  const window = { isFocused: () => true };
+  const input = { type: "keyDown", control: true, shift: true, alt: false, meta: false };
+  for (const [code, key] of [["KeyC", "C"], ["KeyC", "С"], ["KeyV", "М"], ["KeyV", "م"]]) {
+    handle(diagnostics, window, { ...input, code, key });
+    assert.deepEqual(records.pop(), ["info", "clipboard", "shortcut.received", {
+      code, control: true, shift: true, alt: false, meta: false, windowFocused: true
+    }]);
+  }
+  for (const extra of [
+    { code: "KeyA" }, { code: "KeyV", control: false }, { code: "KeyC", type: "keyUp" }
+  ]) handle(diagnostics, window, { ...input, ...extra });
+  assert.deepEqual(records, []);
+});
+
 test("displays platform-neutral canvas navigation bindings with macOS key names", () => {
   assert.equal(displayCanvasNavigationBinding("Ctrl+Alt+Meta+Space", true), "Ctrl+Option+Command+Space");
   assert.equal(displayCanvasNavigationBinding("Ctrl+Alt", false), "Ctrl+Alt");
@@ -223,6 +244,16 @@ test("App restores native Command+A before its native-input guard without interc
   assert.deepEqual(actions, []);
   handler(event(new ElementTarget(), { key: "Home", code: "Home", metaKey: false }));
   assert.deepEqual(actions, ["home"]);
+  settings.shortcuts.toggleFullscreen = "F11";
+  const fullscreenKey = { key: "F11", code: "F11", metaKey: false };
+  const fullscreenEvent = event(terminal, fullscreenKey);
+  handler(fullscreenEvent);
+  assert.deepEqual(fullscreenEvent.state, { prevented: true, stopped: true });
+  assert.deepEqual(actions, ["home", "toggleFullscreen"]);
+  const repeated = event(terminal, { ...fullscreenKey, repeat: true });
+  handler(repeated);
+  assert.deepEqual(repeated.state, { prevented: true, stopped: true });
+  assert.deepEqual(actions, ["home", "toggleFullscreen"]);
 });
 
 test("terminal keyboard focus is reported on change only; a plugin iframe or app field is not a terminal", async (t) => {

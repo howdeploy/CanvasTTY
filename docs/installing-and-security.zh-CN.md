@@ -80,18 +80,20 @@ gh variable set SPARKLE_PUBLIC_ED_KEY --repo howdeploy/CanvasTTY \
 
 ## 智能体防护层
 
-智能体按自己的模式工作；CanvasTTY 的各层位于其外部，作为安静的安全网：项目内的常规工作不会增加提问，只拦截危险操作并给出简短原因。
+新配置中，基础保护和智能体隔离默认关闭。已有的明确设置会保留；这些防护层仅在启用时生效。
 
-- **启动模式**：自动（默认）、手动、接受编辑、计划、绕过，仅在 CLI 支持时提供。绕过由用户按 CLI 确认，在主进程中检查，绝不交给子智能体，并且仍处于下列各层之内。
-- **基础保护**（hooks）为有 hooks 的智能体拒绝提权、`curl | sh`、磁盘命令以及项目外的写入；它检查命令，不是沙箱。
+智能体按自己的模式工作；已启用的 CanvasTTY 防护层位于其外部，作为安静的安全网：项目内的常规工作不会增加提问，只拦截危险操作并给出简短原因。
+
+- **启动模式**：自动（默认）、手动、接受编辑、计划、绕过，仅在 CLI 支持时提供。绕过由用户按 CLI 确认，在主进程中检查，绝不交给子智能体，并且仍受下列已启用防护层约束。
+- **基础保护**（hooks）启用后为有 hooks 的智能体拒绝提权、`curl | sh`、磁盘命令以及项目外的写入；它检查命令，不是沙箱。
 - **委派规则**：子智能体的权限不超过其编排者（绝不为 YOLO），只在项目文件夹内工作，并受用户设定的深度和数量限制；智能体无法更改设置、防护、配置档或隔离。
-- **智能体隔离**（macOS 使用 sandbox-exec，Linux 使用 bubblewrap）：只能写入项目、自身临时目录和其 CLI 的目录；密钥和令牌不可读；其他进程、应用和守护进程不可达；无法建立时拒绝启动。网络不受限制；Windows 暂无此层，子智能体在那里以手动模式运行。详见 [agent-orchestration.md](agent-orchestration.md)。
+- **智能体隔离**（macOS 使用 sandbox-exec，Linux 使用 bubblewrap）：启用后只能写入项目、自身临时目录和其 CLI 的目录；密钥和令牌不可读；其他进程、应用和守护进程不可达；无法建立时拒绝启动。网络不受限制；Windows 暂无此层，开启隔离时子智能体在那里以手动模式运行。详见 [agent-orchestration.md](agent-orchestration.md)。
 
 **Git 审计。** 隔离的智能体会话结束、被关闭或在退出后恢复时，CanvasTTY 会检查其文件夹下 git 目录发生变化的仓库。如果 git 现在会在隔离外运行某些东西（`core.hooksPath`、filter 或 diff 驱动、`fsmonitor`、hook 文件、`info/attributes`），会出现一条列出具体变化的通知；**Neutralize** 删除这些键并停用这些文件，**Keep as is** 保持不变。它不会撤销项目内的其他文件改动。
 
 ### Linux：bubblewrap 无法启动时
 
-Ubuntu 24.04 及更新版本（以及其他设置了 `kernel.apparmor_restrict_unprivileged_userns=1` 的发行版）只允许带 AppArmor 配置文件的程序创建非特权用户命名空间，而 bubblewrap 需要它。CanvasTTY 会检查一次（失败后一分钟再查），如果 `bwrap` 已安装却无法启动，就按没有隔离层的电脑处理：子智能体和插件启动的智能体以手动模式运行，卡片会说明原因。要允许它，可以为 bubblewrap 单独添加配置文件（推荐，只影响 `bwrap`）：
+Ubuntu 24.04 及更新版本（以及其他设置了 `kernel.apparmor_restrict_unprivileged_userns=1` 的发行版）只允许带 AppArmor 配置文件的程序创建非特权用户命名空间，而 bubblewrap 需要它。CanvasTTY 会检查一次（失败后一分钟再查），启用隔离时，如果 `bwrap` 已安装却无法启动，就按没有隔离层的电脑处理：子智能体和插件启动的智能体以手动模式运行，卡片会说明原因。要允许它，可以为 bubblewrap 单独添加配置文件（推荐，只影响 `bwrap`）：
 
 ```sh
 sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'

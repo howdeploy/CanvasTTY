@@ -1,6 +1,8 @@
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
+import { windowsBatchShellCommand } from "../../agent-runtime/windows-batch.mjs";
+import { connectedLaunchEnvironment } from "../../agent-runtime/launch-environment.mjs";
 import type { AgentCliAvailability, AgentProviderId } from "../../shared/contracts.ts";
 
 // A provider ID and the executable names it may install as are independent
@@ -276,14 +278,15 @@ export function providerChildProcessLaunch(
   resolution: AvailableProviderCli,
   args: string[]
 ): ProviderChildProcessLaunch {
+  const environment = connectedLaunchEnvironment(resolution.environment);
   if (resolution.launcher === "native") {
-    return { command: resolution.executable, args, environment: resolution.environment };
+    return { command: resolution.executable, args, environment };
   }
   if (!resolution.commandPrompt) throw new Error("A Windows batch provider requires cmd.exe.");
   return {
     command: resolution.commandPrompt,
     args: ["/d", "/s", "/c", windowsBatchShellCommand(resolution.executable, args)],
-    environment: resolution.environment,
+    environment,
     windowsVerbatimArguments: true
   };
 }
@@ -292,37 +295,6 @@ export function providerTerminalBatchCommandLine(executable: string, args: strin
   return `/d /s /c ${windowsBatchShellCommand(executable, args)}`;
 }
 
-function windowsBatchShellCommand(executable: string, args: string[]): string {
-  const shellCommand = [escapeCommandPromptCommand(executable), ...args.map(escapeCommandPromptArgument)].join(" ");
-  return `"${shellCommand}"`;
-}
-
-const COMMAND_PROMPT_META_CHARACTERS = /([()\][%!^"`<>&|;, *?])/g;
-
-function escapeCommandPromptCommand(value: string): string {
-  return value.replace(COMMAND_PROMPT_META_CHARACTERS, "^$1");
-}
-
-// Arguments are escaped twice. cmd.exe removes one level of carets when it
-// reads the /c line, then a batch file (an npm shim runs `node cli.js %*`)
-// parses the text %* expands to again. cmd.exe does not treat \" as an
-// escaped quote, so with one level an argument holding a quote followed by
-// & or | (the --settings hook command, for example) was cut there and the
-// rest ran as a separate command. With every quote escaped at both levels
-// cmd.exe never sees a quoted region and every operator stays escaped.
-//
-// Program-side quoting follows the MSVC rules: backslashes before a quote and
-// at the end are doubled. The old lookahead regex doubled only one of two or
-// more backslashes before a quote, so in `a\\"b` the quote ended the argument
-// instead of being part of it.
-function escapeCommandPromptArgument(value: string): string {
-  const escaped = value
-    .replace(/(\\*)"/g, (_match, slashes: string) => `${slashes}${slashes}\\"`)
-    .replace(/(\\+)$/, "$1$1");
-  return `"${escaped}"`
-    .replace(COMMAND_PROMPT_META_CHARACTERS, "^$1")
-    .replace(COMMAND_PROMPT_META_CHARACTERS, "^$1");
-}
 
 function providerCandidates(commands: readonly string[], directories: string[], platform: NodeJS.Platform, commandFirst = false): string[] {
   const path = platform === "win32" ? win32 : posix;

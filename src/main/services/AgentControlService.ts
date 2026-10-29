@@ -1,4 +1,4 @@
-import { codexPromptInput } from "./codexInput.ts";
+import { agentPromptInput } from "./codexInput.ts";
 import type {
   AgentProviderId,
   CreateSessionRequest,
@@ -192,8 +192,7 @@ export class AgentControlService {
       ...(request.effort !== undefined ? { effort: request.effort } : {})
     }, { ...(RESULT_CAPTURE_PROVIDERS.has(request.provider) ? { captureResult: true } : {}), origin: "subagent" });
     if (request.initialPrompt === undefined || request.initialPrompt.length === 0) return Promise.resolve(created);
-    const input = request.provider === "codex"
-      ? codexPromptInput(request.initialPrompt) : `${request.initialPrompt}\r`;
+    const input = agentPromptInput(request.provider, request.initialPrompt);
     return this.deliver(created.id, input, "prompt", signal)
       .then(() => this.terminals.getMetadata(created.id) ?? created, (error: unknown) => {
         // Cancelled while it started: nobody receives its id, so the card is closed instead of left running.
@@ -208,7 +207,7 @@ export class AgentControlService {
     return subagentProfile(this.requireSession(parentSessionId).profile, provider, requested, this.containment());
   }
 
-  /** Validates at once (throws); resolves once the text reached the agent, and rejects when it did not. */
+  /** Resolves after a PTY write; provider submission/acceptance is not acknowledged here. */
   send(sessionId: string, text: string, submit = true, signal?: AbortSignal): Promise<void> {
     const session = this.requireSession(sessionId);
     if (session.provider === "terminal") throw new Error("Plain terminals are not agents.");
@@ -216,7 +215,7 @@ export class AgentControlService {
     if (!capabilities.send) throw new Error(`${session.provider} cannot receive prompts.`);
     if (typeof text !== "string" || text.length === 0) throw new Error("Prompt text is required.");
     if (session.exitCode !== null) throw new Error("Agent session has already exited.");
-    const input = session.provider === "codex" ? codexPromptInput(text, submit) : submit ? `${text}\r` : text;
+    const input = agentPromptInput(session.provider, text, submit);
     return this.deliver(sessionId, input, "text", signal);
   }
 
@@ -384,7 +383,7 @@ export class AgentControlService {
     this.terminals.dispose(sessionId);
   }
 
-  /** Through the terminal manager's one delivery rule: exactly once, into the launch that is starting now. */
+  /** Ordered PTY delivery, bound to this launch; native acceptance is not acknowledged. */
   private async deliver(sessionId: string, data: string, what: "prompt" | "text", signal?: AbortSignal): Promise<void> {
     const delivery = await this.terminals.deliverInput(sessionId, data, undefined, signal, this.requireSession(sessionId).provider === "codex");
     if (!delivery.delivered) {

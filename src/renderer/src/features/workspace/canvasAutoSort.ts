@@ -37,11 +37,14 @@ export interface CanvasAutoSortOptions {
   /** Fixed areas the block may not cover, e.g. HOME and canvas regions. */
   avoid?: readonly SessionBounds[];
   snapToGrid?: boolean;
+  /** For a region plan: center the existing arrangement inside it, or refuse the whole step. */
+  within?: SessionBounds;
 }
 
 /**
  * Build the items for the windows in scope from their current bounds and arrange them. Returns
- * null when fewer than two of them still exist. `layerIdOf` maps a session id to its layer id.
+ * null when fewer than two of them still exist, or a region cannot safely hold the arrangement.
+ * `layerIdOf` maps a session id to its layer id.
  * Every layer in `bounds` that is not sorted (notes, materials, Files cards, windows left out of
  * the scope) is an obstacle the sorted block keeps clear of, like `options.avoid`.
  */
@@ -73,9 +76,12 @@ export function planCanvasAutoSort(
   if (items.length < 2) return null;
   const sorted = new Set(items.map((item) => item.id));
   const obstacles = [...options.avoid ?? [], ...[...bounds].filter(([id]) => !sorted.has(id)).map(([, value]) => value)];
+  const arranged = arrangeCanvasAutoSort(items, mode, { avoid: options.within ? [] : obstacles, snapToGrid: options.snapToGrid });
+  const after = options.within ? centerInRegion(arranged, options.within, obstacles, options.snapToGrid === true) : arranged;
+  if (!after) return null;
   return {
     before: new Map(items.map((item) => [item.id, item.bounds])),
-    after: arrangeCanvasAutoSort(items, mode, { avoid: obstacles, snapToGrid: options.snapToGrid })
+    after
   };
 }
 
@@ -83,6 +89,32 @@ export function planCanvasAutoSort(
 const GAP = 20;
 const GROUP_GAP = 2 * GAP;
 const GRID = 10;
+
+function centerInRegion(
+  arranged: ReadonlyMap<string, SessionBounds>,
+  region: SessionBounds,
+  obstacles: readonly SessionBounds[],
+  snap: boolean
+): Map<string, SessionBounds> | null {
+  // Keep 20px at the edges and 60px above the content for the existing region title.
+  const content = {
+    position: { x: region.position.x + GAP, y: region.position.y + 3 * GAP },
+    size: { width: region.size.width - 2 * GAP, height: region.size.height - 4 * GAP }
+  };
+  const block = boundingBox([...arranged.values()]);
+  const round = (value: number): number => snap ? Math.round(value / GRID) * GRID : Math.round(value);
+  const x = round(content.position.x + (content.size.width - block.size.width) / 2);
+  const y = round(content.position.y + (content.size.height - block.size.height) / 2);
+  if (x < content.position.x || y < content.position.y
+    || x + block.size.width > content.position.x + content.size.width
+    || y + block.size.height > content.position.y + content.size.height) return null;
+  const margin = { position: { x: x - GAP, y: y - GAP }, size: { width: block.size.width + 2 * GAP, height: block.size.height + 2 * GAP } };
+  // shortcut: reject an obstructed centered block; add bounded placement search only if requested.
+  if (obstacles.some((obstacle) => overlaps(margin, obstacle))) return null;
+  return new Map([...arranged].map(([id, bounds]) => [id,
+    at(x + bounds.position.x - block.position.x, y + bounds.position.y - block.position.y, bounds)
+  ]));
+}
 
 /** The next start after an edge: the gap past it, rounded up onto the grid when snapping. */
 type Step = (edge: number, gap?: number) => number;

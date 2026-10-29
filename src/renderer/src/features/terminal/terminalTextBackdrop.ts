@@ -5,7 +5,8 @@ export function terminalTextRuns(line: IBufferLine | undefined, columns: number)
   let start = -1, end = 0;
   for (let column = 0; line && column < columns; column++) {
     const cell = line.getCell(column);
-    if (cell?.getChars().trim()) {
+    // ANSI highlights already provide their own background and contrast.
+    if (cell?.getChars().trim() && cell.isBgDefault() && !cell.isInverse()) {
       if (start < 0) start = column;
       end = Math.min(columns, column + Math.max(1, cell.getWidth()));
     } else if (start >= 0 && column >= end) {

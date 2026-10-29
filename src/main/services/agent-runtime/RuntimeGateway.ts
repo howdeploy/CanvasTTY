@@ -4,7 +4,7 @@ import type { IncomingMessage, Server as HttpServer, ServerResponse } from "node
 import { createServer } from "node:net";
 import type { AddressInfo, Server } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { AGENT_PROVIDERS, type ProviderId } from "../../../shared/contracts.ts";
 import {
   CLAUDE_HTTP_HOOK,
@@ -62,6 +62,9 @@ export interface RuntimeLifecycleSignal {
   turnId: string | null;
   /** The provider's own conversation id (Codex thread, Claude or OpenCode session), as its hook reported it. */
   threadId?: string;
+  /** Only the shell card's scoped Codex observer sends these authenticated identity fields. */
+  invocationId?: string;
+  cwd?: string;
   result?: { text: string; truncated: boolean };
   lastAssistantMessage?: string;
   answerCaptureGrantExpiresAt?: number;
@@ -75,6 +78,7 @@ export interface RuntimeSessionCapability {
 }
 
 interface RuntimeLease {
+  shellTracking?: boolean;
   terminalSessionId: string;
   provider: Exclude<ProviderId, "terminal">;
   tokenDigest: Buffer;
@@ -119,6 +123,8 @@ interface ParsedLifecycleMessage {
   event: string;
   turnId: string | null;
   threadId?: string;
+  invocationId?: string;
+  cwd?: string;
   result?: { text: string; truncated: boolean };
   lastAssistantMessage?: string;
 }
@@ -256,7 +262,8 @@ export class RuntimeGateway {
     captureResultOrGrantExpiresAt: boolean | number = false,
     answerCaptureGrantExpiresAt?: number,
     decisions = false,
-    decisionBudgetMs?: number
+    decisionBudgetMs?: number,
+    shellTracking = false
   ): RuntimeSessionCapability {
     if (!this.endpoint || (!this.server && !this.windowsTransport?.isRunning)) {
       throw new Error("Agent runtime gateway must be started before launching agents.");
@@ -264,7 +271,9 @@ export class RuntimeGateway {
     if (!terminalSessionId || !AGENT_PROVIDER_SET.has(provider)) {
       throw new Error("Agent runtime launch identity is invalid.");
     }
-    if (!this.leases.has(terminalSessionId) && this.leases.size >= MAX_RUNTIME_SESSIONS) {
+    if (!this.leases.has(terminalSessionId) && (shellTracking
+      ? this.leases.size >= 1_024 + MAX_RUNTIME_SESSIONS
+      : [...this.leases.values()].filter((lease) => !lease.shellTracking).length >= MAX_RUNTIME_SESSIONS)) {
       throw new Error("CanvasTTY supports at most 32 runtime-observed agent sessions.");
     }
     this.revokeTerminalSession(terminalSessionId);
@@ -273,6 +282,7 @@ export class RuntimeGateway {
       ? captureResultOrGrantExpiresAt : answerCaptureGrantExpiresAt;
     this.leases.set(terminalSessionId, {
       terminalSessionId,
+      ...(shellTracking ? { shellTracking: true } : {}),
       provider,
       tokenDigest: tokenDigest(capabilityToken),
       activeTurnId: null,
@@ -455,6 +465,7 @@ export class RuntimeGateway {
     const lease = this.leases.get(message.terminalSessionId);
     if (!lease || lease.provider !== message.provider) throw new Error("Runtime capability is invalid.");
     if (!tokenMatches(message.capabilityToken, lease.tokenDigest)) throw new Error("Runtime capability is invalid.");
+    if (Boolean(lease.shellTracking) !== (message.invocationId !== undefined)) throw new Error("Runtime shell observation scope is invalid.");
     return this.applyLifecycle(lease, message);
   }
 
@@ -489,6 +500,8 @@ export class RuntimeGateway {
       event: message.event,
       turnId: message.turnId,
       ...(message.threadId === undefined ? {} : { threadId: message.threadId }),
+      ...(message.invocationId === undefined ? {} : { invocationId: message.invocationId }),
+      ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
       ...(message.result === undefined ? {} : { result: message.result }),
       ...(message.lastAssistantMessage === undefined ? {} : { lastAssistantMessage: message.lastAssistantMessage })
     };
@@ -834,6 +847,8 @@ function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
   ];
   if (value.result !== undefined) expected.push("result");
   if (value.threadId !== undefined) expected.push("threadId");
+  if (value.invocationId !== undefined) expected.push("invocationId");
+  if (value.cwd !== undefined) expected.push("cwd");
   expected.sort();
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
     throw new Error("Runtime message has an invalid schema.");
@@ -860,6 +875,11 @@ function parseLifecycleMessage(value: unknown): ParsedLifecycleMessage {
   if (value.threadId !== undefined && normalizeThreadId(String(value.provider), value.threadId) !== value.threadId) {
     throw new Error("Runtime threadId is invalid.");
   }
+  if (value.invocationId !== undefined && (value.provider !== "codex"
+    || normalizeThreadId("codex", value.invocationId) !== value.invocationId)) throw new Error("Runtime invocationId is invalid.");
+  if (value.cwd !== undefined && (value.invocationId === undefined || typeof value.cwd !== "string"
+    || value.cwd.length > 4_096 || /[\u0000-\u001f\u007f]/u.test(value.cwd)
+    || (!posix.isAbsolute(value.cwd) && !win32.isAbsolute(value.cwd)))) throw new Error("Runtime cwd is invalid.");
   if (value.result !== undefined && (
     value.state !== "idle" || !isResultEvent(value.provider, value.event) || !isRecord(value.result)
     || Object.keys(value.result).sort().join(",") !== "text,truncated"

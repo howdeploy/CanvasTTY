@@ -293,6 +293,7 @@ function host(windows, other = {}) {
     bounds: new Map([...windows.map(([id, bounds]) => [id, bounds]), ...(other.layers ?? [])]),
     selection: other.selection ?? new Set(),
     home: HOME,
+    region: other.region,
     regions: other.regions ?? [],
     sessions: windows.map(([, , session]) => session).filter(Boolean),
     pluginCanvas: other.pluginCanvas ?? [],
@@ -364,9 +365,125 @@ test("the empty-canvas menu has one Tools row that loads its submenu on demand",
   tools.props.onDone();
   assert.equal(ui.closed(), 1, "running an action closes the menu");
 
-  for (const kind of ["region", "note", "material"]) {
+  for (const kind of ["note", "material"]) {
     assert.equal(menuHarness(t, { kind }).row("Tools"), undefined, `no Tools row in the ${kind} menu`);
   }
+});
+
+test("a region opens the same Tools submenu with its own host", async (t) => {
+  const value = host([], { region: card(3_000, 0, 3_000, 2_000) }).value;
+  const ui = menuHarness(t, { kind: "region", autoSort: value });
+  await ui.openTools();
+  assert.equal(ui.tools().props.host, value);
+  assert.equal(ui.row("Tools").props["aria-expanded"], true);
+  ui.tools().props.onDone();
+  assert.equal(ui.closed(), 1);
+});
+
+test("region scope clips selection before counting it and leaves shared windows and annotations alone", () => {
+  const region = card(3_000, 0, 3_000, 2_400);
+  const other = card(5_000, 0, 2_000, 2_400);
+  const candidates = [
+    { id: "a", kind: "terminal", bounds: card(3_100, 100) },
+    { id: "b", kind: "plugin", bounds: card(3_100, 800) },
+    { id: "shared", kind: "terminal", bounds: card(5_100, 100) },
+    { id: "outside", kind: "browser", bounds: card(8_000, 0) },
+    { id: "partial", kind: "terminal", bounds: card(2_900, 100) },
+    { id: "note", kind: "note", bounds: card(3_100, 1_500) },
+    { id: "pet", kind: "plugin", bounds: card(4_000, 1_500, 100, 100), decorative: true }
+  ];
+  assert.deepEqual(canvasAutoSortScope(candidates, new Set(), [other], region), ["a", "b"]);
+  assert.deepEqual(canvasAutoSortScope(candidates, new Set(["a", "outside", "shared", "partial"]), [other], region), ["a", "b"]);
+  assert.deepEqual(canvasAutoSortScope(candidates, new Set(["b", "pet", "outside"]), [other], region), ["b", "pet"]);
+});
+
+test("every region criterion centers the existing layout, keeps grid and sizes, and refuses overflow or obstacles", () => {
+  const region = card(3_003, 7, 3_000, 2_400);
+  const windows = [terminal("a", 3_100, 100), terminal("b", 3_100, 800, { parentSessionId: "a", cwd: "/other" })];
+  const bounds = new Map(windows.map(([id, bounds]) => [id, bounds]));
+  const sessions = windows.map(([, , session]) => session);
+  for (const mode of CANVAS_AUTO_SORT_MODES) {
+    const options = { within: region, avoid: [HOME], snapToGrid: true };
+    const plan = planCanvasAutoSort([...bounds.keys()], bounds, sessions, (id) => `terminal:${id}`, mode, options);
+    assert.ok(plan, mode);
+    const block = blockOf(plan.after);
+    assert.ok(Math.abs(block.position.x + block.size.width / 2 - (region.position.x + region.size.width / 2)) <= 5, `${mode} centered horizontally`);
+    assert.ok(Math.abs(block.position.y + block.size.height / 2 - (region.position.y + region.size.height / 2 + 20)) <= 5, `${mode} centered below the title`);
+    assertDisjoint(plan.after);
+    for (const [id, placed] of plan.after) {
+      assert.deepEqual(placed.size, bounds.get(id).size);
+      assert.equal(placed.position.x % 10, 0);
+      assert.equal(placed.position.y % 10, 0);
+      assert.ok(placed.position.x >= region.position.x + 20 && placed.position.y >= region.position.y + 60);
+      assert.ok(placed.position.x + placed.size.width <= region.position.x + region.size.width - 20);
+      assert.ok(placed.position.y + placed.size.height <= region.position.y + region.size.height - 20);
+    }
+    assert.deepEqual(planCanvasAutoSort([...bounds.keys()], plan.after, sessions, (id) => `terminal:${id}`, mode, options).after, plan.after);
+    const obstructed = new Map([...bounds, ["note:fixed", block]]);
+    assert.equal(planCanvasAutoSort([...bounds.keys()], obstructed, sessions, (id) => `terminal:${id}`, mode, options), null);
+    assert.equal(planCanvasAutoSort([...bounds.keys()], bounds, sessions, (id) => `terminal:${id}`, mode, { ...options, avoid: [block] }), null);
+    assert.equal(planCanvasAutoSort([...bounds.keys()], bounds, sessions, (id) => `terminal:${id}`, mode, { within: card(3_000, 0, 800, 600) }), null);
+  }
+});
+
+test("nested or identical zones cannot sort windows shared with the other zone", () => {
+  const outer = card(3_000, 0, 3_000, 2_400);
+  const inner = card(3_100, 100, 2_000, 1_600);
+  const candidates = [
+    { id: "a", kind: "terminal", bounds: card(3_200, 200) },
+    { id: "b", kind: "browser", bounds: card(3_200, 700) }
+  ];
+  const selected = new Set(["a", "b"]);
+  assert.deepEqual(canvasAutoSortScope(candidates, selected, [outer], inner), []);
+  assert.deepEqual(canvasAutoSortScope(candidates, selected, [inner], outer), []);
+  assert.deepEqual(canvasAutoSortScope(candidates, selected, [inner], inner), []);
+  const value = host(candidates.map(({ id, bounds }) => [id, bounds]), { region: inner, regions: [outer], selection: selected });
+  const menu = toolsMenu(value.value);
+  assert.ok(menu.radios.every((node) => node.props.disabled));
+  assert.equal(value.calls.commit.length, 0);
+});
+
+test("region placement handles mixed sizes without snapping and rejects a new overlapping region", () => {
+  const region = card(3_003, 7, 3_000, 2_400);
+  const bounds = new Map([["a", card(3_100, 100, 701, 431)], ["b", card(3_100, 800, 503, 357)]]);
+  for (const mode of CANVAS_AUTO_SORT_MODES) {
+    const plan = planCanvasAutoSort([...bounds.keys()], bounds, [], (id) => id, mode, { within: region, snapToGrid: false });
+    assert.ok(plan, mode);
+    assertDisjoint(plan.after);
+    for (const [id, placed] of plan.after) assert.deepEqual(placed.size, bounds.get(id).size);
+    assert.deepEqual(canvasAutoSortUndoTargets({ mode, ...plan }, plan.after, region), plan.before);
+    const other = { position: { ...region.position }, size: { ...region.size } };
+    assert.equal(canvasAutoSortUndoTargets({ mode, ...plan }, plan.after, region, [other]).size, 0);
+    assert.equal(planCanvasAutoSort([...bounds.keys()], bounds, [], (id) => id, mode, { within: region, avoid: [other] }), null);
+  }
+});
+
+test("two region sorts keep separate criteria and undo, touch only their windows, and report no space without committing", () => {
+  const regionA = card(3_000, 0, 3_000, 2_400);
+  const regionB = card(7_000, 0, 3_000, 2_400);
+  const windows = [terminal("a", 3_100, 100), terminal("b", 3_100, 800), terminal("c", 7_100, 100), terminal("d", 7_100, 800), terminal("outside", 11_000, 0)];
+  const a = host(windows, { region: regionA, regions: [regionB], selection: new Set(["terminal:a", "terminal:c", "terminal:d"]) });
+  const b = host(windows, { region: regionB, regions: [regionA] });
+  toolsMenu(a.value).row("Grid").props.onClick();
+  toolsMenu(b.value).row("By task").props.onClick();
+  assert.deepEqual([...a.calls.commit[0].keys()], ["terminal:a", "terminal:b"]);
+  assert.deepEqual([...b.calls.commit[0].keys()], ["terminal:c", "terminal:d"]);
+  assert.equal(a.calls.state[0].mode, "grid");
+  assert.equal(b.calls.state[0].mode, "task");
+  a.value.state = a.calls.state[0];
+  a.value.bounds = new Map([...a.value.bounds, ...a.calls.commit[0], ...b.calls.commit[0]]);
+  toolsMenu(a.value).row("Undo auto-sort").props.onClick();
+  assert.deepEqual(a.calls.commit[1], new Map(windows.slice(0, 2).map(([id, bounds]) => [id, bounds])));
+  assert.equal(b.calls.commit.length, 1, "A's undo does not commit B");
+  assert.equal(b.calls.state.length, 1, "A's undo does not clear B's state");
+  assert.equal(canvasAutoSortUndoTargets(a.value.state.undo, a.value.bounds, card(3_000, 0, 800, 600), [regionB]).size, 0);
+  assert.equal(canvasAutoSortUndoTargets(a.value.state.undo, a.value.bounds, regionA, [regionA]).size, 0, "new shared membership cannot be undone from A");
+
+  const cramped = host([terminal("a", 3_010, 10), terminal("b", 3_010, 100)], { region: card(3_000, 0, 800, 600), state: a.value.state });
+  toolsMenu(cramped.value, "ru").row("Сеткой").props.onClick();
+  assert.equal(cramped.calls.commit.length, 0);
+  assert.equal(cramped.calls.state.length, 0, "a refused layout keeps the earlier criterion and undo");
+  assert.match(cramped.calls.error[0], /не помещается/);
 });
 
 test("the Tools submenu body loads while the empty-canvas menu is open, so Tools shows it at once", async (t) => {
@@ -562,7 +679,7 @@ test("auto-sort strings exist in every locale and new code uses tokens, vendored
   const ru = i18n.slice(0, enStart);
   const en = i18n.slice(enStart);
   const keys = ["canvasMenuTools", "canvasAutoSort", "canvasAutoSortTask", "canvasAutoSortStatus", "canvasAutoSortProject",
-    "canvasAutoSortGrid", "canvasAutoSortUnavailable", "canvasAutoSortUndo", "canvasAutoSortFailed"];
+    "canvasAutoSortGrid", "canvasAutoSortUnavailable", "canvasAutoSortUndo", "canvasAutoSortFailed", "canvasAutoSortRegionNoSpace"];
   for (const key of keys) {
     const ruValue = ru.match(new RegExp(`\\n  ${key}: "([^"]+)"`))?.[1];
     const enValue = en.match(new RegExp(`\\n  ${key}: "([^"]+)"`))?.[1];

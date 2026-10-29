@@ -1,4 +1,8 @@
 import type { ProviderId } from "../../../shared/contracts.ts";
+import { dirname, join } from "node:path";
+import type { AvailableProviderCli } from "../providerCliRegistry.ts";
+import type { HelperLaunch } from "../agentHelpers.ts";
+import { createShellCodexWrapper, shellCodexEnvironment } from "../shellCodexLaunch.ts";
 import {
   AGENT_RUNTIME_ENV,
   CAPTURE_ANSWER_ENV,
@@ -8,6 +12,7 @@ import {
 import type { RuntimeGateway, RuntimeLifecycleState } from "./RuntimeGateway.ts";
 import {
   ProviderRuntimeLaunchAdapters,
+  codexLifecycleArgs,
   type ProviderRuntimeLaunchOptions
 } from "./ProviderRuntimeLaunch.ts";
 import type { ClaudeHttpLaunchFacts, ClaudeHttpVerdict } from "./ClaudeHttpHooks.ts";
@@ -32,15 +37,18 @@ export interface PreparedAgentRuntimePtyLaunch {
   decisions?: boolean;
   /** Claude's lifecycle hooks go over HTTP to the gateway (otherwise through the command helper). */
   httpHooks?: boolean;
+  shellCodexWrapper?: string;
   cleanup(): void;
 }
 
 export interface AgentRuntimeLaunchCoordinator {
   prepareLaunch(input: PrepareAgentRuntimeLaunchInput): PreparedAgentRuntimePtyLaunch;
   currentStatus(terminalSessionId: string): RuntimeLifecycleState | null;
+  prepareShellLaunch?(input: { terminalSessionId: string; cli: AvailableProviderCli; environment: Record<string, string> }): PreparedAgentRuntimePtyLaunch;
 }
 
 export interface AgentRuntimeBridgeOptions extends ProviderRuntimeLaunchOptions {
+  shellCodexHelper?: HelperLaunch;
   recoverOnStart?: boolean;
   coreHooksEnabled?: boolean;
   /** Whether a launch of this agent needs the decision hook (base protection on, or a decision plugin applies). */
@@ -56,13 +64,15 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
   private readonly providers: ProviderRuntimeLaunchAdapters;
   /** Running sessions and whether each got the decision hook. */
   /** Live launches by card id; the entry object is the launch identity a late cleanup checks against. */
-  private readonly activeSessions = new Map<string, { decisions: boolean }>();
+  private readonly activeSessions = new Map<string, { decisions: boolean; trackIdentity?: boolean }>();
+  private readonly options: AgentRuntimeBridgeOptions;
   private coreHooksEnabled: boolean;
   private readonly wantsDecisions: AgentRuntimeBridgeOptions["wantsDecisions"];
   private readonly decisionBudgetMs: AgentRuntimeBridgeOptions["decisionBudgetMs"];
   private readonly claudeHttpHooks: AgentRuntimeBridgeOptions["claudeHttpHooks"];
 
   constructor(gateway: RuntimeGateway, options: AgentRuntimeBridgeOptions) {
+    this.options = options;
     this.gateway = gateway;
     this.wantsDecisions = options.wantsDecisions;
     this.decisionBudgetMs = options.decisionBudgetMs;
@@ -70,6 +80,47 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
     this.providers = new ProviderRuntimeLaunchAdapters(options);
     this.coreHooksEnabled = options.coreHooksEnabled !== false;
     if (options.recoverOnStart) this.providers.recoverConfigurations();
+  }
+
+  prepareShellLaunch(input: { terminalSessionId: string; cli: AvailableProviderCli; environment: Record<string, string> }): PreparedAgentRuntimePtyLaunch {
+    const helper = this.options.shellCodexHelper;
+    if (!helper || helper.args.length !== 1) return { args: [], environment: {}, cleanup() {} };
+    // Shell cards get identity observation only: no decisions, browser or orchestration capabilities.
+    const capability = this.gateway.registerSession(input.terminalSessionId, "codex", false, undefined, false, undefined, true);
+    const environment = {
+      [AGENT_RUNTIME_ENV.address]: capability.address,
+      [AGENT_RUNTIME_ENV.terminalSessionId]: capability.terminalSessionId,
+      [AGENT_RUNTIME_ENV.provider]: capability.provider,
+      [AGENT_RUNTIME_ENV.capabilityToken]: capability.capabilityToken
+    };
+    let wrapper;
+    try {
+      wrapper = createShellCodexWrapper({
+        directory: this.options.runtimeDirectory,
+        helper,
+        cli: input.cli,
+        hooks: codexLifecycleArgs({ command: helper.command, args: [join(dirname(helper.args[0]!), "hook-helper.mjs")], env: helper.env }, this.options.platform),
+        environment,
+        platform: this.options.platform
+      });
+    } catch (error) {
+      this.gateway.revokeTerminalSession(input.terminalSessionId, capability.capabilityToken);
+      throw error;
+    }
+    const launch = { decisions: false, trackIdentity: true };
+    this.activeSessions.set(input.terminalSessionId, launch);
+    let cleaned = false;
+    return {
+      args: [],
+      environment: shellCodexEnvironment(input.environment, wrapper.directory, this.options.platform),
+      shellCodexWrapper: wrapper.wrapper,
+      cleanup: () => {
+        if (cleaned) return;
+        cleaned = true;
+        if (this.activeSessions.get(input.terminalSessionId) === launch) this.activeSessions.delete(input.terminalSessionId);
+        try { wrapper.cleanup(); } finally { this.gateway.revokeTerminalSession(input.terminalSessionId, capability.capabilityToken); }
+      }
+    };
   }
 
   prepareLaunch(input: PrepareAgentRuntimeLaunchInput): PreparedAgentRuntimePtyLaunch {
@@ -154,8 +205,8 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
     this.coreHooksEnabled = next;
     if (next) return;
     // A session with the decision hook keeps its lease: its protection must not silently stop.
-    for (const [terminalSessionId, { decisions }] of this.activeSessions) {
-      if (!decisions) this.gateway.revokeTerminalSession(terminalSessionId);
+    for (const [terminalSessionId, { decisions, trackIdentity }] of this.activeSessions) {
+      if (!decisions && !trackIdentity) this.gateway.revokeTerminalSession(terminalSessionId);
     }
   }
 }

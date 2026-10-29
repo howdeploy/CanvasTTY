@@ -192,7 +192,9 @@ export interface ShortcutBindings {
   codexSubmitSuper: string;
   codexNewline: string;
   codexSelectAll: string;
+  /** Persisted legacy key for the hide-backgrounds action. */
   momEntered: string;
+  disableDesign: string;
 }
 
 export const DEFAULT_SHORTCUTS: ShortcutBindings = {
@@ -217,7 +219,8 @@ export const DEFAULT_SHORTCUTS: ShortcutBindings = {
   codexSubmitSuper: "Meta+Enter",
   codexNewline: "Shift+Enter",
   codexSelectAll: "Ctrl+A",
-  momEntered: "F8"
+  momEntered: "Shift+F6",
+  disableDesign: "Shift+F7"
 };
 
 export function keyboardPresetShortcuts(preset: Exclude<KeyboardPreset, "custom">): ShortcutBindings {
@@ -234,7 +237,8 @@ export function keyboardPresetShortcuts(preset: Exclude<KeyboardPreset, "custom"
 
 export function shortcutsShareContext(left: ShortcutAction, right: ShortcutAction): boolean {
   const terminal = (action: ShortcutAction) => action.startsWith("terminal") || action.startsWith("codex");
-  return left === "toggleDetail" || right === "toggleDetail" || left === "momEntered" || right === "momEntered" || terminal(left) === terminal(right);
+  const global = (action: ShortcutAction) => ["toggleDetail", "momEntered", "disableDesign"].includes(action);
+  return global(left) || global(right) || terminal(left) === terminal(right);
 }
 
 export const INITIAL_TERMINAL_COLS = 80;
@@ -774,6 +778,8 @@ export interface TerminalDataEvent {
 }
 
 export interface TerminalBufferSnapshot {
+  /** Parser/mode checkpoint before the retained raw buffer; not part of outputOffset. */
+  restorePrefix?: string;
   buffer: string;
   outputOffset: number;
 }
@@ -2076,6 +2082,7 @@ export interface CanvasTTYApi {
   };
   terminal: {
     openFile(id: string, reference: string): Promise<void>;
+    canOpenFile(id: string, reference: string): Promise<boolean>;
     fileDropText(files: File[]): string;
     list(): Promise<SessionSnapshot[]>;
     readBuffer(id: string): Promise<TerminalBufferSnapshot>;
@@ -2270,6 +2277,7 @@ export const IPC = {
   githubAuthOpenUrl: "github-auth:open-url",
   terminalList: "terminal:list",
   terminalOpenFile: "terminal:open-file",
+  terminalCanOpenFile: "terminal:can-open-file",
   terminalReadBuffer: "terminal:read-buffer",
   terminalCreate: "terminal:create",
   agentsAvailability: "agents:availability",

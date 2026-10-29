@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import xterm from "@xterm/headless";
 import { attachTerminalTextBackdrop, terminalTextRuns } from "../src/renderer/src/features/terminal/terminalTextBackdrop.ts";
 
 function line(cells) {
   return { getCell: column => cells[column] && {
     getChars: () => cells[column][0], getWidth: () => cells[column][1],
+    isBgDefault: () => !cells[column][2], isInverse: () => cells[column][3] ?? 0,
   } };
 }
 
@@ -19,6 +21,30 @@ test("wide characters retain their second cell and runs stop at the viewport edg
   const cells = [["界", 2], ["", 0], ["A", 1], [" ", 1], ["界", 2], ["", 0]];
   assert.deepEqual(terminalTextRuns(line(cells), 6), [[0, 3], [4, 6]]);
   assert.deepEqual(terminalTextRuns(line(cells), 5), [[0, 3], [4, 5]]);
+});
+
+test("native ANSI backgrounds and inverse highlights do not receive a readability backdrop", () => {
+  const cells = [["A", 1], ["B", 1, true], ["C", 1], ["D", 1, false, 1], ["E", 1]];
+  assert.deepEqual(terminalTextRuns(line(cells), cells.length), [[0, 1], [2, 3], [4, 5]]);
+});
+
+test("real ANSI cells preserve native colors and bold while only transparent text receives a mask", async () => {
+  const terminal = new xterm.Terminal({ cols: 80, rows: 4, allowProposedApi: true });
+  try {
+    await new Promise(resolve => terminal.write(
+      "plain \x1b[38;2;238;238;238;48;2;118;154;213mRGB\x1b[0m " +
+      "\x1b[30;47mBLACK\x1b[0m \x1b[7mINVERSE\x1b[0m \x1b[1mBOLD\x1b[0m", resolve));
+    const row = terminal.buffer.active.getLine(0);
+    assert.deepEqual(terminalTextRuns(row, terminal.cols), [[0, 5], [24, 28]]);
+    assert.equal(row.getCell(6).getFgColor(), 0xeeeeee);
+    assert.equal(row.getCell(6).getBgColor(), 0x769ad5);
+    assert.equal(row.getCell(10).getFgColor(), 0);
+    assert.equal(row.getCell(10).getBgColor(), 7);
+    assert.ok(row.getCell(16).isInverse());
+    assert.ok(row.getCell(24).isBold());
+  } finally {
+    terminal.dispose();
+  }
 });
 
 test("mask updates coalesce terminal events and never run a background animation loop", t => {

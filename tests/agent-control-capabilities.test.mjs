@@ -12,6 +12,7 @@ import {
   launchRole
 } from "../src/main/services/agent-control/controlCapabilities.ts";
 import { TerminalManager, terminalEnvironment } from "../src/main/services/TerminalManager.ts";
+import { ORCHESTRATION_ENV } from "../src/main/services/agent-browser/orchestration-protocol.ts";
 import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 
 const CONNECTION = { connectionPath: "/data/agent-control/connection.json", cliPath: "/app/scripts/canvastty-control.mjs" };
@@ -70,6 +71,21 @@ test("terminalEnvironment strips an inherited control grant like the other reser
   assert.equal("CANVASTTY_CONTROL_CONNECTION" in environment, false);
   assert.equal("CANVASTTY_CONTROL_CLI" in environment, false);
   assert.equal("CANVASTTY_RUNTIME_CAPTURE_RESULT" in environment, false);
+});
+
+test("nested app launches never inherit the parent orchestration capability", () => {
+  const inherited = {
+    PATH: "/usr/bin",
+    PROJECT_MODE: "development",
+    ...Object.fromEntries(Object.values(ORCHESTRATION_ENV).map((name) => [name, "synthetic-parent-grant"]))
+  };
+  const environment = terminalEnvironment(inherited);
+  for (const name of Object.values(ORCHESTRATION_ENV)) {
+    assert.equal(name in environment, false, `the parent ${name} is not a grant for this child`);
+    assert.equal(inherited[name], "synthetic-parent-grant", "filtering must not change the parent environment");
+  }
+  assert.equal(environment.PATH, "/usr/bin");
+  assert.equal(environment.PROJECT_MODE, "development");
 });
 
 test("TerminalManager hands the descriptor to orchestrator sessions only, and records the role", async () => {

@@ -32,9 +32,9 @@ export function limitPinnedTerminalInput(input: PinnedTerminalInput, maxRows: nu
   };
 }
 
-/** The complete live logical cursor line while normal scrollback is away from the bottom. */
-export function pinnedTerminalInput(buffer: TerminalBufferLike): PinnedTerminalInput | null {
-  if (buffer.type !== "normal" || buffer.viewportY >= buffer.baseY) return null;
+/** Pin the live logical cursor line only after it leaves the unreserved viewport. */
+export function pinnedTerminalInput(buffer: TerminalBufferLike, viewportRows: number): PinnedTerminalInput | null {
+  if (buffer.type !== "normal" || buffer.viewportY >= buffer.baseY || viewportRows < 1) return null;
   const cursorLine = buffer.baseY + buffer.cursorY;
   if (!buffer.getLine(cursorLine)) return null;
 
@@ -43,6 +43,8 @@ export function pinnedTerminalInput(buffer: TerminalBufferLike): PinnedTerminalI
 
   let lastLine = cursorLine;
   while (buffer.getLine(lastLine + 1)?.isWrapped) lastLine += 1;
+
+  if (firstLine < buffer.viewportY + viewportRows && lastLine >= buffer.viewportY) return null;
 
   const rows: string[] = [];
   for (let line = firstLine; line <= lastLine; line += 1) {

@@ -1,5 +1,5 @@
 import type { ProviderId, SessionRestoreMode, SessionRestoreNote } from "../../shared/contracts.ts";
-import type { PersistedEnvironmentRef, PersistedTerminalSession } from "./TerminalSessionStore.ts";
+import type { NestedCodexSession, PersistedEnvironmentRef, PersistedTerminalSession } from "./TerminalSessionStore.ts";
 import { canResumeLatestConversation, canResumeThreadById, resumeWithoutIdOpensPicker } from "./terminalLaunch.ts";
 
 /**
@@ -9,6 +9,7 @@ import { canResumeLatestConversation, canResumeThreadById, resumeWithoutIdOpensP
 export type ResumeRequest = null | "latest" | { threadId: string };
 
 export interface RestoreStep {
+  shellResume?: NestedCodexSession;
   record: PersistedTerminalSession;
   /** "stopped" comes back as a card with Restart / Continue; nothing is launched. */
   launch: ResumeRequest | "stopped";
@@ -109,7 +110,8 @@ export function planSessionRestore(
       return { record, launch: "stopped", note: "plugin-unavailable", ...recorded };
     }
     if (record.lastState !== "running") return { record, launch: "stopped", ...recorded };
-    if (record.provider === "terminal" || mode === "reopen") return { record, launch: null };
+    if (record.provider === "terminal" || mode === "reopen") return { record, launch: null,
+      ...(record.provider === "terminal" && mode === "continue" && record.nestedCodex ? { shellResume: record.nestedCodex } : {}) };
     const peers = kept.filter((candidate) => candidate.provider === record.provider && candidate.cwd === record.cwd);
     const { resume, note } = chooseResume(record.provider, record.threadId, peers.length);
     return { record, launch: resume, ...(note ? { note } : {}),

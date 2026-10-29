@@ -6,7 +6,7 @@ import test from "node:test";
 import headless from "@xterm/headless";
 import { parseTerminalFileLink, findTerminalFileLinks } from "../src/shared/terminalFileLink.ts";
 import { terminalFileLinkProvider } from "../src/renderer/src/features/terminal/terminalFileLinks.ts";
-import { terminalFileEditorArguments, vscodeLaunchCandidates } from "../src/main/services/terminalFileEditor.ts";
+import { canOpenTerminalFile, resolveTerminalFilePath } from "../src/main/services/terminalFileEditor.ts";
 
 test("file paths preserve line and column across plain and explicit links", () => {
   for (const value of [
@@ -64,17 +64,39 @@ test("xterm links span wrapped rows and account for wide Unicode characters", as
   assert.deepEqual(opened, [reference]);
 });
 
-test("opening a real file always reuses the VS Code window and passes the position as one argument", async (t) => {
+test("system opening receives only a validated regular file path without position suffixes", async (t) => {
   const folder = await mkdtemp(join(tmpdir(), "canvastty-file-links-"));
   t.after(() => rm(folder, { recursive: true, force: true }));
   const name = "source with spaces $(echo nope).go";
   await writeFile(join(folder, name), "package main\n");
-  assert.deepEqual(await terminalFileEditorArguments(name + ":12:3", folder), [
-    "--reuse-window", "--goto", join(await realpath(folder), name) + ":12:3"
-  ]);
-  await assert.rejects(terminalFileEditorArguments("missing.go:4", folder), /ENOENT/);
-  await assert.rejects(terminalFileEditorArguments(folder, folder), /existing file/);
-  await assert.rejects(terminalFileEditorArguments("https://example.com/a.go:2", folder), /Invalid file link/);
+  assert.equal(await canOpenTerminalFile(name + ":12:3", folder), true);
+  assert.equal(await canOpenTerminalFile(folder, folder), false);
+  assert.equal(await canOpenTerminalFile("missing.go:4", folder), false);
+  assert.equal(await canOpenTerminalFile("https://example.com/a.go", folder), false);
+  if (process.platform !== "win32") assert.equal(await canOpenTerminalFile("/dev/null", folder), false);
+  assert.equal(await resolveTerminalFilePath(name + ":12:3", folder), join(await realpath(folder), name));
+  await assert.rejects(resolveTerminalFilePath("missing.go:4", folder), /ENOENT/);
+  await assert.rejects(resolveTerminalFilePath(folder, folder), /existing file/);
+  await assert.rejects(resolveTerminalFilePath("https://example.com/a.go:2", folder), /Invalid file link/);
+});
+
+test("only regular files are linked and validation is cached briefly without changing link positions", async (t) => {
+  const terminal = new headless.Terminal({ cols: 100, rows: 6, allowProposedApi: true });
+  t.after(() => terminal.dispose());
+  await new Promise((resolve) => terminal.write("/tmp/main.go:4 / /dev/null /tmp/missing.go", resolve));
+  const checked = [];
+  const provider = terminalFileLinkProvider(terminal, () => {}, async (reference) => {
+    checked.push(reference);
+    return reference === "/tmp/main.go:4";
+  });
+  const first = await new Promise((resolve) => provider.provideLinks(1, resolve));
+  assert.deepEqual(first.map((link) => link.text), ["/tmp/main.go:4"]);
+  assert.deepEqual(first[0].range.start, { x: 1, y: 1 });
+  const count = checked.length;
+  await new Promise((resolve) => provider.provideLinks(1, resolve));
+  assert.equal(checked.length, count);
+  const rejected = terminalFileLinkProvider(terminal, () => {}, async () => { throw new Error("IPC unavailable"); });
+  assert.deepEqual(await new Promise((resolve) => rejected.provideLinks(1, resolve)), []);
 });
 
 test("Windows paths preserve their drive, separators and position", () => {
@@ -125,30 +147,4 @@ test("an overlong wrapped logical line never produces a truncated file link", as
   const provider = terminalFileLinkProvider(terminal, () => {});
   assert.equal(await new Promise((done) => provider.provideLinks(1, done)), undefined);
   assert.equal(await new Promise((done) => provider.provideLinks(102, done)), undefined);
-});
-
-test("macOS and Linux launchers use installed code commands without relying on the current directory", () => {
-  const mac = vscodeLaunchCandidates("darwin", { PATH: "/opt/bin:.:/usr/bin" }, "/Users/runner");
-  assert.equal(mac[0].command, "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code");
-  assert.ok(mac.some((entry) => entry.command === "/Users/runner/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"));
-  assert.deepEqual(vscodeLaunchCandidates("linux", { PATH: "/opt/bin:.:/usr/bin:/opt/bin" }, "/home/runner"), [
-    { command: "/opt/bin/code", prefix: [], runAsNode: false },
-    { command: "/usr/bin/code", prefix: [], runAsNode: false }
-  ]);
-});
-
-test("Windows launchers run Code.exe with its CLI script instead of interpolating filenames into cmd.exe", () => {
-  const candidates = vscodeLaunchCandidates("win32", {
-    LocalAppData: String.raw`C:\Users\runner\AppData\Local`,
-    ProgramFiles: String.raw`C:\Program Files`,
-    Path: String.raw`D:\VS Code\bin;.`
-  }, String.raw`C:\Users\runner`);
-  const first = candidates[0];
-  assert.deepEqual(first, {
-    command: String.raw`C:\Users\runner\AppData\Local\Programs\Microsoft VS Code\Code.exe`,
-    prefix: [String.raw`C:\Users\runner\AppData\Local\Programs\Microsoft VS Code\resources\app\out\cli.js`],
-    runAsNode: true
-  });
-  assert.ok(candidates.some((entry) => entry.command === String.raw`D:\VS Code\Code.exe`));
-  assert.ok(candidates.every((entry) => entry.runAsNode && entry.command.endsWith("\\Code.exe")));
 });

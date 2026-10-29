@@ -25,6 +25,11 @@
   background: transparent !important;
 }
 
+.terminal-card__surface--ascii .xterm-screen {
+  /* Keep the negative text mask above the animated background and below ANSI cells. */
+  isolation: isolate;
+}
+
 .terminal-ascii-text-backdrop {
   display: none;
   position: absolute;
@@ -39,7 +44,7 @@
   display: block;
 }
 
-.terminal-card__surface--ascii-readable .xterm-rows > div > span,
+.terminal-card__surface--ascii-readable .xterm-rows > div > span:not([class*="xterm-bg-"]):not([style*="background-color:"]),
 .terminal-card__surface--ascii-readable .terminal-card__pinned-input {
   -webkit-text-stroke: 0.4px #02040a;
   paint-order: stroke fill;

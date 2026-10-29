@@ -166,6 +166,24 @@ test("the paths: the project and the CLI's own folders writable; other CLIs' cre
     "(deny user-preference-write)", "(deny network-outbound (remote unix-socket))"]) assert.ok(profile.includes(rule), rule);
 });
 
+test("Kimi can write its native state while its permission config and other providers' access stay protected", async (t) => {
+  const w = await world(t);
+  for (const moved of [false, true]) {
+    const env = moved ? { ...w.env, KIMI_CODE_HOME: join(w.base, "kimi-code"), KIMI_SHARE_DIR: join(w.base, "kimi-legacy"), KIMI_HOME: join(w.base, "kimi-home") } : w.env;
+    const homes = moved ? [env.KIMI_CODE_HOME, env.KIMI_SHARE_DIR, env.KIMI_HOME] : [join(w.home, ".kimi-code"), join(w.home, ".kimi")];
+    const input = { cwd: w.project, sessionTemp: join(w.temp, "s"), env, userDataPath: w.userData, sessionId: "s" };
+    const own = isolationPaths({ ...input, provider: "kimi" });
+    const other = isolationPaths({ ...input, provider: "codex" });
+    for (const home of homes) {
+      assert.ok(own.writable.includes(home), "Kimi can persist its sessions and sign-in");
+      assert.ok(!own.unreadable.includes(home));
+      assert.ok(own.protectedWrites.includes(join(home, "config.toml")), "permission rules and hooks are not writable");
+      assert.ok(other.unreadable.includes(home), "another provider cannot read Kimi's credentials");
+      assert.ok(!other.writable.includes(home) && !other.readableAgain.includes(home));
+    }
+  }
+});
+
 test("bubblewrap: read-only root, writable project, tmpfs over what may not be read, the user runtime folder hidden", async (t) => {
   const w = await world(t);
   const paths = isolationPaths({ provider: "claude", cwd: w.project, sessionTemp: join(w.temp, "s"), env: w.env, userDataPath: w.userData, sessionId: "s" });

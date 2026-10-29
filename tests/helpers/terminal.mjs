@@ -20,6 +20,15 @@ export function availableRegistry() {
   };
 }
 
+/** The verified startup sequence, emitted only when a test's fake OpenCode input view is up. */
+export const OPENCODE_STARTUP_READY = "\x1b[?1049h\x1b[?2004h\x1b[?25l\x1b[?25h";
+
+export async function openCodeInputReady(calls, index) {
+  for (let i = 0; i < 100 && calls.length <= index; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  if (!calls[index]) throw new Error("The expected fake OpenCode PTY did not start");
+  calls[index].process.emitData(OPENCODE_STARTUP_READY);
+}
+
 /**
  * A PTY spawner that pushes `{ command, args, options, process }` to `calls` and
  * returns a fake PTY: `emitData`/`emitExit` drive its listeners, `lastResize`

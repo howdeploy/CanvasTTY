@@ -9,6 +9,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { clearPreservedWebglFrames } from "./terminalWebglFrames";
 import { Terminal } from "@xterm/xterm";
 import {
   INITIAL_TERMINAL_COLS,
@@ -460,9 +461,8 @@ function TerminalCardView({
       // into the pinned row below it.
       scrollOnUserInput: false,
       allowTransparency: true,
-      minimumContrastRatio: hasAsciiBackground && backgroundReadability
-        ? Math.max(1, Math.min(7, Math.round((backgroundReadabilityStrength ?? 70) / 14)))
-        : 1,
+      // Readability uses a backdrop; contrast correction can turn ANSI menu text black.
+      minimumContrastRatio: 1,
       macOptionClickForcesSelection: copyOnSelectRef.current,
       altClickMovesCursor: !(copyOnSelectRef.current && window.canvasTTY.window.isMacOS),
       // Search decorations (highlighting every match and reporting the match
@@ -497,7 +497,9 @@ function TerminalCardView({
     terminal.loadAddon(searchAddon);
     searchAddonRef.current = searchAddon;
     terminal.loadAddon(webLinksAddon);
-    const fileLinks = terminal.registerLinkProvider(terminalFileLinkProvider(terminal, openFile));
+    const fileLinks = terminal.registerLinkProvider(terminalFileLinkProvider(
+      terminal, openFile, (reference) => window.canvasTTY.terminal.canOpenFile(session.id, reference)
+    ));
     terminal.open(host);
     const screen = terminal.element?.querySelector<HTMLElement>(".xterm-screen");
     const pinnedInput = document.createElement("div");
@@ -508,7 +510,8 @@ function TerminalCardView({
     let pinnedRows = 0;
     let pinnedFitFrame: number | null = null;
     const renderPinnedInput = (): void => {
-      const completePinned = pinnedTerminalInput(terminal.buffer.active);
+      // Include reserved rows so showing the pinned input cannot sustain its own visibility.
+      const completePinned = pinnedTerminalInput(terminal.buffer.active, terminal.rows + pinnedRows);
       const maxPinnedRows = Math.max(1, Math.floor(host.clientHeight / (14 * 1.2) / 2));
       const pinned = completePinned ? limitPinnedTerminalInput(completePinned, maxPinnedRows) : null;
       const nextRows = pinned?.rows.length ?? 0;
@@ -597,6 +600,8 @@ function TerminalCardView({
     );
     const fit = (): void => {
       try {
+        const dimensions = fitAddon.proposeDimensions();
+        if (!dimensions || !Number.isFinite(dimensions.cols) || !Number.isFinite(dimensions.rows)) return;
         fitTerminalPreservingViewport(terminal, () => fitAddon.fit());
         reportGrid(terminal.cols, terminal.rows);
       } catch {
@@ -696,7 +701,7 @@ function TerminalCardView({
           const text = await window.canvasTTY.clipboard.readText();
           if (text && acceptsPaste()) terminal.paste(text);
         })
-        .catch(() => undefined);
+        .catch(() => setActionToast({ tone: "error", message: t(locale, "clipboardReadFailed") }));
       return false;
     });
     const detachMouseCoordinateAdapter = screen
@@ -803,15 +808,12 @@ function TerminalCardView({
       }
     });
     return () => { disposed = true; detach(); };
-  }, [session.id, hasAsciiBackground]);
+  }, [session.id, hasAsciiBackground, backgroundReadability, backgroundReadabilityStrength, lifecycle]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
     if (terminal) {
       terminal.options.theme = terminalTheme(palette, pixelSkinTheme, hasAsciiBackground);
-      terminal.options.minimumContrastRatio = hasAsciiBackground && backgroundReadability
-        ? Math.max(1, Math.min(7, Math.round((backgroundReadabilityStrength ?? 70) / 14)))
-        : 1;
       terminal.refresh(0, terminal.rows - 1);
     }
   }, [palette, pixelSkinTheme, hasAsciiBackground, backgroundReadability, backgroundReadabilityStrength]);
@@ -844,8 +846,9 @@ function TerminalCardView({
     });
     try {
       terminal.loadAddon(webgl);
+      if (!clearPreservedWebglFrames(webgl)) throw new Error("Unsupported WebGL renderer.");
     } catch {
-      // WebGL2 unavailable — stay on the DOM renderer.
+      // WebGL2 unavailable or its frame hook changed — stay on the DOM renderer.
       webgl.dispose();
       restoreRendererTransition();
       return false;
@@ -883,7 +886,7 @@ function TerminalCardView({
   useEffect(() => {
     // The pool gives WebGL to on-screen cards in priority order. Above WEBGL_MAX_SCALE the canvas raster
     // would be an upscale, and in summary mode the terminal is not drawn, so those cards stay on DOM.
-    // Preserved WebGL frames blend transparent backgrounds over old glyphs; use xterm's DOM renderer for ASCII scenes.
+    // ASCII scenes keep their existing DOM renderer path.
     webglContextPool().update(session.id, { eligible: !hasAsciiBackground && !summaryMode && webglScaleAllowed, focused });
   }, [session.id, focused, summaryMode, webglScaleAllowed, hasAsciiBackground]);
 

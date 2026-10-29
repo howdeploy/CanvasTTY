@@ -22,7 +22,8 @@ export function ShortcutReference({ settings, onClose }: {
       [[bindings.commandPalette], "commandPalette"],
       [[bindings.openSettings], "settings"],
       [[bindings.toggleDetail], "keyboardToggleDetail"],
-      [[bindings.momEntered], "keyboardMomEntered"],
+      [[bindings.momEntered], "keyboardHideBackgrounds"],
+      [[bindings.disableDesign], "keyboardDisableDesign"],
       [["Shift + drag"], "marqueeSelectionHint"]
     ] },
     { title: "keyboardNavigation", shortcuts: [

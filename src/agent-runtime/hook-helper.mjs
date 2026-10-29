@@ -65,6 +65,7 @@ await reportLifecycle({
   event,
   turnId,
   ...(threadId ? { threadId } : {}),
+  ...(typeof input?.cwd === "string" ? { cwd: input.cwd } : {}),
   ...(result === undefined ? {} : { result }),
   ...(lastAssistantMessage === undefined ? {} : { lastAssistantMessage })
 });

@@ -87,8 +87,12 @@ function providerFolders(provider: ProviderId, env: IsolationPathInput["env"], h
       return { folders: named("opencode"), files: [] };
     case "hermes":
       return { folders: [env.HERMES_HOME && isAbsolute(env.HERMES_HOME) ? env.HERMES_HOME : join(home, ".hermes"), ...named("hermes")], files: [] };
-    case "kimi":
-      return { folders: [env.KIMI_HOME && isAbsolute(env.KIMI_HOME) ? env.KIMI_HOME : join(home, ".kimi"), ...named("kimi")], files: [] };
+    case "kimi": {
+      // Kimi Code uses .kimi-code; the older CLI uses .kimi. Both remain this provider's private state.
+      const moved = (name: string): string | null => { const value = env[name]; return value && isAbsolute(value) ? value : null; };
+      return { folders: [moved("KIMI_CODE_HOME") ?? join(home, ".kimi-code"), moved("KIMI_SHARE_DIR") ?? join(home, ".kimi"),
+        ...(moved("KIMI_HOME") ? [moved("KIMI_HOME")!] : []), ...named("kimi")], files: [] };
+    }
     case "cursor":
       return { folders: [...named("cursor"), ...named("cursor-agent")], files: [] };
     case "antigravity":
@@ -106,7 +110,7 @@ const HOME_VARIABLES: Partial<Record<ProviderId, readonly string[]>> = {
   claude: ["CLAUDE_CONFIG_DIR"],
   grok: ["GROK_HOME"],
   hermes: ["HERMES_HOME"],
-  kimi: ["KIMI_HOME"],
+  kimi: ["KIMI_CODE_HOME", "KIMI_SHARE_DIR", "KIMI_HOME"],
   opencode: ["OPENCODE_CONFIG_DIR"],
   qwen: ["QWEN_HOME"]
 };
@@ -267,7 +271,8 @@ export function isolationPaths(input: IsolationPathInput): IsolationPaths {
       // A repository that exists keeps its config (hooksPath, fsmonitor, filters run code when the person uses git
       // later, outside the layer); a new one may be created, which writes its config.
       ...(existsSync(join(project, ".git", "config")) ? [join(project, ".git", "config"), join(project, ".git", "config.lock")] : []),
-      ...(input.provider === "codex" ? ownFolders.map((folder) => join(folder, "config.toml")) : []),
+      // These files hold the CLI's permission rules and hooks.
+      ...(input.provider === "codex" || input.provider === "kimi" ? ownFolders.map((folder) => join(folder, "config.toml")) : []),
       ...(input.provider === "claude" ? ownFolders.flatMap((folder) => [join(folder, "settings.json"), join(folder, "settings.local.json")]) : []),
       ...configSources.jsonFiles
     ]),

@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import type {
   LaunchProfileId,
@@ -38,6 +38,7 @@ export interface PersistedTerminalSession {
   parentSessionId?: string;
   /** The provider's own conversation id, learned from a lifecycle hook or selected in local history. */
   threadId?: string;
+  nestedCodex?: NestedCodexSession;
   /** State at quit or at the moment the process exited; v1 records read as "running". */
   lastState: PersistedLastState;
   exitCode?: number | null;
@@ -59,6 +60,22 @@ export interface PersistedTerminalSession {
   effort?: ReasoningEffort;
   /** An isolated session ran since then and its repositories were not audited yet, or a report is still open. */
   gitAuditSince?: number;
+}
+
+/** Exact identity reported by a Codex launched inside an ordinary shell card. */
+export interface NestedCodexSession {
+  threadId: string;
+  cwd: string;
+}
+
+export function normalizeNestedCodex(value: unknown): NestedCodexSession | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Record<string, unknown>;
+  const threadId = normalizeThreadId("codex", candidate.threadId);
+  const cwd = candidate.cwd;
+  if (!threadId || typeof cwd !== "string" || cwd.length > 4_096 || /[\u0000-\u001f\u007f]/u.test(cwd)
+    || (!posix.isAbsolute(cwd) && !win32.isAbsolute(cwd))) return undefined;
+  return { threadId, cwd };
 }
 
 export type PersistedLastState = "running" | "exited" | "failed";
@@ -218,7 +235,7 @@ function normalizeStoredThreadId(provider: ProviderId, candidate: unknown): stri
 }
 
 /** What core keeps beside the live metadata: nothing here is scrollback, prompts or secrets. */
-export type PersistedSessionExtras = Pick<PersistedTerminalSession, "options" | "environment" | "environmentChoice" | "ownerPluginId" | "gitAuditSince"> & {
+export type PersistedSessionExtras = Pick<PersistedTerminalSession, "options" | "environment" | "environmentChoice" | "ownerPluginId" | "gitAuditSince" | "nestedCodex"> & {
   /** Overrides the derived state while a card is held stopped (its environment is unavailable). */
   heldState?: PersistedLastState;
 };
@@ -229,6 +246,8 @@ export function persistedTerminalSession(
   extras: PersistedSessionExtras = {}
 ): PersistedTerminalSession {
   const normalizedThreadId = normalizeStoredThreadId(metadata.provider, threadId);
+  const nestedCodex = metadata.provider === "terminal" && !extras.environment && !extras.environmentChoice
+    ? normalizeNestedCodex(extras.nestedCodex) : undefined;
   const lastState: PersistedLastState = extras.heldState
     ?? (metadata.exitCode === null ? "running" : metadata.exitCode === 0 ? "exited" : "failed");
   return {
@@ -243,6 +262,7 @@ export function persistedTerminalSession(
     size: { ...metadata.size },
     ...(metadata.parentSessionId !== undefined ? { parentSessionId: metadata.parentSessionId } : {}),
     ...(normalizedThreadId !== undefined ? { threadId: normalizedThreadId } : {}),
+    ...(nestedCodex ? { nestedCodex } : {}),
     lastState,
     ...(lastState !== "running" ? { exitCode: metadata.exitCode } : {}),
     restore: metadata.skipRestore !== true,
@@ -307,6 +327,7 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
     if (session.environment !== undefined && !environment) continue;
     // Likewise a launch whose environment was chosen but not prepared yet.
     const environmentChoice = environment ? undefined : normalizeEnvironmentChoice(session.environmentChoice);
+    const nestedCodex = session.provider === "terminal" && !environment && !environmentChoice ? normalizeNestedCodex(session.nestedCodex) : undefined;
     if (!environment && session.environmentChoice !== undefined && !environmentChoice) continue;
     sessions.push({
       id: session.id,
@@ -323,6 +344,7 @@ export function normalizePersistedTerminalSessions(candidate: unknown): Persiste
       },
       ...(parentSessionId !== undefined ? { parentSessionId } : {}),
       ...(threadId !== undefined ? { threadId } : {}),
+      ...(nestedCodex ? { nestedCodex } : {}),
       lastState,
       ...(lastState !== "running" ? { exitCode } : {}),
       restore: session.restore !== false,

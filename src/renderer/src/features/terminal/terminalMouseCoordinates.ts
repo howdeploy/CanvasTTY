@@ -68,6 +68,8 @@ export function attachTerminalMouseCoordinateAdapter(
   shouldForceSelectionWithShift: () => boolean = () => false
 ): () => void {
   const ownerDocument = screen.ownerDocument;
+  const viewport = screen.parentElement ?? screen;
+  const wheelTarget = screen.closest?.<HTMLElement>(".terminal-card") ?? viewport;
   const syntheticEvents = new WeakSet<Event>();
   let dragging = false;
   // Mounted under the pointer: no mouseenter comes until it leaves.
@@ -112,8 +114,16 @@ export function attachTerminalMouseCoordinateAdapter(
   const handleWheelEvent = (event: WheelEvent): void => {
     if (syntheticEvents.has(event)) return;
     const target = event.target;
-    if (!(target instanceof Node) || !screen.contains(target)) return;
+    if (!(target instanceof Node) || !wheelTarget.contains(target)) return;
     if (shouldRouteWheelToCanvas()) return;
+    const targetInViewport = viewport.contains(target);
+    const resizeHandle = !targetInViewport && (target as Element).closest?.(".terminal-card__resize-handle");
+    const viewportRect = resizeHandle ? viewport.getBoundingClientRect() : null;
+    // Resize handles overlap the scrollbar; only wheel input should pass through to xterm.
+    const forwardFromResize = viewportRect !== null
+      && event.clientX >= viewportRect.left && event.clientX < viewportRect.left + viewportRect.width
+      && event.clientY >= viewportRect.top && event.clientY < viewportRect.top + viewportRect.height;
+    if (!targetInViewport && !forwardFromResize) return;
     const rect = screen.getBoundingClientRect();
     const adjusted = remapTerminalMouseCoordinates(
       { x: event.clientX, y: event.clientY },
@@ -123,13 +133,13 @@ export function attachTerminalMouseCoordinateAdapter(
     const needsRemap = Math.abs(adjusted.x - event.clientX) > 0.01
       || Math.abs(adjusted.y - event.clientY) > 0.01;
     const wheelMultiplier = getWheelMultiplier();
-    if (!needsRemap && wheelMultiplier === 1) return;
+    if (!needsRemap && wheelMultiplier === 1 && !forwardFromResize) return;
 
     event.preventDefault();
     event.stopImmediatePropagation();
     const remapped = cloneWheelEvent(event, adjusted, wheelMultiplier);
     syntheticEvents.add(remapped);
-    target.dispatchEvent(remapped);
+    (forwardFromResize ? viewport : target).dispatchEvent(remapped);
   };
 
   // The document-level capture listeners run before xterm's own, but only while the pointer is over this card or
@@ -155,7 +165,8 @@ export function attachTerminalMouseCoordinateAdapter(
 
   screen.addEventListener("mouseenter", handleEnter);
   screen.addEventListener("mouseleave", handleLeave);
-  screen.addEventListener("wheel", handleWheelEvent, { capture: true, passive: false });
+  // Capture at the card so overlapping resize handles cannot swallow the scrollbar's wheel input.
+  wheelTarget.addEventListener("wheel", handleWheelEvent, { capture: true, passive: false });
   updateListening();
 
   return () => {
@@ -164,7 +175,7 @@ export function attachTerminalMouseCoordinateAdapter(
     updateListening();
     screen.removeEventListener("mouseenter", handleEnter);
     screen.removeEventListener("mouseleave", handleLeave);
-    screen.removeEventListener("wheel", handleWheelEvent, true);
+    wheelTarget.removeEventListener("wheel", handleWheelEvent, true);
   };
 }
 
@@ -190,7 +201,7 @@ function cloneMouseEvent(event: MouseEvent, point: ClientPoint, forceSelection =
 }
 
 function cloneWheelEvent(event: WheelEvent, point: ClientPoint, multiplier: 1 | -1): WheelEvent {
-  return new WheelEvent(event.type, {
+  const remapped = new WheelEvent(event.type, {
     bubbles: true,
     cancelable: true,
     composed: true,
@@ -211,4 +222,12 @@ function cloneWheelEvent(event: WheelEvent, point: ClientPoint, multiplier: 1 | 
     deltaZ: event.deltaZ * multiplier,
     deltaMode: event.deltaMode
   });
+  // xterm's scrollback reads legacy deltas; mouse-reporting TUIs read deltaY.
+  const legacy = event as WheelEvent & { wheelDelta?: number; wheelDeltaX?: number; wheelDeltaY?: number };
+  for (const property of ["wheelDelta", "wheelDeltaX", "wheelDeltaY"] as const) {
+    if (typeof legacy[property] === "number") {
+      Object.defineProperty(remapped, property, { value: legacy[property] * multiplier });
+    }
+  }
+  return remapped;
 }

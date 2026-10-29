@@ -1,5 +1,6 @@
 import { terminalScreenText } from "../materials/sessionScreen.ts";
 import { codexComposerReady, codexContinuationIsEmpty, codexPlaceholderIsDim } from "../codexInput.ts";
+import { kimiComposerReady } from "../kimiInput.ts";
 export { codexComposerReady } from "../codexInput.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -57,6 +58,8 @@ interface TerminalPort {
   inputChecked(id: string, text: string): boolean;
   /** The launch still waits for its plugins: the card cannot take input yet. */
   launchPending?(id: string): boolean;
+  /** The current OpenCode launch's native input view is up; not a composer/draft check. */
+  startupReady?(id: string): boolean;
   geometry(id: string): { cols: number; rows: number };
   /** Masks plugin launch secrets in text handed to a controller. */
   redactSecrets?(text: string): string;
@@ -559,7 +562,7 @@ export class AgentControlGateway {
         const terminal = new (xterm().Terminal)({ ...this.options.terminals.geometry(session.id), scrollback: 200, allowProposedApi: true });
         const snapshot = this.options.terminals.readBuffer(session.id);
         const owned: OwnedSession = { owner, startedAt: session.startedAt, terminal,
-          ready: new Promise<void>((resolve) => terminal.write(snapshot.buffer, resolve)),
+          ready: new Promise<void>((resolve) => terminal.write((snapshot.restorePrefix ?? "") + snapshot.buffer, resolve)),
           outputOffset: snapshot.outputOffset, resultRevision: 0, turn: null, completedTurn: null };
         this.sessions.set(session.id, owned);
       } catch (error) {
@@ -608,7 +611,7 @@ export class AgentControlGateway {
     }
     const capabilities = controlCapabilities(fresh.provider);
     const screen = viewport(owned.terminal, (text) => this.redact(text));
-    const composerReady = capabilities.menus && codexComposerReady(
+    const composerReady = fresh.provider === "kimi" ? kimiComposerReady(owned.terminal) : capabilities.menus && codexComposerReady(
       this.redact(terminalScreenText(owned.terminal, true)), codexPlaceholderIsDim(owned.terminal), codexContinuationIsEmpty(owned.terminal));
     if (request.method === "screen") return { sessionId: id, text: screen, revision: hash(screen), outputOffset: owned.outputOffset,
       interaction: capabilities.menus ? codexChoices(screen) : null, composerReady };
@@ -655,10 +658,11 @@ export class AgentControlGateway {
       if (!this.options.lifecycleEnabled()) throw new ControlError("LIFECYCLE_DISABLED", "Agent lifecycle hooks are disabled.");
       if (/^[\s]*\//.test(text) || /[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(text)) throw new ControlError("INVALID_PARAMS", "send accepts task text, not slash commands or terminal control sequences.");
       if (owned.turn && ["queued", "working"].includes(owned.turn.state)) throw new ControlError("BUSY", "The previous submitted turn has not finished.");
-      // Only Codex's composer is recognised; for other providers the lifecycle
-      // status is the sole readiness gate and the screen the only evidence.
+      // Codex and Kimi have native composer checks; other providers retain their lifecycle gate.
       if (!["idle", "unavailable"].includes(fresh.status)) throw new ControlError("NOT_READY", "The session is not idle; inspect screen and wait for the current activity to finish.");
       if (capabilities.menus && !composerReady) throw new ControlError("NOT_READY", "Codex is not at an empty task composer; inspect screen and resolve startup or approvals without changing its sandbox.");
+      if (fresh.provider === "kimi" && !composerReady) throw new ControlError("NOT_READY", "Kimi is not at a verified empty Kimi 2.x task composer; inspect screen and resolve startup or approvals. Nothing was written.");
+      if (fresh.provider === "opencode" && this.options.terminals.startupReady?.(id) === false) throw new ControlError("NOT_READY", "OpenCode has not shown its startup input cursor; nothing was written. Inspect the card and wait for its input view.");
       const previousTurn = owned.turn;
       owned.turn = { id: request.id, state: "queued", sawWorking: false, nativeTurnId: null, interruptRequested: false, result: null };
       if (!this.options.terminals.inputChecked(id, `\x1b[200~${text}\x1b[201~\r`)) {
@@ -703,7 +707,7 @@ export class AgentControlGateway {
       const terminal = new (xterm().Terminal)({ ...this.options.terminals.geometry(session.id), scrollback: 200, allowProposedApi: true });
       const snapshot = this.options.terminals.readBuffer(session.id);
       this.sessions.set(session.id, { owner, startedAt: session.startedAt, terminal,
-        ready: new Promise<void>((resolve) => terminal.write(snapshot.buffer, resolve)),
+        ready: new Promise<void>((resolve) => terminal.write((snapshot.restorePrefix ?? "") + snapshot.buffer, resolve)),
         outputOffset: snapshot.outputOffset, resultRevision: 0, turn: null, completedTurn: null });
     } catch (error) {
       this.options.terminals.dispose?.(session.id);

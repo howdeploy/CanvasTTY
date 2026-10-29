@@ -85,7 +85,7 @@ test("api profiles persist through the settings store and settingsVersion is cur
   assert.equal(reloaded.apiProfiles[1].defaultModel, "claude-sonnet-4-6");
 
   const persisted = JSON.parse(await (await import("node:fs/promises")).readFile(join(directory, "settings.json"), "utf8"));
-  assert.equal(persisted.settingsVersion, 21);
+  assert.equal(persisted.settingsVersion, 22);
   assert.equal(persisted.apiProfiles.length, 2);
 });
 

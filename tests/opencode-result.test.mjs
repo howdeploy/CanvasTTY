@@ -10,7 +10,7 @@ import { RuntimeGateway } from "../src/main/services/agent-runtime/RuntimeGatewa
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { AgentControlService } from "../src/main/services/AgentControlService.ts";
 import { ScopedOrchestrationHandler } from "../src/main/services/agent-browser/OrchestrationTools.ts";
-import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
+import { availableRegistry, fakeSpawner, openCodeInputReady } from "./helpers/terminal.mjs";
 
 const POSIX = { skip: process.platform === "win32" ? "Unix socket test; the Windows pipe transport has its own suite." : false };
 
@@ -147,11 +147,14 @@ test("an ordinary OpenCode card (not a subagent) never keeps an answer", async (
 test("wait_for_agent ignores an idle before the prompt's turn and returns that turn's answer", async (t) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "ctty-ocr-")));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner([]));
+  const calls = [];
+  const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner(calls));
   t.after(() => terminals.disposeAll());
   const orchestrator = terminals.create({ provider: "codex", cwd: root, profile: "normal", position: { x: 0, y: 0 }, role: "orchestrator" });
   const handler = new ScopedOrchestrationHandler(new AgentControlService(terminals, { waitTiming: { checkMs: 5, settleMs: 10, quietMs: 60_000 } }));
-  const child = await handler.execute(orchestrator.id, { id: "1", tool: "spawn_agent", arguments: { provider: "opencode", cwd: root, prompt: "do part A" } });
+  const spawning = handler.execute(orchestrator.id, { id: "1", tool: "spawn_agent", arguments: { provider: "opencode", cwd: root, prompt: "do part A" } });
+  await openCodeInputReady(calls, 1);
+  const child = await spawning;
   const wait = (timeoutSeconds) => handler.execute(orchestrator.id, { id: "w", tool: "wait_for_agent", arguments: { sessionId: child.sessionId, timeoutSeconds } });
   // OpenCode's session.created reports idle before the prompt's turn starts.
   terminals.applyProviderSignal(child.sessionId, { kind: "lifecycle", state: "idle", event: "session.created" });

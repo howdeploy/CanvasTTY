@@ -95,6 +95,63 @@ const fallback = {
   browserPauseHiddenTabs: true
 };
 
+test("appearance shortcut migration frees F8 without replacing customized bindings or design", async () => {
+  const oldShortcuts = { ...keyboardPresetShortcuts("linux"), momEntered: "F8" };
+  delete oldShortcuts.disableDesign;
+  for (const [shortcuts, overrides, expected] of [
+    [oldShortcuts, {}, ["Shift+F6", "Shift+F7"]],
+    [{ ...oldShortcuts, momEntered: "F12" }, {}, ["F12", "Shift+F7"]],
+    [{ ...oldShortcuts, momEntered: "" }, {}, ["", "Shift+F7"]],
+    [{ ...oldShortcuts, terminalSearch: "Shift+F6", terminalPaste: "Shift+F7" }, {}, ["", ""]],
+    [oldShortcuts, { canvasNavigationOverride: "Shift+F6", canvasWheelOverride: "Shift+F7" }, ["", ""]]
+  ]) {
+    const dir = await mkdtemp(join(tmpdir(), "canvastty-appearance-shortcuts-"));
+    try {
+      await writeFile(join(dir, "settings.json"), JSON.stringify({
+        ...fallback, settingsVersion: 21, keyboardPreset: "custom", shortcuts,
+        appSkin: "midnight", terminalBorderSkin: "sakura", terminalBackground: "lantern-lake",
+        baseProtectionEnabled: false, agentIsolation: "off", invertTerminalWheel: true,
+        ...overrides
+      }));
+      const store = new SettingsStore(dir, "en", "linux");
+      const loaded = await store.load();
+      assert.equal(loaded.shortcuts.momEntered, expected[0]);
+      assert.equal(loaded.shortcuts.disableDesign, expected[1]);
+      for (const [action, binding] of Object.entries(shortcuts)) {
+        if (action !== "momEntered") assert.equal(loaded.shortcuts[action], binding);
+      }
+      for (const [field, binding] of Object.entries(overrides)) assert.equal(loaded[field], binding);
+      assert.equal(loaded.appSkin, "midnight");
+      assert.equal(loaded.terminalBorderSkin, "sakura");
+      assert.equal(loaded.terminalBackground, "lantern-lake");
+      assert.equal(loaded.baseProtectionEnabled, false);
+      assert.equal(loaded.agentIsolation, "off");
+      assert.equal(loaded.invertTerminalWheel, true);
+      const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
+      assert.equal(persisted.settingsVersion, 22);
+      assert.deepEqual(persisted.shortcuts, loaded.shortcuts);
+      // A deliberate rebind after migration must survive the next application launch.
+      await store.update({ shortcuts: { ...loaded.shortcuts, momEntered: "F8" } });
+      assert.equal((await new SettingsStore(dir, "en", "linux").load()).shortcuts.momEntered, "F8");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("fresh profiles opt into protection while explicit existing choices survive reload", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "canvastty-protection-opt-in-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = new SettingsStore(dir, "en", "linux");
+  const fresh = await store.load();
+  assert.equal(fresh.baseProtectionEnabled, false);
+  assert.equal(fresh.agentIsolation, "off");
+  await store.update({ baseProtectionEnabled: true, agentIsolation: "on" });
+  const reloaded = await new SettingsStore(dir, "en", "linux").load();
+  assert.equal(reloaded.baseProtectionEnabled, true);
+  assert.equal(reloaded.agentIsolation, "on");
+});
+
 test("persists ASCII scene settings and rejects invalid scene paths and brightness", () => {
   const valid = normalizeSettings({ terminalBackground: "lantern-lake", terminalBackgroundBrightness: 70, terminalBackgroundPaused: true }, fallback);
   assert.equal(valid.terminalBackground, "lantern-lake");
@@ -630,7 +687,7 @@ test("the Qwen migration does not rerun the older expanded-limit migration", asy
     assert.deepEqual(loaded.homeLimitProviders, ["codex", "claude", "kimi"]);
 
     const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 21);
+    assert.equal(persisted.settingsVersion, 22);
     assert.equal(persisted.agentLifecycleHooksEnabled, true);
     assert.deepEqual(persisted.homeLimitProviders, ["codex", "claude", "kimi"]);
   } finally {
@@ -653,7 +710,7 @@ test("the limit-display migration preserves a version-three launcher subset", as
     assert.deepEqual(loaded.homeLimitProviders, fallback.homeLimitProviders);
 
     const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 21);
+    assert.equal(persisted.settingsVersion, 22);
     assert.equal(persisted.agentLifecycleHooksEnabled, true);
     assert.deepEqual(persisted.homeLimitProviders, fallback.homeLimitProviders);
   } finally {
@@ -673,7 +730,7 @@ test("the expanded limit migration preserves a curated version-four subset", asy
     assert.deepEqual(loaded.homeLimitProviders, ["kimi"]);
 
     const persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 21);
+    assert.equal(persisted.settingsVersion, 22);
     assert.equal(persisted.agentLifecycleHooksEnabled, true);
     assert.deepEqual(persisted.homeLimitProviders, ["kimi"]);
   } finally {
@@ -827,7 +884,7 @@ test("existing profiles migrate minimap interaction to click and persist later c
     const store = new SettingsStore(dir, "en");
     assert.equal((await store.load()).minimapInteractionMode, "click");
     let persisted = JSON.parse(await readFile(join(dir, "settings.json"), "utf8"));
-    assert.equal(persisted.settingsVersion, 21);
+    assert.equal(persisted.settingsVersion, 22);
     assert.equal(persisted.minimapInteractionMode, "click");
 
     await store.update({ minimapInteractionMode: "drag" });

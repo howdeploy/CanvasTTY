@@ -60,7 +60,7 @@ import { TitleBar } from "./components/TitleBar";
 import { Toast } from "./components/Toast";
 import { environmentOptions } from "./features/launcher/LaunchOptionsSection";
 import { UpdateNotice } from "./components/UpdateNotice";
-import { resolveAppearanceSettings } from "./features/settings/appearanceSettings";
+import { resolveAppearanceSettings, resolveDisplaySettings } from "./features/settings/appearanceSettings";
 import { persistSettingsUpdate } from "./features/settings/persistSettings";
 import { PluginBrowserOpenQueue } from "./features/plugins/PluginBrowserOpenQueue";
 import {
@@ -145,7 +145,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS],
   radialLauncherEnabled: false,
   agentLifecycleHooksEnabled: true,
-  baseProtectionEnabled: true,
+  baseProtectionEnabled: false,
   uiScale: DEFAULT_UI_SCALE,
   canvasColor: "sage",
   canvasBackground: "none",
@@ -219,7 +219,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   agentChatHistorySearchAgents: "current",
   agentChatHistorySearchSessions: "filtered",
   agentControlEnabled: false,
-  agentIsolation: "on",
+  agentIsolation: "off",
   orchestrationMaxDepth: 2,
   orchestrationMaxSubagents: 8,
   defaultLaunchProfile: "auto",
@@ -1894,23 +1894,17 @@ export function App(): React.JSX.Element {
   }, [homeEditDraft, settings.locale, showToast]);
 
   const [backgroundsSuspended, setBackgroundsSuspended] = useState(false);
+  const [designDisabled, setDesignDisabled] = useState(false);
 
-  const toggleMomEntered = useCallback(() => {
-    const hasAny = settings.terminalBackground !== "none" || Object.keys(settings.terminalBackgroundOverrides).length > 0;
-    if (!hasAny && !backgroundsSuspended) {
-      showToast(settings.locale === "ru" ? "Фоны не настроены" : "No backgrounds configured");
-      return;
-    }
-    setBackgroundsSuspended((prev) => {
-      const next = !prev;
-      showToast(
-        next
-          ? (settings.locale === "ru" ? "Ой мама зашла!" : "Mom entered!")
-          : (settings.locale === "ru" ? "Фоны возвращены" : "Backgrounds restored")
-      );
-      return next;
-    });
-  }, [settings.locale, settings.terminalBackground, settings.terminalBackgroundOverrides, backgroundsSuspended, showToast]);
+  const toggleBackgrounds = useCallback(() => {
+    setBackgroundsSuspended(!backgroundsSuspended);
+    showToast(t(settings.locale, backgroundsSuspended ? "backgroundsRestored" : "backgroundsHidden"));
+  }, [settings.locale, backgroundsSuspended, showToast]);
+
+  const toggleDesign = useCallback(() => {
+    setDesignDisabled(!designDisabled);
+    showToast(t(settings.locale, designDisabled ? "designRestored" : "designDisabled"));
+  }, [settings.locale, designDisabled, showToast]);
 
   useEffect(() => {
     const performShortcut = (shortcut: "home" | "renameWindow" | "toggleFullscreen"): void => {
@@ -1935,13 +1929,26 @@ export function App(): React.JSX.Element {
       if (handleMacNativeSelectAll(event, window.canvasTTY.window.isMacOS)) return;
       if (handoffRemarkIds !== null) return;
       if (usageHistoryOpen) return;
-      if (event.repeat || isShortcutCaptureTarget(event.target) || isRenameInputTarget(event.target)) return;
-      if (settings.shortcuts.momEntered && matchesShortcut(event, settings.shortcuts.momEntered)) {
+      if (isShortcutCaptureTarget(event.target) || isRenameInputTarget(event.target)) return;
+      if (matchesShortcut(event, settings.shortcuts.momEntered)) {
         event.preventDefault();
         event.stopPropagation();
-        toggleMomEntered();
+        if (!event.repeat) toggleBackgrounds();
         return;
       }
+      if (matchesShortcut(event, settings.shortcuts.disableDesign)) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) toggleDesign();
+        return;
+      }
+      if (settings.shortcuts.toggleFullscreen === "F11" && matchesShortcut(event, "F11")) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) performShortcut("toggleFullscreen");
+        return;
+      }
+      if (event.repeat) return;
       if (shouldKeepNativeKeyboardInput(event.target, window.canvasTTY.window.isMacOS, event)) return;
       if (matchesShortcut(event, settings.shortcuts.toggleFullscreen)) {
         event.preventDefault();
@@ -1989,9 +1996,13 @@ export function App(): React.JSX.Element {
       window.removeEventListener("pointerdown", handlePointerShortcut, true);
       stopTerminalFocus();
     };
-  }, [activeSessionId, fullscreenSessionId, goHome, handoffRemarkIds, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, shortcutReferenceOpen, showToast, usageHistoryOpen, toggleSessionFullscreen, toggleMomEntered]);
+  }, [activeSessionId, fullscreenSessionId, goHome, handoffRemarkIds, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, shortcutReferenceOpen, showToast, usageHistoryOpen, toggleSessionFullscreen, toggleBackgrounds, toggleDesign]);
 
-  const appearance = resolveAppearanceSettings(settings);
+  const displaySettings = useMemo(
+    () => resolveDisplaySettings(settings, backgroundsSuspended, designDisabled),
+    [settings, backgroundsSuspended, designDisabled]
+  );
+  const appearance = resolveAppearanceSettings(displaySettings);
   const rootClasses = useMemo(
     () => [
       "app",
@@ -2013,7 +2024,7 @@ export function App(): React.JSX.Element {
   const workspaceSettings = useMemo(() => {
     const available = new Set(AGENT_PROVIDERS.filter((provider) => agentAvailability?.[provider]));
     return {
-      ...settings,
+      ...displaySettings,
       ...(homeEditDraft ? { homeGridSize: homeEditDraft.homeGridSize, homeLayout: homeEditDraft.homeLayout } : {}),
       homeLauncherProviders: settings.homeLauncherProviders.filter((provider) => available.has(provider)),
       homeLimitProviders: settings.homeLimitProviders.filter((provider) => available.has(provider)),
@@ -2022,11 +2033,11 @@ export function App(): React.JSX.Element {
         provider === "terminal" || provider === "note" || provider === "browser" || provider === "settings" || available.has(provider)
       ))
     };
-  }, [agentAvailability, homeEditDraft, settings]);
+  }, [agentAvailability, homeEditDraft, settings, displaySettings]);
 
   return (
-    <div ref={setOverlayHost} className={rootClasses} style={rootStyle} data-app-skin={settings.appSkin}>
-      <TerminalBorderSkinStyleHost skinId={settings.terminalBorderSkin} />
+    <div ref={setOverlayHost} className={rootClasses} style={rootStyle} data-app-skin={displaySettings.appSkin}>
+      <TerminalBorderSkinStyleHost skinId={displaySettings.terminalBorderSkin} />
       <TitleBar locale={settings.locale} windowState={windowState} onWindowStateChange={setWindowState} />
       <UsageHistoryPanel
         locale={settings.locale}
@@ -2039,7 +2050,7 @@ export function App(): React.JSX.Element {
         {ready && <WorkspaceCanvas
           surfacesMounted={surfacesMounted}
           settings={workspaceSettings}
-          backgroundsSuspended={backgroundsSuspended}
+          backgroundsSuspended={backgroundsSuspended || designDisabled}
           mediaData={mediaData}
           sessions={sessions}
           limits={limits}
@@ -2172,7 +2183,9 @@ export function App(): React.JSX.Element {
           openUpdatesRequest={openUpdatesRequest}
           settings={settings}
           backgroundsSuspended={backgroundsSuspended}
-          onToggleMomEntered={toggleMomEntered}
+          designDisabled={designDisabled}
+          onToggleBackgrounds={toggleBackgrounds}
+          onToggleDesign={toggleDesign}
           agentAvailability={agentAvailability}
           onRecheckAgentClis={recheckAgentClis}
           plugins={plugins}

@@ -53,6 +53,7 @@ import {
   DEFAULT_HOME_GRID_SIZE,
   DEFAULT_HOME_LAYOUT,
   DEFAULT_RADIAL_LAUNCHER_ITEMS,
+  DEFAULT_SHORTCUTS,
   keyboardPresetShortcuts,
   shortcutsShareContext,
   DEFAULT_UI_SCALE,
@@ -87,8 +88,9 @@ const CANVAS_COLORS = new Set<CanvasColorId>(["sage", "lilac", "night", "sand", 
 const PATTERNS = new Set<CanvasPatternId>(["dots", "grid", "waves", "diagonal", "rings", "none"]);
 const APP_SKINS = new Set<AppSkinId>(["classic", "atelier", "signal", "greenhouse", "midnight"]);
 const MEDIA_FITS = new Set<MediaFit>(["cover", "contain"]);
-// 21: the on/off "restoreTerminalSessions" became sessionRestoreMode (off / reopen / continue).
-const SETTINGS_VERSION = 21;
+// 22: move the legacy F8 background toggle and add the temporary classic-design toggle.
+const SETTINGS_VERSION = 22;
+const APPEARANCE_SHORTCUT_SETTINGS_VERSION = 22;
 const GROK_LAUNCHER_SETTINGS_VERSION = 3;
 const EXPANDED_LIMIT_SETTINGS_VERSION = 5;
 const QWEN_SETTINGS_VERSION = 6;
@@ -207,6 +209,19 @@ export class SettingsStore {
         || source.canvasColor === "palette"
         || source.settingsVersion !== SETTINGS_VERSION;
       let migratedCandidate: Record<string, unknown> = source;
+      if (persistedVersion < APPEARANCE_SHORTCUT_SETTINGS_VERSION) {
+        const shortcuts = source.shortcuts && typeof source.shortcuts === "object"
+          ? { ...source.shortcuts as Partial<ShortcutBindings> } : {};
+        // Missing bindings inherit the new defaults, unless an existing user binding owns them.
+        if (typeof shortcuts.momEntered === "string" && shortcuts.momEntered.toLowerCase() === "f8") delete shortcuts.momEntered;
+        for (const action of ["momEntered", "disableDesign"] as const) {
+          if (shortcuts[action] !== undefined) continue;
+          const binding = DEFAULT_SHORTCUTS[action].toLowerCase();
+          if ([...Object.values(shortcuts), source.canvasWheelOverride, source.canvasNavigationOverride]
+            .some((value) => typeof value === "string" && value.toLowerCase() === binding)) shortcuts[action] = "";
+        }
+        migratedCandidate = { ...migratedCandidate, shortcuts };
+      }
       if (needsGrokLauncherMigration && persistedLauncherProviders) {
         migratedCandidate = { ...migratedCandidate, homeLauncherProviders: [...persistedLauncherProviders, "grok"] };
       }
@@ -376,7 +391,7 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS],
     radialLauncherEnabled: false,
     agentLifecycleHooksEnabled: true,
-    baseProtectionEnabled: true,
+    baseProtectionEnabled: false,
     uiScale: DEFAULT_UI_SCALE,
     canvasColor: "sage",
     canvasBackground: "none",
@@ -451,7 +466,7 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     agentChatHistorySearchAgents: "current",
     agentChatHistorySearchSessions: "filtered",
     agentControlEnabled: false,
-    agentIsolation: "on",
+    agentIsolation: "off",
     orchestrationMaxDepth: DEFAULT_ORCHESTRATION_MAX_DEPTH,
     orchestrationMaxSubagents: DEFAULT_ORCHESTRATION_MAX_SUBAGENTS,
     defaultLaunchProfile: "auto",
@@ -633,10 +648,10 @@ export function normalizeSettings(
     agentLifecycleHooksEnabled: typeof source.agentLifecycleHooksEnabled === "boolean"
       ? source.agentLifecycleHooksEnabled
       : fallback.agentLifecycleHooksEnabled,
-    // On unless the person turned it off; an install from before it existed gets it on.
+    // Preserve explicit choices; new profiles opt in to protection.
     baseProtectionEnabled: typeof source.baseProtectionEnabled === "boolean"
       ? source.baseProtectionEnabled
-      : fallback.baseProtectionEnabled ?? true,
+      : fallback.baseProtectionEnabled ?? false,
     uiScale: normalizeUiScale(source.uiScale, fallback.uiScale ?? DEFAULT_UI_SCALE),
     canvasColor,
     canvasBackground,
@@ -802,10 +817,10 @@ export function normalizeSettings(
     agentControlEnabled: typeof source.agentControlEnabled === "boolean"
       ? source.agentControlEnabled
       : fallback.agentControlEnabled ?? false,
-    // On unless the person turned it off: only an explicit "off" does.
+    // Preserve explicit choices; new profiles opt in to isolation.
     agentIsolation: source.agentIsolation === "off" || source.agentIsolation === "on"
       ? source.agentIsolation
-      : fallback.agentIsolation ?? "on",
+      : fallback.agentIsolation ?? "off",
     orchestrationMaxDepth: boundedInteger(source.orchestrationMaxDepth, 1, MAX_ORCHESTRATION_DEPTH,
       fallback.orchestrationMaxDepth ?? DEFAULT_ORCHESTRATION_MAX_DEPTH),
     orchestrationMaxSubagents: boundedInteger(source.orchestrationMaxSubagents, 1, MAX_ORCHESTRATION_SUBAGENTS,

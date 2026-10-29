@@ -202,7 +202,7 @@ host.service.onEvent(({ serviceId, event, data }) => { /* … */ });
 - 5 秒内无应答、出错、应答无效、缺少机密，或插件被禁用、删除或不再受信任，都会拒绝启动并在卡片上显示原因。智能体绝不会在缺少用户所选贡献的情况下启动。插件不可用的恢复卡片以停止状态返回并显示该原因，记录保留到插件恢复或卡片被关闭。
 - 普通终端不接受启动选项。
 
-**启动配置档。** `profile` 为 `normal`（默认）、`yolo` 或 `auto`。`auto` 仅适用于 CLI 自带自动模式的智能体，均按各 CLI 的 `--help` 核实：Codex `--approve-for-me`（其自身审查，运行于 `workspace-write` 沙箱），Claude Code `--permission-mode auto` 及其沙箱（`{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":false}}` 合并进唯一的 `--settings`），以及 Grok `--permission-mode auto`（不依赖 Grok 沙箱）。基础保护和决策服务仍在其前面作答（Codex、Claude Code）。只要任一贡献者回答 `thirdPartyModel: true`，`auto` 就改为同一沙箱中 CLI 的“仅接受编辑”模式（Codex `--sandbox workspace-write --ask-for-approval on-request`，Claude Code 和 Grok `--permission-mode acceptEdits`）：原生审查者将是同一个模型，而弱模型自己的分类器不是安全边界。
+**启动配置档。** `profile` 为 `normal`（默认）、`yolo` 或 `auto`。`auto` 仅适用于 CLI 自带自动模式的智能体，均按各 CLI 的 `--help` 核实：Codex `--approve-for-me`（其自身审查，运行于 `workspace-write` 沙箱），Claude Code `--permission-mode auto` 及其沙箱（`{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":false}}` 合并进唯一的 `--settings`），以及 Grok `--permission-mode auto`（不依赖 Grok 沙箱）。开启的基础保护和已配置的决策服务仍在其前面作答（Codex、Claude Code）。只要任一贡献者回答 `thirdPartyModel: true`，`auto` 就改为同一沙箱中 CLI 的“仅接受编辑”模式（Codex `--sandbox workspace-write --ask-for-approval on-request`，Claude Code 和 Grok `--permission-mode acceptEdits`）：原生审查者将是同一个模型，而弱模型自己的分类器不是安全边界。
 
 **受信任文件夹。** 在本机运行、其文件夹是用户为其顶层智能体选择的文件夹（或位于其中）的子智能体，会收到 `"trustedFolder"`：该文件夹的真实路径。CanvasTTY 会以仅限此次运行的 `-c projects=…` 覆盖替它回答 Codex 的 “Trust this folder?”（不会写入 `~/.codex`）；自行保存智能体配置目录的插件（例如账户的 `CLAUDE_CONFIG_DIR`）可以在那里将该文件夹标记为受信任。Codex 还会获得对 CanvasTTY 自己添加的 hook 的本次运行信任（`-c hooks.state=…`），因此不会停在 “Hooks need review”；项目或用户自己的 hook 仍会询问。插件不能传递 `-c hooks…`。
 
@@ -280,7 +280,7 @@ interface DecisionRequest {
 
 回答按以下顺序合并：
 
-1. 先运行**基础保护**（见下文）；它的拒绝是最终结果，不再询问插件。
+1. 若已开启，先运行**基础保护**（见下文）；它的拒绝是最终结果，不再询问插件。
 2. 任何插件的 `deny` 优先。模型读到 `CanvasTTY plugin "<name>" blocked this tool call (<reason>)`，所以请在原因中写明应当改做什么。
 3. 否则任何 `ask`：无论权限模式如何，Claude Code 都会就此调用询问用户。超时、错误、服务已停止或无法读取的回答都算 `ask`，绝不算允许。
 4. 否则只有用户授权可以允许的插件，其 `allow` 才算数：在**设置 → Agents → Extension native code**中该插件下的第二个确认**May allow agent actions**，随原生代码信任一起撤销。之后 Claude Code 不经自身提示直接运行该调用；OpenCode 对该调用的询问以 `once` 回答。输入过大、无法完整发送时，允许永不生效。
@@ -382,7 +382,7 @@ interface PluginSessionEvent {
 
 两项安全功能内置，无需插件：
 
-- **基础保护**（设置 → Agents → Base protection，默认开启；用户可以关闭）通过同一个 hook 拒绝：sudo 及其他提权、把下载或生成的文本管道给 shell、下载后直接运行、磁盘和格式化命令、fork 炸弹，以及在工作文件夹之外写入或删除（包括主目录、其他项目和 `/tmp`），以及删除工作文件夹本身。agent 自己的计划和记忆文件夹（`~/.claude/plans`、`~/.claude/projects/<project>/memory`，以及本次运行 `CLAUDE_CONFIG_DIR` 中的相同位置）不算"外部"。它还会拒绝任何程序（包括解释器单行命令和套接字客户端）使用 CanvasTTY 自己的私有数据（来自应用的 userData 文件夹：agent-control 令牌与描述文件、各网关的连接记录与套接字、密钥存储、账户主目录；以及临时文件夹下的控制/运行时套接字文件夹）；拒绝原因会引导模型改用 **Orchestrator** 启动和 `canvastty_agents` 工具。内置控制 CLI 可以引用它的描述文件。它只会拒绝；每条原因都告诉模型应当改做什么（写入 `/tmp` 时建议在项目内建立临时文件夹）。
+- **基础保护**（设置 → Agents → Base protection，默认关闭；需手动开启）开启后通过同一个 hook 拒绝：sudo 及其他提权、把下载或生成的文本管道给 shell、下载后直接运行、磁盘和格式化命令、fork 炸弹，以及在工作文件夹之外写入或删除（包括主目录、其他项目和 `/tmp`），以及删除工作文件夹本身。agent 自己的计划和记忆文件夹（`~/.claude/plans`、`~/.claude/projects/<project>/memory`，以及本次运行 `CLAUDE_CONFIG_DIR` 中的相同位置）不算"外部"。它还会拒绝任何程序（包括解释器单行命令和套接字客户端）使用 CanvasTTY 自己的私有数据（来自应用的 userData 文件夹：agent-control 令牌与描述文件、各网关的连接记录与套接字、密钥存储、账户主目录；以及临时文件夹下的控制/运行时套接字文件夹）；拒绝原因会引导模型改用 **Orchestrator** 启动和 `canvastty_agents` 工具。内置控制 CLI 可以引用它的描述文件。它只会拒绝；每条原因都告诉模型应当改做什么（写入 `/tmp` 时建议在项目内建立临时文件夹）。
 - **密钥遮蔽**：CanvasTTY 从一个 agent 交给另一个 agent 的所有文本（`observe_agent`、`wait_for_agent`、`get_agent_result`，以及 control CLI 的 `screen`、`result` 和失败详情）都会被遮蔽：CanvasTTY 保存的服务商密钥、启动时的 `secretEnv` 值、服务通过 `redaction.register` 注册的值（包括被终端折行拆开的情况），以及常见密钥形式（`sk-…`、GitHub、Slack、AWS、Google、JWT、`Bearer …`、`"apiKey": "…"`、PEM 私钥、长随机串）。插件工具的回答、会话事件中的 `screen`、卡片标记和卡片动作消息也以同样方式遮蔽。
 
 host.onStorageChange(listener) 会把 host.storage.set 的写入通知给同一插件的所有活动界面——画布卡片、HOME 小组件和独立窗口——从而避免轮询。

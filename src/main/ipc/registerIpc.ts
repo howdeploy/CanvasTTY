@@ -49,7 +49,7 @@ import type { GithubAuthService } from "../services/GithubAuthService";
 import type { HermesHudService } from "../services/HermesHudService";
 import { normalizeExternalUrl } from "../../shared/externalUrl";
 import { readHomeMedia } from "../services/homeMedia";
-import { openTerminalFile } from "../services/terminalFileEditor";
+import { canOpenTerminalFile, resolveTerminalFilePath } from "../services/terminalFileEditor";
 
 interface CriticalDependencies {
   settings: SettingsStore;
@@ -106,7 +106,9 @@ export function registerCriticalIpc(ipcMain: IpcRegistrar, {
 }: CriticalDependencies): (window: BrowserWindow | null) => void {
   ipcMain.handle(IPC.clipboardRead, (event) => {
     assertMainRenderer(event, getMainWindow);
-    return clipboard.readText();
+    const text = clipboard.readText();
+    console.info("CanvasTTY clipboard read completed", { characters: text.length });
+    return text;
   });
   ipcMain.handle(IPC.clipboardHasImage, (event) => {
     assertMainRenderer(event, getMainWindow);
@@ -114,7 +116,10 @@ export function registerCriticalIpc(ipcMain: IpcRegistrar, {
   });
   ipcMain.on(IPC.clipboardWrite, (event, text: string) => {
     if (!isMainRenderer(event, getMainWindow)) return;
-    if (typeof text === "string" && text.length > 0) clipboard.writeText(text);
+    if (typeof text === "string" && text.length > 0) {
+      clipboard.writeText(text);
+      console.info("CanvasTTY clipboard write requested", { characters: text.length });
+    }
   });
   ipcMain.handle(IPC.externalOpenUrl, (event, value: unknown) => {
     assertMainRenderer(event, getMainWindow);
@@ -929,12 +934,19 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     assertMainRenderer(event, getMainWindow);
     return terminals.list();
   });
-  ipcMain.handle(IPC.terminalOpenFile, (event, id: unknown, reference: unknown) => {
+  ipcMain.handle(IPC.terminalCanOpenFile, (event, id: unknown, reference: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    if (typeof id !== "string") return false;
+    const session = terminals.getMetadata(id);
+    return session ? canOpenTerminalFile(reference, session.cwd) : false;
+  });
+  ipcMain.handle(IPC.terminalOpenFile, async (event, id: unknown, reference: unknown) => {
     assertMainRenderer(event, getMainWindow);
     if (typeof id !== "string") throw new Error("Terminal session ID is required.");
     const session = terminals.getMetadata(id);
     if (!session) throw new Error("Terminal session does not exist.");
-    return openTerminalFile(reference, session.cwd);
+    const error = await shell.openPath(await resolveTerminalFilePath(reference, session.cwd));
+    if (error) throw new Error(error);
   });
   ipcMain.handle(IPC.terminalReadBuffer, (event, id: unknown) => {
     assertMainRenderer(event, getMainWindow);

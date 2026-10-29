@@ -333,6 +333,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   // Auto-sort state lives in renderer memory only: the last criterion for this app session and
   // the single undo step. Nothing here is persisted.
   const [autoSortState, setAutoSortState] = useState(NO_AUTO_SORT);
+  const [regionAutoSortStates, setRegionAutoSortStates] = useState<ReadonlyMap<string, CanvasAutoSortState>>(() => new Map());
+  useEffect(() => {
+    setRegionAutoSortStates((current) => {
+      const next = new Map(current);
+      pruneToLive(next, new Set(settings.canvasRegions.map((region) => region.id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [settings.canvasRegions]);
   // The windows the last sort or undo moved: they glide and keep an outline for a moment. Outline
   // only: unlike the marquee selection it never makes them a drag group or narrows the next sort.
   const [autoSortMarked, setAutoSortMarked] = useState<ReadonlySet<string>>(EMPTY_MARQUEE_SELECTION);
@@ -1513,8 +1521,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         </div>
       )}
 
-      {contextMenu && CanvasContextMenu && (
+      {contextMenu && CanvasContextMenu && (contextMenu.kind !== "region" || contextRegion) && (
         <CanvasContextMenu
+          key={`${contextMenu.kind}:${contextMenu.targetId ?? ""}`}
           kind={contextMenu.kind}
           position={contextMenu.position}
           locale={settings.locale}
@@ -1606,13 +1615,16 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             bounds: boundsByLayer,
             selection: marqueeSelection,
             home: homeBounds,
-            regions: renderedCanvasRegions,
+            region: contextRegion ?? undefined,
+            regions: renderedCanvasRegions.filter((region) => region.id !== contextRegion?.id),
             sessions,
             pluginCanvas: renderedPluginCanvas,
             plugins,
             snapToGrid: settings.snapToGrid,
-            state: autoSortState,
-            setState: setAutoSortState,
+            state: contextRegion ? regionAutoSortStates.get(contextRegion.id) ?? NO_AUTO_SORT : autoSortState,
+            setState: contextRegion
+              ? (state) => setRegionAutoSortStates((current) => new Map(current).set(contextRegion.id, state))
+              : setAutoSortState,
             commit: commitLayerBounds,
             mark: setAutoSortMarked,
             onError: onPluginError

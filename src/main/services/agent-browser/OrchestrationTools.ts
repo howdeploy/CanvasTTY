@@ -195,6 +195,7 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
       throw error;
     }
     if (signal?.aborted) throw canceledError();
+    // Transport receipt only; an unavailable lifecycle hook cannot acknowledge native acceptance.
     return { sessionId: args.sessionId as string, sent: true };
   }
 

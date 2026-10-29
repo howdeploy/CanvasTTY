@@ -102,7 +102,9 @@ import { markMainBoot, mainBootMarks } from "./bootMarks";
 import { attachEditContextMenu } from "./editContextMenu";
 import { macApplicationMenuTemplate } from "./macApplicationMenu";
 import { configureCanvasLinkStartup, installCanvasLink } from "./services/canvasLink";
+import { connectedLaunchEnvironment } from "../agent-runtime/launch-environment.mjs";
 
+Object.assign(process.env, connectedLaunchEnvironment(process.env));
 configureCanvasLinkStartup(app);
 
 if (process.env.CANVASTTY_USER_DATA_DIR) {
@@ -264,6 +266,14 @@ function createWindow(): BrowserWindow {
   mainWindowClosing = false;
 
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("before-input-event", (_event, input) => {
+    if (input.type !== "keyDown" || (!input.control && !input.meta)
+      || (input.code !== "KeyC" && input.code !== "KeyV")) return;
+    diagnostics.record("info", "clipboard", "shortcut.received", {
+      code: input.code, control: input.control, shift: input.shift,
+      alt: input.alt, meta: input.meta, windowFocused: window.isFocused()
+    });
+  });
   window.webContents.on("will-navigate", (event, url) => {
     const currentUrl = window.webContents.getURL();
     if (currentUrl && url !== currentUrl) event.preventDefault();
@@ -532,7 +542,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       runtimeDirectory: lifecycleRuntimeDirectory,
       windowsHostPath,
       onSignal: (terminalSessionId, signal) => {
-        terminalManager?.applyProviderSignal(terminalSessionId, {
+        if (signal.invocationId) terminalManager?.applyShellCodexSignal(terminalSessionId, signal);
+        else terminalManager?.applyProviderSignal(terminalSessionId, {
           kind: "lifecycle",
           state: signal.state,
           event: signal.event,
@@ -567,6 +578,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     const claudeHttpHookPolicy = new ClaudeHttpHookPolicy();
     agentRuntimeBridge = new AgentRuntimeBridge(runtimeGateway, {
       helper: agentRuntimeHelper,
+      shellCodexHelper: helpers.shellCodex,
       runtimeDirectory: lifecycleRuntimeDirectory,
       openCodePluginPath,
       hermesHomeDirectory,
@@ -731,7 +743,6 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   // launch options or an environment ask their plugin's service, so start services first.
   pluginServices.hostReady();
   await pluginServicesStarted.catch(() => undefined);
-  await terminalManager.restorePersistedSessions();
   // The agent-control endpoint follows Settings → Agents → "Agent orchestration
   // endpoint"; the start flag / env var force it on for one launch (CI smoke)
   // regardless of the setting. Start and stop are serialised so a quick toggle
@@ -790,6 +801,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     return agentControlTransition;
   };
   await applyAgentControlSetting(settings.get().agentControlEnabled);
+  // Restored orchestrators need their private control grant at PTY launch, just like new cards.
+  await terminalManager.restorePersistedSessions();
   limitsService = new LimitsService(providerClis, app.getVersion());
   // Read-only accounting collection; history is stored in the normal app userData directory.
   usageHistory = new UsageHistoryService({

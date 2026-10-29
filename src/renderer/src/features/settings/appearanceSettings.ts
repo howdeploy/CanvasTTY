@@ -29,6 +29,28 @@ export function canvasColorPatch(canvasColor: CanvasColorId): Pick<AppSettings, 
   return { canvasColor };
 }
 
+/** Presentation only: never persist these temporary overrides as user settings. */
+export function resolveDisplaySettings(
+  settings: AppSettings,
+  backgroundsSuspended: boolean,
+  designDisabled: boolean
+): AppSettings {
+  if (!backgroundsSuspended && !designDisabled) return settings;
+  return {
+    ...settings,
+    ...(designDisabled ? {
+      appSkin: "classic",
+      terminalBorderSkin: "classic",
+      terminalSkinAnimationEnabled: false,
+      canvasColor: "sage"
+    } as const : {}),
+    canvasBackground: "none",
+    pattern: backgroundsSuspended ? "none" : "dots",
+    terminalBackground: "none",
+    terminalBackgroundOverrides: {}
+  };
+}
+
 export function homeAccentPresetPatch(
   homeAccentPreset: HomeAccentPresetId
 ): Pick<AppSettings, "homeAccentPreset"> {

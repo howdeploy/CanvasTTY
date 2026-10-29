@@ -51,6 +51,8 @@ export function attachTerminalOutput(
   };
   void api.readBuffer(id).then((snapshot) => {
     if (disposed) return;
+    // Parser state is synthetic metadata; it must never count towards the producer's byte offsets.
+    if (snapshot.restorePrefix) write(snapshot.restorePrefix);
     if (snapshot.buffer) write(snapshot.buffer);
     outputOffset = snapshot.outputOffset;
     for (const event of queuedLiveOutput) writeLive(event);

@@ -6,28 +6,28 @@
   background: #07090f;
 }
 
-.terminal-background-catalog { display: grid; gap: .8em; }
-.terminal-background-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) auto; gap: .6em; align-items: stretch; }
-.terminal-background-actions { display: flex; gap: .5em; align-items: stretch; }
+.terminal-background-catalog { display: grid; gap: .65em; }
+.terminal-background-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: .6em; align-items: stretch; }
+.terminal-background-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: .5em; align-items: stretch; justify-content: flex-end; }
 .terminal-background-search { box-sizing: border-box; min-width: 0; width: 100%; padding: .7em .85em; border: 1px solid var(--text-muted-on-dark); border-radius: 7px; background: var(--surface-soft); color: var(--text); font: inherit; }
 .terminal-background-disable { display: flex; align-items: center; justify-content: center; white-space: nowrap; padding: .65em .85em; }
 .terminal-background-disable-all { font-size: .88em; }
-.terminal-background-results { max-height: 27em; overflow-y: auto; overscroll-behavior: contain; padding: 2px 5px 4px 2px; }
-.terminal-background-results:focus-visible { outline: 2px solid var(--secondary); outline-offset: 2px; }
+.terminal-background-results { min-width: 0; padding: 2px 2px 4px; }
+.terminal-background-catalog .border-skin-choices { grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.2em), 1fr)); gap: .55em; }
 
-@media (max-width: 700px) {
-  .terminal-background-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
-  .terminal-background-toolbar input { grid-column: 1 / -1; grid-row: 2; }
+@container (max-width: 360px) {
+  .terminal-background-toolbar { grid-template-columns: minmax(0, 1fr); }
 }
 
 .terminal-background-preview img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 
 .terminal-background-tile { position: relative; min-width: 0; }
-.terminal-background-tile > .border-skin-choice { width: 100%; height: 100%; }
+.terminal-background-tile > .border-skin-choice { width: 100%; height: 100%; padding: .45em; gap: .4em; }
+.terminal-background-tile .terminal-background-preview { height: auto; }
 .terminal-background-favorite {
   position: absolute;
-  top: .9em;
-  right: .9em;
+  top: .65em;
+  right: .65em;
   display: grid;
   place-items: center;
   width: 2em;
@@ -47,8 +47,8 @@
 
 .terminal-background-delete {
   position: absolute;
-  top: .9em;
-  left: .9em;
+  top: .65em;
+  left: .65em;
   display: grid;
   place-items: center;
   width: 2em;
@@ -82,8 +82,8 @@
 
 .terminal-background-restore {
   position: absolute;
-  top: .9em;
-  left: .9em;
+  top: .65em;
+  left: .65em;
   display: inline-flex;
   align-items: center;
   gap: 5px;

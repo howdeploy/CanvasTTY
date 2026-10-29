@@ -261,7 +261,7 @@ test("after a prompt, an idle before the turn starts does not end wait_for_agent
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { TerminalManager } = await import("../src/main/services/TerminalManager.ts");
-  const { availableRegistry, fakeSpawner } = await import("./helpers/terminal.mjs");
+  const { availableRegistry, fakeSpawner, openCodeInputReady } = await import("./helpers/terminal.mjs");
   const root = await realpath(await mkdtemp(join(tmpdir(), "ctty-turn-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const calls = [];
@@ -277,7 +277,9 @@ test("after a prompt, an idle before the turn starts does not end wait_for_agent
   terminals.applyProviderSignal(idleChild.sessionId, { kind: "lifecycle", state: "idle" });
   assert.equal((await handler.execute(orchestrator.id, { id: "i", tool: "wait_for_agent", arguments: { sessionId: idleChild.sessionId } })).reason, "idle");
 
-  const child = await handler.execute(orchestrator.id, { id: "1", tool: "spawn_agent", arguments: { provider: "opencode", cwd: root, prompt: "do part A" } });
+  const spawning = handler.execute(orchestrator.id, { id: "1", tool: "spawn_agent", arguments: { provider: "opencode", cwd: root, prompt: "do part A" } });
+  await openCodeInputReady(calls, 2);
+  const child = await spawning;
   // The CLI's startup idle arrives after the prompt was typed but before its turn starts.
   terminals.applyProviderSignal(child.sessionId, { kind: "lifecycle", state: "idle" });
   const early = await wait(1);

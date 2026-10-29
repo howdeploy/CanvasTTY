@@ -5,7 +5,7 @@ const xterm = lazyRequire<typeof import("@xterm/headless")>("@xterm/headless");
 
 export interface ScreenPort {
   geometry(id: string): { cols: number; rows: number };
-  readBuffer(id: string): { buffer: string; outputOffset: number };
+  readBuffer(id: string): { buffer: string; outputOffset: number; restorePrefix?: string };
 }
 
 export class SessionScreen {
@@ -23,7 +23,7 @@ export class SessionScreen {
     this.terminal = new (xterm().Terminal)({ cols: geometry.cols, rows: geometry.rows, allowProposedApi: true, scrollback: 200 });
     const snapshot = port.readBuffer(id);
     this.offset = snapshot.outputOffset;
-    this.ready = new Promise((resolve) => this.terminal.write(snapshot.buffer, resolve));
+    this.ready = new Promise((resolve) => this.terminal.write((snapshot.restorePrefix ?? "") + snapshot.buffer, resolve));
   }
 
   feed(event: TerminalDataEvent): void {

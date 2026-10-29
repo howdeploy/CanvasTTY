@@ -97,6 +97,8 @@ test("the setting is exposed in Settings → Agents, honoured by the main proces
 
   // Main process: the setting (or the forced flag) decides, at startup and on every settings change.
   assert.match(main, /applyAgentControlSetting\(settings\.get\(\)\.agentControlEnabled\)/);
+  assert.ok(main.indexOf("await applyAgentControlSetting(settings.get().agentControlEnabled)")
+    < main.indexOf("await terminalManager.restorePersistedSessions()"), "restored orchestrators receive a live private control grant");
   assert.match(main, /await applyAgentControlSetting\(next\.agentControlEnabled\)/);
   assert.match(main, /process\.argv\.includes\("--agent-control"\) \|\| process\.env\.CANVASTTY_AGENT_CONTROL === "1"/);
   assert.match(main, /terminalManager\.setControlConnection\(\{ connectionPath: connection, cliPath: agentControlCliPath,\s+grant: \(sessionId\) => gateway\.grantSession\(sessionId\) \}\)/);

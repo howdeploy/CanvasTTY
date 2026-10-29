@@ -43,17 +43,33 @@ function wrappedBuffer() {
 }
 
 test("a scrolled normal terminal pins its complete live cursor line", () => {
-  assert.deepEqual(pinnedTerminalInput(buffer()), {
+  assert.deepEqual(pinnedTerminalInput(buffer(), 6), {
     rows: ["  ask something"], cursorRow: 0, cursorColumn: 15
   });
 });
 
 test("wrapped input keeps every physical row and the cursor's row and column", () => {
-  assert.deepEqual(pinnedTerminalInput(wrappedBuffer()), {
+  assert.deepEqual(pinnedTerminalInput(wrappedBuffer(), 6), {
     rows: ["prompt> abcdef", "ghijklmnop", "qrstuv"],
     cursorRow: 1,
     cursorColumn: 4
   });
+});
+
+test("scrolling slightly up never duplicates an input line that is still visible", () => {
+  assert.equal(pinnedTerminalInput(buffer({ viewportY: 9 }), 4), null);
+  assert.equal(pinnedTerminalInput(buffer({ viewportY: 9 }), 0), null);
+  assert.notEqual(pinnedTerminalInput(buffer({ viewportY: 8 }), 4), null);
+  // A partially visible wrapped draft must not be copied into a second input strip.
+  assert.equal(pinnedTerminalInput({ ...wrappedBuffer(), viewportY: 9 }, 2), null);
+  assert.notEqual(pinnedTerminalInput({ ...wrappedBuffer(), viewportY: 7 }, 3), null);
+});
+
+test("reserved input rows do not keep a pinned copy alive after its source becomes visible", () => {
+  const nearBottom = buffer({ viewportY: 9 });
+  assert.notEqual(pinnedTerminalInput(nearBottom, 3), null);
+  const pinnedRows = 1;
+  assert.equal(pinnedTerminalInput(nearBottom, 3 + pinnedRows), null);
 });
 
 test("long wrapped input is bounded while keeping the cursor and nearby rows visible", () => {
@@ -70,18 +86,18 @@ test("long wrapped input is bounded while keeping the cursor and nearby rows vis
 });
 
 test("the pinned row disappears at the live bottom and in alternate-screen TUIs", () => {
-  assert.equal(pinnedTerminalInput(buffer({ viewportY: 10 })), null);
-  assert.equal(pinnedTerminalInput(buffer({ type: "alternate" })), null);
+  assert.equal(pinnedTerminalInput(buffer({ viewportY: 10 }), 6), null);
+  assert.equal(pinnedTerminalInput(buffer({ type: "alternate" }), 6), null);
 });
 
 test("a missing cursor row does not leave a stale pinned input", () => {
-  assert.equal(pinnedTerminalInput(buffer({ getLine: () => undefined })), null);
+  assert.equal(pinnedTerminalInput(buffer({ getLine: () => undefined }), 6), null);
 });
 
 test("TerminalCard refreshes and reserves room for the pinned logical line", async () => {
   const source = await readFile(new URL("../src/renderer/src/features/terminal/TerminalCard.tsx", import.meta.url), "utf8");
   assert.match(source, /scrollOnUserInput:\s*false/);
-  assert.match(source, /pinnedTerminalInput\(terminal\.buffer\.active\)/);
+  assert.match(source, /pinnedTerminalInput\(terminal\.buffer\.active, terminal\.rows \+ pinnedRows\)/);
   assert.match(source, /limitPinnedTerminalInput\(completePinned, maxPinnedRows\)/);
   assert.match(source, /host\.clientHeight[^\n]*\/\s*2/);
   assert.match(source, /host\.append\(pinnedInput\)/);

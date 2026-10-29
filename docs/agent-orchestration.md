@@ -52,7 +52,7 @@ The core applies these to every way an agent can start another one: `spawn_agent
 
 ## Agent isolation
 
-Settings → Agents → Agent isolation (on by default) wraps an agent's whole process tree (the CLI, its commands, its MCP servers and hooks) in an operating-system layer. It applies to every subagent, every agent a plugin starts, and every agent in a profile other than normal (manual), whoever launched it. Inside it:
+Settings → Agents → Agent isolation (off by default for new profiles; existing choices are preserved) wraps an agent's whole process tree (the CLI, its commands, its MCP servers and hooks) in an operating-system layer. When enabled, it applies to every subagent, every agent a plugin starts, and every agent in a profile other than normal (manual), whoever launched it. Inside it:
 
 - files can be written only in the project folder (both spellings), the launch's own temporary folder (`TMPDIR`), the CLI's own state, configuration and cache folders, and the npm/bun caches; the project's git hooks and an existing repository's git config, and the CLI's own permission settings files (`~/.codex/config.toml`, `~/.claude/settings.json`, OpenCode's config) are not writable;
 - SSH, cloud and package-registry credentials, other CLIs' folders (their credentials) and CanvasTTY's own tokens, secret stores, account homes and launch files are unreadable, except what this launch was handed (its own control connection, its account home);
@@ -103,7 +103,7 @@ node scripts/canvastty-control.mjs interrupt SESSION_ID
 
 Output is JSON; `--json` is accepted explicitly too. `providers` lists the agents CanvasTTY can create workers for (the same entries as `list_providers`, without plugin launch options); an unknown `--provider` is refused with a pointer to it. `create --model <id> --effort <level>` sets the worker's model and reasoning effort like `spawn_agent`. Save the returned session ID. For each send, use its returned `resultRevisionBefore` as `result --after`, rather than repeatedly using zero.
 
-From the person's own terminal, `create` defaults to **YOLO** and passes Codex's real `--dangerously-bypass-approvals-and-sandbox` flag, only for a CLI the person acknowledged YOLO for in the launcher (otherwise it is refused with that reason); inside agent isolation (below) YOLO still cannot write outside the project. Workers can edit files and run tests. Their global settings are unchanged. Specify `--profile normal` to use the ordinary provider configuration instead, or `--profile auto` (Codex, Claude Code, Grok) for the CLI's own auto mode inside its sandbox (see [Launch contributors](plugins.md#launch-contributors-launchcontribute)). Scope tasks and external actions explicitly: full access is not filesystem isolation. A control API with no deletion command does not prevent a full-access model from deleting files. Base protection (Settings → Agents, on by default) still refuses elevation, pipes into a shell, disk commands, and writes or deletes outside the working folder before the tool call runs, YOLO included; it is a guard through the agent's own hook, not a sandbox. Screens, results and failure details returned to a controller are masked for known keys and common key shapes.
+From the person's own terminal, `create` defaults to **YOLO** and passes Codex's real `--dangerously-bypass-approvals-and-sandbox` flag, only for a CLI the person acknowledged YOLO for in the launcher (otherwise it is refused with that reason); inside agent isolation (below) YOLO still cannot write outside the project. Workers can edit files and run tests. Their global settings are unchanged. Specify `--profile normal` to use the ordinary provider configuration instead, or `--profile auto` (Codex, Claude Code, Grok) for the CLI's own auto mode inside its sandbox (see [Launch contributors](plugins.md#launch-contributors-launchcontribute)). Scope tasks and external actions explicitly: full access is not filesystem isolation. A control API with no deletion command does not prevent a full-access model from deleting files. Base protection (Settings → Agents, off by default), when enabled, refuses elevation, pipes into a shell, disk commands, and writes or deletes outside the working folder before the tool call runs, YOLO included; it is a guard through the agent's own hook, not a sandbox. Screens, results and failure details returned to a controller are masked for known keys and common key shapes.
 
 The backend uses `TerminalManager` and the existing native provider path. `cwd`, title and profile apply at creation. YOLO is retained by ordinary native restart/restore. Creation does not activate a canvas window or request UI focus.
 
@@ -114,18 +114,24 @@ The default private controller file is next to the connection descriptor. Use a 
 - `status` returns the native session state plus the controller-submitted turn, if any.
 - Before its first prompt a ready provider can still report `unavailable`; inspect `screen`. Startup/authentication/trust menus require resolution before tasks. Task delivery never doubles as menu confirmation.
 - `send` accepts at most 16,000 characters of task text. It rejects slash commands, terminal control sequences and input while a submitted turn is active. It does not offer automatic permission approval.
-- An accepted send means text was written to the PTY. It is not a completed task.
+- A successful send confirms a PTY write. It does not acknowledge that the CLI accepted or started the task; inspect the corresponding lifecycle, answer or screen before claiming progress. Never retry Enter blindly.
 - A result becomes fresh only after a corresponding working-to-idle lifecycle transition. Provider turn IDs, when present, reject stale completion signals.
 - `resultRevision` counts completed observations. A previous completed answer is kept separate from the active turn. `result --after N` returns `fresh: false` until a newer result exists.
 - Only controlled Codex sessions opt into the Stop hook's final-message capture. Text is bounded to 4,096 UTF-16 code units, with a `truncated` flag. Ordinary sessions continue reporting lifecycle without capturing their answers.
 - `no_result` means a turn became idle without a final-message payload. Inspect files and screen; do not report success from that state alone.
 - `interrupt` returns `stopped: false` because Ctrl-C delivery is only a request. Confirm the resulting lifecycle before proceeding.
 
-Human changes to an owned window still matter. Do not submit work while someone is editing its composer. The first version recognizes the Codex empty composer, not arbitrary provider TUIs.
+Human changes to an owned window still matter. Do not submit work while someone is editing its composer. Composer checks recognize Codex and Kimi 2.x, not arbitrary provider TUIs.
 
-Automated Codex delivery waits for the current launch's empty composer, including
-multiline draft checks, and sends task text with explicit paste boundaries before
-Enter. It does not treat startup output or a previous launch's screen as readiness.
+Automated Codex and Kimi 2.x delivery waits for the current launch's empty composer,
+including multiline draft checks. Codex, Claude and Kimi task text uses explicit
+paste boundaries before Enter. Per-card automated deliveries are ordered and
+remain bound to the launch that accepted the request. A new output frame after
+submission prevents reuse of the same stale empty screen; that frame alone is
+not an acknowledgement of acceptance. Startup output and a previous launch's
+screen do not count as composer readiness.
+
+On macOS/Linux, OpenCode delivery waits for its current launch's alternate-screen then visible-cursor sequence; CLIs without that sequence fail without a write, Windows retains its existing ungated startup behavior, and this startup check does not protect an OpenCode human draft or acknowledge acceptance.
 
 For a visible numbered menu, `screen` returns `interaction.options`, the selected option and a screen revision. After inspecting the choices and confirming the action is within the task's authorization, use `choose SESSION_ID --choice N --revision HASH`. To close an idle menu that explicitly offers Escape, use `dismiss SESSION_ID --revision HASH`. Both commands reject a changed screen, act only on the owned PTY and return delivery receipts; inspect the next screen to confirm the outcome. They do not automatically approve anything.
 

@@ -2,6 +2,18 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## 1.8.5-beta
+
+Prerelease for collecting feedback; known issues below remain open.
+
+- Open terminal file links with the operating system's default application instead of requiring VS Code. Directory, device and nonexistent targets stay inactive; line/column navigation is not passed to the system application.
+- Preserve native ANSI menu colors, isolate readability masks from animated backgrounds, clear preserved WebGL frames, and avoid duplicated pinned input.
+- Separate background/classic-appearance shortcuts, improve the background catalog's scrolling, and add region-scoped sorting with independent undo.
+- Queue agent input around startup readiness and separate pasting from submission. A successful PTY write still does not confirm agent acceptance.
+- Ignore disconnected PATH directories during launch and provide restored orchestrators with control connections after the endpoint is ready.
+- Default new profiles to disabled base protection and isolation while preserving explicit existing choices.
+- **Known beta issues:** a colored region can capture HOME after being resized over it; nested Codex conversation restoration failed in manual review; sorting can reject feasible layouts and needs further redesign. Intermittent copy, question-menu and formatting failures were not reproduced in the latest review. Native Windows/macOS behavior remains unverified.
+
 ## 1.8.4
 
 - Carry forward the evaluation hotfix: avoid redundant work at zoom limits and prevent terminal text from overlapping during DOM/WebGL renderer changes.

@@ -26,7 +26,7 @@ const IDLE_SCREEN_MS = 20_000;
 type Port = {
   listMetadata(): SessionMetadata[];
   geometry(id: string): { cols: number; rows: number };
-  readBuffer(id: string): { buffer: string; outputOffset: number };
+  readBuffer(id: string): { buffer: string; outputOffset: number; restorePrefix?: string };
   /** The secret redaction registry's masking (the manager's `redactSecrets`). */
   redactSecrets?(text: string): string;
 };
@@ -97,7 +97,7 @@ export class TerminalPresentation {
       const buffer = this.port.readBuffer(id);
       screen.terminal = terminal;
       screen.offset = buffer.outputOffset;
-      screen.ready = new Promise((resolve) => terminal.write(buffer.buffer, resolve));
+      screen.ready = new Promise((resolve) => terminal.write((buffer.restorePrefix ?? "") + buffer.buffer, resolve));
     }
     return screen as Screen & { terminal: import("@xterm/headless").Terminal };
   }

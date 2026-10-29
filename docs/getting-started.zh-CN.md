@@ -31,7 +31,7 @@ npm run dev
 5. 缩小画布后借助语义摘要导航；放大后继续使用 xterm 或原生浏览器页面。
 6. 回到 Home，查看真实会话、已连接的浏览器智能体以及适配器提供的服务商配额窗口。
 
-启动模式有 **Auto**（默认）、**Manual**、**Accept edits**、**Plan** 与 **Bypass**，只在对应 CLI 支持时提供；它们外面的防护层见[安装与安全](installing-and-security.zh-CN.md#智能体防护层)。在服务商支持的情况下，**Bypass**（YOLO）会关闭其安全确认提示，但仍处于基础防护与智能体隔离之内。对于 OpenCode，CanvasTTY 只在本次启动中添加 inline `permission: "allow"` override，并保留其余合并后的 OpenCode 配置；Hermes 接收原生 `--yolo`，Grok Build 接收原生 `--always-approve`，且都只作用于本次启动。CanvasTTY 会要求你为每个 CLI 确认一次，且不会交给子智能体；只在你愿意让智能体改动的目录中使用它。
+启动模式有 **Auto**（默认）、**Manual**、**Accept edits**、**Plan** 与 **Bypass**，只在对应 CLI 支持时提供；它们外面的防护层见[安装与安全](installing-and-security.zh-CN.md#智能体防护层)。在服务商支持的情况下，**Bypass**（YOLO）会关闭其安全确认提示，但仍受已启用的基础防护与智能体隔离约束。对于 OpenCode，CanvasTTY 只在本次启动中添加 inline `permission: "allow"` override，并保留其余合并后的 OpenCode 配置；Hermes 接收原生 `--yolo`，Grok Build 接收原生 `--always-approve`，且都只作用于本次启动。CanvasTTY 会要求你为每个 CLI 确认一次，且不会交给子智能体；只在你愿意让智能体改动的目录中使用它。
 
 ## 终端动画背景
 

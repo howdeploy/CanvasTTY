@@ -29,7 +29,9 @@ https://github.com/user-attachments/assets/444612f7-cda1-4fd6-8514-2f4fac9cc520
 
 ## 智能体、编排与防护
 
-智能体默认以 **Auto** 模式启动：使用 CLI 自带的自动模式（Claude Code、Codex、Grok）、CanvasTTY 为 OpenCode 提供的单次启动规则；对于没有自动模式的 CLI，则是跳过审批，且只在智能体隔离内可用。Manual、Accept edits、Plan 与 Bypass 只在 CLI 支持时提供；Bypass 需要用户为每个 CLI 确认一次，且不会交给子智能体。所有模式外面都有用户在 Settings → Agents 中控制的防护层：基础防护（hook 在工具调用运行前拒绝提权、`curl | sh`、磁盘命令以及项目外的写入）、委派规则（子智能体的权限不超过其编排者，只在其项目内工作；默认最多 2 层、8 个存活子智能体），以及操作系统隔离层（macOS 用 `sandbox-exec`，Linux 用 bubblewrap；Windows 暂无隔离层，子智能体在那里以 Manual 运行）。隔离会话结束后，CanvasTTY 会检查它触及的仓库中是否有会在隔离外运行程序的 git 设置，并提供一键消除。
+新配置中，基础保护和智能体隔离默认关闭。已有的明确设置会保留；这些防护层仅在启用时生效。
+
+智能体默认以 **Auto** 模式启动：使用 CLI 自带的自动模式（Claude Code、Codex、Grok）、CanvasTTY 为 OpenCode 提供的单次启动规则；对于没有自动模式的 CLI，则是跳过审批，且只在智能体隔离内可用。Manual、Accept edits、Plan 与 Bypass 只在 CLI 支持时提供；Bypass 需要用户为每个 CLI 确认一次，且不会交给子智能体。用户可在 Settings → Agents 中按需启用防护层：基础防护（hook 在工具调用运行前拒绝提权、`curl | sh`、磁盘命令以及项目外的写入）、委派规则（子智能体的权限不超过其编排者，只在其项目内工作；默认最多 2 层、8 个存活子智能体），以及操作系统隔离层（macOS 用 `sandbox-exec`，Linux 用 bubblewrap；Windows 暂无隔离层，开启隔离时子智能体在那里以 Manual 运行）。隔离会话结束后，CanvasTTY 会检查它触及的仓库中是否有会在隔离外运行程序的 git 设置，并提供一键消除。
 
 以 **Orchestrator** 角色启动的会话会获得 `canvastty_agents` 工具：`list_providers`（已安装的智能体、登录状态、模型、effort、profile）、带可选 `model`、`effort` 与 `profile` 的 `spawn_agent`、`wait_for_agent`（最长 600 秒），以及 `get_agent_result`——它以 `answer` 返回 Codex 或 OpenCode 子智能体的最终回复（最多 4,096 个字符，已脱敏）。详见[智能体编排与隔离](docs/agent-orchestration.md)（英文）和[防护层](docs/installing-and-security.zh-CN.md#智能体防护层)。
 

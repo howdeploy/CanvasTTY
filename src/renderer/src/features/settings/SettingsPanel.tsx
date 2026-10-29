@@ -133,7 +133,8 @@ const SHORTCUT_LABELS = {
   terminalCopy: "shortcutCopySelection", terminalPaste: "shortcutPaste", terminalSearch: "terminalSearch",
   terminalRestart: "shortcutRestartExited", terminalPageUp: "keyboardPageUp", terminalPageDown: "keyboardPageDown",
   codexSubmit: "keyboardSubmit", codexSubmitAlternate: "keyboardSubmitAlternate", codexSubmitSuper: "keyboardSubmitSuper",
-  codexNewline: "shortcutLineBreak", codexSelectAll: "keyboardSelectAll", momEntered: "keyboardMomEntered"
+  codexNewline: "shortcutLineBreak", codexSelectAll: "keyboardSelectAll",
+  momEntered: "keyboardHideBackgrounds", disableDesign: "keyboardDisableDesign"
 } as const;
 
 const SETTINGS_SECTIONS: ReadonlyArray<{
@@ -179,7 +180,9 @@ interface SettingsPanelProps {
   openUpdatesRequest: number;
   settings: AppSettings;
   backgroundsSuspended?: boolean;
-  onToggleMomEntered?(): void;
+  designDisabled?: boolean;
+  onToggleBackgrounds?(): void;
+  onToggleDesign?(): void;
   agentAvailability: AgentCliAvailability | null;
   onRecheckAgentClis(): Promise<void>;
   plugins: InstalledPlugin[];
@@ -217,8 +220,10 @@ export function SettingsPanel({
   open,
   openUpdatesRequest,
   settings,
-  backgroundsSuspended,
-  onToggleMomEntered,
+  backgroundsSuspended = false,
+  designDisabled = false,
+  onToggleBackgrounds,
+  onToggleDesign,
   agentAvailability,
   onRecheckAgentClis,
   plugins,
@@ -611,7 +616,7 @@ export function SettingsPanel({
               <div className="keyboard-shortcuts">
                 <p>{t(locale, "keyboardCaptureHint")}</p>
                 {([
-                  ["keyboardCanvas", ["home", "renameWindow", "toggleFullscreen", "commandPalette", "openSettings", "focusUp", "focusDown", "focusLeft", "focusRight", "toggleDetail", "momEntered"]],
+                  ["keyboardCanvas", ["home", "renameWindow", "toggleFullscreen", "commandPalette", "openSettings", "focusUp", "focusDown", "focusLeft", "focusRight", "toggleDetail", "momEntered", "disableDesign"]],
                   ["keyboardTerminal", ["terminalCopy", "terminalPaste", "terminalSearch", "terminalRestart", "terminalPageUp", "terminalPageDown"]],
                   ["keyboardCodex", ["codexSubmit", "codexSubmitAlternate", "codexSubmitSuper", "codexNewline", "codexSelectAll"]]
                 ] as const).map(([group, actions]) => (
@@ -664,6 +669,18 @@ export function SettingsPanel({
 
           {section === "appearance" && (
             <>
+              <SettingGroup label={t(locale, "keyboardHideBackgrounds")}
+                description={`${t(locale, "hideBackgroundsDescription")} ${settings.shortcuts.momEntered || t(locale, "disabled")}`}>
+                <Segmented value={backgroundsSuspended ? "on" : "off"}
+                  options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
+                  onChange={(value) => { if ((value === "on") !== backgroundsSuspended) onToggleBackgrounds?.(); }} />
+              </SettingGroup>
+              <SettingGroup label={t(locale, "keyboardDisableDesign")}
+                description={`${t(locale, "disableDesignDescription")} ${settings.shortcuts.disableDesign || t(locale, "disabled")}`}>
+                <Segmented value={designDisabled ? "on" : "off"}
+                  options={[["on", t(locale, "on")], ["off", t(locale, "off")]]}
+                  onChange={(value) => { if ((value === "on") !== designDisabled) onToggleDesign?.(); }} />
+              </SettingGroup>
               <SettingGroup label={t(locale, "palette")} description={t(locale, "paletteDescription")}>
                 <Segmented
                   value={settings.palette}
@@ -791,19 +808,6 @@ export function SettingsPanel({
                   onDeletedChange={(terminalBackgroundDeleted) => void onChange({ terminalBackgroundDeleted })}
                   onChange={(terminalBackground) => change({ terminalBackground })}
                   onDisableAll={disableAll} />
-                <div style={{ marginTop: "14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", padding: "10px 14px", borderRadius: "6px", background: "var(--surface-soft)", border: "1px solid color-mix(in srgb, var(--text) 16%, transparent)" }}>
-                  <div>
-                    <strong style={{ fontSize: "12px", display: "block", color: "var(--text)" }}>
-                      {locale === "ru" ? "Быстро скрыть фоны: «Ой мама зашла»" : "Quick hide backgrounds: \"Mom entered\""}
-                    </strong>
-                    <span style={{ fontSize: "11px", color: "var(--text-muted-on-dark)" }}>
-                      {locale === "ru" ? "Мгновенно гасит фоны со всех окон терминалов и возвращает назад. Настроить бинд можно в «Горячие клавиши»." : "Instantly hides all backgrounds and restores them back. Rebind in Hotkeys."}
-                    </span>
-                  </div>
-                  <span className="border-skin-choice" style={{ padding: "4px 10px", fontSize: "12px", fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap" }}>
-                    {settings.shortcuts.momEntered || "F8"}
-                  </span>
-                </div>
               </SettingGroup>
               </> : <>
               {appearance.terminalBackground !== "none" ? <>
@@ -885,23 +889,6 @@ export function SettingsPanel({
                       onChange={(event) => change({ terminalBackgroundSpeed: Number(event.currentTarget.value) })} />
                     <output>{appearance.terminalBackgroundSpeed.toLocaleString(locale, { maximumFractionDigits: 2 })}×</output>
                   </label>
-                </SettingGroup>
-                <h4 className="background-appearance-subheading">{locale === "ru" ? "Экстренное скрытие" : "Panic toggle"}</h4>
-                <SettingGroup label={locale === "ru" ? "Ой мама зашла" : "Mom entered"}
-                  description={locale === "ru" ? "Горячая клавиша для мгновенного скрытия всех фонов терминалов и возврата их обратно. Чтобы переназначить клавишу, перейдите в раздел «Горячие клавиши»." : "Quick hotkey to instantly hide all terminal backgrounds and restore them back. Rebind in Hotkeys."}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <span className="border-skin-choice" style={{ padding: "4px 12px", fontSize: "13px", fontFamily: "monospace", fontWeight: 700, letterSpacing: "0.04em" }}>
-                      {settings.shortcuts.momEntered || "F8"}
-                    </span>
-                    <button type="button" className="border-skin-choice" style={{ padding: "5px 14px", fontSize: "12px", cursor: "pointer" }}
-                      onClick={() => {
-                        onToggleMomEntered?.();
-                      }}>
-                      {backgroundsSuspended
-                        ? (locale === "ru" ? "Включить фоны обратно (F8)" : "Restore backgrounds (F8)")
-                        : (locale === "ru" ? "Скрыть все фоны сейчас (F8)" : "Hide all backgrounds now (F8)")}
-                    </button>
-                  </div>
                 </SettingGroup>
               </> : <p className="setting-group__description">{locale === "ru" ? "Выберите фон во вкладке «Каталог», чтобы настроить его оформление." : "Choose a background in the Catalog tab to adjust its appearance."}</p>}
                 </>}

@@ -8,7 +8,7 @@ import test from "node:test";
 import YAML from "yaml";
 import manifest from "../package.json" with { type: "json" };
 
-test("release gate requires the matching stable or hotfix tag and complete update files", async () => {
+test("release gate requires the matching stable, hotfix or beta tag and complete update files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canvastty-release-gate-"));
   const version = manifest.version;
   const files = [

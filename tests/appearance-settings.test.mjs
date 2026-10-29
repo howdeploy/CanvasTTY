@@ -5,8 +5,43 @@ import { DEFAULT_HOME_ACCENT_COLORS } from "../src/shared/contracts.ts";
 import {
   canvasColorPatch,
   homeAccentPresetPatch,
-  resolveAppearanceSettings
+  resolveAppearanceSettings,
+  resolveDisplaySettings
 } from "../src/renderer/src/features/settings/appearanceSettings.ts";
+
+test("temporary appearance modes compose and restore the latest user settings without mutation", () => {
+  const settings = {
+    palette: "night", canvasColor: "rose", canvasBackground: "sakura", pattern: "rings",
+    appSkin: "midnight", terminalBorderSkin: "sakura", terminalSkinAnimationEnabled: true,
+    terminalBackground: "lantern-lake",
+    terminalBackgroundOverrides: { session: { terminalBackground: "lantern-lake" } },
+    invertTerminalWheel: true
+  };
+  const original = structuredClone(settings);
+  const hidden = resolveDisplaySettings(settings, true, false);
+  assert.equal(hidden.canvasBackground, "none");
+  assert.equal(hidden.pattern, "none");
+  assert.equal(hidden.terminalBackground, "none");
+  assert.deepEqual(hidden.terminalBackgroundOverrides, {});
+  assert.equal(hidden.appSkin, "midnight");
+  assert.equal(hidden.terminalBorderSkin, "sakura");
+  const classic = resolveDisplaySettings(settings, false, true);
+  assert.equal(classic.appSkin, "classic");
+  assert.equal(classic.terminalBorderSkin, "classic");
+  assert.equal(classic.canvasColor, "sage");
+  assert.equal(classic.canvasBackground, "none");
+  assert.equal(classic.pattern, "dots");
+  assert.equal(classic.terminalBackground, "none");
+  assert.deepEqual(classic.terminalBackgroundOverrides, {});
+  assert.equal(classic.terminalSkinAnimationEnabled, false);
+  assert.equal(classic.palette, "night");
+  assert.equal(classic.invertTerminalWheel, true);
+  assert.equal(resolveDisplaySettings(settings, true, true).pattern, "none");
+  assert.deepEqual(settings, original);
+  assert.equal(resolveDisplaySettings(settings, false, false), settings);
+  const updated = { ...settings, terminalBorderSkin: "glass" };
+  assert.equal(resolveDisplaySettings(updated, false, false), updated);
+});
 
 test("stale renderer settings resolve the new appearance fields without crashing", () => {
   assert.deepEqual(resolveAppearanceSettings({}), {

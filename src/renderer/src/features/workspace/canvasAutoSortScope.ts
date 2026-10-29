@@ -2,7 +2,7 @@ import type { SessionBounds } from "../../../../shared/contracts";
 import type { CanvasAutoSortSession } from "./canvasAutoSort";
 
 /**
- * What the empty-canvas Auto-sort may move and what its undo puts back. Kept apart from the
+ * What canvas and region Auto-sort may move and what its undo puts back. Kept apart from the
  * arrangement itself (canvasAutoSort.ts) so the menu can tell whether a sort is possible without
  * loading the layout code.
  */
@@ -38,6 +38,8 @@ export interface CanvasAutoSortHost {
   bounds: ReadonlyMap<string, SessionBounds>;
   selection: ReadonlySet<string>;
   home: SessionBounds;
+  /** The region being sorted, if any; `regions` then holds only the other regions. */
+  region?: SessionBounds;
   regions: readonly SessionBounds[];
   sessions: readonly CanvasAutoSortSession[];
   /** Plugin windows and installed plugins, to tell companion mascots apart. */
@@ -62,14 +64,17 @@ const MOVABLE_KINDS: ReadonlySet<CanvasAutoSortKind> = new Set(["terminal", "plu
  * cards or a single window) every terminal, plugin and Browser window that is not completely
  * inside a canvas region moves: regions hold the person's own grouping, and moving a window out
  * of one silently changes its membership. Mascots stay out of that default scope unless the
- * person selected them.
+ * person selected them. In a region menu, apply these selection rules only to windows fully
+ * inside that region, leaving windows shared with other regions out of scope.
  */
 export function canvasAutoSortScope(
   candidates: readonly CanvasAutoSortCandidate[],
   selection: ReadonlySet<string>,
-  regions: readonly SessionBounds[]
+  regions: readonly SessionBounds[],
+  region?: SessionBounds
 ): string[] {
-  const movable = candidates.filter((candidate) => MOVABLE_KINDS.has(candidate.kind));
+  const movable = candidates.filter((candidate) => MOVABLE_KINDS.has(candidate.kind)
+    && (!region || inRegionScope(candidate.bounds, region, regions)));
   const selected = movable.filter((candidate) => selection.has(candidate.id));
   if (selected.length >= 2) return selected.map((candidate) => candidate.id);
   return movable
@@ -84,13 +89,18 @@ export function canvasAutoSortScope(
  */
 export function canvasAutoSortUndoTargets(
   undo: CanvasAutoSortUndo,
-  current: ReadonlyMap<string, SessionBounds>
+  current: ReadonlyMap<string, SessionBounds>,
+  region?: SessionBounds,
+  regions: readonly SessionBounds[] = []
 ): Map<string, SessionBounds> {
   const result = new Map<string, SessionBounds>();
   for (const [id, before] of undo.before) {
     const placed = undo.after.get(id);
     const now = current.get(id);
-    if (placed && now && sameBounds(placed, now) && !sameBounds(before, now)) result.set(id, before);
+    if (!placed || !now || !sameBounds(placed, now) || sameBounds(before, now)) continue;
+    // Region edits may have changed membership since the sort, even without moving a window.
+    if (region && (!inRegionScope(now, region, regions) || !inRegionScope(before, region, regions))) continue;
+    result.set(id, before);
   }
   return result;
 }
@@ -102,6 +112,10 @@ export function canvasAutoSortMoves(step: Pick<CanvasAutoSortUndo, "before" | "a
     if (!before || !sameBounds(before, placed)) return true;
   }
   return false;
+}
+
+function inRegionScope(bounds: SessionBounds, region: SessionBounds, others: readonly SessionBounds[]): boolean {
+  return contains(region, bounds) && !others.some((other) => contains(other, bounds));
 }
 
 function contains(outer: SessionBounds, inner: SessionBounds): boolean {

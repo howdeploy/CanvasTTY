@@ -6,8 +6,8 @@ import YAML from "yaml";
 
 const [tag, directory = "release-artifacts"] = process.argv.slice(2);
 const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-if (!/^v\d+\.\d+\.\d+(?:-hotfix\.\d+)?$/.test(tag ?? "") || tag.slice(1) !== manifest.version) {
-  throw new Error(`Release tag must equal package version v${manifest.version} and be stable or a hotfix prerelease`);
+if (!/^v\d+\.\d+\.\d+(?:-(?:hotfix\.\d+|beta(?:\.\d+)?))?$/.test(tag ?? "") || tag.slice(1) !== manifest.version) {
+  throw new Error(`Release tag must equal package version v${manifest.version} and be stable, hotfix or beta`);
 }
 const names = await readdir(resolve(directory));
 const version = manifest.version.replaceAll(".", "\\.");

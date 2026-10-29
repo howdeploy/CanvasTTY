@@ -6,6 +6,7 @@ import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 
 const READY = "\x1b[2J\x1b[H>_ OpenAI Codex\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\n";
+const KIMI_READY = "\x1b[2J\x1b[HKimi Code 2.4.0\r\n╭──────────────────────╮\r\n│ >                    │\r\n╰──────────────────────╯\r\n\x1b[3;6H";
 
 function fixture(t, autoReady = true) {
   const writes = [];
@@ -14,7 +15,15 @@ function fixture(t, autoReady = true) {
   const terminals = new TerminalManager(() => {}, availableRegistry(), undefined, undefined, true,
     (...args) => {
       const process = spawn(...args);
-      if (autoReady) queueMicrotask(() => process.emitData(READY));
+      const ready = args[0].endsWith("/kimi") ? KIMI_READY : READY;
+      if (autoReady) {
+        const write = process.write;
+        process.write = (data) => {
+          write(data);
+          if (data.endsWith("\r")) queueMicrotask(() => process.emitData(ready));
+        };
+        queueMicrotask(() => process.emitData(ready));
+      }
       return process;
     });
   t.after(() => terminals.disposeAll());
@@ -44,6 +53,16 @@ test("other providers retain their existing delivery bytes", async (t) => {
   await f.control.send(child.id, "draft", false);
   assert.deepEqual(f.writes, ["first\r", "second\r", "draft"]);
 });
+
+for (const provider of ["claude", "kimi"]) {
+  test(`${provider} initial prompts and follow-ups separate pasted text from submission`, async (t) => {
+    const f = fixture(t);
+    const child = await f.control.spawn({ parentSessionId: f.parent.id, provider, cwd: process.cwd(), profile: "normal", initialPrompt: "first\nline" });
+    await f.control.send(child.id, "next\nline");
+    await f.control.send(child.id, "draft", false);
+    assert.deepEqual(f.writes, ["\x1b[200~first\nline\x1b[201~\r", "\x1b[200~next\nline\x1b[201~\r", "\x1b[200~draft\x1b[201~"]);
+  });
+}
 
 test("a newly spawned Codex receives no prompt before its task composer is ready", async (t) => {
   const f = fixture(t, false);

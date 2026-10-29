@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
-import { attachTerminalScrollbarCoordinateAdapter, remapTerminalMouseCoordinates } from "../src/renderer/src/features/terminal/terminalMouseCoordinates.ts";
+import { attachTerminalMouseCoordinateAdapter, attachTerminalScrollbarCoordinateAdapter, remapTerminalMouseCoordinates } from "../src/renderer/src/features/terminal/terminalMouseCoordinates.ts";
 
 test("installed xterm scrollbar drag follows layout distance at every canvas scale", async (t) => {
   const { outputFiles } = await build({
@@ -94,6 +94,10 @@ function fakeCards(count) {
   };
   class FakeNode extends EventTarget {
     constructor(parent = null) { super(); this.parent = parent; }
+    removeEventListener(type, listener, options) {
+      // Node's EventTarget needs an options object to remove capture listeners like a browser does.
+      super.removeEventListener(type, listener, typeof options === "boolean" ? { capture: options } : options);
+    }
   }
   class FakeMouseEvent extends Event {
     constructor(type, init) { super(type, init); this.clientX = init.clientX; this.clientY = init.clientY; }
@@ -146,4 +150,124 @@ test("mouse moves anywhere cost nothing for cards the pointer is not over; a hov
 
   for (const stop of detach) stop();
   assert.equal(doc.count("mouseup"), 0);
+});
+
+test("wheel inversion agrees for scrollback and TUI mouse reports over text and the scrollbar", (t) => {
+  const { cards: [{ screen }], FakeNode } = fakeCards(1);
+  class FakeWheelEvent extends Event {
+    constructor(type, init) {
+      const { bubbles, cancelable, composed, ...properties } = init;
+      super(type, { bubbles, cancelable, composed });
+      Object.assign(this, properties);
+      // Chromium can reconstruct legacy deltas with the same sign as deltaY.
+      this.wheelDeltaX = init.deltaX;
+      this.wheelDeltaY = this.wheelDelta = init.deltaY;
+    }
+  }
+  const originals = { Node: globalThis.Node, WheelEvent: globalThis.WheelEvent };
+  Object.assign(globalThis, { Node: FakeNode, WheelEvent: FakeWheelEvent });
+  t.after(() => Object.assign(globalThis, originals));
+  const viewport = new FakeNode();
+  screen.parent = screen.parentElement = viewport;
+  viewport.contains = (node) => {
+    for (let current = node; current; current = current.parent) if (current === viewport) return true;
+    return false;
+  };
+  const scrollbar = new FakeNode(viewport);
+  let multiplier = -1;
+  let canvasOwnsWheel = false;
+  const detach = attachTerminalMouseCoordinateAdapter(screen, () => multiplier, () => canvasOwnsWheel);
+  t.after(detach);
+  const received = [];
+  const consume = (event) => received.push([
+    event.deltaX, event.deltaY, event.wheelDeltaX, event.wheelDeltaY, event.wheelDelta, event.deltaMode
+  ]);
+  for (const target of [screen, scrollbar, viewport]) target.addEventListener("wheel", consume);
+  const fire = (target, deltaMode) => {
+    const event = new FakeWheelEvent("wheel", {
+      bubbles: true, cancelable: true, clientX: 135, clientY: 135,
+      deltaX: 4, deltaY: 40, deltaZ: 0, deltaMode
+    });
+    Object.assign(event, { wheelDeltaX: -12, wheelDeltaY: -120, wheelDelta: -120 });
+    Object.defineProperty(event, "target", { value: target });
+    viewport.dispatchEvent(event);
+  };
+  for (multiplier of [-1, 1]) {
+    for (const target of [screen, scrollbar, viewport]) {
+      for (const deltaMode of [0, 1, 2]) {
+        received.length = 0;
+        fire(target, deltaMode);
+        assert.deepEqual(received, [[
+          4 * multiplier, 40 * multiplier, -12 * multiplier, -120 * multiplier, -120 * multiplier, deltaMode
+        ]], "one event reaches xterm with matching modern and legacy direction");
+      }
+    }
+  }
+  multiplier = -1;
+  canvasOwnsWheel = true;
+  received.length = 0;
+  fire(screen, 0);
+  assert.deepEqual(received, [[4, 40, -12, -120, -120, 0]], "canvas-owned wheel is not inverted");
+  canvasOwnsWheel = false;
+  detach();
+  received.length = 0;
+  fire(scrollbar, 0);
+  assert.deepEqual(received, [[4, 40, -12, -120, -120, 0]], "cleanup removes the viewport listener");
+});
+
+test("wheel passes through resize overlays only where they cover the terminal viewport", (t) => {
+  const { cards: [{ screen }], FakeNode } = fakeCards(1);
+  class FakeWheelEvent extends Event {
+    constructor(type, init) {
+      const { bubbles, cancelable, composed, ...properties } = init;
+      super(type, { bubbles, cancelable, composed });
+      Object.assign(this, properties);
+    }
+  }
+  const originals = { Node: globalThis.Node, WheelEvent: globalThis.WheelEvent };
+  Object.assign(globalThis, { Node: FakeNode, WheelEvent: FakeWheelEvent });
+  t.after(() => Object.assign(globalThis, originals));
+  const card = new FakeNode();
+  const viewport = new FakeNode(card);
+  const handle = new FakeNode(card);
+  const header = new FakeNode(card);
+  screen.parent = screen.parentElement = viewport;
+  screen.closest = () => card;
+  handle.closest = () => handle;
+  for (const element of [card, viewport]) element.contains = (node) => {
+    for (let current = node; current; current = current.parent) if (current === element) return true;
+    return false;
+  };
+  screen.getBoundingClientRect = () => ({ left: 100, top: 100, width: 700, height: 400 });
+  viewport.getBoundingClientRect = () => ({ left: 100, top: 100, width: 714, height: 400 });
+  let multiplier = 1;
+  let canvasOwnsWheel = false;
+  const detach = attachTerminalMouseCoordinateAdapter(screen, () => multiplier, () => canvasOwnsWheel);
+  t.after(detach);
+  const received = [];
+  viewport.addEventListener("wheel", (event) => received.push([event.deltaY, event.wheelDeltaY, event.clientX]));
+  const fire = (target = handle, clientY = 250) => {
+    const event = new FakeWheelEvent("wheel", {
+      bubbles: true, cancelable: true, clientX: 805, clientY,
+      deltaX: 0, deltaY: 40, deltaZ: 0, deltaMode: 0, wheelDeltaY: -120
+    });
+    Object.defineProperty(event, "target", { value: target });
+    card.dispatchEvent(event);
+  };
+  for (multiplier of [1, -1]) {
+    received.length = 0;
+    fire();
+    assert.deepEqual(received, [[40 * multiplier, -120 * multiplier, 805]]);
+  }
+  received.length = 0;
+  fire(handle, 50);
+  fire(header);
+  assert.deepEqual(received, [], "header controls and resize edges outside the viewport stay untouched");
+  canvasOwnsWheel = true;
+  fire();
+  assert.deepEqual(received, [], "canvas-owned wheel is not forwarded to xterm");
+  canvasOwnsWheel = false;
+  detach();
+  fire();
+  assert.deepEqual(received, [], "cleanup removes the card capture listener");
 });

@@ -122,7 +122,7 @@ test("application skin selection reaches the app root with previews", async () =
     readFile(appSkinsPath, "utf8")
   ]);
   assert.match(settings, /onChange=\{\(appSkin\) => void onChange\(\{ appSkin \}\)\}/);
-  assert.match(app, /data-app-skin=\{settings\.appSkin\}/);
+  assert.match(app, /data-app-skin=\{displaySettings\.appSkin\}/);
   for (const skin of ["classic", "atelier", "signal", "greenhouse", "midnight"]) {
     assert.match(settings, new RegExp(`\\["${skin}", "appSkin`));
     assert.ok(styles.includes(`data-preview-skin="${skin}"`));

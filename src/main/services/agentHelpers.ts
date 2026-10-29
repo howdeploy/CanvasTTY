@@ -27,6 +27,7 @@ export interface AgentHelperLaunches {
   orchestration: HelperLaunch;
   hook: HelperLaunch;
   permissionGate: HelperLaunch;
+  shellCodex: HelperLaunch;
 }
 
 export interface AgentHelperLocation {
@@ -75,16 +76,6 @@ function isExecutableFile(path: string): boolean {
 
 /** The launch of each helper: the native binary's subcommands, or Electron running the .mjs helper as Node. */
 export function agentHelperLaunches(location: AgentHelperLocation): AgentHelperLaunches {
-  const native = nativeHelperPath(location);
-  if (native) {
-    return {
-      native: true,
-      browser: { command: native, args: ["mcp-browser"] },
-      orchestration: { command: native, args: ["mcp-orchestration"] },
-      hook: { command: native, args: ["hook"] },
-      permissionGate: { command: native, args: ["permission-gate"] }
-    };
-  }
   const { join } = pathRules(location.platform ?? process.platform);
   const script = (folder: string, name: string) => location.packaged
     ? join(location.resourcesPath, folder, name)
@@ -94,12 +85,25 @@ export function agentHelperLaunches(location: AgentHelperLocation): AgentHelperL
     args: [script(folder, name)],
     env: { ELECTRON_RUN_AS_NODE: "1" }
   });
+  const shellCodex = node("agent-runtime", "shell-codex.mjs");
+  const native = nativeHelperPath(location);
+  if (native) {
+    return {
+      native: true,
+      browser: { command: native, args: ["mcp-browser"] },
+      orchestration: { command: native, args: ["mcp-orchestration"] },
+      hook: { command: native, args: ["hook"] },
+      permissionGate: { command: native, args: ["permission-gate"] },
+      shellCodex
+    };
+  }
   return {
     native: false,
     browser: node("agent-browser", "mcp-helper.mjs"),
     orchestration: node("agent-browser", "orchestration-helper.mjs"),
     hook: node("agent-runtime", "hook-helper.mjs"),
-    permissionGate: node("agent-runtime", "permission-gate.mjs")
+    permissionGate: node("agent-runtime", "permission-gate.mjs"),
+    shellCodex
   };
 }
 

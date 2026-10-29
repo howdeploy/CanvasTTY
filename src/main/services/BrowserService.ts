@@ -1329,6 +1329,11 @@ export class BrowserService {
       return;
     }
     this.observeOwner(owner);
+    if (process.platform === "darwin" && (!owner.isVisible() || owner.isMinimized())) {
+      this.hideClipView();
+      this.syncPresenceOverlay(null);
+      return;
+    }
     const content = owner.getContentBounds();
     const visibleRectangle = clipBrowserViewportBounds(this.viewport, content);
     const left = visibleRectangle?.x ?? 0;
@@ -1587,6 +1592,13 @@ export class BrowserService {
     owner.on("maximize", sync);
     owner.on("unmaximize", sync);
     owner.on("show", sync);
+    if (process.platform === "darwin") {
+      owner.on("minimize", () => {
+        this.canvasGestures.endSequence(false);
+        sync();
+      });
+      owner.on("restore", sync);
+    }
     owner.on("hide", () => {
       this.canvasGestures.endSequence(false);
       sync();

@@ -98,6 +98,9 @@ const DOWNLOAD_ATTEMPTS = 3;
 const DOWNLOAD_RETRY_DELAY_MS = 1_500;
 const MAX_PACKAGE_ENTRIES = 500;
 const MAX_PACKAGE_BYTES = 25 * 1024 * 1024;
+// Keep network downloads bounded separately from compressible macOS asset packs.
+const MAX_UNPACKED_PACKAGE_BYTES = process.platform === "darwin" ? 64 * 1024 * 1024 : MAX_PACKAGE_BYTES;
+const PACKAGE_LIMIT = `500 entry / ${MAX_UNPACKED_PACKAGE_BYTES / (1024 * 1024)} MB`;
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_STORAGE_BYTES = 64 * 1024;
 const MAX_MANIFEST_BYTES = 128 * 1024;
@@ -2065,7 +2068,7 @@ async function firstExistingFile(root: string, candidates: readonly string[]): P
   return null;
 }
 
-async function inspectPackage(root: string, maxBytes = MAX_PACKAGE_BYTES): Promise<void> {
+async function inspectPackage(root: string, maxBytes = MAX_UNPACKED_PACKAGE_BYTES): Promise<void> {
   let entryCount = 0;
   let totalBytes = 0;
   const visit = async (directory: string): Promise<void> => {
@@ -2073,7 +2076,7 @@ async function inspectPackage(root: string, maxBytes = MAX_PACKAGE_BYTES): Promi
     for (const entry of entries) {
       entryCount += 1;
       if (entryCount > MAX_PACKAGE_ENTRIES) {
-        throw new Error("Plugin package exceeds the 500 entry / 25 MB limit.");
+        throw new Error(`Plugin package exceeds the ${PACKAGE_LIMIT} limit.`);
       }
       const path = join(directory, entry.name);
       const metadata = await lstat(path);
@@ -2085,7 +2088,7 @@ async function inspectPackage(root: string, maxBytes = MAX_PACKAGE_BYTES): Promi
       if (!metadata.isFile()) throw new Error("Plugin packages may contain only regular files and directories.");
       totalBytes += metadata.size;
       if (totalBytes > maxBytes) {
-        throw new Error("Plugin package exceeds the 500 entry / 25 MB limit.");
+        throw new Error(`Plugin package exceeds the ${PACKAGE_LIMIT} limit.`);
       }
     }
   };
@@ -2242,9 +2245,12 @@ async function readGzipTarball(body: ReadableStream<Uint8Array>): Promise<Buffer
   const archive = await readBoundedBody(body, MAX_PACKAGE_BYTES, "Plugin archive exceeds the 25 MB download limit.");
   try {
     return gunzipSync(archive, {
-      maxOutputLength: MAX_PACKAGE_BYTES + MAX_PACKAGE_ENTRIES * 1_024
+      maxOutputLength: MAX_UNPACKED_PACKAGE_BYTES + MAX_PACKAGE_ENTRIES * 1_024
     });
   } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ERR_BUFFER_TOO_LARGE") {
+      throw new Error(`Plugin archive exceeds the ${MAX_UNPACKED_PACKAGE_BYTES / (1024 * 1024)} MB unpacked limit.`, { cause: error });
+    }
     throw new Error("GitHub plugin archive is not a valid bounded gzip tarball.", { cause: error });
   }
 }
@@ -2284,7 +2290,7 @@ export async function extractGithubTarball(tarball: Buffer, destination: string)
     const target = join(destination, ...relativeParts);
     entryCount += 1;
     if (entryCount > MAX_PACKAGE_ENTRIES) {
-      throw new Error("Plugin package exceeds the 500 entry / 25 MB limit.");
+      throw new Error(`Plugin package exceeds the ${PACKAGE_LIMIT} limit.`);
     }
 
     if (type === "5") {
@@ -2293,8 +2299,8 @@ export async function extractGithubTarball(tarball: Buffer, destination: string)
     }
 
     totalBytes += size;
-    if (totalBytes > MAX_PACKAGE_BYTES) {
-      throw new Error("Plugin package exceeds the 500 entry / 25 MB limit.");
+    if (totalBytes > MAX_UNPACKED_PACKAGE_BYTES) {
+      throw new Error(`Plugin package exceeds the ${PACKAGE_LIMIT} limit.`);
     }
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, tarball.subarray(dataStart, dataEnd));
@@ -2916,7 +2922,7 @@ async function materializeModularPackage(
     ...(manifest.coreFiles ?? []),
     ...(manifest.modules ?? []).filter((module) => selected.has(module.id)).flatMap((module) => module.files)
   ];
-  if (files.length > MAX_PACKAGE_ENTRIES || files.reduce((total, file) => total + file.bytes, 0) > MAX_PACKAGE_BYTES) {
+  if (files.length > MAX_PACKAGE_ENTRIES || files.reduce((total, file) => total + file.bytes, 0) > MAX_UNPACKED_PACKAGE_BYTES) {
     throw new Error("Selected plugin modules exceed the package limits.");
   }
   await mkdir(destination, { recursive: true });
@@ -3028,7 +3034,7 @@ function validateModuleFiles(value: unknown, label: string): PluginModuleAsset[]
     }
     const bytes = candidate.bytes as number;
     totalBytes += bytes;
-    if (totalBytes > MAX_PACKAGE_BYTES) throw new Error("Plugin module assets exceed the 25 MB package limit.");
+    if (totalBytes > MAX_UNPACKED_PACKAGE_BYTES) throw new Error(`Plugin module assets exceed the ${MAX_UNPACKED_PACKAGE_BYTES / (1024 * 1024)} MB package limit.`);
     const sha256 = requiredString(candidate.sha256, `${label} sha256`, 64).toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error(`Plugin module asset hash is invalid: ${path}.`);
     return { path, bytes, sha256 };

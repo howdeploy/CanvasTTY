@@ -791,6 +791,11 @@
   background-attachment: fixed;
 }
 
+/* Ultrawide Mac displays must not expose unpainted bands beside the wallpaper. */
+.app--macos .workspace[data-theme-background] {
+  background-size: cover;
+}
+
 .workspace[data-theme-background]::before {
   display: none !important;
 }

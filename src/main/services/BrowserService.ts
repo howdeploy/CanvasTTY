@@ -603,6 +603,9 @@ export class BrowserService {
     this.visible = true;
     for (const [id, tab] of this.tabs) {
       if (tab.sleeping || !tab.view.webContents.isDestroyed()) continue;
+      // Keep the crashed tab's identity and latest URL until reload can replace its WebContents.
+      // BrowserCore also calls ensureRuntime before dispatching reload, so recovery must survive it.
+      if (process.platform === "darwin" && tab.status === "crashed") continue;
       this.automation.unregister(id);
       this.tabs.delete(id);
     }
@@ -881,6 +884,7 @@ export class BrowserService {
       this.destroyTab(tab);
       tab = this.createRuntimeTab(tabId, url, nextRevision);
       void this.loadTab(tab, url);
+      if (process.platform === "darwin") this.syncViews();
     } else {
       tab.status = "loading";
       tab.loading = true;

@@ -46,6 +46,7 @@ export async function browserServiceHarness(t, { platform = "darwin", entry = "B
     destroyed = false;
     attached = false;
     url = "";
+    loads = [];
     throttled = true;
     zoom = 1;
     session = browserSession;
@@ -71,6 +72,7 @@ export async function browserServiceHarness(t, { platform = "darwin", entry = "B
     setZoomFactor(zoom) { this.zoom = zoom; }
     send() {}
     async loadURL(url) {
+      this.loads.push(url);
       this.url = url;
       this.emit("did-start-navigation", null, url, false, true);
       this.emit("did-navigate", null, url);

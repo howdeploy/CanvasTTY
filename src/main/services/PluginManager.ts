@@ -476,7 +476,21 @@ export class PluginManager {
     }
 
     let installed: InstalledPlugin | null = null;
+    let ownsDestination = false;
     try {
+      if (process.platform === "darwin") {
+        // An exclusive reservation protects unregistered directories, including empty ones
+        // and symlinks. Cleanup may remove only the directory this install created.
+        try {
+          await mkdir(destination);
+          ownsDestination = true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+            throw new Error(`Unregistered plugin directory exists: ${destination}. Preserve it and resolve ownership before retrying installation.`);
+          }
+          throw error;
+        }
+      }
       if (preview.manifest.modules?.length) {
         await materializeModularPackage(
           preview.sourceUrl,
@@ -504,7 +518,7 @@ export class PluginManager {
       return structuredClone(activePlugin(installed));
     } catch (error) {
       if (installed && this.plugins.get(preview.manifest.id) === installed) this.plugins.delete(preview.manifest.id);
-      await rm(destination, { recursive: true, force: true });
+      if (process.platform !== "darwin" || ownsDestination) await rm(destination, { recursive: true, force: true });
       throw error;
     } finally {
       await rm(directory, { recursive: true, force: true });

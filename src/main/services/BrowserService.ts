@@ -200,6 +200,7 @@ export class BrowserService {
     showAgentPresence: false
   };
   private persisted: PersistedBrowserState = { version: 1, tabs: [], activeTabId: null };
+  private runtimeInitialized = false;
   private downloads: BrowserDownloadSnapshot[] = [];
   private readonly pendingDialogs = new Map<string, BrowserDialogSnapshot>();
   private visible = false;
@@ -611,6 +612,7 @@ export class BrowserService {
         ? this.persisted.activeTabId
         : this.tabs.keys().next().value ?? null;
     }
+    this.runtimeInitialized = true;
     this.syncViews();
   }
 
@@ -1268,7 +1270,8 @@ export class BrowserService {
   }
 
   private async persistRuntime(): Promise<void> {
-    if (!this.restoreTabsEnabled) return;
+    // Until lazy restoration runs, an empty runtime does not mean the saved tabs were closed.
+    if (!this.restoreTabsEnabled || !this.runtimeInitialized) return;
     const tabs = [...this.tabs.values()]
       .map((tab) => ({ id: tab.id, url: this.tabUrl(tab) }))
       .filter((tab) => isSafeBrowserUrl(tab.url));

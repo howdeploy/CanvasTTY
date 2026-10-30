@@ -399,11 +399,24 @@ export class BrowserService {
   }
 
   decidePageWheel(sender: WebContents, input: unknown): BrowserPageWheelReply {
-    return browserPageWheelReply(this.canvasGestures.decidePageWheel(sender, input));
+    const reply = browserPageWheelReply(this.canvasGestures.decidePageWheel(sender, input));
+    return {
+      ...reply,
+      canGoBack: reply.owner === "page" && this.canvasGestures.canStartHistorySwipe && sender.navigationHistory.canGoBack(),
+      canGoForward: reply.owner === "page" && this.canvasGestures.canStartHistorySwipe && sender.navigationHistory.canGoForward()
+    };
   }
 
   handlePageWheel(sender: WebContents, input: unknown): void {
     this.canvasGestures.handlePageWheel(sender, input);
+    const direction = this.canvasGestures.consumeHistorySwipe(sender, input);
+    if (direction) {
+      const tabId = this.activeTabId;
+      if (!tabId) return;
+      const history = sender.navigationHistory;
+      if (direction === "back" ? !history.canGoBack() : !history.canGoForward()) return;
+      void (direction === "back" ? this.back(tabId) : this.forward(tabId)).catch(() => undefined);
+    }
   }
 
   beginRendererWheelSequence(input: unknown, rendererZoomFactor = 1): void {

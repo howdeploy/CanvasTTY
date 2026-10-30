@@ -62,6 +62,8 @@ export class BrowserCanvasGestureController {
   private readonly frameStore = new BrowserCanvasFreezeFrameStore();
   private captureMode: CanvasWheelCaptureMode;
   private inputFocused = false;
+  private historySwipeGeneration = 0;
+  private historySwipeBlockedUntil = 0;
   private browserWheelPoint: { tabId: string; point: Point; observedAt: number } | null = null;
   private sequenceTimer: NodeJS.Timeout | null = null;
   private capturePromise: Promise<void> | null = null;
@@ -126,6 +128,10 @@ export class BrowserCanvasGestureController {
     return decision;
   }
 
+  get canStartHistorySwipe(): boolean {
+    return this.now() >= this.historySwipeBlockedUntil;
+  }
+
   handlePageWheel(sender: WebContents, input: unknown): void {
     const viewport = this.host.getViewport();
     const tab = this.host.getActiveTab();
@@ -133,6 +139,7 @@ export class BrowserCanvasGestureController {
     if (tab.view.webContents !== sender || sender.isDestroyed()) return;
     const wheel = toCanvasPageWheelInput(input);
     if (!wheel) return;
+    if (!this.canStartHistorySwipe) this.historySwipeBlockedUntil = this.now() + BROWSER_CANVAS_WHEEL_IDLE_MS;
     const generation = pageWheelGeneration(input);
     const owner = generation === null ? null : this.pageSequence.touch(generation, this.now());
     if (owner === null || owner === "page") return;
@@ -146,6 +153,26 @@ export class BrowserCanvasGestureController {
       clientY: clientPoint.y,
       ...wheel
     });
+  }
+
+  consumeHistorySwipe(sender: WebContents, input: unknown): "back" | "forward" | null {
+    if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+    const values = input as Record<string, unknown>;
+    if (values.historySwipe !== "back" && values.historySwipe !== "forward") return null;
+    if (!toCanvasPageWheelInput(input)) return null;
+    const tab = this.host.getActiveTab();
+    const owner = this.host.getOwner();
+    const generation = pageWheelGeneration(input);
+    if (this.host.isDisposed() || !this.host.isVisible() || !this.inputFocused
+      || this.host.getViewport().surface !== "native" || !tab || tab.view.webContents !== sender
+      || sender.isDestroyed() || !owner || owner.isDestroyed() || !owner.isFocused()
+      || !this.canStartHistorySwipe || generation === null || generation === this.historySwipeGeneration) return null;
+    const overrides = this.host.getOverrideState();
+    if (overrides.wheelActive || overrides.navigationActive || this.captureMode === "always") return null;
+    if (this.pageSequence.touch(generation, this.now()) !== "page") return null;
+    this.historySwipeGeneration = generation;
+    this.historySwipeBlockedUntil = this.now() + BROWSER_CANVAS_WHEEL_IDLE_MS;
+    return values.historySwipe;
   }
 
   beginRendererSequence(input: unknown, rendererZoomFactor = 1): void {

@@ -21,6 +21,8 @@ export interface BrowserWheelDecision {
 // constant; the decision itself keeps its own form.
 export interface BrowserPageWheelReply extends BrowserWheelDecision {
   idleMs: number;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
 }
 
 export interface BrowserWheelOwnershipInput {

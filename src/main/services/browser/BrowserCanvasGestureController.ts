@@ -155,7 +155,9 @@ export class BrowserCanvasGestureController {
     });
   }
 
-  consumeHistorySwipe(sender: WebContents, input: unknown): "back" | "forward" | null {
+  resetPageWheelOwnership(): void { this.pageSequence.reset(); }
+
+  consumeHistorySwipe(sender: WebContents, input: unknown, nativeGesture = false): "back" | "forward" | null {
     if (!input || typeof input !== "object" || Array.isArray(input)) return null;
     const values = input as Record<string, unknown>;
     if (values.historySwipe !== "back" && values.historySwipe !== "forward") return null;
@@ -166,10 +168,10 @@ export class BrowserCanvasGestureController {
     if (this.host.isDisposed() || !this.host.isVisible() || !this.inputFocused
       || this.host.getViewport().surface !== "native" || !tab || tab.view.webContents !== sender
       || sender.isDestroyed() || !owner || owner.isDestroyed() || !owner.isFocused()
-      || !this.canStartHistorySwipe || generation === null || generation === this.historySwipeGeneration) return null;
+      || generation === null || (!nativeGesture && (!this.canStartHistorySwipe || generation === this.historySwipeGeneration))) return null;
     const overrides = this.host.getOverrideState();
     if (overrides.wheelActive || overrides.navigationActive || this.captureMode === "always") return null;
-    if (this.pageSequence.touch(generation, this.now()) !== "page") return null;
+    if (!nativeGesture && this.pageSequence.touch(generation, this.now()) !== "page") return null;
     this.historySwipeGeneration = generation;
     this.historySwipeBlockedUntil = this.now() + BROWSER_CANVAS_WHEEL_IDLE_MS;
     return values.historySwipe;

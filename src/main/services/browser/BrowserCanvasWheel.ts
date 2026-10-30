@@ -20,6 +20,7 @@ export interface BrowserWheelDecision {
 // envelope because its sandboxed entry stays self-contained and cannot share the main-process
 // constant; the decision itself keeps its own form.
 export interface BrowserPageWheelReply extends BrowserWheelDecision {
+  nativeGesture?: import("./BrowserHistoryGesture.ts").BrowserHistoryGestureSnapshot | null;
   idleMs: number;
   canGoBack?: boolean;
   canGoForward?: boolean;

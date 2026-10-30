@@ -171,6 +171,10 @@ mac:
     - from: src/native/updates/mac-update-server.mjs
       to: Resources/updates/mac-update-server.mjs
   extraResources:
+    - from: build/browser-gestures/darwin-${arch}
+      to: browser-gestures
+      filter:
+        - "*.node"
     - from: artifacts/companion-speech/${arch}
       to: companion/speech
   icon: build/icon.png

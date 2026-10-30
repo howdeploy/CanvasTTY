@@ -40,6 +40,8 @@ export class BrowserHistorySwipe {
     return { direction: this.direction, progress: Math.min(1, this.distance / SWIPE_THRESHOLD) };
   }
 
+  get claimed(): boolean { return this.direction !== null && !this.blocked; }
+
   finish(): HistoryDirection | null {
     if (this.finished) return null;
     this.finished = true;

@@ -19,12 +19,12 @@
   "scripts": {
     "control": "node scripts/canvastty-control.mjs",
     "dev": "electron-vite dev",
-    "build": "npm run build:speech && npm run build:even && npm run build:mobile && npm run build:helpers -- --host && npm run typecheck && electron-vite build",
+    "build": "npm run build:speech && npm run build:even && npm run build:mobile && npm run build:helpers -- --host && npm run build:browser-gestures && npm run typecheck && electron-vite build",
     "package": "npm run build && electron-builder --dir",
     "package:linux": "npm run build && electron-builder --linux AppImage deb --publish never",
     "prepackage:win": "node scripts/build-windows-agent-pipe-host.mjs --require-windows --self-test",
     "package:win": "npm run build && electron-builder --win nsis portable --publish never",
-    "package:mac": "npm run build:mac-updater && npm run build && electron-builder --mac dmg zip --arm64 --publish never",
+    "package:mac": "npm run build:mac-updater && npm run build && npm run build:browser-gestures -- --arch=arm64 && electron-builder --mac dmg zip --arm64 --publish never",
     "build:mac-updater": "node scripts/build-mac-updater.mjs",
     "smoke:browser": "node scripts/smoke-browser-electron.mjs",
     "smoke:browser:providers": "node scripts/smoke-browser-providers.mjs --deterministic",
@@ -43,14 +43,15 @@
     "build:mobile": "tsc --noEmit -p integrations/mobile/tsconfig.json && npm run build --prefix integrations/mobile",
     "test:even": "npm test --workspace integrations/even-g2",
     "pack:even:local": "npm run pack --workspace integrations/even-g2 -- --local-development",
-    "predev": "npm run build:even && npm run build:mobile",
+    "predev": "npm run build:even && npm run build:mobile && npm run build:browser-gestures",
     "build:speech": "node scripts/build-companion-speech.mjs",
     "build:helpers": "node scripts/build-native-helpers.mjs",
     "pack:even": "npm run pack --workspace integrations/even-g2",
     "smoke:terminal-hidden": "node scripts/smoke-hidden-terminal-electron.mjs",
     "bench:terminal-hidden-renderer": "node scripts/smoke-hidden-terminal-electron.mjs --benchmark",
     "test:canvaslink": "npm test --workspace @canvastty/canvaslink",
-    "build:canvaslink:android": "npm run build:android --workspace @canvastty/canvaslink"
+    "build:canvaslink:android": "npm run build:android --workspace @canvastty/canvaslink",
+    "build:browser-gestures": "node scripts/build-browser-gestures.mjs"
   },
   "dependencies": {
     "@xterm/headless": "6.0.0",

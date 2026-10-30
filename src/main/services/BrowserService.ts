@@ -46,6 +46,8 @@ import { BrowserEngineTabs, type BrowserEngineProvider } from "./browser/Browser
 import type { EngineFallbackReason } from "./browser/BrowserErrors.ts";
 import { CHROMIUM_ENGINE } from "./browser/TabDriver.ts";
 import { BrowserKernelError } from "./browser/BrowserErrors.ts";
+import { BrowserHistoryGesture, type NativeScrollPhase, type BrowserHistoryGestureSnapshot } from "./browser/BrowserHistoryGesture.ts";
+import { observeBrowserHistoryGestures } from "./browser/BrowserHistoryGestureMonitor.ts";
 import { NativeViewSync } from "./browser/NativeViewSync.ts";
 import {
   BrowserTabLifecycle,
@@ -204,6 +206,8 @@ export class BrowserService {
   private readonly pendingDialogs = new Map<string, BrowserDialogSnapshot>();
   private visible = false;
   private disposed = false;
+  private readonly historyGesture = new BrowserHistoryGesture();
+  private stopHistoryGestureMonitor: (() => void) | null = null;
   private restoreTabsEnabled: boolean;
   private clipOwnerId: number | null = null;
   private clipTabId: string | null = null;
@@ -373,6 +377,7 @@ export class BrowserService {
     if (this.disposed) return;
     await this.persistRuntime();
     this.canvasPointers.cancelNavigationGesture();
+    this.cancelNativeHistoryGesture();
     this.invalidateCanvasSequence(false);
     this.canvasGestures.setInputFocused(false);
     this.visible = false;
@@ -391,6 +396,7 @@ export class BrowserService {
   }
 
   setInputFocused(focused: boolean): void {
+    if (!focused) this.cancelNativeHistoryGesture();
     this.canvasGestures.setInputFocused(focused);
   }
 
@@ -399,11 +405,34 @@ export class BrowserService {
   }
 
   decidePageWheel(sender: WebContents, input: unknown): BrowserPageWheelReply {
-    return browserPageWheelReply(this.canvasGestures.decidePageWheel(sender, input));
+    const reply = browserPageWheelReply(this.canvasGestures.decidePageWheel(sender, input));
+    const tabId = this.activeTabId;
+    const nativeGesture = tabId ? this.historyGesture.snapshot(tabId) : null;
+    const canStart = nativeGesture?.phase === "active" || this.canvasGestures.canStartHistorySwipe;
+    return {
+      ...reply,
+      nativeGesture,
+      canGoBack: reply.owner === "page" && canStart && sender.navigationHistory.canGoBack(),
+      canGoForward: reply.owner === "page" && canStart && sender.navigationHistory.canGoForward()
+    };
   }
 
   handlePageWheel(sender: WebContents, input: unknown): void {
     this.canvasGestures.handlePageWheel(sender, input);
+    const tabId = this.activeTabId;
+    if (tabId && this.tabs.get(tabId)?.view.webContents === sender) this.historyGesture.claim(tabId, input);
+    const nativeId = input && typeof input === "object" ? (input as Record<string, unknown>).nativeGestureId : undefined;
+    const nativeAllowed = tabId !== null && this.historyGesture.canNavigate(tabId, nativeId);
+    if (nativeId !== undefined && !nativeAllowed) return;
+    const direction = this.canvasGestures.consumeHistorySwipe(sender, input, nativeAllowed);
+    if (direction) {
+      const tabId = this.activeTabId;
+      if (!tabId) return;
+      const history = sender.navigationHistory;
+      if (direction === "back" ? !history.canGoBack() : !history.canGoForward()) return;
+      if (nativeAllowed) this.historyGesture.consume();
+      void (direction === "back" ? this.back(tabId) : this.forward(tabId)).catch(() => undefined);
+    }
   }
 
   beginRendererWheelSequence(input: unknown, rendererZoomFactor = 1): void {
@@ -427,6 +456,9 @@ export class BrowserService {
     if (this.disposed) return;
     await this.readyPromise.catch(() => undefined);
     this.disposed = true;
+    this.stopHistoryGestureMonitor?.();
+    this.stopHistoryGestureMonitor = null;
+    this.historyGesture.clear();
     this.lifecycle.dispose();
     const draining = this.core.shutdown();
     await this.persistRuntime().catch(() => undefined);
@@ -743,6 +775,7 @@ export class BrowserService {
     }
     const normalized = this.policy.assertNavigationUrl(url);
     const tab = this.createRuntimeTab(randomUUID(), normalized);
+    this.cancelNativeHistoryGesture();
     this.invalidateCanvasSequence(false);
     this.activeTabId = tab.id;
     await this.persistRuntime();
@@ -758,6 +791,7 @@ export class BrowserService {
     if (this.engineTabs.has(tabId)) await this.engineTabs.moveToChromium(tabId, "revealed", { waitForLoad: false });
     const tab = this.requireTab(tabId);
     this.canvasPointers.cancelNavigationGesture();
+    this.cancelNativeHistoryGesture();
     this.invalidateCanvasSequence(false);
     this.activeTabId = tab.id;
     await this.persistRuntime();
@@ -786,6 +820,7 @@ export class BrowserService {
     }
     const tab = this.requireTab(tabId);
     if (this.activeTabId === tabId) {
+      this.cancelNativeHistoryGesture();
       this.invalidateCanvasSequence(false);
     }
     this.tabs.delete(tabId);
@@ -947,7 +982,10 @@ export class BrowserService {
           // callback to return that exact instance, so adopt it into our view.
           const popupContents = (options as typeof options & { webContents?: WebContents }).webContents;
           const child = this.createRuntimeTab(randomUUID(), decision.url!, 0, popupContents);
-          if (decision.activate) this.activeTabId = child.id;
+          if (decision.activate) {
+            this.cancelNativeHistoryGesture();
+            this.activeTabId = child.id;
+          }
           void this.persistRuntime().then(() => {
             this.syncViews();
             this.emit();
@@ -1578,9 +1616,45 @@ export class BrowserService {
     this.native.setBackgroundThrottling(tab.view.webContents, !keepUnthrottled);
   }
 
+  private handleNativeHistoryGesture(input: NativeScrollPhase): void {
+    if (this.disposed) return;
+    const { x, y, width, height, surface } = this.viewport;
+    const owner = this.getOwner();
+    const targetId = this.visible && surface === "native" && owner?.isFocused()
+      && input.x >= x && input.x < x + width && input.y >= y && input.y < y + height ? this.activeTabId : null;
+    const previousTab = this.activeTabId;
+    const previous = previousTab ? this.historyGesture.snapshot(previousTab) : null;
+    const signal = this.historyGesture.observe(input, targetId);
+    if (signal) {
+      if (signal.gesture.phase === "active") this.canvasGestures.resetPageWheelOwnership();
+      this.sendHistoryGesture(signal.tabId, signal.gesture);
+    } else if (previous && previousTab && !this.historyGesture.snapshot(previousTab)) {
+      this.sendHistoryGesture(previousTab, null);
+    }
+  }
+
+  private cancelNativeHistoryGesture(): void {
+    const signal = this.historyGesture.observe({ phase: 16, momentumPhase: 0, x: 0, y: 0 }, null);
+    if (signal) this.sendHistoryGesture(signal.tabId, signal.gesture);
+  }
+
+  private sendHistoryGesture(tabId: string, gesture: BrowserHistoryGestureSnapshot | null): void {
+    const contents = this.tabs.get(tabId)?.view.webContents;
+    if (!contents || contents.isDestroyed()) return;
+    // Each frame owns its wheel listener; only the frame with a claimed swipe will navigate.
+    const frames = contents.mainFrame?.framesInSubtree;
+    if (frames) {
+      for (const frame of frames) {
+        if (!frame.isDestroyed()) frame.send("browser:history-gesture", gesture);
+      }
+    } else contents.send("browser:history-gesture", gesture);
+  }
+
   private observeOwner(owner: BrowserWindow): void {
     if (this.observedOwners.has(owner)) return;
     this.observedOwners.add(owner);
+    this.stopHistoryGestureMonitor?.();
+    this.stopHistoryGestureMonitor = observeBrowserHistoryGestures(owner, (input) => this.handleNativeHistoryGesture(input));
     const sync = () => this.syncViews();
     owner.on("move", sync);
     owner.on("resize", sync);
@@ -1588,15 +1662,20 @@ export class BrowserService {
     owner.on("unmaximize", sync);
     owner.on("show", sync);
     owner.on("minimize", () => {
+      this.cancelNativeHistoryGesture();
       this.canvasGestures.endSequence(false);
       sync();
     });
     owner.on("restore", sync);
     owner.on("hide", () => {
+      this.cancelNativeHistoryGesture();
       this.canvasGestures.endSequence(false);
       sync();
     });
-    owner.on("blur", () => this.canvasGestures.endSequence());
+    owner.on("blur", () => {
+      this.cancelNativeHistoryGesture();
+      this.canvasGestures.endSequence();
+    });
     owner.webContents.on("before-mouse-event", (event, mouse) => {
       if (mouse.type === "mouseWheel") {
         this.canvasGestures.beginOwnerSequence({ x: mouse.x, y: mouse.y });
@@ -1604,6 +1683,9 @@ export class BrowserService {
       this.canvasPointers.handleOwnerMouse(event, mouse, owner);
     });
     owner.once("closed", () => {
+      this.stopHistoryGestureMonitor?.();
+      this.stopHistoryGestureMonitor = null;
+      this.historyGesture.clear();
       this.canvasGestures.endSequence(false);
       this.destroyPresenceWindow();
     });

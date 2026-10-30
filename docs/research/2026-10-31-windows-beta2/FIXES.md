@@ -2,6 +2,11 @@
 
 Date: 2026-10-31 (Europe/Moscow). Agent: Codex.
 
+Follow-up: these fixes were integrated with the beta2 PRs and tested after the
+user authorized validation. See
+[the integration validation](../2026-10-31-beta2-integration/VALIDATION.md).
+The verification limits below describe the original source-only pass.
+
 Initially prepared on `dev/1.8.5-beta2-optimization`, starting HEAD `df274cfb`,
 and preserved in commit `cdcfb02e` on `integration/1.8.5-beta2-platform-fixes`.
 This beta2 tree contains

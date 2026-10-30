@@ -2,6 +2,10 @@
 
 Date: 2026-10-31 (Europe/Moscow). Agent: Codex.
 
+Follow-up: the user subsequently authorized tests and builds. See
+[VALIDATION.md](VALIDATION.md) for their results and remaining limitations;
+the source-only verification limits below describe the initial integration pass.
+
 Branch: `integration/1.8.5-beta2-platform-fixes`.
 Base: `df274cfb144b2d46bbc3ab6a3b2d92c12549169e` on
 `dev/1.8.5-beta2-optimization`. The base branch was not advanced.

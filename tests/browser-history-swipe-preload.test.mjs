@@ -15,12 +15,16 @@ async function preloadHarness({ reducedMotion = false } = {}) {
   let hudVisible = false;
   let paintedHudVisible = false;
   let hudStyle = null;
-  const hudFading = () => hudVisible && hudStyle?.opacity === "0" && hudStyle?.transition === "opacity 150ms ease-out";
+  let hudElement = null;
+  const hudListeners = new Map();
+  const hudFading = () => hudVisible && hudStyle?.opacity === "0" && hudStyle?.transition === "opacity 75ms ease-out";
   const document = {
     hasFocus: () => true, visibilityState: "visible", scrollingElement: null,
     addEventListener() {},
-    documentElement: { append: (element) => { hudVisible = true; hudStyle = element.style; } },
+    documentElement: { append: (element) => { hudVisible = true; hudStyle = element.style; hudElement = element; } },
     createElement: () => ({ style: {setProperty(key,value) {this[key] = value;}}, setAttribute() {},
+      addEventListener: (name, listener) => hudListeners.set(name, listener),
+      removeEventListener: (name) => hudListeners.delete(name),
       attachShadow: () => ({ append() {} }), remove: () => { hudVisible = false; } })
   };
   const window = { matchMedia: () => ({matches:reducedMotion}), innerWidth: 900, innerHeight: 600,
@@ -69,12 +73,13 @@ async function preloadHarness({ reducedMotion = false } = {}) {
       paintedHudVisible = hudVisible && !hudFading();
     },
     blur: () => listeners.get("blur")(),
+    transitionEnd: () => hudListeners.get("transitionend")?.({target:hudElement,propertyName:"opacity"}),
     hudFading,
     hudVisible: () => hudVisible
   };
 }
 
-test("ending a swipe starts a 150 ms fade before navigation and cleans it up without a browser event", async () => {
+test("navigation waits until the 75 ms fade has completed", async () => {
   const page = await preloadHarness();
   page.swipe();
   page.idle();
@@ -82,15 +87,16 @@ test("ending a swipe starts a 150 ms fade before navigation and cleans it up wit
   assert.equal(page.navigation.length, 0, "navigation must wait for dismissal to start painting");
   page.frame();
   page.frame();
-  assert.deepEqual(page.navigation, [{ direction: "back", paintedHudVisible: false }]);
-  assert.equal(page.hudVisible(), true, "navigation dispatch does not wait for fade completion");
+  assert.equal(page.navigation.length, 0, "navigation must not interrupt the fade");
   page.idle();
-  assert.equal(page.hudVisible(), false, "remove the faded HUD independently of browser completion");
+  assert.equal(page.hudVisible(), false, "the faded HUD is removed before navigation");
+  page.frame(); page.frame();
+  assert.deepEqual(page.navigation, [{direction:"back",paintedHudVisible:false}]);
 });
 
 test("losing focus cancels navigation queued after HUD dismissal", async () => {
   const page = await preloadHarness();
-  page.swipe(); page.idle(); page.blur(); page.frame(); page.frame();
+  page.swipe(); page.idle(); page.blur(); page.idle(); page.frame(); page.frame();
   assert.equal(page.hudVisible(), false);
   assert.deepEqual(page.navigation, []);
 });
@@ -101,6 +107,8 @@ test("native release starts HUD dismissal immediately and inertia cannot reopen 
   page.native("ended");
   assert.equal(page.hudFading(), true, "finger release does not wait for wheel idle");
   page.frame(); page.frame();
+  assert.equal(page.navigation.length, 0, "native release starts the fade before navigation");
+  page.idle(); page.frame(); page.frame();
   assert.deepEqual(page.navigation, [{ direction: "back", paintedHudVisible: false }]);
   page.native("ended", 1, true);
   page.swipe(false); page.idle(); page.frame(); page.frame();
@@ -124,7 +132,7 @@ test("a new document ignores the previous history swipe's momentum, then accepts
   assert.deepEqual(page.navigation, []);
   page.replyNative({id:2,phase:"active",claimed:false});
   page.native("active", 2); page.swipe(); page.native("ended", 2);
-  page.frame(); page.frame();
+  page.idle(); page.frame(); page.frame();
   assert.deepEqual(page.navigation, [{direction:"back",paintedHudVisible:false}]);
 });
 
@@ -135,4 +143,15 @@ test("reduced motion dismisses without a fade and still dispatches asynchronousl
   assert.equal(page.navigation.length, 0);
   page.frame(); page.frame();
   assert.equal(page.navigation.length, 1);
+});
+
+
+test("transition completion dispatches once and a new gesture cancels a pending fade", async () => {
+  const page = await preloadHarness();
+  page.native("active"); page.swipe(); page.native("ended");
+  page.transitionEnd(); page.frame(); page.frame(); page.idle();
+  assert.equal(page.navigation.length, 1);
+  page.native("active", 2); page.swipe(); page.native("ended", 2);
+  page.native("active", 3); page.transitionEnd(); page.idle(); page.frame(); page.frame();
+  assert.equal(page.navigation.length, 1, "new finger contact cancels the previous pending navigation");
 });

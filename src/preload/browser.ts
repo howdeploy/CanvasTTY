@@ -1,6 +1,7 @@
 import { ipcRenderer } from "electron";
 import { BrowserHistorySwipe, type HistoryDirection } from "./BrowserHistorySwipe.ts";
 
+const HISTORY_SWIPE_FADE_MS = 75;
 const BROWSER_PAGE_WHEEL_CHANNEL = "browser:page-wheel";
 const BROWSER_PAGE_WHEEL_DECISION_CHANNEL = "browser:page-wheel-decision";
 type NativeHistoryGesture = { id: number; phase: "active" | "ended" | "cancelled"; claimed: boolean };
@@ -24,6 +25,7 @@ let indicator: HTMLDivElement | null = null;
 let indicatorArrow: HTMLDivElement | null = null;
 let fadingIndicator: HTMLDivElement | null = null;
 let fadeTimer: ReturnType<typeof setTimeout> | null = null;
+let fadeEndListener: ((event: TransitionEvent) => void) | null = null;
 let nativeGesture: NativeHistoryGesture | null = null;
 let latestWheel: { input: Record<string, unknown>; generation: number } | null = null;
 let wheelDecision: (BrowserWheelDecision & { lastEventAt: number }) | null = null;
@@ -132,17 +134,18 @@ function finishHistorySwipe(): void {
   if (swipeTimer) clearTimeout(swipeTimer);
   swipeTimer = null;
   const direction = historySwipe.finish();
-  dismissHistoryIndicator(true);
   const wheel = latestWheel;
   const nativeGestureId = nativeGesture?.id;
-  if (!direction || !wheel) return;
-  // Start painting the dismissal before dispatch; navigation does not wait for the 150 ms fade.
-  navigationFrame = requestAnimationFrame(() => {
+  dismissHistoryIndicator(true, () => {
+    if (!direction || !wheel) return;
+    // The outgoing page owns the HUD, so let its fade finish before replacing the document.
     navigationFrame = requestAnimationFrame(() => {
-      navigationFrame = null;
-      if (!document.hasFocus() || document.visibilityState !== "visible") return;
-      ipcRenderer.send(BROWSER_PAGE_WHEEL_CHANNEL, {
-        ...wheel.input, generation: wheel.generation, historySwipe: direction, nativeGestureId
+      navigationFrame = requestAnimationFrame(() => {
+        navigationFrame = null;
+        if (!document.hasFocus() || document.visibilityState !== "visible") return;
+        ipcRenderer.send(BROWSER_PAGE_WHEEL_CHANNEL, {
+          ...wheel.input, generation: wheel.generation, historySwipe: direction, nativeGestureId
+        });
       });
     });
   });
@@ -174,24 +177,37 @@ function cancelHistorySwipe(): void {
 function clearFadingIndicator(): void {
   if (fadeTimer) clearTimeout(fadeTimer);
   fadeTimer = null;
+  if (fadingIndicator && fadeEndListener) fadingIndicator.removeEventListener("transitionend", fadeEndListener);
+  fadeEndListener = null;
   fadingIndicator?.remove();
   fadingIndicator = null;
 }
 
-function dismissHistoryIndicator(animate: boolean): void {
+function dismissHistoryIndicator(animate: boolean, onDismissed?: () => void): void {
   clearFadingIndicator();
   const current = indicator;
   indicator = null;
   indicatorArrow = null;
-  if (!current) return;
+  if (!current) { onDismissed?.(); return; }
   if (!animate || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     current.remove();
+    onDismissed?.();
     return;
   }
   fadingIndicator = current;
-  current.style.setProperty("transition", "opacity 150ms ease-out", "important");
+  const finish = () => {
+    if (fadingIndicator !== current) return;
+    clearFadingIndicator();
+    onDismissed?.();
+  };
+  fadeEndListener = (event) => {
+    if (event.target === current && event.propertyName === "opacity") finish();
+  };
+  current.addEventListener("transitionend", fadeEndListener);
+  current.style.setProperty("transition", `opacity ${HISTORY_SWIPE_FADE_MS}ms ease-out`, "important");
   current.style.setProperty("opacity", "0", "important");
-  fadeTimer = setTimeout(clearFadingIndicator, 150);
+  // A hidden document or disabled transition may never emit transitionend.
+  fadeTimer = setTimeout(finish, HISTORY_SWIPE_FADE_MS + 50);
 }
 
 window.addEventListener("blur", cancelHistorySwipe);

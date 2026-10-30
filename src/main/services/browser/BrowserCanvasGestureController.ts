@@ -171,7 +171,8 @@ export class BrowserCanvasGestureController {
       || generation === null || (!nativeGesture && (!this.canStartHistorySwipe || generation === this.historySwipeGeneration))) return null;
     const overrides = this.host.getOverrideState();
     if (overrides.wheelActive || overrides.navigationActive || this.captureMode === "always") return null;
-    if (!nativeGesture && this.pageSequence.touch(generation, this.now()) !== "page") return null;
+    // The HUD fade may outlive wheel idle; the generation still rejects a newer gesture.
+    if (!nativeGesture && this.pageSequence.touch(generation, this.now(), BROWSER_CANVAS_WHEEL_IDLE_MS * 2) !== "page") return null;
     this.historySwipeGeneration = generation;
     this.historySwipeBlockedUntil = this.now() + BROWSER_CANVAS_WHEEL_IDLE_MS;
     return values.historySwipe;

@@ -75,3 +75,24 @@ test("native release authorizes a held swipe after wheel idle and momentum canno
   browser.handlePageWheel(contents, {...request,generation:next.generation,nativeGestureId:next.nativeGesture.id});
   assert.deepEqual(calls, [state.activeTabId], "hiding the window cancels an unfinished native gesture");
 });
+
+for (const [elapsed, expected] of [[320, 1], [501, 0]]) {
+  test(`unphased swipe completion after ${elapsed} ms respects the animation grace window`, async (t) => {
+    const { BrowserService, FakeWindow, root, onCleanup } = await browserServiceHarness(t);
+    let now = 1000;
+    const owner = new FakeWindow();
+    const browser = new BrowserService(() => owner, {userDataPath:root,restoreTabs:false,now:()=>now});
+    onCleanup(() => browser.dispose());
+    const state = await browser.newTab("https://fixture.test/");
+    browser.setViewport({x:0,y:120,width:900,height:600,surface:"native",showAgentPresence:false});
+    browser.setInputFocused(true);
+    const contents = browser.tabs.get(state.activeTabId).view.webContents;
+    contents.navigationHistory = {canGoBack:()=>true,canGoForward:()=>true};
+    const calls = [];
+    browser.back = async (id) => calls.push(id);
+    const decision = browser.decidePageWheel(contents, wheel);
+    now += elapsed;
+    browser.handlePageWheel(contents, {...wheel,generation:decision.generation,historySwipe:"back"});
+    assert.equal(calls.length, expected);
+  });
+}

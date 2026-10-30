@@ -20,7 +20,10 @@ export interface BrowserWheelDecision {
 // envelope because its sandboxed entry stays self-contained and cannot share the main-process
 // constant; the decision itself keeps its own form.
 export interface BrowserPageWheelReply extends BrowserWheelDecision {
+  nativeGesture?: import("./BrowserHistoryGesture.ts").BrowserHistoryGestureSnapshot | null;
   idleMs: number;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
 }
 
 export interface BrowserWheelOwnershipInput {
@@ -81,11 +84,11 @@ export class BrowserPageWheelSequence {
     return { generation: this.generation, owner: requestedOwner };
   }
 
-  touch(generation: number, now: number): BrowserWheelOwner | null {
+  touch(generation: number, now: number, idleMs = BROWSER_CANVAS_WHEEL_IDLE_MS): BrowserWheelOwner | null {
     if (
       this.owner === null
       || generation !== this.generation
-      || now - this.lastWheelAt >= BROWSER_CANVAS_WHEEL_IDLE_MS
+      || now - this.lastWheelAt >= idleMs
     ) return null;
     this.lastWheelAt = now;
     return this.owner;

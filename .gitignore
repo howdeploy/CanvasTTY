@@ -52,3 +52,6 @@ Thumbs.db
 
 # Native helper builds (scripts/build-native-helpers.mjs)
 /build/native-helpers/
+
+/build/browser-gestures/
+/native/mac-browser-gestures/build/

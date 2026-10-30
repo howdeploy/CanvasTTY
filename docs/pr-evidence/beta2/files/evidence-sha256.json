@@ -1,0 +1,8 @@
+{
+  "testedFixRevision": "f3976022fda453a15ae9b9df63e7edc769d74620",
+  "baseRevision": "df274cfb144b2d46bbc3ab6a3b2d92c12549169e",
+  "files": {
+    "evidence/files-stale-cwd.jpg": "d0c26658e26c029b915ccb9459367b3a28955b7e10a5a22441e948a6c636df43",
+    "evidence/gui-files-child-selection.png": "2f4fc8dd45c36efb77ea29290f20bd249b342959407d295638b7b988d1c66a65"
+  }
+}

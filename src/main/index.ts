@@ -816,13 +816,12 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   await mascotManager.initialize();
   pluginManager.registerTokenProvider(() => githubAuth!.getToken());
   protocol.handle("canvastty-media", (request) => pluginMediaService!.protocolResponse(request));
-  // Session roots resolve a sessionId to the terminal's current working
-  // directory through TerminalManager's metadata snapshots; the renderer never
-  // supplies a path. Folder roots come from the native dialog or a persisted
-  // folderPath on restore.
+  // Session roots resolve the live local shell's cwd in the main process;
+  // launch metadata stays unchanged and the renderer never supplies a path.
+  // Folder roots come from the native dialog or a persisted folderPath on restore.
   const fileAccessService = new FileAccessService({
     resolveSessionCwd: (sessionId) =>
-      terminalManager?.getMetadata(sessionId)?.cwd
+      terminalManager?.getWorkingDirectory(sessionId)
   });
   materialService = new MaterialService({
     userDataPath: app.getPath("userData"),

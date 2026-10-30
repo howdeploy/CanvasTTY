@@ -379,6 +379,7 @@ export function App(): React.JSX.Element {
   const fileSearchSequence = useRef<Record<string, number>>({});
   /** Monotonic per-card read sequence, so a slow earlier read cannot overwrite a newer one. */
   const fileReadSequence = useRef<Record<string, number>>({});
+  const fileRootRequests = useRef<Record<string, symbol>>({});
   const [launchProvider, setLaunchProvider] = useState<ProviderId | null>(null);
   const [launchPosition, setLaunchPosition] = useState<Point | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1121,7 +1122,14 @@ export function App(): React.JSX.Element {
     if (rootId) void window.canvasTTY.files.closeRoot(rootId).catch(() => undefined);
   }, []);
 
-  const loadFileRoot = useCallback(async (id: string, descriptor: FileRootDescriptor): Promise<void> => {
+  const loadFileRoot = useCallback(async (id: string, descriptor: FileRootDescriptor, request: symbol): Promise<void> => {
+    const stillOwned = (): boolean => fileRootRequests.current[id] === request
+      && settingsRef.current.fileCards.some((card) => card.id === id);
+    const releaseIfStale = (): boolean => {
+      if (stillOwned()) return false;
+      void window.canvasTTY.files.closeRoot(descriptor.rootId).catch(() => undefined);
+      return true;
+    };
     updateFileCardRuntime(id, () => ({
       root: descriptor,
       rootUnavailable: !descriptor.available,
@@ -1136,20 +1144,24 @@ export function App(): React.JSX.Element {
     if (!descriptor.available) return;
     try {
       const entries = await window.canvasTTY.files.list(descriptor.rootId, "");
+      if (releaseIfStale()) return;
       updateFileCardRuntime(id, () => ({ entries, loading: false }));
     } catch (error) {
+      if (releaseIfStale()) return;
       updateFileCardRuntime(id, () => ({ loading: false, error: fileErrorMessage(error) }));
     }
   }, [updateFileCardRuntime]);
 
   const chooseFileFolder = useCallback((id: string): void => {
+    const request = Symbol();
+    fileRootRequests.current[id] = request;
     void (async () => {
       try {
         const descriptor = await window.canvasTTY.files.openFolder();
         if (!descriptor) return;
-        // The card may have closed while the native dialog was open; release the
-        // freshly registered root instead of leaking it.
-        if (!settingsRef.current.fileCards.some((card) => card.id === id)) {
+        // A superseded or closed card no longer owns this newly registered root.
+        if (fileRootRequests.current[id] !== request
+          || !settingsRef.current.fileCards.some((card) => card.id === id)) {
           void window.canvasTTY.files.closeRoot(descriptor.rootId).catch(() => undefined);
           return;
         }
@@ -1162,23 +1174,28 @@ export function App(): React.JSX.Element {
           activeFile: null,
           expandedFolders: []
         });
-        await loadFileRoot(id, descriptor);
+        await loadFileRoot(id, descriptor, request);
       } catch (error) {
+        if (fileRootRequests.current[id] !== request
+          || !settingsRef.current.fileCards.some((card) => card.id === id)) return;
         updateFileCardRuntime(id, () => ({ loading: false, error: fileErrorMessage(error) }));
       }
     })();
   }, [loadFileRoot, releaseFileCardRoot, updateFileCard, updateFileCardRuntime]);
 
   const registerFileSession = useCallback((id: string, sessionId: string): void => {
+    const request = Symbol();
+    fileRootRequests.current[id] = request;
     void (async () => {
       try {
         const descriptor = await window.canvasTTY.files.registerRoot({ rootType: "session", sessionId });
-        if (!descriptor) {
-          updateFileCardRuntime(id, () => ({ rootUnavailable: true, loading: false, error: null }));
+        if (fileRootRequests.current[id] !== request
+          || !settingsRef.current.fileCards.some((card) => card.id === id)) {
+          if (descriptor) void window.canvasTTY.files.closeRoot(descriptor.rootId).catch(() => undefined);
           return;
         }
-        if (!settingsRef.current.fileCards.some((card) => card.id === id)) {
-          void window.canvasTTY.files.closeRoot(descriptor.rootId).catch(() => undefined);
+        if (!descriptor) {
+          updateFileCardRuntime(id, () => ({ rootUnavailable: true, loading: false, error: null }));
           return;
         }
         releaseFileCardRoot(id);
@@ -1190,8 +1207,10 @@ export function App(): React.JSX.Element {
           activeFile: null,
           expandedFolders: []
         });
-        await loadFileRoot(id, descriptor);
+        await loadFileRoot(id, descriptor, request);
       } catch (error) {
+        if (fileRootRequests.current[id] !== request
+          || !settingsRef.current.fileCards.some((card) => card.id === id)) return;
         updateFileCardRuntime(id, () => ({ loading: false, error: fileErrorMessage(error) }));
       }
     })();
@@ -1280,12 +1299,15 @@ export function App(): React.JSX.Element {
    * the root-selection state instead.
    */
   const restoreFileCard = useCallback(async (card: FileCard): Promise<void> => {
+    const request = Symbol();
+    fileRootRequests.current[card.id] = request;
     const reference = fileCardToRootReference(card);
     if (!reference) {
       updateFileCardRuntime(card.id, () => ({ ...EMPTY_FILE_CARD_RUNTIME }));
       return;
     }
-    const stillOpen = (): boolean => settingsRef.current.fileCards.some((candidate) => candidate.id === card.id);
+    const stillOpen = (): boolean => fileRootRequests.current[card.id] === request
+      && settingsRef.current.fileCards.some((candidate) => candidate.id === card.id);
     const releaseRoot = (rootId: string): void => {
       void window.canvasTTY.files.closeRoot(rootId).catch(() => undefined);
     };
@@ -1301,8 +1323,8 @@ export function App(): React.JSX.Element {
       }));
       return;
     }
-    if (descriptor !== null && !stillOpen()) {
-      releaseRoot(descriptor.rootId);
+    if (!stillOpen()) {
+      if (descriptor) releaseRoot(descriptor.rootId);
       return;
     }
     if (!isFileRootUsable(descriptor)) {
@@ -1319,7 +1341,10 @@ export function App(): React.JSX.Element {
       }
       updateFileCardRuntime(card.id, () => ({ entries, loading: false }));
     } catch (error) {
-      if (!stillOpen()) return;
+      if (!stillOpen()) {
+        releaseRoot(root.rootId);
+        return;
+      }
       updateFileCardRuntime(card.id, () => ({ loading: false, error: fileErrorMessage(error) }));
       return;
     }
@@ -1334,6 +1359,10 @@ export function App(): React.JSX.Element {
           childrenByDirectory: { ...state.childrenByDirectory, [folder]: children }
         }));
       } catch {
+        if (!stillOpen()) {
+          releaseRoot(root.rootId);
+          return;
+        }
         // A folder that disappeared stays unloaded; the rest of the tree restores.
       }
     }
@@ -1351,7 +1380,10 @@ export function App(): React.JSX.Element {
           readResult: { relativePath, result }
         }));
       } catch (error) {
-        if (!stillOpen()) return;
+        if (!stillOpen()) {
+          releaseRoot(root.rootId);
+          return;
+        }
         updateFileCardRuntime(card.id, () => ({
           loading: false,
           readResult: null,
@@ -1376,6 +1408,7 @@ export function App(): React.JSX.Element {
     const rootId = fileCardRuntimeRef.current[id]?.root?.rootId ?? null;
     delete fileSearchSequence.current[id];
     delete fileReadSequence.current[id];
+    delete fileRootRequests.current[id];
     setFileCardRuntime((current) => {
       if (!(id in current)) return current;
       const next = { ...current };

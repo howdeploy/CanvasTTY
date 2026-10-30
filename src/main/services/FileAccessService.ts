@@ -53,8 +53,10 @@ interface RegisteredRoot {
   available: boolean;
 }
 
+type SessionCwdResolver = (sessionId: string) => string | undefined | Promise<string | undefined>;
+
 interface FileAccessOptions {
-  resolveSessionCwd: (sessionId: string) => string | undefined;
+  resolveSessionCwd: SessionCwdResolver;
   limits?: Partial<FileAccessLimits>;
 }
 
@@ -64,7 +66,7 @@ type ResolvedTarget =
 
 export class FileAccessService {
   private readonly roots = new Map<string, RegisteredRoot>();
-  private readonly resolveSessionCwd: (sessionId: string) => string | undefined;
+  private readonly resolveSessionCwd: SessionCwdResolver;
   private readonly limits: FileAccessLimits;
 
   constructor(options: FileAccessOptions) {
@@ -81,10 +83,10 @@ export class FileAccessService {
     };
   }
 
-  registerSessionRoot(sessionId: string): FileRootDescriptor | null {
-    const cwd = this.resolveSessionCwd(sessionId);
-    if (typeof cwd !== "string" || cwd.length === 0) return null;
+  async registerSessionRoot(sessionId: string): Promise<FileRootDescriptor | null> {
     try {
+      const cwd = await this.resolveSessionCwd(sessionId);
+      if (typeof cwd !== "string" || cwd.length === 0) return null;
       const canonical = realpathSync(cwd);
       if (!statSync(canonical).isDirectory()) return null;
       return this.register(canonical, "session");

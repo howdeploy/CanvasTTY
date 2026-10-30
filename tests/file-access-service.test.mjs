@@ -22,7 +22,7 @@ test("registers a session root from the injected cwd lookup and hides the absolu
   const root = await makeTempDir("canvastty-files-session-");
   try {
     const service = createService({ cwd: root });
-    const descriptor = service.registerSessionRoot("session-1");
+    const descriptor = await service.registerSessionRoot("session-1");
     assert.ok(descriptor);
     assert.equal(descriptor.rootType, "session");
     assert.equal(descriptor.available, true);
@@ -30,7 +30,7 @@ test("registers a session root from the injected cwd lookup and hides the absolu
     assert.equal("path" in descriptor, false);
     assert.equal(JSON.stringify(descriptor).includes(root), false);
     assert.deepEqual(service.listRoots(), [descriptor]);
-    assert.equal(service.registerSessionRoot("missing-session"), null);
+    assert.equal(await service.registerSessionRoot("missing-session"), null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -58,7 +58,7 @@ test("exposes a canonical folder path only on folder root descriptors", async ()
   const root = await makeTempDir("canvastty-files-descriptor-path-");
   try {
     const service = createService({ cwd: root });
-    const session = service.registerSessionRoot("session-1");
+    const session = await service.registerSessionRoot("session-1");
     assert.equal("folderPath" in session, false);
     assert.equal(JSON.stringify(session).includes(root), false);
 
@@ -94,7 +94,7 @@ test("rejects absolute paths and parent traversal on read", async () => {
   const root = await makeTempDir("canvastty-files-traversal-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "inside.txt"), "inside");
 
     assert.deepEqual(await service.read(rootId, "/etc/passwd"), {
@@ -119,7 +119,7 @@ test("rejects symlinks whose real target escapes the root", async () => {
   const outside = await makeTempDir("canvastty-files-symlink-outside-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(outside, "secret.txt"), "top secret");
     await symlink(join(outside, "secret.txt"), join(root, "escape.txt"));
     await symlink(outside, join(root, "escape-dir"));
@@ -142,7 +142,7 @@ test("rejects non-regular files such as directories", async () => {
   const root = await makeTempDir("canvastty-files-nonregular-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await mkdir(join(root, "subdir"));
     assert.deepEqual(await service.read(rootId, "subdir"), {
       kind: "unsupported",
@@ -161,7 +161,7 @@ test("lists immediate entries with directories before files and file sizes", asy
   const root = await makeTempDir("canvastty-files-list-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await mkdir(join(root, "gamma"));
     await mkdir(join(root, "zeta"));
     await mkdir(join(root, "nested"));
@@ -191,7 +191,7 @@ test("caps directory listings at maxDirectoryEntries", async () => {
   const root = await makeTempDir("canvastty-files-list-cap-");
   try {
     const service = createService({ cwd: root, limits: { maxDirectoryEntries: 2 } });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "a.txt"), "a");
     await writeFile(join(root, "b.txt"), "b");
     await writeFile(join(root, "c.txt"), "c");
@@ -205,7 +205,7 @@ test("throws when listing a missing directory or a bad path", async () => {
   const root = await makeTempDir("canvastty-files-list-bad-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await assert.rejects(service.list(rootId, "missing"), /unavailable/);
     await assert.rejects(service.list(rootId, "../"), /outside|unavailable/);
     await assert.rejects(service.list(rootId, "/etc"), /outside|unavailable/);
@@ -218,7 +218,7 @@ test("reads a small UTF-8 text file", async () => {
   const root = await makeTempDir("canvastty-files-text-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "notes.txt"), "hello world");
     assert.deepEqual(await service.read(rootId, "notes.txt"), {
       kind: "text",
@@ -243,7 +243,7 @@ test("reads a file when descriptor devices do not expose its real path", async (
   try {
     await writeFile(join(root, "notes.txt"), "hello world");
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     assert.deepEqual(await service.read(rootId, "notes.txt"), { kind: "text", content: "hello world", truncated: false, size: 11 });
   } finally {
     fs.realpathSync = original;
@@ -256,7 +256,7 @@ test("reads UTF-8 text whose final character is multi-byte", async () => {
   const root = await makeTempDir("canvastty-files-text-multibyte-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "README.md"), "# Привет");
     const cyrillic = await service.read(rootId, "README.md");
     assert.equal(cyrillic.kind, "text");
@@ -274,7 +274,7 @@ test("tolerates a bounded read that splits the final multi-byte code point", asy
   const root = await makeTempDir("canvastty-files-text-split-");
   try {
     const service = createService({ cwd: root, limits: { maxTextBytes: 3 } });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "emoji.txt"), "😀");
     const result = await service.read(rootId, "emoji.txt");
     assert.equal(result.kind, "text");
@@ -289,7 +289,7 @@ test("truncates oversized text and reports the observed total size", async () =>
   const root = await makeTempDir("canvastty-files-text-trunc-");
   try {
     const service = createService({ cwd: root, limits: { maxTextBytes: 4 } });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "long.txt"), "abcdefghij");
     const result = await service.read(rootId, "long.txt");
     assert.equal(result.kind, "text");
@@ -305,7 +305,7 @@ test("reports binary content as unsupported without returning bytes", async () =
   const root = await makeTempDir("canvastty-files-binary-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "data.bin"), Buffer.from([0x68, 0x00, 0x69]));
     assert.deepEqual(await service.read(rootId, "data.bin"), {
       kind: "unsupported",
@@ -320,7 +320,7 @@ test("reports NUL-free binary content as unsupported", async () => {
   const root = await makeTempDir("canvastty-files-binary-nonul-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "latin.bin"), Buffer.from([0xff, 0xfe, 0xfd, 0xfc, 0xfb]));
     assert.deepEqual(await service.read(rootId, "latin.bin"), {
       kind: "unsupported",
@@ -335,7 +335,7 @@ test("returns an allow-listed image as a base64 data URL", async () => {
   const root = await makeTempDir("canvastty-files-image-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     await writeFile(join(root, "pic.png"), bytes);
 
@@ -357,7 +357,7 @@ test("reports an oversized image as too large", async () => {
   const root = await makeTempDir("canvastty-files-image-large-");
   try {
     const service = createService({ cwd: root, limits: { maxImageBytes: 2 } });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "big.png"), Buffer.from([1, 2, 3]));
     assert.deepEqual(await service.read(rootId, "big.png"), {
       kind: "too-large",
@@ -373,7 +373,7 @@ test("reports a disallowed non-image binary type as unsupported binary", async (
   const root = await makeTempDir("canvastty-files-disallowed-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "archive.zip"), Buffer.from([0x50, 0x4b, 0x00, 0x04]));
     assert.deepEqual(await service.read(rootId, "archive.zip"), {
       kind: "unsupported",
@@ -388,7 +388,7 @@ test("searches file names case-insensitively and returns relative paths", async 
   const root = await makeTempDir("canvastty-files-search-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await mkdir(join(root, "src"));
     await writeFile(join(root, "README.md"), "readme");
     await writeFile(join(root, "src", "Widget.tsx"), "widget");
@@ -412,7 +412,7 @@ test("skips heavy directories and symlinked directories during search", async ()
   const outside = await makeTempDir("canvastty-files-search-skip-out-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await mkdir(join(root, "node_modules"), { recursive: true });
     await mkdir(join(root, ".git"), { recursive: true });
     await mkdir(join(root, "dist"), { recursive: true });
@@ -438,7 +438,7 @@ test("does not search beyond maxSearchDepth", async () => {
   const root = await makeTempDir("canvastty-files-search-depth-");
   try {
     const service = createService({ cwd: root, limits: { maxSearchDepth: 1 } });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await mkdir(join(root, "a", "b"), { recursive: true });
     await writeFile(join(root, "match.txt"), "x");
     await writeFile(join(root, "a", "match.txt"), "x");
@@ -457,7 +457,7 @@ test("caps search results and marks the result truncated", async () => {
   const root = await makeTempDir("canvastty-files-search-cap-");
   try {
     const service = createService({ cwd: root, limits: { maxSearchResults: 1 } });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "match-one.txt"), "1");
     await writeFile(join(root, "match-two.txt"), "2");
     const result = await service.search(rootId, "match");
@@ -472,7 +472,7 @@ test("releases a root and rejects later operations on it", async () => {
   const root = await makeTempDir("canvastty-files-release-");
   try {
     const service = createService({ cwd: root });
-    const { rootId } = service.registerSessionRoot("session-1");
+    const { rootId } = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "notes.txt"), "hello");
 
     service.releaseRoot(rootId);

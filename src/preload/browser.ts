@@ -17,6 +17,7 @@ type BrowserWheelDecision = {
 let wheelIdleMs: number | null = null;
 const historySwipe = new BrowserHistorySwipe();
 let swipeTimer: ReturnType<typeof setTimeout> | null = null;
+let navigationFrame: number | null = null;
 let indicator: HTMLDivElement | null = null;
 let indicatorArrow: HTMLDivElement | null = null;
 let wheelDecision: (BrowserWheelDecision & { lastEventAt: number }) | null = null;
@@ -69,19 +70,27 @@ window.addEventListener("wheel", (event) => {
       showHistoryIndicator(preview.direction, preview.progress);
     }
     if (swipeTimer) clearTimeout(swipeTimer);
-    // Finish before main expires the ownership generation; momentum remains in this same gesture.
+    // Leave time to paint the dismissed HUD before main expires the ownership generation.
     swipeTimer = setTimeout(() => {
       swipeTimer = null;
       const direction = historySwipe.finish();
       indicator?.remove();
       indicator = null;
       indicatorArrow = null;
-      if (direction && document.hasFocus() && document.visibilityState === "visible") {
-        ipcRenderer.send(BROWSER_PAGE_WHEEL_CHANNEL, {
-          ...input, generation: decision.generation, historySwipe: direction
+      if (direction) {
+        // The first frame paints the removal; dispatch on the next frame so navigation cannot
+        // retain a compositor frame that still contains the indicator while the next page loads.
+        navigationFrame = requestAnimationFrame(() => {
+          navigationFrame = requestAnimationFrame(() => {
+            navigationFrame = null;
+            if (!document.hasFocus() || document.visibilityState !== "visible") return;
+            ipcRenderer.send(BROWSER_PAGE_WHEEL_CHANNEL, {
+              ...input, generation: decision.generation, historySwipe: direction
+            });
+          });
         });
       }
-    }, Math.max(1, (wheelIdleMs ?? 250) - 30));
+    }, Math.min(120, (wheelIdleMs ?? 250) / 2));
   } else {
     cancelHistorySwipe();
   }
@@ -106,6 +115,8 @@ function browserWheelIdleMs(value: unknown): number | null {
 }
 
 function cancelHistorySwipe(): void {
+  if (navigationFrame !== null) cancelAnimationFrame(navigationFrame);
+  navigationFrame = null;
   if (swipeTimer) clearTimeout(swipeTimer);
   swipeTimer = null;
   historySwipe.finish();

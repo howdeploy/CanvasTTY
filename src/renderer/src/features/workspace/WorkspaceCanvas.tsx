@@ -1347,7 +1347,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               bounds={withGroupNudge(browserLayerId, renderedBrowserCanvas)}
               locale={settings.locale}
               camera={camera}
-              visible={browserViewVisible && !homeEditing && contextMenu === null
+              visible={browserViewVisible && fullscreenSessionId === null && !homeEditing && contextMenu === null
                 && regionEditor === null && !commandPaletteOpen && radialLauncher === null
                 && !browserOccluded && !browserUnderOverlay}
               stackIndex={canvasLayerZIndex(layerOrder, browserLayerId)}

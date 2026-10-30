@@ -1,0 +1,10 @@
+{
+  "testedFixRevision": "81c72c3b3a668912c0d15df22db05f00b68ae8d1",
+  "baseRevision": "df274cfb144b2d46bbc3ab6a3b2d92c12549169e",
+  "files": {
+    "evidence/browser-over-fullscreen.jpg": "03d3a9c21c9fca3fff0f98997ebd08a13f8d826d3fe85d170bc85c532b579206",
+    "evidence/gui-fullscreen-input.png": "4a46a5bf44d94fe0a8c57e2b63a12e1e4081fd4a59ea5c877c989df1e60923f1",
+    "evidence/gui-fullscreen-returned.png": "1c9fdc8ab0b7751dfe344f1c885adb7492880ce46c87d33bc9878c868acbf001",
+    "evidence/gui-fullscreen-idle-codex.png": "accb25c0144ab48c44f794b0fb106058d58e66dfabcf89bdf77ef173cb0c6e9b"
+  }
+}

@@ -499,7 +499,9 @@ export class PluginManager {
         );
       } else if (process.platform === "win32") {
         // Windows cannot rename a directory over the empty reservation.
-        await cp(packageRoot, destination, { recursive: true, force: false, errorOnExist: true });
+        for (const entry of await readdir(packageRoot)) {
+          await cp(join(packageRoot, entry), join(destination, entry), { recursive: true, force: false, errorOnExist: true });
+        }
       } else {
         await rename(packageRoot, destination);
       }

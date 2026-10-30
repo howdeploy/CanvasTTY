@@ -85,6 +85,8 @@ test("disposing an orchestrator session revokes its capability", { timeout: 15_0
   const env = calls[0].options.env;
   const authenticate = async (token) => {
     const socket = createConnection(env.CANVASTTY_ORCHESTRATION_ADDRESS);
+    // Connect/reply promises still report errors; revocation may reset a Windows pipe during close.
+    socket.on("error", () => {});
     t.after(() => socket.destroy());
     socket.setTimeout(5_000, () => socket.destroy(new Error("orchestration authentication timed out")));
     const lines = createInterface({ input: socket });
@@ -98,12 +100,13 @@ test("disposing an orchestrator session revokes its capability", { timeout: 15_0
     }) + "\n");
     const reply = await next;
     assert.equal(reply.done, false, "authentication produces a protocol response");
-    return { socket, reply: JSON.parse(reply.value) };
+    return { socket, lines, reply: JSON.parse(reply.value) };
   };
   const connected = await authenticate(env.CANVASTTY_ORCHESTRATION_CAPABILITY);
   assert.equal(connected.reply.type, "authenticated", "the original launch capability works before disposal");
   assert.equal(typeof connected.reply.reconnectToken, "string");
-  const closed = once(connected.socket, "close");
+  connected.lines.close();
+  const closed = new Promise(resolve => connected.socket.once("close", resolve));
   terminals.dispose(orchestrator.id);
   await closed;
   // Re-registering would itself revoke the old lease and hide a missing dispose cleanup.

@@ -77,6 +77,19 @@ test("refuses existing unregistered plugin destinations without touching their c
   }
 });
 
+test("Windows copies nested package contents into its exclusive empty reservation", async (t) => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  t.after(() => Object.defineProperty(process, "platform", platform));
+  const { root, manager, destination, sibling } = await fixture(t);
+  await mkdir(join(root, "source", "nested"));
+  await writeFile(join(root, "source", "nested", "extra.txt"), "nested package asset");
+  await manager.install((await manager.previewInstall(sourceUrl)).token);
+  assert.equal(await readFile(join(destination, "app.html"), "utf8"), "<p>owned package</p>");
+  assert.equal(await readFile(join(destination, "nested", "extra.txt"), "utf8"), "nested package asset");
+  assert.equal(await readFile(sibling, "utf8"), "other install's data");
+});
+
 test("cleans its reservation after a failed package move, then allows retry", async (t) => {
   const { profile, manager, destination, sibling } = await fixture(t);
   const preview = await manager.previewInstall(sourceUrl);

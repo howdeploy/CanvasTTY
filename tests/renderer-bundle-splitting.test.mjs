@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -16,30 +13,27 @@ import { build } from "esbuild";
 const appEntry = fileURLToPath(new URL("../src/renderer/src/App.tsx", import.meta.url));
 
 async function bundleApp() {
-  const outdir = await mkdtemp(join(tmpdir(), "canvastty-bundle-split-"));
-  try {
-    const { metafile } = await build({
-      entryPoints: [appEntry],
-      bundle: true,
-      splitting: true,
-      platform: "browser",
-      format: "esm",
-      // Match the production React branch and electron-vite 5's fallback renderer target.
-      minify: true,
-      define: { "process.env.NODE_ENV": '"production"' },
-      legalComments: "none",
-      target: "chrome142",
-      charset: "utf8",
-      outdir,
-      write: true,
-      metafile: true,
-      logLevel: "silent",
-      loader: { ".svg": "text", ".css": "empty", ".png": "empty", ".webp": "empty", ".ttf": "empty", ".woff2": "empty", ".ico": "empty" }
-    });
-    return metafile;
-  } finally {
-    await rm(outdir, { recursive: true, force: true });
-  }
+  // Only the dependency graph and byte counts are inspected; esbuild can produce
+  // both in memory without writing and deleting an entire renderer bundle.
+  const { metafile } = await build({
+    entryPoints: [appEntry],
+    bundle: true,
+    splitting: true,
+    platform: "browser",
+    format: "esm",
+    // Match the production React branch and electron-vite 5's fallback renderer target.
+    minify: true,
+    define: { "process.env.NODE_ENV": '"production"' },
+    legalComments: "none",
+    target: "chrome142",
+    charset: "utf8",
+    outdir: "canvastty-bundle-split",
+    write: false,
+    metafile: true,
+    logLevel: "silent",
+    loader: { ".svg": "text", ".css": "empty", ".png": "empty", ".webp": "empty", ".ttf": "empty", ".woff2": "empty", ".ico": "empty" }
+  });
+  return metafile;
 }
 
 function outputFor(metafile, suffix) {

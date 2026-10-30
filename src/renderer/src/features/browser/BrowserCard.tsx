@@ -235,7 +235,9 @@ export function BrowserCard({
 
   useEffect(() => {
     if (!focused || !nativeViewVisible) return;
-    const frame = requestAnimationFrame(() => window.canvasTTY.browser.focus());
+    const frame = requestAnimationFrame(() => {
+      if (!addressFocused.current) window.canvasTTY.browser.focus();
+    });
     return () => cancelAnimationFrame(frame);
   }, [focused, nativeViewVisible]);
 

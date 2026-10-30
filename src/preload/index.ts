@@ -316,7 +316,7 @@ const api: CanvasTTYApi = {
     readBuffer: (id: string) => ipcRenderer.invoke(IPC.terminalReadBuffer, id),
     create: (request: CreateSessionRequest) => ipcRenderer.invoke(IPC.terminalCreate, request),
     restart: (id: string, options?: { resume?: boolean }) => ipcRenderer.invoke(IPC.terminalRestart, id, options),
-    input: (id: string, data: string) => ipcRenderer.send(IPC.terminalInput, id, data),
+    input: (id: string, data: string, protocolReply = false) => ipcRenderer.send(IPC.terminalInput, id, data, protocolReply),
     resize: (id: string, cols: number, rows: number) => ipcRenderer.send(IPC.terminalResize, id, cols, rows),
     setBounds: (id: string, bounds: SessionBounds) => ipcRenderer.send(IPC.terminalBounds, id, bounds),
     rename: (id: string, title: string) => ipcRenderer.invoke(IPC.terminalRename, id, title),

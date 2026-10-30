@@ -675,12 +675,6 @@ export class BrowserService {
     if (this.disposed) throw new BrowserKernelError("BRIDGE_UNAVAILABLE", "Browser service is disposed.");
     const normalized = this.policy.assertNavigationUrl(url);
     const tab = this.createRuntimeTab(tabId, normalized, revision);
-    this.native.setBounds(tab.view, {
-      x: 0,
-      y: 0,
-      width: Math.max(BACKGROUND_TAB_SIZE.width, Math.round(this.viewport.width)),
-      height: Math.max(BACKGROUND_TAB_SIZE.height, Math.round(this.viewport.height))
-    });
     await this.persistRuntime();
     this.syncViews();
     this.emit();
@@ -896,6 +890,12 @@ export class BrowserService {
     const view = existingContents
       ? new WebContentsView({ webContents: existingContents })
       : new WebContentsView({ webPreferences: remoteBrowserWebPreferences() });
+    // Tabs need real layout before their canvas card is shown, including agent-created/restored tabs.
+    this.native.setBounds(view, {
+      x: 0, y: 0,
+      width: Math.max(BACKGROUND_TAB_SIZE.width, Math.round(this.viewport.width)),
+      height: Math.max(BACKGROUND_TAB_SIZE.height, Math.round(this.viewport.height))
+    });
     // Electron's `view.webContents` getter returns undefined once the WebContents is closed (a sleeping or destroyed
     // tab), and every `tab.view.webContents.isDestroyed()` check would throw. Pin the object: closed, it still answers.
     Object.defineProperty(view, "webContents", { value: view.webContents, configurable: true, enumerable: true });

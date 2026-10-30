@@ -60,6 +60,7 @@ interface TerminalPort {
   deliverPrompt(id: string, text: string, submit?: boolean, signal?: AbortSignal,
     options?: { bracketedPaste?: boolean; beforeSubmit?: () => boolean | void }): Promise<InputDelivery>;
   codexUnstyledComposerAllowed?(id: string): boolean;
+  claudeUnstyledComposerAllowed?(id: string): boolean;
   lastPromptDelivery?(id: string): PromptDeliveryReceipt | undefined;
   /** The launch still waits for its plugins: the card cannot take input yet. */
   launchPending?(id: string): boolean;
@@ -615,12 +616,12 @@ export class AgentControlGateway {
     const capabilities = controlCapabilities(fresh.provider);
     const screen = viewport(owned.terminal, (text) => this.redact(text));
     const composerReady = fresh.provider === "kimi" ? kimiComposerReady(owned.terminal)
-      : fresh.provider === "claude" ? claudeTerminalComposerReady(owned.terminal)
+      : fresh.provider === "claude" ? claudeTerminalComposerReady(owned.terminal, this.options.terminals.claudeUnstyledComposerAllowed?.(id))
         : capabilities.menus && codexTerminalComposerReady(owned.terminal, this.options.terminals.codexUnstyledComposerAllowed?.(id));
     if (request.method === "screen") return { sessionId: id, text: screen, revision: hash(screen), outputOffset: owned.outputOffset,
       interaction: capabilities.menus ? codexChoices(screen) : null, composerReady };
     if ((request.method === "choose" || request.method === "dismiss") && !capabilities.menus) {
-      throw new ControlError("NOT_SUPPORTED", `Menus are parsed for Codex only; resolve ${fresh.provider} prompts from the desktop and treat screen as the only evidence.`);
+      throw new ControlError("NOT_SUPPORTED", `Menus are parsed for Codex only; inspect screen and ask the person to resolve the ${fresh.provider} prompt in its terminal card. Do not switch to desktop automation.`);
     }
     // Its launch plugins are still preparing it: nothing can be written yet, and nothing is queued.
     if (this.options.terminals.launchPending?.(id)) {

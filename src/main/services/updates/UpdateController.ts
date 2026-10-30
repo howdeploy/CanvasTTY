@@ -1,4 +1,5 @@
 import type { UpdateStatus } from "../../../shared/contracts.ts";
+import { compareSemver, isValidSemver } from "../../../shared/hostVersion.ts";
 import type { UpdateService } from "./UpdateService.ts";
 
 export interface AvailableUpdate {
@@ -14,17 +15,10 @@ export interface UpdateAdapter {
 }
 
 export function isNewStableVersion(candidate: string, current: string): boolean {
-  const parse = (value: string): number[] | null => {
-    if (!/^\d+\.\d+\.\d+$/.test(value)) return null;
-    return value.split(".").map(Number);
-  };
-  const next = parse(candidate);
-  const prior = parse(current);
-  if (!next || !prior) return false;
-  for (let index = 0; index < 3; index += 1) {
-    if (next[index] !== prior[index]) return next[index] > prior[index];
-  }
-  return false;
+  if (!/^\d+\.\d+\.\d+$/.test(candidate) || !isValidSemver(current)) return false;
+  const difference = compareSemver(candidate, current);
+  // A stable release also replaces a prerelease with the same numeric version.
+  return difference > 0 || (difference === 0 && current.split("+")[0]!.includes("-"));
 }
 
 export class UpdateController implements UpdateService {

@@ -1,4 +1,5 @@
 import { realpath } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, shell } from "electron";
 import type { IpcMainEvent, IpcMainInvokeEvent, OpenDialogOptions, WebContents } from "electron";
 import type {
@@ -259,8 +260,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   });
   ipcMain.handle(IPC.mascotsOpenLog, async (event, projectId: string) => {
     assertMainRenderer(event, getMainWindow);
-    const error = await shell.openPath(await mascots.errorLog(projectId));
-    if (error) throw new Error(error);
+    await openSystemFile(await mascots.errorLog(projectId));
   });
   // A surface reaches only its own plugin's services: the caller's plugin id is bound by the
   // renderer frame host or by the identity-checked plugin window, never taken from plugin code.
@@ -945,8 +945,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     if (typeof id !== "string") throw new Error("Terminal session ID is required.");
     const session = terminals.getMetadata(id);
     if (!session) throw new Error("Terminal session does not exist.");
-    const error = await shell.openPath(await resolveTerminalFilePath(reference, session.cwd));
-    if (error) throw new Error(error);
+    await openSystemFile(await resolveTerminalFilePath(reference, session.cwd));
   });
   ipcMain.handle(IPC.terminalReadBuffer, (event, id: unknown) => {
     assertMainRenderer(event, getMainWindow);
@@ -961,10 +960,10 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     assertMainRenderer(event, getMainWindow);
     return terminals.restart(id, { resume: options?.resume === true });
   });
-  ipcMain.on(IPC.terminalInput, (event, id: string, data: string) => {
+  ipcMain.on(IPC.terminalInput, (event, id: string, data: string, protocolReply: unknown) => {
     // Fire-and-forget: a foreign sender is dropped instead of throwing into the IPC layer.
     if (!isMainRenderer(event, getMainWindow)) return;
-    terminals.input(id, data);
+    terminals.input(id, data, protocolReply === true);
   });
   ipcMain.on(IPC.terminalResize, (event, id: string, cols: number, rows: number) => {
     if (!isMainRenderer(event, getMainWindow) || typeof id !== "string") return;
@@ -1091,6 +1090,16 @@ function assertPluginWindowSender(
     || actual.pathname !== expected.pathname
   ) throw new Error("Plugin window identity does not match its loaded entry.");
   return contribution;
+}
+
+async function openSystemFile(path: string): Promise<void> {
+  // Electron's Linux openPath drops its completion callback; openExternal completes the handoff.
+  if (process.platform === "linux") {
+    await shell.openExternal(pathToFileURL(path).href);
+    return;
+  }
+  const error = await shell.openPath(path);
+  if (error) throw new Error(error);
 }
 
 function stringValue(value: unknown, label: string): string {

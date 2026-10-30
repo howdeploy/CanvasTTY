@@ -102,6 +102,12 @@ test("prereleases and equal versions are excluded", async () => {
     assert.equal(isNewStableVersion(value, "1.5.2"), false);
   }
   assert.equal(isNewStableVersion("1.6.0", "1.5.2"), true);
+  assert.equal(isNewStableVersion("1.8.5", "1.8.5-beta2"), true);
+  assert.equal(isNewStableVersion("1.8.6", "1.8.5-beta.2+build.1"), true);
+  assert.equal(isNewStableVersion("1.8.4", "1.8.5-beta2"), false);
+  assert.equal(isNewStableVersion("1.8.5-beta3", "1.8.5-beta2"), false);
+  assert.equal(isNewStableVersion("1.8.5", "1.8.5+build-beta2"), false);
+  assert.equal(isNewStableVersion("1.8.5", "invalid"), false);
 });
 
 test("network and permission failures are visible and cannot advance the stage", async () => {

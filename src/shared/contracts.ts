@@ -2095,7 +2095,7 @@ export interface CanvasTTYApi {
     create(request: CreateSessionRequest): Promise<SessionSnapshot>;
     /** `resume` continues the card's own conversation instead of starting a new one. */
     restart(id: string, options?: { resume?: boolean }): Promise<SessionSnapshot>;
-    input(id: string, data: string): void;
+    input(id: string, data: string, protocolReply?: boolean): void;
     resize(id: string, cols: number, rows: number): void;
     setBounds(id: string, bounds: SessionBounds): void;
     rename(id: string, title: string): Promise<SessionMetadata>;

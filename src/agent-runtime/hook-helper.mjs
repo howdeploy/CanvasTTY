@@ -20,8 +20,9 @@ const captureResult = process.env[CAPTURE_RESULT_ENV] === "1";
 const answerCaptureExpiresAt = Number(process.env[CAPTURE_ANSWER_EXPIRES_AT_ENV]);
 const captureAnswer = process.env[CAPTURE_ANSWER_ENV] === "1"
   && Number.isFinite(answerCaptureExpiresAt) && answerCaptureExpiresAt > Date.now();
+process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) {
-  raw += chunk.toString("utf8");
+  raw += chunk;
   if (Buffer.byteLength(raw, "utf8") > MAX_HOOK_INPUT_BYTES) {
     raw = "";
     break;

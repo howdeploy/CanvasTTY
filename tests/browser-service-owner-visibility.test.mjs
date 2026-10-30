@@ -2,6 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { browserServiceHarness, flushBrowser } from "./fixtures/browser-service-harness.mjs";
 
+for (const platform of ["linux", "win32", "darwin"]) {
+  test(`${platform} gives an off-canvas tab layout before its first viewport report`, async (t) => {
+    const { BrowserService, FakeWindow, root, onCleanup } = await browserServiceHarness(t, { platform });
+    const owner = new FakeWindow();
+    const browser = new BrowserService(() => owner, { userDataPath: root, restoreTabs: false });
+    onCleanup(() => browser.dispose());
+    await browser.ready();
+    const opened = await browser.newTab("https://fixture.test/");
+    const tab = browser.tabs.get(opened.activeTabId);
+    assert.ok(tab.view.getBounds().width > 0);
+    assert.ok(tab.view.getBounds().height > 0);
+    assert.equal(tab.visible, false, "layout does not reveal a hidden card");
+  });
+}
+
 test("owner hide/minimize throttles the visible tab and restore/show makes it visible again", async (t) => {
   const { BrowserService, FakeWindow, root, onCleanup } = await browserServiceHarness(t);
   const owner = new FakeWindow();

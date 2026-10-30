@@ -58,6 +58,7 @@ import { surfaceIsLive, surfaceLifecycle, type SurfaceGate } from "../workspace/
 import { createPinnedInputRefresh, limitPinnedTerminalInput, pinnedTerminalInput, type PinnedTerminalInput } from "./terminalPinnedInput";
 import { terminalLinkTarget } from "./terminalLinkTarget";
 import { terminalFileLinkProvider } from "./terminalFileLinks";
+import { terminalQueryReplies } from "./terminalQueryReplies";
 import { parseTerminalFileLink } from "../../../../shared/terminalFileLink";
 import {
   constrainResize,
@@ -763,6 +764,7 @@ function TerminalCardView({
       detach: () => disableWebgl(terminal)
     });
 
+    const queryReplies = terminalQueryReplies(terminal);
     const input = terminal.onData((data) => {
       // Hover focus routes keyboard input locally without reporting a synthetic focus transition to the TUI.
       if (suppressFocusReport.current && (data === TERMINAL_FOCUS_IN || data === TERMINAL_FOCUS_OUT)) return;
@@ -773,7 +775,7 @@ function TerminalCardView({
       if (!text.startsWith("\u001b") && /[^\u0000-\u001f\u007f]/.test(text)) {
         window.dispatchEvent(new CustomEvent("canvastty:terminal-input", { detail: { sessionId: session.id } }));
       }
-      window.canvasTTY.terminal.input(session.id, data);
+      window.canvasTTY.terminal.input(session.id, data, queryReplies.isReply(data));
     });
     // The first terminal card whose xterm is attached and forwards keystrokes: at startup this is a restored
     // session (new sessions cannot exist yet), so this doubles as "restored terminal interactive".
@@ -797,6 +799,7 @@ function TerminalCardView({
       unsubscribe();
       resizeObserver.disconnect();
       input.dispose();
+      queryReplies.dispose();
       pinnedScroll.dispose();
       pinnedCursor.dispose();
       pinnedOutput.dispose();

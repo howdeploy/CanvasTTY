@@ -4,6 +4,7 @@ import xterm from "@xterm/headless";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 import { TerminalReplayState } from "../src/main/services/terminalReplayState.ts";
 import { attachTerminalOutput } from "../src/renderer/src/features/terminal/terminalOutput.ts";
+import { terminalQueryReplies } from "../src/renderer/src/features/terminal/terminalQueryReplies.ts";
 import { availableRegistry, fakeSpawner } from "./helpers/terminal.mjs";
 import { IPC } from "../src/shared/contracts.ts";
 
@@ -27,6 +28,26 @@ function terminal(t) {
   t.after(() => instance.dispose());
   return instance;
 }
+
+test("query replies keep protocol origin across split queries without exempting later keyboard input", async (t) => {
+  const instance = terminal(t);
+  const replies = terminalQueryReplies(instance);
+  t.after(() => replies.dispose());
+  const input = [];
+  instance.onData(data => input.push([data, replies.isReply(data)]));
+  await write(instance, "\x1b[6");
+  assert.deepEqual(input, []);
+  await write(instance, "n\x1b[5n\x1b[c\x1bP$qm\x1b\\");
+  assert.deepEqual(input, [
+    ["\x1b[1;1R", true], ["\x1b[0n", true], ["\x1b[?1;2c", true], ["\x1bP1$r0m\x1b\\", true]
+  ]);
+  instance.input("\x1b[1;1R", true);
+  instance.input("human edit", true);
+  assert.deepEqual(input.slice(-2), [["\x1b[1;1R", false], ["human edit", false]]);
+  replies.dispose();
+  await write(instance, "\x1b[6n");
+  assert.deepEqual(input.at(-1), ["\x1b[1;1R", false]);
+});
 
 const screen = (terminal) => {
   const buffer = terminal.buffer.active;

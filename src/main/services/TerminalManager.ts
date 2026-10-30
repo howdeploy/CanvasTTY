@@ -950,8 +950,8 @@ export class TerminalManager {
     return snapshot(session);
   }
 
-  input(id: string, data: string): void {
-    this.inputChecked(id, data);
+  input(id: string, data: string, protocolReply = false): void {
+    this.inputChecked(id, data, protocolReply ? "protocol" : "person");
   }
 
   /** The card's launch waits for its plugins (or its measured grid): nothing can be written to it yet. */
@@ -992,6 +992,13 @@ export class TerminalManager {
     const session = this.sessions.get(id);
     return Boolean(session && session.metadata.status === "idle" && ["idle", "done"].includes(session.lifecycle?.programStatus ?? "")
       && (session.manualInputRevision ?? 0) === (session.cleanInputRevision ?? 0));
+  }
+
+  claudeUnstyledComposerAllowed(id: string): boolean {
+    const session = this.sessions.get(id);
+    return Boolean(session && session.metadata.provider === "claude" && session.metadata.status === "idle"
+      && ((session.hookSignals ?? 0) > 0 || ["idle", "done"].includes(session.lifecycle?.programStatus ?? ""))
+      && !session.incompletePrompt && (session.manualInputRevision ?? 0) === (session.cleanInputRevision ?? 0));
   }
 
   async deliverInput(id: string, data: string, waitMs = LAUNCH_INPUT_WAIT_MS, signal?: AbortSignal, waitForCodexComposer = false,
@@ -1094,7 +1101,7 @@ export class TerminalManager {
           screen.feed({ id, data: snapshot.buffer, outputOffset: snapshot.outputOffset });
           const fresh = session.automatedSubmit?.epoch !== epoch || snapshot.outputOffset > session.automatedSubmit.outputOffset;
           if (fresh && await screen.inspect((terminal) => session.metadata.provider === "kimi" ? kimiComposerReady(terminal)
-            : session.metadata.provider === "claude" ? claudeTerminalComposerReady(terminal)
+            : session.metadata.provider === "claude" ? claudeTerminalComposerReady(terminal, this.claudeUnstyledComposerAllowed(id))
               : codexTerminalComposerReady(terminal, this.codexUnstyledComposerAllowed(id)))) {
             inputReady = true;
             continue;

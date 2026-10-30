@@ -131,6 +131,38 @@ test("manual input, cancellation and restart between paste and Enter never submi
   }
 });
 
+test("a terminal query reply between paste and Enter is not a manual edit", async t => {
+  const f = fixture(t, "claude");
+  const pending = f.send();
+  await until(() => f.writes.length === 1);
+  f.manager.input(f.session.id, "\x1b[1;3R", true);
+  f.draw("task");
+  const result = await pending;
+  assert.equal(result.receipt.stage, "submitted");
+  assert.deepEqual(f.writes, ["\x1b[200~task\x1b[201~", "\x1b[1;3R", "\r"]);
+});
+
+test("Claude's unstyled hint requires native idle, cursor at the start and untouched input", async t => {
+  const hint = 'Try "edit <filepath> to..."';
+  const archiveFrame = frame("claude", hint) + "\x1b[1;3H";
+  const f = fixture(t, "claude");
+  f.pty.emitData(archiveFrame);
+  assert.equal((await f.send()).delivered, false, "an untrusted hint is not an empty composer");
+  f.manager.applyProviderSignal(f.session.id, { state: "idle", event: "SessionStart" });
+  f.pty.emitData(frame("claude", hint));
+  assert.equal((await f.send()).delivered, false, "the cursor at the end indicates a draft");
+  f.pty.emitData(archiveFrame);
+  const pending = f.send();
+  await until(() => f.writes.length === 1);
+  f.draw("task");
+  assert.equal((await pending).receipt.stage, "submitted");
+  f.manager.input(f.session.id, hint);
+  f.pty.emitData(archiveFrame);
+  const count = f.writes.length;
+  assert.equal((await f.send()).delivered, false, "manual input keeps ownership of the composer");
+  assert.equal(f.writes.length, count);
+});
+
 test("the queue retains the entire paste/observe/Enter transaction and supports owned paste-only drafts", async t => {
   const f = fixture(t);
   const first = f.send("one"), second = f.send("two");

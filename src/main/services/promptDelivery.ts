@@ -8,7 +8,7 @@ export interface PromptDeliveryReceipt {
 }
 
 /** Read the active input region, never a copy of the task in the transcript. */
-export function promptComposer(terminal: Terminal, provider: string, throughCursor = false): { text: string; typed: string } | null {
+export function promptComposer(terminal: Terminal, provider: string, throughCursor = false): { text: string; typed: string; atStart: boolean } | null {
   const buffer = terminal.buffer.active;
   const pattern = provider === "claude" ? /^(\s*)❯\s?/u
     : provider === "kimi" ? /^(\s*)│\s*>\s?/u : /^(\s*)›\s?/u;
@@ -37,12 +37,16 @@ export function promptComposer(terminal: Terminal, provider: string, throughCurs
     }
     text += "\n"; typed += "\n";
   }
-  return buffer.cursorY >= row && buffer.cursorY <= end ? { text: text.trim(), typed: typed.trim() } : null;
+  return buffer.cursorY >= row && buffer.cursorY <= end ? {
+    text: text.trim(), typed: typed.trim(), atStart: buffer.cursorY === row && buffer.cursorX === column
+  } : null;
 }
 
-export function claudeTerminalComposerReady(terminal: Terminal): boolean {
+export function claudeTerminalComposerReady(terminal: Terminal, allowUnstyled = false): boolean {
   const composer = promptComposer(terminal, "claude");
-  return composer?.typed === "" && !/\[(?:Pasted text #\d+|Pasted Content|Image #\d+)/u.test(composer.text);
+  if (!composer || /\[(?:Pasted text #\d+|Pasted Content|Image #\d+)/u.test(composer.text)) return false;
+  // shortcut: only the beta2 archive's exact unstyled hint is known; extend with new native evidence.
+  return composer.typed === "" || Boolean(allowUnstyled && composer.atStart && composer.text === 'Try "edit <filepath> to..."');
 }
 
 /** Repeated text needs a new occurrence; an old collapsed paste is not an acknowledgement. */

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import * as fileSystem from "node:fs/promises";
+import * as url from "node:url";
 import { runInNewContext } from "node:vm";
 import { transformSync } from "esbuild";
 import test from "node:test";
@@ -19,7 +20,7 @@ function handlerSource(source, channel) {
 
 // Load the actual registration modules, as in the existing VM main-service tests.
 // Unused service imports and Electron APIs are doubles; sender checks and callbacks are not replaced.
-async function ipcModules() {
+async function ipcModules({ platform = process.platform, shell = {}, terminalFileEditor = {} } = {}) {
   const unusedImports = [
     "../../shared/canvasNavigation", "../windowState", "../services/SkinRegistry",
     "../services/PixelSkinPackRegistry", "../services/providerCliRegistry", "../services/LimitsService",
@@ -28,7 +29,8 @@ async function ipcModules() {
   ];
   const imports = Object.fromEntries(unusedImports.map((name) => [name, {}]));
   Object.assign(imports, {
-    electron: {}, "node:fs/promises": fileSystem,
+    electron: { shell }, "node:fs/promises": fileSystem, "node:url": url,
+    "../services/terminalFileEditor": terminalFileEditor,
     "../../shared/contracts": contracts, "../../shared/contracts.ts": contracts,
     "./PluginBrowserOpenBroker": { PluginBrowserOpenBroker }
   });
@@ -36,7 +38,7 @@ async function ipcModules() {
     const { code } = transformSync(await readFile(path, "utf8"), { loader: "ts", format: "cjs", target: "es2022" });
     const module = { exports: {} };
     runInNewContext(code, {
-      module, exports: module.exports, Error, URL, Buffer, process, console, setTimeout, clearTimeout,
+      module, exports: module.exports, Error, URL, Buffer, process: { platform }, console, setTimeout, clearTimeout,
       require(name) {
         assert.ok(Object.hasOwn(imports, name), `unexpected IPC module import: ${name}`);
         return imports[name];
@@ -198,6 +200,37 @@ test("registered privileged handlers refuse foreign frames before side effects",
     }
     calls.length = 0;
     await callback(event, ...args);
-    assert.deepEqual(calls, [[name, ...args]], `${channel}: the trusted frame still reaches the service once`);
+    assert.deepEqual(calls, [[name, ...args, ...(fireAndForget ? [false] : [])]], `${channel}: the trusted frame still reaches the service once`);
   }
 });
+
+for (const platform of ["linux", "win32", "darwin"]) {
+  test(`${platform} completes both file-opening IPC calls and preserves shell errors`, { timeout: 1_000 }, async () => {
+    const calls = [];
+    let failure = "";
+    const path = platform === "win32" ? "C:\\Users\\Тест\\report #.md" : "/tmp/Тест #?.md";
+    const shell = {
+      async openExternal(value) { calls.push(["external", value]); if (failure) throw new Error(failure); },
+      openPath(value) {
+        calls.push(["path", value]);
+        return platform === "linux" ? new Promise(() => {}) : Promise.resolve(failure);
+      }
+    };
+    const { registerIpc } = await ipcModules({ platform, shell,
+      terminalFileEditor: { resolveTerminalFilePath: async () => path } });
+    const { window, event } = rendererIdentity();
+    const handlers = new Map();
+    registerIpc({ handle: (channel, handler) => handlers.set(channel, handler), on() {} }, {
+      getMainWindow: () => window, terminals: { getMetadata: () => ({ cwd: "/work" }) },
+      mascots: { errorLog: async () => path }
+    });
+    for (const channel of [contracts.IPC.terminalOpenFile, contracts.IPC.mascotsOpenLog]) {
+      calls.length = 0;
+      failure = "";
+      await handlers.get(channel)(event, "session", "report.md");
+      assert.deepEqual(calls, [platform === "linux" ? ["external", url.pathToFileURL(path).href] : ["path", path]]);
+      failure = "No associated application";
+      await assert.rejects(() => handlers.get(channel)(event, "session", "report.md"), /No associated application/);
+    }
+  });
+}

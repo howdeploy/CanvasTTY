@@ -23,7 +23,9 @@ const IGNORED_ENTRY_NAMES = new Set([
 // `build/` itself is not ignored: it also holds tracked icons and resources.
 const IGNORED_RELATIVE_PATHS = new Set([
   "build/windows-agent-pipe-host",
-  "native/windows-agent-pipe-host/build"
+  "native/windows-agent-pipe-host/build",
+  "build/browser-gestures",
+  "native/mac-browser-gestures/build"
 ]);
 const BUILD_OUTPUT_DIRECTORY = "out";
 const BINARY_EXTENSIONS = new Set([

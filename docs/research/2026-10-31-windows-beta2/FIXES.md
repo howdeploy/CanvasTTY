@@ -2,10 +2,11 @@
 
 Date: 2026-10-31 (Europe/Moscow). Agent: Codex.
 
-Worktree: `/home/kosya/vibecoding/canvastty-optimization-1.8.4.2`, branch
-`dev/1.8.5-beta2-optimization`, starting HEAD `df274cfb`. This beta2 tree contains
+Initially prepared on `dev/1.8.5-beta2-optimization`, starting HEAD `df274cfb`,
+and preserved in commit `cdcfb02e` on `integration/1.8.5-beta2-platform-fixes`.
+This beta2 tree contains
 the delivery/composer mechanisms present in the archive excerpts. The archive's
-exact build commit has not been established. Changes remain uncommitted.
+exact build commit has not been established.
 
 Evidence: `CanvasTTY-debug-2026-10-30.zip`, SHA256
 `0599f32be29aea415b79f3c94cd0712dc2b1711b376e4d7acd71e4b1649f8522`.

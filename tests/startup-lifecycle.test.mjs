@@ -3,6 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import { EventEmitter } from "node:events";
 import { startupPageUrl } from "../src/main/startupPage.ts";
 
 const mainPath = new URL("../src/main/index.ts", import.meta.url);
@@ -21,6 +22,56 @@ function deferred() {
   return { promise, resolve, reject };
 }
 const turn = () => new Promise((resolve) => setImmediate(resolve));
+
+test("Mac window close keeps the renderer; quit and other platforms still close normally", async () => {
+  const source = await readFile(mainPath, "utf8");
+  const create = source.slice(source.indexOf("function createWindow"), source.indexOf("function shellWindowGone"));
+  for (const [platform, quitting, hidden] of [["darwin", false, true], ["darwin", true, false], ["linux", false, false], ["win32", false, false]]) {
+    class Window extends EventEmitter {
+      hidden = false;
+      webContents = Object.assign(new EventEmitter(), { setWindowOpenHandler() {} });
+      hide() { this.hidden = true; }
+    }
+    const context = {
+      process: { platform }, app: { isPackaged: true }, BrowserWindow: Window,
+      shutdownRunning: quitting, shutdownComplete: false,
+      mainWindow: null, mainWindowClosing: false, appSurfaceReady: false,
+      appIcon: null, __dirname: "/tmp", join: (...parts) => parts.join("/"),
+      mainWindowChromeOptions: () => ({}), markMainBoot() {}, observeMainWindowState: null,
+      canvasNavigationInput: null, browserService: null, attachEditContextMenu() {}
+    };
+    const createWindow = runInNewContext(`${stripTypeScriptTypes(create)}; createWindow`, context);
+    const window = createWindow();
+    const event = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    window.emit("close", event);
+    assert.equal(event.defaultPrevented, hidden, `${platform}, quitting=${quitting}`);
+    assert.equal(window.hidden, hidden);
+    assert.equal(context.mainWindowClosing, !hidden);
+    assert.equal(context.mainWindow, window);
+  }
+});
+
+test("Dock activation raises the retained Mac window even with a plugin window open", async () => {
+  const source = await readFile(mainPath, "utf8");
+  const activate = source.slice(source.indexOf('  app.on("activate"'), source.indexOf("  // The rejected second launch"));
+  const app = new EventEmitter();
+  app.isReady = () => true;
+  const calls = [];
+  const context = {
+    app, process: { platform: "darwin" }, shutdownRunning: false, shutdownComplete: false,
+    mainWindow: { isDestroyed: () => false, isMinimized: () => true,
+      restore: () => calls.push("restore"), show: () => calls.push("show"), focus: () => calls.push("focus") },
+    BrowserWindow: { getAllWindows: () => ["plugin window"] },
+    startApplication: () => calls.push("startup")
+  };
+  runInNewContext(activate, context);
+  app.emit("activate");
+  assert.deepEqual(calls, ["restore", "show", "focus"]);
+  calls.length = 0;
+  context.shutdownRunning = true;
+  app.emit("activate");
+  assert.deepEqual(calls, []);
+});
 
 function startupContext(events, overrides = {}) {
   const gate = {

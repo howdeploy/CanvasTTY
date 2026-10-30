@@ -305,7 +305,15 @@ function createWindow(): BrowserWindow {
   // Both handlers are registered before the first load: a close landing inside
   // that load has to be visible to the load's own failure handling, and the dead
   // window must not stay in `mainWindow` until the load settles.
-  window.on("close", () => {
+  window.on("close", (event) => {
+    // macOS keeps the application and its PTYs alive after the red close button.
+    // Keep their parser/renderer too: destroying it stalls output at backpressure
+    // and rebuilds every terminal and skin when the Dock reopens the window.
+    if (process.platform === "darwin" && !shutdownRunning && !shutdownComplete) {
+      event.preventDefault();
+      window.hide();
+      return;
+    }
     mainWindowClosing = true;
   });
   window.on("closed", () => {
@@ -1235,7 +1243,12 @@ if (hasSingleInstanceLock) {
     });
 
   app.on("activate", () => {
-    if (app.isReady() && !shutdownRunning && BrowserWindow.getAllWindows().length === 0) void startApplication();
+    if (!app.isReady() || shutdownRunning || shutdownComplete) return;
+    if (process.platform === "darwin" && mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    } else if (BrowserWindow.getAllWindows().length === 0) void startApplication();
   });
 
   // The rejected second launch exits silently (the lock is never released), so

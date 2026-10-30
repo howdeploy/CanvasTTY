@@ -33,6 +33,19 @@ test("secret audit still reports personal paths in publishable files", async (t)
   ]);
 });
 
+test("secret audit excludes root scratch and gesture builds but still scans source tmp directories", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "canvastty-secret-audit-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const privatePath = `/${["home", "local-user", "project"].join("/")}/`;
+  for (const directory of ["tmp", ".tmp", "build/browser-gestures", "native/mac-browser-gestures/build", "src/tmp"]) {
+    await mkdir(join(root, directory), { recursive: true });
+    await writeFile(join(root, directory, "notes.md"), privatePath);
+  }
+  assert.deepEqual(await collectRepositoryIssues(root), [
+    { path: "src/tmp/notes.md", rule: "personal home path" }
+  ]);
+});
+
 test("secret audit ignores key prefixes embedded in identifiers", () => {
   const patterns = new Map(SECRET_PATTERNS);
   const matches = (rule, sample) => [...sample.matchAll(patterns.get(rule))].map((match) => match[0]);

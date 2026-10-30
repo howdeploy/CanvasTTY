@@ -679,7 +679,7 @@ function agentErrorMessage(code: BrowserErrorCode): string {
     BRIDGE_UNAVAILABLE: "Browser bridge is unavailable.",
     TAB_NOT_FOUND: "Browser tab was not found.",
     TAB_CLOSED: "Browser tab was closed.",
-    VIEWPORT_UNAVAILABLE: "Browser view has no drawable surface. Use semantic page reading or ask the person to bring its Browser card into view. Do not switch to desktop automation.",
+    VIEWPORT_UNAVAILABLE: "Browser view has no drawable surface. Use semantic page reading or ask the person to bring its Browser card into view, then retry. Do not switch to desktop automation.",
     STALE_REF: "Browser page changed; observe it again.",
     INVALID_URL: "Browser URL is invalid.",
     NAVIGATION_BLOCKED: "Browser navigation was blocked by policy.",

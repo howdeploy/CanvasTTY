@@ -21,11 +21,14 @@ const IGNORED_ENTRY_NAMES = new Set([
 // writes the builder's absolute home path into the generated project files and
 // objects, which is build-environment noise rather than publishable content.
 // `build/` itself is not ignored: it also holds tracked icons and resources.
+// Root-only scratch directories are gitignored local state, not publishable source.
 const IGNORED_RELATIVE_PATHS = new Set([
   "build/windows-agent-pipe-host",
   "native/windows-agent-pipe-host/build",
   "build/browser-gestures",
-  "native/mac-browser-gestures/build"
+  "native/mac-browser-gestures/build",
+  "tmp",
+  ".tmp"
 ]);
 const BUILD_OUTPUT_DIRECTORY = "out";
 const BINARY_EXTENSIONS = new Set([

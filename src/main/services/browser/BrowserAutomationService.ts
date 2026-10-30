@@ -1662,7 +1662,7 @@ export function redactBitmapPixels(
 }
 
 function viewportUnavailable(): BrowserKernelError {
-  return new BrowserKernelError("VIEWPORT_UNAVAILABLE", "Browser view has no drawable surface. Use semantic page reading or ask the person to bring its Browser card into view. Do not switch to desktop automation.", {
+  return new BrowserKernelError("VIEWPORT_UNAVAILABLE", "Browser view has no drawable surface. Use semantic page reading or ask the person to bring its Browser card into view, then retry. Do not switch to desktop automation.", {
     retryable: true
   });
 }

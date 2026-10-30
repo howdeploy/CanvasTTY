@@ -87,6 +87,8 @@ test("viewport errors reach the agent through BrowserCore and MCP without an inv
     assert.equal(result.ok, false);
     assert.equal(result.error.code, "VIEWPORT_UNAVAILABLE");
     assert.match(result.error.message, /Browser card.*view.*retry/i);
+    assert.match(result.error.message, /ask the person/i);
+    assert.match(result.error.message, /Do not switch to desktop automation/);
     const tool = formatToolResult(result);
     assert.equal(tool.isError, true);
     assert.ok(tool.content.every((item) => item.type === "text"));

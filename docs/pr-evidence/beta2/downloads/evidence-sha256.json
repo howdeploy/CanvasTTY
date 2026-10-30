@@ -1,0 +1,8 @@
+{
+  "testedFixRevision": "ccc47c01160c748d1a43ff8b95bd7fd73ce789c1",
+  "baseRevision": "df274cfb144b2d46bbc3ab6a3b2d92c12549169e",
+  "files": {
+    "evidence/downloads-before-detail.png": "549cc157a0d1789353d1d8b5d1c7e30503094538c3bb653744d32651bb36ee06",
+    "evidence/downloads-after-states.png": "25867353bb8f98713d12aae3caa5509cf7efcbd74497a15070873a76fb18c617"
+  }
+}

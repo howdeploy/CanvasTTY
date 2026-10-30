@@ -40,7 +40,7 @@ test("list, read, and search payloads expose no absolute root path", async () =>
     const service = new FileAccessService({
       resolveSessionCwd: (sessionId) => (sessionId === "session-1" ? root : undefined)
     });
-    const descriptor = service.registerSessionRoot("session-1");
+    const descriptor = await service.registerSessionRoot("session-1");
     await writeFile(join(root, "notes.txt"), "hello");
 
     const payloads = {

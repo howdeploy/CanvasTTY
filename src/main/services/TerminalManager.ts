@@ -59,6 +59,7 @@ import {
 import { codexTrustArguments, mergeOpenCodeLaunchEnvironment } from "./agent-runtime/ProviderRuntimeLaunch.ts";
 import { openCodeProjectFolderEnvironment } from "./openCodeConfig.ts";
 import { onDiskPath } from "./onDiskPath.ts";
+import { processWorkingDirectory } from "./processWorkingDirectory.ts";
 import { RESULT_CAPTURE_PROVIDERS } from "./resultCapture.ts";
 import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from "../../shared/launchModel.ts";
 import { SecretRedactionRegistry } from "./safety/SecretRedaction.ts";
@@ -611,6 +612,23 @@ export class TerminalManager {
   getMetadata(id: string): SessionMetadata | null {
     const session = this.sessions.get(id);
     return session ? publicSessionMetadata(session) : null;
+  }
+
+  /** Files resolves a live local shell at selection time without changing launch/restore metadata. */
+  async getWorkingDirectory(id: string): Promise<string | undefined> {
+    const session = this.sessions.get(id);
+    if (!session) return undefined;
+    const process = session.process;
+    // Remote/environment wrappers and non-shell providers retain their launch-directory semantics.
+    if (session.metadata.provider !== "terminal" || session.extras.environment || session.extras.environmentChoice
+      || (this.platform !== "darwin" && this.platform !== "linux")
+      || !process || session.metadata.exitCode !== null) return session.metadata.cwd;
+    if (this.quitting) return undefined;
+    const epoch = session.launchEpoch;
+    const cwd = await processWorkingDirectory(process.pid, this.platform);
+    if (this.quitting || this.sessions.get(id) !== session || session.process !== process
+      || session.launchEpoch !== epoch || session.metadata.exitCode !== null) return undefined;
+    return cwd;
   }
 
   geometry(id: string): { cols: number; rows: number } {

@@ -526,7 +526,7 @@ export function BrowserCard({
           aria-label={`${t(locale, "browserDownloads")}: ${recentDownloads.length}`}
         >
           <UiIcon name="download" size={16} />
-          {recentDownloads.length > 0 && <span>{activeDownloadCount || recentDownloads.length}</span>}
+          {recentDownloads.length > 0 && <span className="browser-card__download-count">{activeDownloadCount || recentDownloads.length}</span>}
         </button>
       </nav>
 

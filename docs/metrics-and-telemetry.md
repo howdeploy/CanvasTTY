@@ -38,6 +38,8 @@ The report period is not the quota window; primary and weekly windows remain sep
   a SQLite CLI with `-safe` support on `PATH`. Missing sources are reported, not counted as zero.
 - History and cursors are saved atomically in `usage-history.json` under the normal
   Electron `userData` directory, bounded to 30 days and 500,000 events.
+  On macOS, snapshots from 1 MiB use a compressed v3 JSON envelope; v2 still loads.
+  Older builds require a [v2 export before rollback](mac-stability.md#history-rollback).
 - The automatic estimate splits a comparable interval's measured change by session token
   weight **if local logged activity explains that change**. This is not the provider's
   billing formula or proof of account attribution. External activity remains unknown.

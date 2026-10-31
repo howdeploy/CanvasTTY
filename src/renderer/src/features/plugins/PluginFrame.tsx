@@ -17,6 +17,7 @@ import {
 import { createFrameReplyGate } from "./frameReplies";
 import { pluginVisibilityMessage } from "../../../../shared/pluginVisibility";
 import { isProviderId } from "../../../../shared/providerCatalog.ts";
+import { useDesktopWindow } from "./useDesktopWindow";
 
 const storageListeners = new Map<string, Set<(key: string, value: unknown) => void>>();
 
@@ -75,6 +76,7 @@ export function PluginFrame({
   suspended = false
 }: PluginFrameProps): React.JSX.Element {
   const frame = useRef<HTMLIFrameElement>(null);
+  const desktopRequest = useDesktopWindow(frame, plugin, canvasInstanceId, suspended, onError);
   // Tells which document a finished request belongs to, so a reload never receives an earlier reply.
   const [replies] = useState(createFrameReplyGate);
   const entryUrl = useMemo(
@@ -157,7 +159,9 @@ export function PluginFrame({
       if (typeof message.method !== "string" || message.method.length > 80) return;
 
       const mayReply = replies.received(message.requestId, event.source, plugin.manifest.id);
-      void handleRequest({
+      const request = typeof message.method === "string" && message.method.startsWith("desktopWindows.")
+        ? desktopRequest(message.method, isRecord(message.params) ? message.params : {})
+        : handleRequest({
         plugin,
         method: message.method,
         params: isRecord(message.params) ? message.params : {},
@@ -166,7 +170,8 @@ export function PluginFrame({
         limits,
         canvasInstanceId,
         onOpenLauncher
-      }).then((value) => {
+      });
+      void request.then((value) => {
         if (!mayReply(frame.current?.contentWindow, servedPlugin.current)) return;
         postToFrame(frame.current, {
           source: "canvastty-host",
@@ -190,7 +195,7 @@ export function PluginFrame({
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [canvasInstanceId, captureCanvasWheelOverWidgets, context, limits, onCanvasWheel, onError, onFocus, onHoverChange, onOpenLauncher, onMascotDrag, plugin, replies, sessions]);
+  }, [canvasInstanceId, captureCanvasWheelOverWidgets, context, desktopRequest, limits, onCanvasWheel, onError, onFocus, onHoverChange, onOpenLauncher, onMascotDrag, plugin, replies, sessions]);
 
   useEffect(() => {
     postToFrame(frame.current, { source: "canvastty-host", type: "context", value: context });

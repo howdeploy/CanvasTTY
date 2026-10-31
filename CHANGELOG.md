@@ -2,6 +2,12 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+- Search Settings labels and descriptions in Russian or English and navigate directly to matching groups with mouse or keyboard.
+- Open Agents → Limit display directly from hidden/unavailable HOME quota states, preserving existing provider switches.
+- Add experimental Windows `desktop:embed` plugin support and a standalone Codex Desktop reference package. Host real application windows in canvas cards, hide them under host overlays, and restore them on detach, card close or normal host exit. Different DPI modes and non-Windows hosts are explicitly unsupported; real Codex GPU compatibility still requires manual acceptance.
+
 ## 1.8.5-beta2
 
 Beta candidate continuing the optimization round. Runtime validation and macOS performance measurements are still pending; this does not claim to resolve every reported slowdown.

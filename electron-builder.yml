@@ -74,6 +74,11 @@ electronFuses:
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true
 extraResources:
+  - from: native/desktop-apps
+    to: desktop-apps
+    filter:
+      - WindowHost.cs
+      - window-host.ps1
   - from: node_modules/ascii.rest/LICENSE
     to: licenses/ascii-rest.txt
   - from: assets/mascot-pipeline

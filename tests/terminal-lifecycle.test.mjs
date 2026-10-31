@@ -164,7 +164,7 @@ test("clipboard replies cannot paste into a restarted or exited session while no
     const promise = new Promise((done) => { resolve = done; });
     return { promise, resolve };
   };
-  const fixture = () => {
+  const fixture = (preset = "macos", provider = "codex") => {
     const image = deferred();
     const text = deferred();
     const calls = [];
@@ -174,14 +174,15 @@ test("clipboard replies cannot paste into a restarted or exited session while no
     const sessionExited = { current: false };
     const sessionStartedAt = { current: 1 };
     const window = { canvasTTY: {
-      window: { isMacOS: true },
+      window: { isMacOS: preset === "macos", platform: preset === "windows" ? "win32" : "darwin" },
       clipboard: {
         hasImage: () => { reads.image++; return image.promise; },
         readText: () => { reads.text++; return text.promise; }
       },
       terminal: { input: (id, sequence) => calls.push([id, sequence]) }
     } };
-    const handler = terminalKeyHandler(body, { window, session: { id: "same-card", provider: "codex" }, terminal,
+    const handler = terminalKeyHandler(body, { window, session: { id: "same-card", provider }, terminal,
+      shortcutsRef: { current: keyboardPresetShortcuts(preset) },
       terminalRef, sessionExited, sessionStartedAt });
     return { handler, image, text, calls, reads, terminalRef, sessionExited, sessionStartedAt };
   };
@@ -198,6 +199,45 @@ test("clipboard replies cannot paste into a restarted or exited session while no
   await tick();
   assert.deepEqual(normalImage.calls, [["same-card", "\u0016"]]);
   assert.equal(normalImage.reads.text, 0);
+
+  const windowsPaste = { ...event, metaKey: false, ctrlKey: true };
+  for (const shiftKey of [false, true]) {
+    const screenshot = fixture("windows");
+    assert.equal(screenshot.handler({ ...windowsPaste, shiftKey }), false);
+    assert.equal(screenshot.reads.image, 1, "Windows paste checks the native image clipboard");
+    screenshot.image.resolve(true);
+    await tick();
+    assert.deepEqual(screenshot.calls, [["same-card", "\u0016"]], "send the CLI image shortcut once, without bracketed paste");
+    assert.equal(screenshot.reads.text, 0);
+  }
+  const windowsText = fixture("windows");
+  windowsText.handler({ ...windowsPaste, shiftKey: true });
+  windowsText.image.resolve(false);
+  await tick();
+  windowsText.text.resolve("multiline\nclipboard text");
+  await tick();
+  assert.deepEqual(windowsText.calls, [["text", "multiline\nclipboard text"]]);
+
+  const literal = fixture("windows");
+  literal.handler(windowsPaste);
+  literal.image.resolve(false);
+  await tick();
+  assert.deepEqual(literal.calls, [["same-card", "\u0016"]]);
+  assert.equal(literal.reads.text, 0, "unbound Ctrl+V keeps native CLI semantics without pasting clipboard text");
+  const otherCli = fixture("windows", "terminal");
+  assert.equal(otherCli.handler(windowsPaste), true);
+  assert.deepEqual(otherCli.reads, { image: 0, text: 0 });
+  for (const patch of [{ type: "keyup" }, { altKey: true }, { isComposing: true }]) {
+    const ignored = fixture("windows");
+    assert.equal(ignored.handler({ ...windowsPaste, ...patch }), true);
+    assert.deepEqual(ignored.reads, { image: 0, text: 0 });
+  }
+  const staleWindows = fixture("windows");
+  staleWindows.handler(windowsPaste);
+  staleWindows.sessionStartedAt.current++;
+  staleWindows.image.resolve(true);
+  await tick();
+  assert.deepEqual(staleWindows.calls, [], "Windows image reply cannot reach a restarted session");
 
   for (const imageValue of [false, true]) {
     const restarted = fixture();

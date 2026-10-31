@@ -2,6 +2,7 @@ import { CanvasLinkSettings } from "./CanvasLinkSettings";
 import { EvenG2Controls } from "./EvenG2Controls";
 import { BackgroundAppearanceManager } from "./BackgroundAppearanceManager";
 import { TerminalBackgroundChoices } from "./TerminalBackgroundChoices";
+import "../../assets/vendor/sl-ui/text-input/buttons.css";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   AppSettings,
@@ -284,7 +285,14 @@ export function SettingsPanel({
         if (parent instanceof HTMLDetailsElement) parent.open = true;
       }
       group.scrollIntoView({ block: "center" });
+      group.dataset.settingHighlight = "true";
       group.focus({ preventScroll: true });
+      const clearHighlight = (): void => { delete group.dataset.settingHighlight; };
+      group.addEventListener("blur", clearHighlight);
+      return () => {
+        group.removeEventListener("blur", clearHighlight);
+        clearHighlight();
+      };
     }
   }, [open, section, searchTarget]);
 
@@ -516,10 +524,15 @@ export function SettingsPanel({
             <span className="settings-panel__brand-icon"><UiIcon name="settings" size="1.05em" /></span>
             <h2>{t(locale, "settings")}</h2>
           </header>
-          <div className="settings-search">
-            <input type="search" aria-label={t(locale, "settingsSearch")} placeholder={t(locale, "settingsSearch")}
-              value={searchQuery} onChange={(event) => { setSearchQuery(event.target.value); setSearchTarget(null); }} />
-            {searchQuery.trim() && <div className="settings-search__results" aria-label={t(locale, "settingsSearchResults")}>
+          <div className="settings-search sl-field">
+            <div className="sl-field__control">
+              <input id="settings-search" className="sl-field__input" type="search" placeholder=" " autoComplete="off"
+                aria-describedby="settings-search-help" aria-controls="settings-search-results"
+                value={searchQuery} onChange={(event) => { setSearchQuery(event.target.value); setSearchTarget(null); }} />
+              <label className="sl-field__label" htmlFor="settings-search">{t(locale, "settingsSearch")}</label>
+            </div>
+            <p id="settings-search-help" className="sl-field__helper">{t(locale, "settingsSearchResults")}</p>
+            {searchQuery.trim() && <div id="settings-search-results" className="settings-search__results" aria-label={t(locale, "settingsSearchResults")}>
               {searchResults.length === 0 && <p role="status">{t(locale, "settingsSearchEmpty")}</p>}
               {searchResults.map((result) => <button type="button" key={result.section + result.label}
                 onClick={() => {

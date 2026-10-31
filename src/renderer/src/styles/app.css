@@ -162,7 +162,7 @@ button { border: 0; }
 .radial-launcher__icon { height: 2.6em; display: grid; place-items: center; }
 .radial-launcher__item .provider-icon { --provider-icon-art-size: 1.85em; }
 
-.tile { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
+.tile { position: relative; overflow: hidden; border: 1px solid color-mix(in srgb, var(--text) 18%, transparent); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
 
 .home-zone { position: absolute; left: 0; top: 0; display: grid; gap: 18px; border-radius: calc(var(--radius-lg) + 4px); }
 /* Empty HOME cells must not intercept regions visible underneath them. */
@@ -1681,3 +1681,13 @@ button { border: 0; }
 }
 
 .canvas-minimap__entity--files { background: rgba(184,207,153,.92); }
+
+/* Search stays in the Settings sidebar, with keyboard-accessible destinations. */
+.settings-search { position: relative; padding: .6em .8em; }
+.settings-search input { width: 100%; box-sizing: border-box; padding: .65em; border: 1px solid color-mix(in srgb, var(--text) 18%, transparent); border-radius: .5em; color: var(--text); background: var(--surface); }
+.settings-search__results { position: absolute; z-index: 5; left: .8em; right: .8em; max-height: 24em; overflow-y: auto; background: var(--surface); border: 1px solid color-mix(in srgb, var(--text) 18%, transparent); border-radius: .5em; box-shadow: 0 .5em 1.5em #0003; }
+.settings-search__results button { display: flex; flex-direction: column; gap: .25em; width: 100%; padding: .65em; border: 0; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.settings-search__results button:hover, .settings-search__results button:focus-visible { background: var(--surface-soft); outline: 2px solid var(--primary); outline-offset: -2px; }
+.settings-search__results small { opacity: .7; }
+.settings-search__results p { padding: .65em; }
+.setting-group[data-setting-label]:focus { outline: 2px solid var(--primary); outline-offset: -2px; }

@@ -126,7 +126,7 @@ import {
 import { PROFILE_LABELS } from "../../lib/launchProfiles";
 import { MascotsSettings } from "./MascotsSettings";
 
-type SettingsSection = "general" | "keyboardShortcuts" | "appearance" | "agents" | "controls" | "externalIntegrations" | "canvasLink" | "browser" | "plugins" | "mascots" | "updates" | "about";
+import { searchSettings, type SettingsSection } from "./settingsSearch";
 
 const SHORTCUT_LABELS = {
   home: "homeShortcut", renameWindow: "renameWindow", toggleFullscreen: "toggleFullscreen",
@@ -257,6 +257,23 @@ export function SettingsPanel({
   const containmentAvailable = isolationAvailable(settings, window.canvasTTY?.window?.platform ?? "");
   const [section, setSection] = useState<SettingsSection>("general");
   const contentRef = useRef<HTMLDivElement>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchTarget, setSearchTarget] = useState<string | null>(null);
+  const searchResults = searchSettings(searchQuery, locale);
+
+  useLayoutEffect(() => {
+    if (!open || !searchTarget) return;
+    const group = [...(contentRef.current?.querySelectorAll<HTMLElement>("[data-setting-label]") ?? [])]
+      .find((element) => element.dataset.settingLabel === searchTarget);
+    if (group) {
+      // Reveal collapsed ancestors before measuring the destination.
+      for (let parent = group.parentElement; parent; parent = parent.parentElement) {
+        if (parent instanceof HTMLDetailsElement) parent.open = true;
+      }
+      group.scrollIntoView({ block: "center" });
+      group.focus({ preventScroll: true });
+    }
+  }, [open, section, searchTarget]);
 
   useEffect(() => {
     if (openUpdatesRequest > 0) setSection("updates");
@@ -296,7 +313,7 @@ export function SettingsPanel({
   const [agentCliError, setAgentCliError] = useState<string | null>(null);
 
   useLayoutEffect(() => {
-    if (open && contentRef.current) contentRef.current.scrollTop = 0;
+    if (open && contentRef.current && !searchTarget) contentRef.current.scrollTop = 0;
   }, [open, section]);
 
   const openAgentInstall = (provider: AgentProviderId): void => {
@@ -332,6 +349,8 @@ export function SettingsPanel({
 
   useEffect(() => {
     if (!open) {
+      setSearchQuery("");
+      setSearchTarget(null);
       setCapturing(null);
       setShortcutError(null);
       setClearConfirm(false);
@@ -485,6 +504,19 @@ export function SettingsPanel({
             <span className="settings-panel__brand-icon"><UiIcon name="settings" size="1.05em" /></span>
             <h2>{t(locale, "settings")}</h2>
           </header>
+          <div className="settings-search">
+            <input type="search" aria-label={t(locale, "settingsSearch")} placeholder={t(locale, "settingsSearch")}
+              value={searchQuery} onChange={(event) => { setSearchQuery(event.target.value); setSearchTarget(null); }} />
+            {searchQuery.trim() && <div className="settings-search__results" aria-label={t(locale, "settingsSearchResults")}>
+              {searchResults.length === 0 && <p role="status">{t(locale, "settingsSearchEmpty")}</p>}
+              {searchResults.map((result) => <button type="button" key={result.section + result.label}
+                onClick={() => {
+                  setSection(result.section);
+                  setSearchTarget(t(locale, result.label));
+                  setSearchQuery("");
+                }}><strong>{t(locale, result.label)}</strong><small>{t(locale, result.section)}</small></button>)}
+            </div>}
+          </div>
           <nav className="settings-tabs" role="tablist" aria-label={t(locale, "settingsSections")}>
             {SETTINGS_SECTIONS.map(({ id, icon }) => (
               <button
@@ -497,6 +529,7 @@ export function SettingsPanel({
                 aria-selected={section === id}
                 title={t(locale, id)}
                 onClick={() => {
+                  setSearchTarget(null);
                   setCapturing(null);
                   setShortcutError(null);
                   setSection(id);
@@ -2242,7 +2275,7 @@ export function SettingGroup({
   children: React.ReactNode;
 }): React.JSX.Element {
   return (
-    <section className={`setting-group setting-group--field${layout === "stacked" ? " setting-group--stacked" : ""}`}>
+    <section data-setting-label={label} tabIndex={-1} className={`setting-group setting-group--field${layout === "stacked" ? " setting-group--stacked" : ""}`}>
       <div className="setting-group__copy">
         <h3>{label}</h3>
         {description && <p className="setting-group__description">{description}</p>}

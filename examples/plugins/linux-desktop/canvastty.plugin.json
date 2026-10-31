@@ -1,0 +1,23 @@
+{
+  "apiVersion": 1,
+  "id": "io.github.howdeploy.linux-desktop",
+  "name": "Linux Desktop",
+  "version": "0.1.0",
+  "description": "Experimental plugin for embedding an already running X11/XWayland window on Linux. Requires the CanvasTTY Linux desktop SDK.",
+  "description.ru": "Экспериментальное встраивание запущенных X11/XWayland-окон на Linux. Нужен Linux desktop SDK в сборке CanvasTTY.",
+  "author": "howdeploy",
+  "homepage": "https://github.com/howdeploy/canvastty-plugin-linux-desktop",
+  "platforms": ["canvastty"],
+  "minHostVersion": "1.8.5",
+  "permissions": ["desktop:embed"],
+  "contributions": [
+    {
+      "id": "linux-desktop-canvas",
+      "kind": "canvas-app",
+      "title": "Linux Desktop",
+      "entry": "widget/index.html",
+      "defaultSize": { "width": 1100, "height": 760 },
+      "minSize": { "width": 480, "height": 320 }
+    }
+  ]
+}

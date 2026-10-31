@@ -1060,6 +1060,7 @@ function HookManifestWarning({
 }
 
 function permissionKey(permission: PluginPermission): TranslationKey {
+  if (permission === "desktop:embed" && window.canvasTTY.window.platform === "linux") return "permissionDesktopEmbedLinux";
   return ({
     storage: "permissionStorage",
     secrets: "permissionSecrets",
@@ -1072,6 +1073,7 @@ function permissionKey(permission: PluginPermission): TranslationKey {
     "playlists:read": "permissionPlaylistsRead",
     "playlists:write": "permissionPlaylistsWrite",
     "hermes:hud": "permissionHermesHud",
+    "desktop:embed": "permissionDesktopEmbed",
     "launch:contribute": "permissionLaunchContribute",
     "environment:provide": "permissionEnvironmentProvide",
     "decision:provide": "permissionDecisionProvide",

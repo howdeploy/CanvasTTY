@@ -74,6 +74,11 @@ electronFuses:
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true
 extraResources:
+  - from: native/desktop-apps
+    to: desktop-apps
+    filter:
+      - WindowHost.cs
+      - window-host.ps1
   - from: node_modules/ascii.rest/LICENSE
     to: licenses/ascii-rest.txt
   - from: assets/mascot-pipeline
@@ -135,6 +140,11 @@ appImage:
   compression: gzip
 
 linux:
+  extraResources:
+    - from: native/desktop-apps-linux
+      to: desktop-apps-linux
+      filter:
+        - window-host.py
   icon: build/icon.png
   category: Utility
   maintainer: howdeploy

@@ -1,3 +1,4 @@
+import type { DesktopWindowCandidate, DesktopWindowViewport } from "./desktopWindows";
 import { CANVAS_LAUNCHER_ITEMS, PROVIDER_LABELS, isProviderId, type CanvasLauncherItemId, type ProviderId } from "./providerCatalog.ts";
 export { CANVAS_LAUNCHER_ITEMS, PROVIDER_LABELS, isProviderId };
 export type { CanvasLauncherItemId, ProviderId };
@@ -824,6 +825,7 @@ export type PluginPermission =
   | "playlists:read"
   | "playlists:write"
   | "hermes:hud"
+  | "desktop:embed"
   | "network"
   | "launch:contribute"
   | "environment:provide"
@@ -2037,6 +2039,9 @@ export interface CanvasTTYApi {
     playlistsList(pluginId: string, libraryId: string): Promise<PluginPlaylistFile[]>;
     playlistsRead(pluginId: string, libraryId: string, playlistId: string): Promise<string>;
     playlistsWrite(pluginId: string, libraryId: string, name: string, content: string): Promise<PluginPlaylistFile>;
+    desktopWindows(pluginId: string, instanceId: string, action: "list", value?: unknown): Promise<DesktopWindowCandidate[]>;
+    desktopWindows(pluginId: string, instanceId: string, action: "attach" | "update" | "detach", value?: string | DesktopWindowViewport): Promise<null>;
+    onDesktopWindowFocus(listener: (event: { pluginId: string; instanceId: string }) => void): () => void;
     hermesHudStatus(pluginId: string): Promise<HermesHudSnapshot>;
     hermesHudOpen(pluginId: string): Promise<HermesHudSnapshot>;
     hermesHudClose(pluginId: string): Promise<HermesHudSnapshot>;
@@ -2129,6 +2134,8 @@ export interface CanvasTTYApi {
 }
 
 export const IPC = {
+  pluginsDesktopWindows: "plugins:desktop-windows",
+  pluginsDesktopWindowFocus: "plugins:desktop-window-focus",
   mascotsList: "mascots:list",
   mascotsStart: "mascots:start",
   mascotsLink: "mascots:link",

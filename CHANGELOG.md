@@ -2,6 +2,12 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## Unreleased
+
+- Search Settings labels and descriptions in Russian or English and navigate directly to matching groups with mouse or keyboard.
+- Open Agents → Limit display directly from hidden/unavailable HOME quota states, preserving existing provider switches.
+- Add experimental Windows and Linux X11/XWayland `desktop:embed` plugin support, preserving [bbutterm's Windows SDK contribution](https://github.com/howdeploy/CanvasTTY/pull/182) and adding a separate Linux backend and Linux Desktop reference plugin. Host real application windows in canvas cards, respect HUD/input layers, and restore them on detach or normal host exit. Native Wayland and macOS are unsupported; Windows DPI/elevation and foreign GPU/dialog compatibility remain experimental limits.
+
 ## 1.8.5-beta2
 
 Beta candidate continuing the optimization round. Runtime validation and macOS performance measurements are still pending; this does not claim to resolve every reported slowdown.

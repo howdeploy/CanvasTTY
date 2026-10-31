@@ -20,6 +20,7 @@ import { PluginFrame } from "./PluginFrame";
 import type { PluginCanvasWheelInput } from "./pluginInputBridge";
 import { pluginCanvasWidgetId } from "../workspace/canvasWidgetFocus";
 import { surfaceIsLive, surfaceLifecycle, useSurfaceOffscreen, useWindowHidden } from "../workspace/surfaceLifecycle";
+import type { LinuxDesktopCanvasPolicy } from "./linuxDesktopViewport";
 
 interface PluginCanvasCardProps {
   instance: PluginCanvasInstance;
@@ -48,6 +49,7 @@ interface PluginCanvasCardProps {
   groupSelected?: boolean;
   /** An ancestor hides the card with CSS (HOME editing hides the whole window layer). */
   hidden?: boolean;
+  nativeSurface?: LinuxDesktopCanvasPolicy;
 }
 
 interface DragState {
@@ -86,7 +88,8 @@ export function PluginCanvasCard({
   onWidgetHoverChange,
   onCanvasWheel,
   groupSelected = false,
-  hidden = false
+  hidden = false,
+  nativeSurface
 }: PluginCanvasCardProps): React.JSX.Element {
   const dragState = useRef<DragState | null>(null);
   const mascotDragState = useRef<DragState | null>(null);
@@ -99,7 +102,10 @@ export function PluginCanvasCard({
   const [position, setPosition] = useState(initialBounds.position);
   const [size, setSize] = useState(initialBounds.size);
   const liveBounds = useRef<SessionBounds>(initialBounds);
-  // Renders when the summary scale changes, not on every camera move.
+  // Native Linux content follows every camera change, just like BrowserCard.
+  const linuxDesktop = window.canvasTTY.window.platform === "linux" && plugin.manifest.permissions.includes("desktop:embed");
+  useCameraSelector(camera, (current) => linuxDesktop ? current : null);
+  // Other plugins only need to rerender when their summary scale changes.
   const summaryScale = useCameraSelector(camera, (current) => summaryScaleForZoom(current.zoom));
   const summaryMode = !isMascot && summaryScale > 1;
   // The plugin document is suspended whenever nobody can see it: its timers drop to one wake-up a second
@@ -301,6 +307,7 @@ export function PluginCanvasCard({
         onError={onError}
         onMascotDrag={isMascot ? dragMascot : undefined}
         suspended={!surfaceIsLive(lifecycle)}
+        nativeSurface={nativeSurface}
       />
       <button
         className="plugin-canvas-card__summary"

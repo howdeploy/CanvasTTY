@@ -26,6 +26,12 @@ export interface CanvasTTYPluginHost {
   request(method: "hermesHud.getState"): Promise<CanvasTTYPluginHermesHudSnapshot>;
   request(method: "hermesHud.open"): Promise<CanvasTTYPluginHermesHudSnapshot>;
   request(method: "hermesHud.close"): Promise<CanvasTTYPluginHermesHudSnapshot>;
+  request(method: "desktopWindows.list"): Promise<CanvasTTYPluginDesktopWindow[]>;
+  request(method: "desktopWindows.status"): Promise<{ attached: boolean }>;
+  request(method: "desktopWindows.attach", params: { windowId: string; insetTop: number }): Promise<null>;
+  /** Linux-only: keep the native viewport below a responsive toolbar (40–4096 local CSS pixels). */
+  request(method: "desktopWindows.layout", params: { insetTop: number }): Promise<null>;
+  request(method: "desktopWindows.detach"): Promise<null>;
   request(method: "secrets.get", params: { key: string }): Promise<string | null>;
   request(method: "secrets.set", params: { key: string; value: string }): Promise<null>;
   request(method: "secrets.delete", params: { key: string }): Promise<null>;
@@ -59,6 +65,14 @@ export interface CanvasTTYPluginHost {
     open(): Promise<CanvasTTYPluginHermesHudSnapshot>;
     close(): Promise<CanvasTTYPluginHermesHudSnapshot>;
   };
+  /** Windows or Linux X11/XWayland; canvas-app only; requires desktop:embed. No process launch/kill API. */
+  desktopWindows: {
+    list(): Promise<CanvasTTYPluginDesktopWindow[]>;
+    status(): Promise<{ attached: boolean }>;
+    /** Reserves 40–300 local CSS pixels above the native viewport for plugin controls. */
+    attach(windowId: string, insetTop?: number): Promise<void>;
+    detach(): Promise<void>;
+  };
   /** Talks to this plugin's own services only (apiVersion 2 `services`). */
   service: {
     /** Rejects when the service is not running (native code not trusted, disabled, restarting, failed) or after 15 s. */
@@ -73,13 +87,20 @@ export interface CanvasTTYPluginHost {
   onVisibilityChange(listener: (state: "visible" | "hidden") => void): () => void;
 }
 
+export interface CanvasTTYPluginDesktopWindow {
+  /** Opaque, single-use selection, bound to this canvas card; expires after 60 seconds. */
+  id: string;
+  title: string;
+  process: string;
+}
+
 export interface CanvasTTYPluginContext {
   apiVersion: 1;
   plugin: {
     id: string;
     name: string;
     version: string;
-    permissions: Array<"storage" | "secrets" | "sessions:read" | "limits:read" | "launcher:open" | "external:open" | "browser:open" | "media:library" | "playlists:read" | "playlists:write" | "hermes:hud" | "network" | "launch:contribute" | "environment:provide" | "decision:provide" | "tools:agents" | "sessions:events" | "sessions:read-screen" | "sessions:launch" | "sessions:control" | "cards:decorate" | "browser:engine">;
+    permissions: Array<"storage" | "secrets" | "sessions:read" | "limits:read" | "launcher:open" | "external:open" | "browser:open" | "media:library" | "playlists:read" | "playlists:write" | "hermes:hud" | "desktop:embed" | "network" | "launch:contribute" | "environment:provide" | "decision:provide" | "tools:agents" | "sessions:events" | "sessions:read-screen" | "sessions:launch" | "sessions:control" | "cards:decorate" | "browser:engine">;
     modules: string[];
   };
   contribution: {

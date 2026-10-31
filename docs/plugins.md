@@ -18,7 +18,7 @@ Installing a plugin is equivalent to allowing third-party browser code to run lo
 - Declared services follow the same rule as hooks, per plugin: install never starts them, and update, module changes, disabling, or a changed entry file revokes the confirmation. Services run out of process; no plugin code runs in the CanvasTTY main process.
 - Declared agent hooks are never enabled by install, update, or module changes. Enabling one is equivalent to running that repository's JavaScript as a native application with the current user's OS privileges, access to the provider event payload, and potential access to user-readable configuration or credentials. Updating the plugin, replacing modules, or disabling the plugin revokes every enabled hook so changed code must be trusted again.
 
-CanvasTTY does not embed arbitrary native OS windows. A `window` contribution is a sandboxed CanvasTTY-owned `BrowserWindow`. Native reparenting is not portable or reliable across Wayland, macOS, Windows, DPI modes, popups, and GPU surfaces.
+A `window` contribution is a sandboxed CanvasTTY-owned `BrowserWindow`. Experimental Windows and Linux X11/XWayland native embedding is available only to canvas-app contributions with the explicit `desktop:embed` permission; see [native desktop window plugins](desktop-window-plugins.md). Native Wayland and macOS are unsupported. Native reparenting remains limited by DPI modes, elevation, popups and GPU surfaces.
 
 ## Package layout
 

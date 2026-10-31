@@ -32,7 +32,9 @@ async function ipcModules({ platform = process.platform, shell = {}, terminalFil
     electron: { shell }, "node:fs/promises": fileSystem, "node:url": url,
     "../services/terminalFileEditor": terminalFileEditor,
     "../../shared/contracts": contracts, "../../shared/contracts.ts": contracts,
-    "./PluginBrowserOpenBroker": { PluginBrowserOpenBroker }
+    "./PluginBrowserOpenBroker": { PluginBrowserOpenBroker },
+    "./desktopWindowIpc": { registerDesktopWindowIpc() {} },
+    "./linuxDesktopWindowIpc": { registerLinuxDesktopWindowIpc() {} }
   });
   const load = async (path) => {
     const { code } = transformSync(await readFile(path, "utf8"), { loader: "ts", format: "cjs", target: "es2022" });

@@ -110,6 +110,17 @@
 .usage-history__pagination button:disabled { opacity: .4; cursor: default; }
 .usage-history__pagination button:focus-visible { outline: .12em solid var(--primary); outline-offset: -.12em; }
 .usage-history__previous .ui-icon { transform: rotate(180deg); }
+
+/* Mac's minimum window plus 125% UI scale can be shorter than the sidebar's
+   intrinsic height. Keep the report and its paging controls in the available row. */
+.app--macos .usage-history__layout,
+.app--macos .usage-history__body { grid-template-rows: minmax(0, 1fr); }
+.app--macos .usage-history__sidebar { min-height: 0; overflow-y: auto; }
+@media (max-height: 720px) {
+  .app--macos .usage-history__header { padding: .8em 1em .6em; }
+  .app--macos .usage-history__toolbar { gap: .4em 1em; padding: 0 1em .7em; }
+  .app--macos .usage-history__meta { flex-direction: row; flex-wrap: wrap; column-gap: 1em; }
+}
 .usage-history__page-flow :is(.usage-history__section, .usage-history__provider, .usage-history__window, .usage-history__account, .usage-history__conditional-result, .usage-history__banners, .usage-history__unknown) { display: block; }
 .usage-history__page-flow .usage-history__section { padding: .2em 0; border: 0; border-radius: 0; background: transparent; }
 .usage-history__page-flow :is(h3, h4, h5, h6, summary) { break-after: avoid; }

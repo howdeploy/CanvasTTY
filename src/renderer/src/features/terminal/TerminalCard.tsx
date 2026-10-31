@@ -697,7 +697,13 @@ function TerminalCardView({
             ? "\u0003" : "\u001b[99;9u");
         return false;
       }
-      if (!shouldPasteTerminalClipboard(event, shortcutsRef.current)) {
+      // Codex's native image shortcut must survive Windows paste bindings and
+      // xterm's extended-key encoding. Other CLIs retain their literal Ctrl+V.
+      const windowsCodexImagePaste = window.canvasTTY.window.platform === "win32"
+        && session.provider === "codex" && event.type === "keydown" && !event.isComposing
+        && matchesShortcut(event, "Ctrl+V");
+      const clipboardPaste = shouldPasteTerminalClipboard(event, shortcutsRef.current);
+      if (!clipboardPaste && !windowsCodexImagePaste) {
         const codexEnter = codexEnterSequence(event, session.provider);
         if (codexEnter !== null) {
           event.preventDefault();
@@ -714,10 +720,15 @@ function TerminalCardView({
       const acceptsPaste = () => terminalRef.current === terminal && !sessionExited.current
         && sessionStartedAt.current === pasteStartedAt;
       if (!acceptsPaste()) return false;
-      void (event.metaKey ? window.canvasTTY.clipboard.hasImage() : Promise.resolve(false))
+      void window.canvasTTY.clipboard.hasImage()
         .then(async (hasImage) => {
           if (!acceptsPaste()) return;
           if (hasImage) {
+            window.canvasTTY.terminal.input(session.id, "\u0016");
+            return;
+          }
+          if (!clipboardPaste) {
+            // Without an image, preserve the CLI's literal Ctrl+V semantics.
             window.canvasTTY.terminal.input(session.id, "\u0016");
             return;
           }

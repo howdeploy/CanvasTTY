@@ -1,3 +1,5 @@
+import { registerDesktopWindowIpc } from "./desktopWindowIpc";
+import { registerLinuxDesktopWindowIpc } from "./linuxDesktopWindowIpc";
 import { realpath } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, shell } from "electron";
@@ -671,6 +673,9 @@ export function registerIpc(ipcMain: IpcRegistrar, {
       playlistContent(content)
     );
   });
+  (process.platform === "linux" ? registerLinuxDesktopWindowIpc : registerDesktopWindowIpc)(
+    ipcMain, plugins, settings, getMainWindow, (event) => assertMainRenderer(event, getMainWindow),
+  );
   ipcMain.handle(IPC.pluginsHermesHudStatus, (event, pluginId: string) => {
     assertMainRenderer(event, getMainWindow);
     plugins.assertPermission(pluginId, "hermes:hud");

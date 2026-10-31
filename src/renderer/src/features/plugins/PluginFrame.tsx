@@ -17,6 +17,8 @@ import {
 import { createFrameReplyGate } from "./frameReplies";
 import { pluginVisibilityMessage } from "../../../../shared/pluginVisibility";
 import { isProviderId } from "../../../../shared/providerCatalog.ts";
+import { useDesktopWindow } from "./useDesktopWindow";
+import type { LinuxDesktopCanvasPolicy } from "./linuxDesktopViewport";
 
 const storageListeners = new Map<string, Set<(key: string, value: unknown) => void>>();
 
@@ -42,6 +44,7 @@ interface PluginFrameProps {
    * fires `visibilitychange`, caps its timers at one wake-up a second and holds its animation frames.
    */
   suspended?: boolean;
+  nativeSurface?: LinuxDesktopCanvasPolicy;
 }
 
 interface PluginMessage {
@@ -72,14 +75,17 @@ export function PluginFrame({
   onOpenLauncher,
   onError,
   onMascotDrag,
-  suspended = false
+  suspended = false,
+  nativeSurface
 }: PluginFrameProps): React.JSX.Element {
   const frame = useRef<HTMLIFrameElement>(null);
+  const desktopRequest = useDesktopWindow(frame, plugin, canvasInstanceId, suspended, onError, nativeSurface, onFocus);
   // Tells which document a finished request belongs to, so a reload never receives an earlier reply.
   const [replies] = useState(createFrameReplyGate);
+  const linuxDesktop = window.canvasTTY.window.platform === "linux" && plugin.manifest.permissions.includes("desktop:embed");
   const entryUrl = useMemo(
-    () => `canvastty-plugin://${plugin.manifest.id}/${encodeAssetPath(contribution.entry)}${plugin.sourceUrl.startsWith("mascot:") ? `?revision=${plugin.installedAt}` : ""}`,
-    [contribution.entry, plugin.manifest.id, plugin.sourceUrl, plugin.installedAt]
+    () => `canvastty-plugin://${plugin.manifest.id}/${encodeAssetPath(contribution.entry)}${plugin.sourceUrl.startsWith("mascot:") || linuxDesktop ? `?revision=${plugin.installedAt}` : ""}`,
+    [contribution.entry, plugin.manifest.id, plugin.sourceUrl, plugin.installedAt, linuxDesktop]
   );
   // The plugin the frame serves right now, read when a reply is ready; and a new document the moment the
   // host points the frame elsewhere (during render, before the frame can load or ask anything).
@@ -157,7 +163,9 @@ export function PluginFrame({
       if (typeof message.method !== "string" || message.method.length > 80) return;
 
       const mayReply = replies.received(message.requestId, event.source, plugin.manifest.id);
-      void handleRequest({
+      const request = typeof message.method === "string" && message.method.startsWith("desktopWindows.")
+        ? desktopRequest(message.method, isRecord(message.params) ? message.params : {})
+        : handleRequest({
         plugin,
         method: message.method,
         params: isRecord(message.params) ? message.params : {},
@@ -166,7 +174,8 @@ export function PluginFrame({
         limits,
         canvasInstanceId,
         onOpenLauncher
-      }).then((value) => {
+      });
+      void request.then((value) => {
         if (!mayReply(frame.current?.contentWindow, servedPlugin.current)) return;
         postToFrame(frame.current, {
           source: "canvastty-host",
@@ -190,7 +199,7 @@ export function PluginFrame({
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [canvasInstanceId, captureCanvasWheelOverWidgets, context, limits, onCanvasWheel, onError, onFocus, onHoverChange, onOpenLauncher, onMascotDrag, plugin, replies, sessions]);
+  }, [canvasInstanceId, captureCanvasWheelOverWidgets, context, desktopRequest, limits, onCanvasWheel, onError, onFocus, onHoverChange, onOpenLauncher, onMascotDrag, plugin, replies, sessions]);
 
   useEffect(() => {
     postToFrame(frame.current, { source: "canvastty-host", type: "context", value: context });

@@ -141,6 +141,7 @@ const PLUGIN_PERMISSIONS = new Set<PluginPermission>([
   "playlists:read",
   "playlists:write",
   "hermes:hud",
+  "desktop:embed",
   "network",
   "launch:contribute",
   "environment:provide",
@@ -3437,6 +3438,12 @@ const PLUGIN_SDK_SOURCE = `(() => {
       list: (libraryId) => request("playlists.list", { libraryId }),
       read: (libraryId, playlistId) => request("playlists.read", { libraryId, playlistId }),
       write: (libraryId, name, content) => request("playlists.write", { libraryId, name, content })
+    }),
+    desktopWindows: Object.freeze({
+      list: () => request("desktopWindows.list"),
+      status: () => request("desktopWindows.status"),
+      attach: (windowId, insetTop = 64) => request("desktopWindows.attach", { windowId, insetTop }),
+      detach: () => request("desktopWindows.detach")
     }),
     hermesHud: Object.freeze({
       getState: () => request("hermesHud.getState"),

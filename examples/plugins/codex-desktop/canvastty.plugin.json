@@ -1,0 +1,30 @@
+{
+  "apiVersion": 1,
+  "id": "com.bbutterm.codex-desktop",
+  "name": "Codex Desktop",
+  "version": "0.1.0",
+  "description": "Embed an already running Codex or ChatGPT desktop window inside a CanvasTTY canvas card on Windows.",
+  "description.ru": "Окно запущенного Codex или ChatGPT Desktop внутри карточки канваса CanvasTTY на Windows.",
+  "author": "bbutterm",
+  "homepage": "https://github.com/bbutterm/canvastty-plugin-codex-desktop",
+  "platforms": ["canvastty"],
+  "minHostVersion": "1.8.5",
+  "permissions": ["desktop:embed"],
+  "contributions": [
+    {
+      "id": "codex-desktop-launcher",
+      "kind": "home-widget",
+      "title": "Codex Desktop",
+      "entry": "widget/index.html",
+      "defaultSize": { "columns": 4, "rows": 2 }
+    },
+    {
+      "id": "codex-desktop-canvas",
+      "kind": "canvas-app",
+      "title": "Codex Desktop",
+      "entry": "widget/index.html",
+      "defaultSize": { "width": 1100, "height": 760 },
+      "minSize": { "width": 480, "height": 320 }
+    }
+  ]
+}

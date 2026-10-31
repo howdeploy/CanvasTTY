@@ -1681,3 +1681,19 @@ button { border: 0; }
 }
 
 .canvas-minimap__entity--files { background: rgba(184,207,153,.92); }
+
+/* Search stays in the Settings sidebar, with keyboard-accessible destinations. */
+.settings-search { position: relative; padding: .6em .8em; }
+.settings-search input { width: 100%; box-sizing: border-box; padding: .65em; border: 1px solid color-mix(in srgb, var(--text) 18%, transparent); border-radius: .5em; color: var(--text); background: var(--surface); }
+.settings-search__results { position: absolute; z-index: 5; left: .8em; right: .8em; max-height: 24em; overflow-y: auto; background: var(--surface); border: 1px solid color-mix(in srgb, var(--text) 18%, transparent); border-radius: .5em; box-shadow: 0 .5em 1.5em #0003; }
+.settings-search__results button { display: flex; flex-direction: column; gap: .25em; width: 100%; padding: .65em; border: 0; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.settings-search__results button:hover, .settings-search__results button:focus-visible { background: var(--surface-soft); outline: 2px solid var(--primary); outline-offset: -2px; }
+.settings-search__results small { opacity: .7; }
+.settings-search__results p { padding: .65em; }
+
+/* Empty quota states provide a real navigation action without inventing usage. */
+.limits-settings-link { border: 0; padding: .2em; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: .15em; }
+.limits-settings-link:focus-visible { outline: 2px solid var(--primary); }
+.limit-row__empty .limits-settings-link { display: block; font-size: .8em; }
+
+.setting-group[data-setting-label]:focus { outline: 2px solid var(--primary); outline-offset: -2px; }

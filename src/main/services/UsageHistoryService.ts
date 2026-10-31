@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { LimitProviderId, LimitsSnapshot } from "../../shared/contracts.ts";
 import type { HistorySample, UsageCollectionHealth, UsageEvent, UsageHistory } from "../../shared/usageHistory.ts";
 import { sanitizeCollectorState, type CollectorState } from "./LocalUsageCollector.ts";
+import { encodeMacHistorySnapshot, decodeMacHistorySnapshot } from "./macHistorySnapshot.ts";
 
 const FILE_NAME = "usage-history.json";
 const FORMAT = "canvastty-usage-history";
@@ -45,6 +46,7 @@ export interface UsageHistoryServiceOptions {
   now?: () => number;
   intervalMs?: number;
   initialDelayMs?: number;
+  platform?: NodeJS.Platform;
 }
 
 interface Notice {
@@ -74,6 +76,7 @@ export class UsageHistoryService {
   private readonly now: () => number;
   private readonly intervalMs: number;
   private readonly initialDelayMs: number;
+  private readonly platform: NodeJS.Platform;
   private startedAt = 0;
   private collectedAt = 0;
   private samples: HistorySample[] = [];
@@ -109,6 +112,7 @@ export class UsageHistoryService {
     this.now = options.now ?? Date.now;
     this.intervalMs = options.intervalMs ?? COLLECTION_INTERVAL_MS;
     this.initialDelayMs = options.initialDelayMs ?? INITIAL_DELAY_MS;
+    this.platform = options.platform ?? process.platform;
   }
 
   async load(): Promise<void> {
@@ -141,6 +145,14 @@ export class UsageHistoryService {
     } catch {
       await this.quarantine("invalid JSON", now);
       return;
+    }
+    if (this.platform === "darwin" && isRecord(parsed) && parsed.format === FORMAT && parsed.version === 3) {
+      try {
+        parsed = JSON.parse(await decodeMacHistorySnapshot(parsed));
+      } catch {
+        await this.quarantine("invalid compressed history", now);
+        return;
+      }
     }
     if (isRecord(parsed) && typeof parsed.format === "string" && (parsed.format !== FORMAT || parsed.version !== STORE_VERSION)) {
       this.block(`Usage history file has an unsupported format (${String(parsed.version).slice(0, 20)}); it was left untouched and new history is not being saved.`);
@@ -462,8 +474,10 @@ export class UsageHistoryService {
     const temporary = join(this.directory, `.${FILE_NAME}.${process.pid}.${randomUUID()}.tmp`);
     let handle: FileHandle | undefined;
     try {
+      const compressed = this.platform === "darwin" ? await encodeMacHistorySnapshot(body) : null;
+      const snapshot = compressed ? JSON.stringify({ format: FORMAT, version: 3, ...compressed }) : body;
       handle = await open(temporary, "wx", 0o600);
-      await handle.writeFile(body, "utf8");
+      await handle.writeFile(snapshot, "utf8");
       await handle.sync();
       await handle.close();
       handle = undefined;

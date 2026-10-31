@@ -91,7 +91,8 @@ async function runOrchestrator() {
   const electronBinary = createRequire(import.meta.url)("electron");
   const env = {
     ...process.env, HOME: join(dir, "home"), SMOKE_USAGE_DIR: dir, SMOKE_USAGE_ROOT: scratchRoot, SMOKE_USAGE_ASAR: asar, SMOKE_USAGE_HISTORY: historyFile,
-    SMOKE_USAGE_EXPECT_SESSIONS: JSON.stringify(expectedSessions)
+    SMOKE_USAGE_EXPECT_SESSIONS: JSON.stringify(expectedSessions),
+    SMOKE_MAC_LAYOUT: process.argv.includes("--mac-layout") ? "1" : ""
   };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ELECTRON_RENDERER_URL;
@@ -202,7 +203,7 @@ async function runHarness() {
   });
   const win = new BrowserWindow({
     show: false, width: 1280, height: 900,
-    webPreferences: { partition, preload, contextIsolation: true, sandbox: false, nodeIntegration: false }
+    webPreferences: { partition, preload, contextIsolation: true, sandbox: false, nodeIntegration: false, backgroundThrottling: false }
   });
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -217,6 +218,16 @@ async function runHarness() {
     }
     throw new Error(`timed out waiting for ${label}`);
   };
+  const selectSection = async (section) => {
+    stage = `opening usage section ${section}`;
+    const selector = `.usage-history[role="dialog"] [role="tab"][id$="-tab-${section}"]`;
+    await js(`document.querySelector(${JSON.stringify(selector)}).click(); true`);
+    await waitFor(`document.querySelector(${JSON.stringify(selector)})?.getAttribute("aria-selected") === "true" &&
+      Boolean(document.querySelector('.usage-history[role="dialog"] [role="tabpanel"][id$="-section-${section}"]'))`, `usage section ${section}`);
+  };
+  const dialogText = () => js(`document.querySelector('.usage-history[role="dialog"]').innerText`);
+  const states = {};
+  let screenshot = null;
 
   try {
     stage = "loading packaged renderer";
@@ -253,18 +264,20 @@ async function runHarness() {
     const html = await js(`document.querySelector('.usage-history[role="dialog"]').innerHTML`);
     const has = (...needles) => needles.some((needle) => text.includes(needle));
     check("history loaded through the packaged preload bridge", usageCalls >= 1, `${usageCalls} call(s)`);
-    check("synthetic fixture label shown", text.includes(history.coverage.at(-1)));
     check("provider sections and window series rendered", ["codex:primary", "claude:five_hour"].every((id) => text.includes(id)));
     const scopes = [...new Set(history.samples.map((sample) => sample.scope))];
     check("account scopes shown shortened with full titles", await js(`((scopes) => scopes.every((scope) =>
       [...document.querySelectorAll('.usage-history[role="dialog"] code[title]')].some((code) =>
         code.title === scope && code.textContent !== scope && code.textContent.includes("…"))))(${JSON.stringify(scopes)})`));
-    check("conditional estimate section is first", html.indexOf("usage-history__section--conditional") < html.indexOf("usage-history-quota"));
+    check("conditional estimate is the first and initially selected section", await js(`(() => {
+      const first = document.querySelector('.usage-history[role="dialog"] [role="tab"]');
+      return first?.id.endsWith("-tab-conditional") && first.getAttribute("aria-selected") === "true" &&
+        Boolean(document.querySelector('.usage-history[role="dialog"] [role="tabpanel"] .usage-history__section--conditional'));
+    })()`));
     check("app → profile → session tree rendered", ["app", "profile", "session"].every((level) => html.includes(`usage-history__tree-row--${level}`)));
     check("not-proven label present", has("The logs do not prove", "Логи не доказывают"));
     check("no manual share input (no share field, no number/text inputs in the dialog)",
       !html.includes("usage-history-share") && (await js(`document.querySelectorAll('.usage-history[role="dialog"] input:not([type="radio"]), .usage-history[role="dialog"] textarea').length`)) === 0);
-    check("measured change stays unattributed", has("Unattributed", "Не атрибутировано"));
     check("private fixture fields never rendered", PRIVATE_MARKERS.every((marker) => !html.includes(marker)));
 
     // Scrape the conditional blocks in the current period / weight basis; numbers are checked by the orchestrator.
@@ -292,14 +305,66 @@ async function runHarness() {
       await waitFor(`document.querySelector('.usage-history[role="dialog"] input[name="${name}"][value="${value}"]').checked`, `${name}=${value}`);
       await new Promise((done) => setTimeout(done, 200));
     };
-    const states = { initial: await scrape() };
+    states.initial = await scrape();
     await choose("usage-history-weight", "all");
     states.weightAll = await scrape();
     await choose("usage-history-weight", "uncached");
     await choose("usage-history-period", "1h");
     states.period1h = await scrape();
 
-    let screenshot = null;
+    if (process.platform === "darwin" && process.env.SMOKE_MAC_LAYOUT === "1") {
+      win.showInactive();
+      const layouts = [];
+      for (const [width, height] of [[920, 620], [1280, 800], [1440, 900]]) {
+        win.setSize(width, height);
+        for (const scale of [.85, 1, 1.25]) {
+          await js(`document.querySelector('.app').style.setProperty('--ui-scale', '${scale}'); true`);
+          for (const section of ["conditional", "quotas", "agents", "evidence", "sources"]) {
+            await selectSection(section);
+            await new Promise(resolve => setTimeout(resolve, 80));
+            const geometry = await js(`(() => {
+              const dialog = document.querySelector('.usage-history');
+              const viewport = dialog.querySelector('.usage-history__page-viewport');
+              const flow = dialog.querySelector('.usage-history__page-flow');
+              const d = dialog.getBoundingClientRect(), v = viewport.getBoundingClientRect();
+              const clipped = [];
+              const walker = document.createTreeWalker(flow, NodeFilter.SHOW_TEXT);
+              while (walker.nextNode()) {
+                const node = walker.currentNode;
+                if (!node.textContent.trim() || !node.parentElement.checkVisibility()) continue;
+                const range = document.createRange(); range.selectNodeContents(node);
+                if ([...range.getClientRects()].some(r => r.height > 0 && (r.top < v.top - 3 || r.bottom > v.bottom + 3))) {
+                  clipped.push(node.textContent.trim().slice(0, 70));
+                }
+              }
+              const hiddenControls = [...dialog.querySelectorAll('button')].filter(button => {
+                const b = button.getBoundingClientRect();
+                return b.top < d.top - 1 || b.bottom > d.bottom + 1 || b.left < d.left - 1 || b.right > d.right + 1;
+              }).map(button => button.getAttribute('aria-label') || button.textContent.trim());
+              return { viewportHeight: v.height, hiddenControls, outside: d.left < -1 || d.top < -1 || d.right > innerWidth + 1 || d.bottom > innerHeight + 1,
+                clipped: [...new Set(clipped)].slice(0, 5), pages: dialog.querySelector('[role="status"]')?.textContent };
+            })()`);
+            layouts.push({ width, height, scale, section, ...geometry });
+          }
+        }
+      }
+      await writeFile(join(dir, "mac-layout.json"), JSON.stringify(layouts, null, 2));
+      check("Mac report text and controls fit at 920×620–1440×900 and 85–125% scale", layouts.every(x => !x.outside && x.viewportHeight > 0 && !x.clipped.length && !x.hiddenControls.length),
+        `${layouts.filter(x => x.outside || !x.viewportHeight || x.clipped.length || x.hiddenControls.length).length}/${layouts.length} layouts clipped; mac-layout.json`);
+      win.setSize(920, 620);
+      await js(`document.querySelector('.app').style.setProperty('--ui-scale', '1.25'); true`);
+      await selectSection("conditional");
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const firstPage = await js(`document.querySelector('.usage-history__pagination [role="status"]')?.textContent`);
+      await js(`document.querySelector('.usage-history__pagination button:last-child').click(); true`);
+      await waitFor(`document.querySelector('.usage-history__pagination [role="status"]')?.textContent !== ${JSON.stringify(firstPage)}`, "next report page");
+      check("Mac minimum window can advance to the next report page", true);
+      await js(`document.querySelector('.usage-history__previous').click(); true`);
+      await waitFor(`document.querySelector('.usage-history__pagination [role="status"]')?.textContent === ${JSON.stringify(firstPage)}`, "previous report page");
+      check("Mac minimum window can return to the first report page", true);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
     try {
       const image = await win.webContents.capturePage();
       if (!image.isEmpty()) {
@@ -307,6 +372,11 @@ async function runHarness() {
         await writeFile(screenshot, image.toPNG());
       }
     } catch { /* optional */ }
+    await selectSection("sources");
+    check("synthetic fixture label shown in Sources", (await dialogText()).includes(history.coverage.at(-1)));
+    await selectSection("quotas");
+    const quotaText = await dialogText();
+    check("measured change stays unattributed in Quotas", ["Unattributed", "Не атрибутировано"].some((label) => quotaText.includes(label)));
     // Native input only: a dispatched DOM KeyboardEvent would hide a broken native path.
     stage = "closing with native Escape";
     win.webContents.focus();
@@ -333,9 +403,14 @@ async function runHarness() {
     stage = "loading renderer-only unknown-provider fixture";
     const callsBeforeReopen = usageCalls;
     await js(`document.querySelector(".usage-history-trigger").click(); true`);
+    await waitFor(`Boolean(document.querySelector('.usage-history[role="dialog"] [role="tab"]'))`, "reopened usage dialog");
+    await selectSection("evidence");
     await waitFor(`document.querySelector('.usage-history[role="dialog"]')?.textContent.includes("fixture-unknown-session")`, "unknown-provider fixture");
-    const edgeText = await js(`document.querySelector('.usage-history[role="dialog"]').innerText`);
-    const edgeHtml = await js(`document.querySelector('.usage-history[role="dialog"]').innerHTML`);
+    const evidenceText = await dialogText();
+    const evidenceHtml = await js(`document.querySelector('.usage-history[role="dialog"]').innerHTML`);
+    await selectSection("quotas");
+    const edgeText = evidenceText + "\n" + await dialogText();
+    const edgeHtml = evidenceHtml + await js(`document.querySelector('.usage-history[role="dialog"]').innerHTML`);
     const edgeHas = (...needles) => needles.some((needle) => edgeText.includes(needle));
     check("reopening reloads through packaged preload", usageCalls > callsBeforeReopen);
     check("unknown / not recorded label", edgeHas("Unknown / not recorded locally", "Неизвестно / не записано локально"));
@@ -348,6 +423,6 @@ async function runHarness() {
     check("no usage-related renderer console errors", usageErrors.length === 0, usageErrors.slice(0, 3).join(" | "));
     finish({ screenshot, states, otherConsoleErrors: pageErrors.length - usageErrors.length });
   } catch (error) {
-    finish({ error: `${error instanceof Error ? error.message : String(error)} (${stage}); console: ${pageErrors.slice(0, 3).join(" | ")}` });
+    finish({ screenshot, states, error: `${error instanceof Error ? error.message : String(error)} (${stage}); console: ${pageErrors.slice(0, 3).join(" | ")}` });
   }
 }

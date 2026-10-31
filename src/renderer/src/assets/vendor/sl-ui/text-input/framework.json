@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "variant": "text-input",
+  "kind": "react-adapter",
+  "rendering": "client-widget",
+  "status": "verified-client-widget",
+  "formats": [
+    "html",
+    "css",
+    "javascript",
+    "react",
+    "nextjs"
+  ],
+  "react": "Component.jsx",
+  "nextjs": "NextClient.jsx",
+  "required": [
+    "Component.jsx",
+    "react-controller.mjs",
+    "react-font.mjs",
+    "instrument-sans-variable.woff2"
+  ],
+  "tested": {
+    "react": true,
+    "nextjs": true
+  },
+  "verification": {
+    "controllerSHA256": "54703518427225d941faa305e15e17c94b4dd4dd54a4578945b5a7b5a56c7b5f",
+    "runtimeSHA256": "a1bbcefaa2f2287f52d5e9cf214901cc330a9585557744719a953ffbb01acff2",
+    "scope": "Client mount, generic input/activation, focus, host geometry, runtime reduced motion, isolated instances and cleanup in React StrictMode and production Next.js; source control typography/SVG fingerprint at320px.",
+    "limitations": "Not exhaustive application-state or real-backend verification. No meaningful widget SSR. Original default-size constraints and generic activation limits are recorded below.",
+    "notes": []
+  }
+}

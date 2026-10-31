@@ -242,6 +242,7 @@ const api: CanvasTTYApi = {
     playlistsRead: (pluginId: string, libraryId: string, playlistId: string) => ipcRenderer.invoke(IPC.pluginsPlaylistsRead, pluginId, libraryId, playlistId),
     playlistsWrite: (pluginId: string, libraryId: string, name: string, content: string) => ipcRenderer.invoke(IPC.pluginsPlaylistsWrite, pluginId, libraryId, name, content),
     desktopWindows: (pluginId, instanceId, action, value) => ipcRenderer.invoke(IPC.pluginsDesktopWindows, pluginId, instanceId, action, value),
+    onDesktopWindowFocus: (listener) => subscribe(IPC.pluginsDesktopWindowFocus, listener),
     hermesHudStatus: (pluginId: string) => ipcRenderer.invoke(IPC.pluginsHermesHudStatus, pluginId),
     hermesHudOpen: (pluginId: string) => ipcRenderer.invoke(IPC.pluginsHermesHudOpen, pluginId),
     hermesHudClose: (pluginId: string) => ipcRenderer.invoke(IPC.pluginsHermesHudClose, pluginId),

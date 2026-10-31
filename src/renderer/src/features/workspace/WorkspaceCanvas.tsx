@@ -724,6 +724,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     return overlayRects.some((rect) => boundsOverlap(browserScreenRect, rect))
       || (popoverRect !== null && boundsOverlap(browserScreenRect, popoverRect));
   });
+  const nativeContentVisible = browserViewVisible && fullscreenSessionId === null && !homeEditing
+    && contextMenu === null && regionEditor === null && !commandPaletteOpen && radialLauncher === null;
   const wheelNavigation = useCanvasWheelNavigation({
     viewport,
     settings,
@@ -1339,6 +1341,12 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                 onCanvasWheel={wheelNavigation.applyCanvasWheel}
                 groupSelected={marqueeSelection.has(pluginLayerId(instance.id)) || autoSortMarked.has(pluginLayerId(instance.id))}
                 hidden={homeEditing}
+                nativeSurface={window.canvasTTY.window.platform === "linux" && plugin.manifest.permissions.includes("desktop:embed") ? {
+                  visible: nativeContentVisible,
+                  overlays: popoverRect ? [...overlayRects, popoverRect] : overlayRects,
+                  higherLayers: layerOrder.includes(pluginLayerId(instance.id))
+                    ? layerOrder.slice(layerOrder.indexOf(pluginLayerId(instance.id)) + 1) : [],
+                } : undefined}
               />
             );
           })}
@@ -1348,9 +1356,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
               bounds={withGroupNudge(browserLayerId, renderedBrowserCanvas)}
               locale={settings.locale}
               camera={camera}
-              visible={browserViewVisible && fullscreenSessionId === null && !homeEditing && contextMenu === null
-                && regionEditor === null && !commandPaletteOpen && radialLauncher === null
-                && !browserOccluded && !browserUnderOverlay}
+              visible={nativeContentVisible && !browserOccluded && !browserUnderOverlay}
               stackIndex={canvasLayerZIndex(layerOrder, browserLayerId)}
               uiScale={settings.uiScale}
               snapEnabled={settings.snapToGrid}

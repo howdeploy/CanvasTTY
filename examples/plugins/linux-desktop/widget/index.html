@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Linux Desktop</title>
+    <link rel="stylesheet" href="./index.css">
+  </head>
+  <body>
+    <header id="toolbar">
+      <div class="controls">
+        <div class="window-picker">
+          <span id="window-label"></span>
+          <button id="windows" class="window-toggle" type="button" role="combobox" aria-labelledby="window-label window-value" aria-haspopup="listbox" aria-expanded="false" aria-controls="window-options">
+            <span id="window-value"></span><span class="window-chevron" aria-hidden="true"></span>
+          </button>
+          <div id="window-options" role="listbox" aria-labelledby="window-label" hidden></div>
+        </div>
+        <button id="refresh" type="button"></button>
+        <button id="attach" class="primary" type="button"></button>
+        <button id="detach" type="button" hidden></button>
+      </div>
+      <div class="connection"><span id="status" role="status"></span><span class="protocol">X11 / XWayland</span></div>
+      <p id="error" role="alert" hidden></p>
+    </header>
+    <main><h1 id="empty-title"></h1><p id="message"></p></main>
+    <script src="canvastty-plugin://host/sdk.js"></script>
+    <script src="./index.js"></script>
+  </body>
+</html>

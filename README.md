@@ -83,7 +83,7 @@ The opt-in [Web companion](docs/mobile-companion.md) shares selected sessions wi
 
 CanvasTTY includes a permissioned runtime for ready-to-run static GitHub packages: HOME widgets, canvas apps, and separate sandboxed windows. The host SDK now supports persistent user-selected music-library grants, seekable local audio streams, and bounded playlist import/export for full player plugins. See the [authoring and security guide](docs/plugins.md), [manifest schema](docs/canvastty-plugin.schema.json), and [TypeScript SDK declarations](docs/plugin-api.d.ts).
 
-Experimental Windows builds with the `desktop:embed` SDK can host an already running desktop application inside a plugin canvas card. See [native window compatibility and the Codex Desktop reference plugin](docs/desktop-window-plugins.md).
+Experimental Windows and Linux X11/XWayland builds with the `desktop:embed` SDK can host an already running desktop application inside a plugin canvas card. See [platform compatibility and the Windows/Linux reference plugins](docs/desktop-window-plugins.md). The original Windows SDK was contributed by [bbutterm](https://github.com/howdeploy/CanvasTTY/pull/182).
 
 Plugin examples:
 

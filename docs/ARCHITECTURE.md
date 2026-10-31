@@ -48,6 +48,7 @@ Electron main process
     ├── PluginMediaService → user-granted music folders, ranged audio streams, playlist files
     ├── FileAccessService → read-only, root-scoped file listing, reading, and search
     ├── HermesHudService → permission-gated Hermes Desktop HUD lifecycle through a fixed control contract
+    ├── DesktopWindowService / LinuxDesktopWindowService → permission-gated foreign-window hosting
     ├── BrowserService → tabs, shared persistent profile, downloads, presence, WebContentsView lifecycle
     │   ├── BrowserStore / BrowserPolicyService / BrowserAuditStore
     │   ├── BrowserCore / BrowserCommandDispatcher / BrowserAutomationService
@@ -58,6 +59,27 @@ Electron main process
 ```
 
 - `src/shared/contracts.ts` is the single public contract between processes. Add or change cross-process data here first.
+- Linux desktop embedding uses the browser's `normalizeBrowserViewportBounds` and
+  `clipBrowserViewportBounds`: the native container receives the visible clip,
+  while the foreign application retains the full viewport and an offset inside
+  it. Linux desktop cards subscribe to the camera and report after layout, as
+  `BrowserCard` does; an in-flight update retains only the latest pending
+  geometry. The X11 helper applies each input batch once and separates container
+  movement from client resize and mapping. The viewport is an actual X11 child
+  of CanvasTTY, with parent-relative coordinates; it follows the host across
+  desktop moves without global-coordinate polling or desktop restacking. The
+  helper verifies parentage before reparenting the foreign client. Close,
+  renderer teardown and SIGTERM/SIGINT await restoration before quitting;
+  repeated close requests cannot bypass restoration in flight. The XFixes
+  save-set protects helper disconnection. Abrupt destruction of Electron itself
+  can still destroy foreign children. The Windows backend is separate.
+  `WorkspaceCanvas` supplies Linux desktop cards with the same global visibility
+  gate, measured HUD rectangles and layer order that govern the browser. Higher
+  cards are measured from their live DOM bounds during a drag. The helper removes
+  those occlusions from both XFixes bounding and input regions, so the minimap,
+  controls and higher cards remain visible and receive clicks. Native application
+  clicks are relayed through a host-only focus event to the existing canvas focus
+  controller; the plugin cannot supply or spoof canvas layer geometry.
 - `src/preload/index.ts` exposes only the typed capabilities the renderer needs. Node integration stays disabled; context isolation and sandbox stay enabled.
 - Terminal file drops resolve native `File` objects through preload's `webUtils.getPathForFile`, format paths for the host's default shell, and paste through xterm without submitting. File contents are not read and no new main-process IPC is exposed.
 - `src/main/ipc/registerIpc.ts` owns native side effects, validates access to persisted media, and guards the allow-listed `files:*` channels with the trusted-main-renderer check.

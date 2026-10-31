@@ -18,6 +18,7 @@ import { createFrameReplyGate } from "./frameReplies";
 import { pluginVisibilityMessage } from "../../../../shared/pluginVisibility";
 import { isProviderId } from "../../../../shared/providerCatalog.ts";
 import { useDesktopWindow } from "./useDesktopWindow";
+import type { LinuxDesktopCanvasPolicy } from "./linuxDesktopViewport";
 
 const storageListeners = new Map<string, Set<(key: string, value: unknown) => void>>();
 
@@ -43,6 +44,7 @@ interface PluginFrameProps {
    * fires `visibilitychange`, caps its timers at one wake-up a second and holds its animation frames.
    */
   suspended?: boolean;
+  nativeSurface?: LinuxDesktopCanvasPolicy;
 }
 
 interface PluginMessage {
@@ -73,15 +75,17 @@ export function PluginFrame({
   onOpenLauncher,
   onError,
   onMascotDrag,
-  suspended = false
+  suspended = false,
+  nativeSurface
 }: PluginFrameProps): React.JSX.Element {
   const frame = useRef<HTMLIFrameElement>(null);
-  const desktopRequest = useDesktopWindow(frame, plugin, canvasInstanceId, suspended, onError);
+  const desktopRequest = useDesktopWindow(frame, plugin, canvasInstanceId, suspended, onError, nativeSurface, onFocus);
   // Tells which document a finished request belongs to, so a reload never receives an earlier reply.
   const [replies] = useState(createFrameReplyGate);
+  const linuxDesktop = window.canvasTTY.window.platform === "linux" && plugin.manifest.permissions.includes("desktop:embed");
   const entryUrl = useMemo(
-    () => `canvastty-plugin://${plugin.manifest.id}/${encodeAssetPath(contribution.entry)}${plugin.sourceUrl.startsWith("mascot:") ? `?revision=${plugin.installedAt}` : ""}`,
-    [contribution.entry, plugin.manifest.id, plugin.sourceUrl, plugin.installedAt]
+    () => `canvastty-plugin://${plugin.manifest.id}/${encodeAssetPath(contribution.entry)}${plugin.sourceUrl.startsWith("mascot:") || linuxDesktop ? `?revision=${plugin.installedAt}` : ""}`,
+    [contribution.entry, plugin.manifest.id, plugin.sourceUrl, plugin.installedAt, linuxDesktop]
   );
   // The plugin the frame serves right now, read when a reply is ready; and a new document the moment the
   // host points the frame elsewhere (during render, before the frame can load or ask anything).

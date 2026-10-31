@@ -29,6 +29,8 @@ export interface CanvasTTYPluginHost {
   request(method: "desktopWindows.list"): Promise<CanvasTTYPluginDesktopWindow[]>;
   request(method: "desktopWindows.status"): Promise<{ attached: boolean }>;
   request(method: "desktopWindows.attach", params: { windowId: string; insetTop: number }): Promise<null>;
+  /** Linux-only: keep the native viewport below a responsive toolbar (40–4096 local CSS pixels). */
+  request(method: "desktopWindows.layout", params: { insetTop: number }): Promise<null>;
   request(method: "desktopWindows.detach"): Promise<null>;
   request(method: "secrets.get", params: { key: string }): Promise<string | null>;
   request(method: "secrets.set", params: { key: string; value: string }): Promise<null>;
@@ -63,7 +65,7 @@ export interface CanvasTTYPluginHost {
     open(): Promise<CanvasTTYPluginHermesHudSnapshot>;
     close(): Promise<CanvasTTYPluginHermesHudSnapshot>;
   };
-  /** Windows only, canvas-app only; requires desktop:embed. No process launch/kill API. */
+  /** Windows or Linux X11/XWayland; canvas-app only; requires desktop:embed. No process launch/kill API. */
   desktopWindows: {
     list(): Promise<CanvasTTYPluginDesktopWindow[]>;
     status(): Promise<{ attached: boolean }>;

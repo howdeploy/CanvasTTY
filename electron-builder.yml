@@ -140,6 +140,11 @@ appImage:
   compression: gzip
 
 linux:
+  extraResources:
+    - from: native/desktop-apps-linux
+      to: desktop-apps-linux
+      filter:
+        - window-host.py
   icon: build/icon.png
   category: Utility
   maintainer: howdeploy

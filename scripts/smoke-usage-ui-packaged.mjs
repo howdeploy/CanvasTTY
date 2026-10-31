@@ -91,7 +91,8 @@ async function runOrchestrator() {
   const electronBinary = createRequire(import.meta.url)("electron");
   const env = {
     ...process.env, HOME: join(dir, "home"), SMOKE_USAGE_DIR: dir, SMOKE_USAGE_ROOT: scratchRoot, SMOKE_USAGE_ASAR: asar, SMOKE_USAGE_HISTORY: historyFile,
-    SMOKE_USAGE_EXPECT_SESSIONS: JSON.stringify(expectedSessions)
+    SMOKE_USAGE_EXPECT_SESSIONS: JSON.stringify(expectedSessions),
+    SMOKE_MAC_LAYOUT: process.argv.includes("--mac-layout") ? "1" : ""
   };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ELECTRON_RENDERER_URL;
@@ -202,7 +203,7 @@ async function runHarness() {
   });
   const win = new BrowserWindow({
     show: false, width: 1280, height: 900,
-    webPreferences: { partition, preload, contextIsolation: true, sandbox: false, nodeIntegration: false }
+    webPreferences: { partition, preload, contextIsolation: true, sandbox: false, nodeIntegration: false, backgroundThrottling: false }
   });
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -310,6 +311,59 @@ async function runHarness() {
     await choose("usage-history-weight", "uncached");
     await choose("usage-history-period", "1h");
     states.period1h = await scrape();
+
+    if (process.platform === "darwin" && process.env.SMOKE_MAC_LAYOUT === "1") {
+      win.showInactive();
+      const layouts = [];
+      for (const [width, height] of [[920, 620], [1280, 800], [1440, 900]]) {
+        win.setSize(width, height);
+        for (const scale of [.85, 1, 1.25]) {
+          await js(`document.querySelector('.app').style.setProperty('--ui-scale', '${scale}'); true`);
+          for (const section of ["conditional", "quotas", "agents", "evidence", "sources"]) {
+            await selectSection(section);
+            await new Promise(resolve => setTimeout(resolve, 80));
+            const geometry = await js(`(() => {
+              const dialog = document.querySelector('.usage-history');
+              const viewport = dialog.querySelector('.usage-history__page-viewport');
+              const flow = dialog.querySelector('.usage-history__page-flow');
+              const d = dialog.getBoundingClientRect(), v = viewport.getBoundingClientRect();
+              const clipped = [];
+              const walker = document.createTreeWalker(flow, NodeFilter.SHOW_TEXT);
+              while (walker.nextNode()) {
+                const node = walker.currentNode;
+                if (!node.textContent.trim() || !node.parentElement.checkVisibility()) continue;
+                const range = document.createRange(); range.selectNodeContents(node);
+                if ([...range.getClientRects()].some(r => r.height > 0 && (r.top < v.top - 3 || r.bottom > v.bottom + 3))) {
+                  clipped.push(node.textContent.trim().slice(0, 70));
+                }
+              }
+              const hiddenControls = [...dialog.querySelectorAll('button')].filter(button => {
+                const b = button.getBoundingClientRect();
+                return b.top < d.top - 1 || b.bottom > d.bottom + 1 || b.left < d.left - 1 || b.right > d.right + 1;
+              }).map(button => button.getAttribute('aria-label') || button.textContent.trim());
+              return { viewportHeight: v.height, hiddenControls, outside: d.left < -1 || d.top < -1 || d.right > innerWidth + 1 || d.bottom > innerHeight + 1,
+                clipped: [...new Set(clipped)].slice(0, 5), pages: dialog.querySelector('[role="status"]')?.textContent };
+            })()`);
+            layouts.push({ width, height, scale, section, ...geometry });
+          }
+        }
+      }
+      await writeFile(join(dir, "mac-layout.json"), JSON.stringify(layouts, null, 2));
+      check("Mac report text and controls fit at 920×620–1440×900 and 85–125% scale", layouts.every(x => !x.outside && x.viewportHeight > 0 && !x.clipped.length && !x.hiddenControls.length),
+        `${layouts.filter(x => x.outside || !x.viewportHeight || x.clipped.length || x.hiddenControls.length).length}/${layouts.length} layouts clipped; mac-layout.json`);
+      win.setSize(920, 620);
+      await js(`document.querySelector('.app').style.setProperty('--ui-scale', '1.25'); true`);
+      await selectSection("conditional");
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const firstPage = await js(`document.querySelector('.usage-history__pagination [role="status"]')?.textContent`);
+      await js(`document.querySelector('.usage-history__pagination button:last-child').click(); true`);
+      await waitFor(`document.querySelector('.usage-history__pagination [role="status"]')?.textContent !== ${JSON.stringify(firstPage)}`, "next report page");
+      check("Mac minimum window can advance to the next report page", true);
+      await js(`document.querySelector('.usage-history__previous').click(); true`);
+      await waitFor(`document.querySelector('.usage-history__pagination [role="status"]')?.textContent === ${JSON.stringify(firstPage)}`, "previous report page");
+      check("Mac minimum window can return to the first report page", true);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
 
     try {
       const image = await win.webContents.capturePage();

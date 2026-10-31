@@ -1,7 +1,7 @@
 import type { LocaleId } from "../../../../shared/contracts";
 import { t, type TranslationKey } from "../../lib/i18n.ts";
+import type { SettingsSection } from "./settingsNavigation";
 
-export type SettingsSection = "general" | "keyboardShortcuts" | "appearance" | "agents" | "controls" | "externalIntegrations" | "canvasLink" | "browser" | "plugins" | "mascots" | "updates" | "about";
 export interface SettingsSearchEntry { section: SettingsSection; label: TranslationKey; description?: TranslationKey }
 
 /** Keep destination labels in sync with SettingGroup labels; both locales are searchable. */

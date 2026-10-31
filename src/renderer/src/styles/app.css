@@ -162,7 +162,7 @@ button { border: 0; }
 .radial-launcher__icon { height: 2.6em; display: grid; place-items: center; }
 .radial-launcher__item .provider-icon { --provider-icon-art-size: 1.85em; }
 
-.tile { position: relative; overflow: hidden; border: 1px solid color-mix(in srgb, var(--text) 18%, transparent); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
+.tile { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
 
 .home-zone { position: absolute; left: 0; top: 0; display: grid; gap: 18px; border-radius: calc(var(--radius-lg) + 4px); }
 /* Empty HOME cells must not intercept regions visible underneath them. */
@@ -1690,4 +1690,10 @@ button { border: 0; }
 .settings-search__results button:hover, .settings-search__results button:focus-visible { background: var(--surface-soft); outline: 2px solid var(--primary); outline-offset: -2px; }
 .settings-search__results small { opacity: .7; }
 .settings-search__results p { padding: .65em; }
+
+/* Empty quota states provide a real navigation action without inventing usage. */
+.limits-settings-link { border: 0; padding: .2em; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: .15em; }
+.limits-settings-link:focus-visible { outline: 2px solid var(--primary); }
+.limit-row__empty .limits-settings-link { display: block; font-size: .8em; }
+
 .setting-group[data-setting-label]:focus { outline: 2px solid var(--primary); outline-offset: -2px; }

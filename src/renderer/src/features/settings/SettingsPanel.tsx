@@ -126,7 +126,8 @@ import {
 import { PROFILE_LABELS } from "../../lib/launchProfiles";
 import { MascotsSettings } from "./MascotsSettings";
 
-import { searchSettings, type SettingsSection } from "./settingsSearch";
+import { searchSettings } from "./settingsSearch";
+import type { SettingsDestination, SettingsSection } from "./settingsNavigation";
 
 const SHORTCUT_LABELS = {
   home: "homeShortcut", renameWindow: "renameWindow", toggleFullscreen: "toggleFullscreen",
@@ -173,6 +174,7 @@ interface SettingsPanelProps {
   sessions: import("../../../../shared/contracts").SessionSnapshot[];
   open: boolean;
   openUpdatesRequest: number;
+  openTarget?: SettingsDestination | null;
   settings: AppSettings;
   backgroundsSuspended?: boolean;
   designDisabled?: boolean;
@@ -214,6 +216,7 @@ export function SettingsPanel({
   sessions,
   open,
   openUpdatesRequest,
+  openTarget,
   settings,
   backgroundsSuspended = false,
   designDisabled = false,
@@ -261,8 +264,18 @@ export function SettingsPanel({
   const [searchTarget, setSearchTarget] = useState<string | null>(null);
   const searchResults = searchSettings(searchQuery, locale);
 
+  useEffect(() => {
+    if (!open || !openTarget) return;
+    setSection(openTarget.section);
+    setSearchTarget(openTarget.label ? t(locale, openTarget.label) : null);
+  }, [open, openTarget, locale]);
+
   useLayoutEffect(() => {
-    if (!open || !searchTarget) return;
+    if (!open) return;
+    if (!searchTarget) {
+      if (contentRef.current) contentRef.current.scrollTop = 0;
+      return;
+    }
     const group = [...(contentRef.current?.querySelectorAll<HTMLElement>("[data-setting-label]") ?? [])]
       .find((element) => element.dataset.settingLabel === searchTarget);
     if (group) {
@@ -276,7 +289,10 @@ export function SettingsPanel({
   }, [open, section, searchTarget]);
 
   useEffect(() => {
-    if (openUpdatesRequest > 0) setSection("updates");
+    if (openUpdatesRequest > 0) {
+      setSection("updates");
+      setSearchTarget(null);
+    }
   }, [openUpdatesRequest]);
   const [capturing, setCapturing] = useState<ShortcutAction | null>(null);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
@@ -311,10 +327,6 @@ export function SettingsPanel({
 
   const [checkingAgentClis, setCheckingAgentClis] = useState(false);
   const [agentCliError, setAgentCliError] = useState<string | null>(null);
-
-  useLayoutEffect(() => {
-    if (open && contentRef.current && !searchTarget) contentRef.current.scrollTop = 0;
-  }, [open, section]);
 
   const openAgentInstall = (provider: AgentProviderId): void => {
     const url = PROVIDERS[provider].installUrl;

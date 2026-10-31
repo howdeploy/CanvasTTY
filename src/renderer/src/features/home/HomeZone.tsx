@@ -1,3 +1,4 @@
+import type { SettingsDestination } from "../settings/settingsSearch";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentProviderId,
@@ -61,7 +62,7 @@ interface HomeZoneProps {
   limitsLoadState: LimitsLoadState;
   plugins: InstalledPlugin[];
   editing: boolean;
-  onOpenSettings(): void;
+  onOpenSettings(target?: SettingsDestination): void;
   onOpenAgent(provider: AgentProviderId): void;
   onOpenTerminal(): void;
   onOpenBrowser(): void;
@@ -279,9 +280,12 @@ export function HomeZone({
           style={{ "--limit-rows": Math.max(home.limitRows.length, 1) } as React.CSSProperties}
         >
           {home.limitRows.length === 0 ? (
-            <div className="limits-list__empty">{t(locale, "noVisibleLimits")}</div>
+            <button type="button" className="limits-list__empty limits-settings-link"
+              onClick={() => onOpenSettings({ section: "agents", label: "homeLimitProviders" })}>
+              {t(locale, "noVisibleLimits")}
+            </button>
           ) : home.limitRows.map((row) => (
-            <LimitRow key={row.provider} row={row} locale={locale} now={now.getTime()} />
+            <LimitRow onOpenSettings={onOpenSettings} key={row.provider} row={row} locale={locale} now={now.getTime()} />
           ))}
         </section>
       );
@@ -366,7 +370,7 @@ export function HomeZone({
     }
     if (widgetId === "core.settings") {
       return (
-        <button className="tile settings-button" type="button" onClick={onOpenSettings} aria-label={t(locale, "settings")}>
+        <button className="tile settings-button" type="button" onClick={() => onOpenSettings()} aria-label={t(locale, "settings")}>
           <UiIcon name="settings" size={48} />
         </button>
       );
@@ -507,7 +511,7 @@ function ClockWidget({ locale, now }: { locale: LocaleId; now: Date }): React.JS
   );
 }
 
-function LimitRow({ row, locale, now }: { row: HomeLimitRow; locale: LocaleId; now: number }): React.JSX.Element {
+function LimitRow({ row, locale, now, onOpenSettings }: { row: HomeLimitRow; locale: LocaleId; now: number; onOpenSettings(target?: SettingsDestination): void }): React.JSX.Element {
   const providerLabel = PROVIDERS[row.provider].limitsLabel ?? PROVIDERS[row.provider].label;
   const meta = limitMeta(row, locale);
   const stateLabel = row.state === "loading"
@@ -540,7 +544,12 @@ function LimitRow({ row, locale, now }: { row: HomeLimitRow; locale: LocaleId; n
             <i className="limit-row__fill" style={{ width: `${row.window.usedPercent}%` }} />
           </span>
         </span>
-      ) : <span className="limit-row__empty">{stateLabel}</span>}
+      ) : <span className="limit-row__empty">{stateLabel}
+        {row.state !== "loading" && <button type="button" className="limits-settings-link"
+          onClick={() => onOpenSettings({ section: "agents", label: "homeLimitProviders" })}>
+          {t(locale, "limitsSettingsPath")}
+        </button>}
+      </span>}
     </article>
   );
 }

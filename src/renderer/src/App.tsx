@@ -1,3 +1,4 @@
+import type { SettingsDestination } from "./features/settings/settingsSearch";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   GitRiskReport,
@@ -383,6 +384,7 @@ export function App(): React.JSX.Element {
   const [launchProvider, setLaunchProvider] = useState<ProviderId | null>(null);
   const [launchPosition, setLaunchPosition] = useState<Point | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTarget, setSettingsTarget] = useState<SettingsDestination | null>(null);
   const [openUpdatesRequest, setOpenUpdatesRequest] = useState(0);
   const [shortcutReferenceOpen, setShortcutReferenceOpen] = useState(false);
   const [usageHistoryOpen, setUsageHistoryOpen] = useState(false);
@@ -2103,7 +2105,7 @@ export function App(): React.JSX.Element {
           camera={cameraStore}
           onCameraChange={changeCamera}
           onGoHome={goHome}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={(target) => { setSettingsTarget(target ?? null); setSettingsOpen(true); }}
           onOpenShortcutReference={() => setShortcutReferenceOpen(true)}
           onOpenAgent={openAgent}
           onOpenTerminal={(position) => void openTerminal(position)}
@@ -2219,6 +2221,7 @@ export function App(): React.JSX.Element {
           }}
         />
         <SettingsPanel
+          openTarget={settingsTarget}
           sessions={sessions}
           open={settingsOpen}
           openUpdatesRequest={openUpdatesRequest}

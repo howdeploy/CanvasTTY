@@ -126,7 +126,7 @@ import {
 import { PROFILE_LABELS } from "../../lib/launchProfiles";
 import { MascotsSettings } from "./MascotsSettings";
 
-import { searchSettings, type SettingsSection } from "./settingsSearch";
+import { searchSettings, type SettingsDestination, type SettingsSection } from "./settingsSearch";
 
 const SHORTCUT_LABELS = {
   home: "homeShortcut", renameWindow: "renameWindow", toggleFullscreen: "toggleFullscreen",
@@ -173,6 +173,7 @@ interface SettingsPanelProps {
   sessions: import("../../../../shared/contracts").SessionSnapshot[];
   open: boolean;
   openUpdatesRequest: number;
+  openTarget?: SettingsDestination | null;
   settings: AppSettings;
   backgroundsSuspended?: boolean;
   designDisabled?: boolean;
@@ -214,6 +215,7 @@ export function SettingsPanel({
   sessions,
   open,
   openUpdatesRequest,
+  openTarget,
   settings,
   backgroundsSuspended = false,
   designDisabled = false,
@@ -260,6 +262,13 @@ export function SettingsPanel({
   const [searchQuery, setSearchQuery] = useState("");
   const [searchTarget, setSearchTarget] = useState<string | null>(null);
   const searchResults = searchSettings(searchQuery, locale);
+
+  useEffect(() => {
+    if (!open || !openTarget) return;
+    setSection(openTarget.section);
+    setSearchQuery("");
+    setSearchTarget(openTarget.label ? t(locale, openTarget.label) : null);
+  }, [open, openTarget, locale]);
 
   useLayoutEffect(() => {
     if (!open || !searchTarget) return;

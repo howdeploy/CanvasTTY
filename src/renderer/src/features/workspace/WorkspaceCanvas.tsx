@@ -1,3 +1,4 @@
+import type { SettingsDestination } from "../settings/settingsNavigation";
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { MutableRefObject } from "react";
@@ -213,7 +214,7 @@ interface WorkspaceCanvasProps {
   camera: CameraStore;
   onCameraChange(camera: CameraState): void;
   onGoHome(): void;
-  onOpenSettings(): void;
+  onOpenSettings(target?: SettingsDestination): void;
   onOpenShortcutReference(): void;
   onOpenAgent(provider: AgentProviderId, position?: Point): void;
   onOpenTerminal(position?: Point): void;

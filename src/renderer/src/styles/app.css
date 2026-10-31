@@ -1681,3 +1681,10 @@ button { border: 0; }
 }
 
 .canvas-minimap__entity--files { background: rgba(184,207,153,.92); }
+
+/* Empty quota states provide a real navigation action without inventing usage. */
+.limits-settings-link { border: 0; padding: .2em; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: .15em; }
+.limits-settings-link:focus-visible { outline: 2px solid var(--primary); }
+.limit-row__empty .limits-settings-link { display: block; font-size: .8em; }
+
+.setting-group[data-setting-label]:focus { outline: 2px solid var(--primary); outline-offset: -2px; }

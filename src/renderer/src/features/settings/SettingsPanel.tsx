@@ -126,7 +126,7 @@ import {
 import { PROFILE_LABELS } from "../../lib/launchProfiles";
 import { MascotsSettings } from "./MascotsSettings";
 
-type SettingsSection = "general" | "keyboardShortcuts" | "appearance" | "agents" | "controls" | "externalIntegrations" | "canvasLink" | "browser" | "plugins" | "mascots" | "updates" | "about";
+import type { SettingsDestination, SettingsSection } from "./settingsNavigation";
 
 const SHORTCUT_LABELS = {
   home: "homeShortcut", renameWindow: "renameWindow", toggleFullscreen: "toggleFullscreen",
@@ -173,6 +173,7 @@ interface SettingsPanelProps {
   sessions: import("../../../../shared/contracts").SessionSnapshot[];
   open: boolean;
   openUpdatesRequest: number;
+  openTarget?: SettingsDestination | null;
   settings: AppSettings;
   backgroundsSuspended?: boolean;
   designDisabled?: boolean;
@@ -214,6 +215,7 @@ export function SettingsPanel({
   sessions,
   open,
   openUpdatesRequest,
+  openTarget,
   settings,
   backgroundsSuspended = false,
   designDisabled = false,
@@ -257,6 +259,27 @@ export function SettingsPanel({
   const containmentAvailable = isolationAvailable(settings, window.canvasTTY?.window?.platform ?? "");
   const [section, setSection] = useState<SettingsSection>("general");
   const contentRef = useRef<HTMLDivElement>(null);
+  const [navigationTarget, setNavigationTarget] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || !openTarget) return;
+    setSection(openTarget.section);
+    setNavigationTarget(openTarget.label ? t(locale, openTarget.label) : null);
+  }, [open, openTarget, locale]);
+
+  useLayoutEffect(() => {
+    if (!open || !navigationTarget) return;
+    const group = [...(contentRef.current?.querySelectorAll<HTMLElement>("[data-setting-label]") ?? [])]
+      .find((element) => element.dataset.settingLabel === navigationTarget);
+    if (group) {
+      // Reveal collapsed ancestors before measuring the destination.
+      for (let parent = group.parentElement; parent; parent = parent.parentElement) {
+        if (parent instanceof HTMLDetailsElement) parent.open = true;
+      }
+      group.scrollIntoView({ block: "center" });
+      group.focus({ preventScroll: true });
+    }
+  }, [open, section, navigationTarget]);
 
   useEffect(() => {
     if (openUpdatesRequest > 0) setSection("updates");
@@ -332,6 +355,7 @@ export function SettingsPanel({
 
   useEffect(() => {
     if (!open) {
+      setNavigationTarget(null);
       setCapturing(null);
       setShortcutError(null);
       setClearConfirm(false);
@@ -499,6 +523,7 @@ export function SettingsPanel({
                 onClick={() => {
                   setCapturing(null);
                   setShortcutError(null);
+                  setNavigationTarget(null);
                   setSection(id);
                 }}
               >
@@ -2242,7 +2267,7 @@ export function SettingGroup({
   children: React.ReactNode;
 }): React.JSX.Element {
   return (
-    <section className={`setting-group setting-group--field${layout === "stacked" ? " setting-group--stacked" : ""}`}>
+    <section data-setting-label={label} tabIndex={-1} className={`setting-group setting-group--field${layout === "stacked" ? " setting-group--stacked" : ""}`}>
       <div className="setting-group__copy">
         <h3>{label}</h3>
         {description && <p className="setting-group__description">{description}</p>}

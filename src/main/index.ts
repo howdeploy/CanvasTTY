@@ -1297,35 +1297,46 @@ app.on("child-process-gone", (_event, details) => {
 void IPC.terminalData;
 
 async function shutdownServices(): Promise<void> {
+  const finish = async (name: string, action: () => unknown): Promise<void> => {
+    try {
+      await action();
+    } catch (error) {
+      // A failed optional service must not skip PTY shutdown or the final save
+      // on Mac. Keep the existing failure behavior on the other platforms.
+      if (process.platform !== "darwin") throw error;
+      console.warn(`CanvasTTY could not finish ${name} during Mac shutdown.`, error);
+    }
+  };
   diagnostics.record("info", "application", "shutdown.started");
-  attentionNotifications?.dispose();
-  mascotManager?.dispose();
-  agentChatHistory?.dispose();
+  await finish("attention notifications", () => attentionNotifications?.dispose());
+  await finish("mascot", () => mascotManager?.dispose());
+  await finish("chat history", () => agentChatHistory?.dispose());
   if (agentControl) await Promise.allSettled([agentControl.close()]);
   if (updateTimer) clearTimeout(updateTimer);
   if (updateInterval) clearInterval(updateInterval);
   for (const request of browserRequests.values()) { clearTimeout(request.timer); request.reject(new Error("App closing")); }
   browserRequests.clear();
-  await evenG2?.close();
-  if (terminalManager) await terminalManager.shutdown();
+  await finish("companion", () => evenG2?.close());
+  if (terminalManager) await finish("terminals", () => terminalManager!.shutdown());
   // The hung-up PTYs exit while the other services close; quitting waits for them (see waitForProcessExits).
-  const ptyExits = terminalManager?.waitForProcessExits().then((left) => {
+  const ptyExits = finish("terminal process exits", async () => {
+    const left = await terminalManager?.waitForProcessExits() ?? 0;
     if (left > 0) console.warn(`CanvasTTY quit with ${left} terminal process(es) that did not exit after SIGKILL.`);
   });
   // Stop the timer first, then abort in-flight limit requests so the final save is prompt.
-  const usageHistoryClosed = usageHistory?.dispose();
-  limitsService?.dispose();
+  const usageHistoryClosed = finish("usage history", () => usageHistory?.dispose());
+  await finish("limit requests", () => limitsService?.dispose());
   await usageHistoryClosed;
   if (agentGateway) await Promise.allSettled([agentGateway.close()]);
   if (runtimeGateway) await Promise.allSettled([runtimeGateway.close()]);
   if (browserService) await Promise.allSettled([browserService.dispose()]);
   if (pluginServices) await Promise.allSettled([pluginServices.dispose()]);
   if (pluginManager) await Promise.allSettled([pluginManager.dispose()]);
-  await handoffService?.dispose();
+  await finish("handoff", () => handoffService?.dispose());
   if (materialService) await Promise.allSettled([materialService.dispose()]);
   await ptyExits;
   diagnostics.record("info", "application", "shutdown.completed");
-  await diagnostics.flush();
+  await finish("diagnostics", () => diagnostics.flush());
 }
 
 async function openPluginWindow(pluginId: string, contributionId: string): Promise<void> {

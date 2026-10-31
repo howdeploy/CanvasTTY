@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Codex Desktop</title>
+    <link rel="stylesheet" href="./index.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="identity">
+          <strong>Codex Desktop</strong
+          ><span id="status" role="status">Loading…</span>
+        </div>
+        <div class="controls">
+          <button id="open" type="button" hidden>Open in canvas</button>
+          <select
+            id="windows"
+            aria-label="Codex desktop window"
+            hidden
+          ></select>
+          <button id="refresh" type="button" hidden>Refresh</button>
+          <button id="attach" type="button" hidden>Embed window</button>
+          <button id="detach" type="button" hidden>Return to desktop</button>
+        </div>
+      </header>
+      <p id="message" class="empty" aria-live="polite"></p>
+      <p id="error" role="alert" hidden></p>
+    </main>
+    <script src="canvastty-plugin://host/sdk.js"></script>
+    <script src="./index.js"></script>
+  </body>
+</html>

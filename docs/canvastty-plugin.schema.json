@@ -37,7 +37,7 @@
       "type": "array",
       "maxItems": 12,
       "uniqueItems": true,
-      "items": { "enum": ["storage", "secrets", "sessions:read", "limits:read", "launcher:open", "external:open", "browser:open", "media:library", "playlists:read", "playlists:write", "hermes:hud", "network", "launch:contribute", "environment:provide", "decision:provide", "tools:agents", "sessions:events", "sessions:read-screen", "sessions:launch", "sessions:control", "cards:decorate", "browser:engine"] }
+      "items": { "enum": ["storage", "secrets", "sessions:read", "limits:read", "launcher:open", "external:open", "browser:open", "media:library", "playlists:read", "playlists:write", "hermes:hud", "desktop:embed", "network", "launch:contribute", "environment:provide", "decision:provide", "tools:agents", "sessions:events", "sessions:read-screen", "sessions:launch", "sessions:control", "cards:decorate", "browser:engine"] }
     },
     "contributions": {
       "type": "array",
@@ -83,7 +83,7 @@
           "type": "array",
           "maxItems": 12,
           "uniqueItems": true,
-          "items": { "enum": ["storage", "secrets", "sessions:read", "limits:read", "launcher:open", "external:open", "browser:open", "media:library", "playlists:read", "playlists:write", "hermes:hud", "network", "launch:contribute", "environment:provide", "decision:provide", "tools:agents", "sessions:events", "sessions:read-screen", "sessions:launch", "sessions:control", "cards:decorate", "browser:engine"] }
+          "items": { "enum": ["storage", "secrets", "sessions:read", "limits:read", "launcher:open", "external:open", "browser:open", "media:library", "playlists:read", "playlists:write", "hermes:hud", "desktop:embed", "network", "launch:contribute", "environment:provide", "decision:provide", "tools:agents", "sessions:events", "sessions:read-screen", "sessions:launch", "sessions:control", "cards:decorate", "browser:engine"] }
         },
         "files": { "type": "array", "minItems": 1, "maxItems": 500, "items": { "$ref": "#/$defs/moduleAsset" } }
       }

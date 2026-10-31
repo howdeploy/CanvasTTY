@@ -204,6 +204,7 @@ test("the card suspends its frame while HOME editing, zoomed to a summary, off-s
   let visibility = "visible";
   globalThis.window = {
     innerWidth: 1600, innerHeight: 1000,
+    canvasTTY: { window: { platform: "linux" } },
     setTimeout: (callback, ms) => { timers.push({ callback, ms }); return timers.length; },
     clearTimeout: () => undefined,
     addEventListener() {}, removeEventListener() {}

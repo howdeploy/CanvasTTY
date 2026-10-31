@@ -7,7 +7,9 @@ const cardStart = source.indexOf("<BrowserCard");
 assert.ok(cardStart >= 0);
 const visible = source.slice(cardStart, source.indexOf("/>", cardStart)).match(/\bvisible=\{([^}]+)\}/)?.[1];
 assert.ok(visible, "test executes the production BrowserCard visibility decision");
-const evaluateVisibility = new Function("state", `with (state) { return (${visible}); }`);
+const nativeContentVisible = source.match(/const nativeContentVisible = ([\s\S]*?);/)?.[1];
+assert.ok(nativeContentVisible, "test executes the shared native content visibility decision");
+const evaluateVisibility = new Function("state", `with (state) { const nativeContentVisible = (${nativeContentVisible}); return (${visible}); }`);
 
 const unobstructed = {
   browserViewVisible: true,

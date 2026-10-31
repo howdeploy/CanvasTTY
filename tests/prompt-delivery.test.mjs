@@ -7,7 +7,7 @@ const frame = (provider, text = "") => provider === "kimi"
   ? `\x1b[2J\x1b[H╭────────────────────────────────────────╮\r\n│ > ${text.padEnd(36)} │\r\n╰────────────────────────────────────────╯\x1b[2;5H`
   : `\x1b[2J\x1b[H${provider === "claude" ? "❯" : "›"} ${text}\x1b[1;${3 + text.length}H`;
 
-function fixture(t, provider = "codex") {
+function fixture(t, provider = "codex", waitMs = 150) {
   const calls = [], writes = [];
   const manager = new TerminalManager(() => {}, availableRegistry(), undefined, undefined, true,
     fakeSpawner(calls, { onWrite: (data) => writes.push(data) }));
@@ -17,7 +17,7 @@ function fixture(t, provider = "codex") {
   draw();
   t.after(() => manager.disposeAll());
   return { manager, session, pty, writes, draw,
-    send: (text = "task", submit = true, signal) => manager.deliverPrompt(session.id, text, submit, signal, { waitMs: 150 }) };
+    send: (text = "task", submit = true, signal) => manager.deliverPrompt(session.id, text, submit, signal, { waitMs }) };
 }
 
 const until = async (condition) => {
@@ -30,7 +30,8 @@ const until = async (condition) => {
 
 test("Codex, Claude and Kimi send Enter only after their active field acknowledges the paste", async t => {
   for (const provider of ["codex", "claude", "kimi"]) {
-    const f = fixture(t, provider);
+    // This checks acknowledgement ordering, not the short-deadline failure path below.
+    const f = fixture(t, provider, 5_000);
     const pending = f.send("first task");
     await until(() => f.writes.length === 1);
     assert.deepEqual(f.writes, ["\x1b[200~first task\x1b[201~"]);

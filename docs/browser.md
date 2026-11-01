@@ -33,6 +33,14 @@ Only agent sessions launched by CanvasTTY receive a per-launch browser connectio
 
 The tool surface covers tabs, navigation, observation/read, screenshot, click/hover/type/select/press, scroll/drag, waits, dialogs, downloads, and the calling agent's activity. It does not expose cookies, saved passwords, authorization headers, local/session storage, arbitrary JavaScript, filesystem or shell access, raw CDP, a TCP listener, or a remote-debugging port.
 
+### Keyboard shortcuts and editor text
+
+`browser_press` accepts named keys (`Enter`, `Tab`, `Escape`, `Backspace`, `Delete`, the arrow keys, `Home`, `End`, `PageUp`, `PageDown`, `Space`) and single ASCII letters/digits. Prefix them with `Ctrl` (or `Control`), `Shift`, `Alt`, or `Meta`, separated by `+`: for example `Ctrl+A`, `Ctrl+Enter`, `Ctrl+Shift+ArrowLeft`, or `Meta+A` on macOS. Duplicate modifiers and unsupported keys fail with `INVALID_INPUT`. Modifiers apply to that command only; they are not held between tool calls.
+
+Use `browser_type({ref, text, mode: "replace"})` to replace the full contents of the observed editable field, including CodeMirror with its normal editing key bindings. Use `mode: "insert"` to insert at its current selection. An empty replacement clears the field. The operation uses the native select-all shortcut and editing input so the editor receives changes and can record undo history; it does not assign `textContent`. The editor's own custom shortcut handlers retain control. Read-only, disabled, and noneditable targets are rejected. Without `mode`, legacy behavior remains: ordinary input/textarea contents are selected before typing, while contenteditable receives text at its selection. Always observe the resulting state before deciding what to do next.
+
+The isolated `npm run smoke:browser:editor` fixture tests real Chromium fields and CodeMirror, including Unicode/multiline replacement, shortcuts, submission, undo, and protected targets. It uses a temporary browser profile, not the person's tabs. After upgrading CanvasTTY, restart the agent session to receive the updated MCP schema.
+
 Agent mutations are ordered FIFO per tab, deduplicated by request ID, revision-checked before side effects, rate-limited, bounded by timeouts, and blocked when their required audit attempt cannot be written. Reads can run concurrently; different tabs keep independent mutation lanes.
 
 If the browser view has zero width or height, `browser_observe` returns `VIEWPORT_UNAVAILABLE` instead of a misleading empty list of controls. `browser_screenshot` returns the same retryable error for an empty capture. Bring the Browser card into view, then observe or capture again; reopening the tab is unnecessary. `browser_read_page` can still read document text while no drawable view is available.

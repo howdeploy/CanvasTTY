@@ -357,7 +357,7 @@
       },
       {
         "name": "browser_type",
-        "description": "Type text into an editable element. Password values are never returned by browser tools.",
+        "description": "Type into an observed editable element. mode: replace replaces its full contents (including contenteditable editors); insert types at its selection. Omitted preserves legacy behavior: replace input/textarea, insert in contenteditable. Password values are never returned.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -416,6 +416,13 @@
             "text": {
               "type": "string",
               "maxLength": 65536
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "insert",
+                "replace"
+              ]
             }
           },
           "required": [
@@ -502,7 +509,7 @@
       },
       {
         "name": "browser_press",
-        "description": "Press a keyboard key in a tab or on an element ref.",
+        "description": "Press a key or chord in a tab or observed element. Prefix a named key or letter/digit with Ctrl (or Control), Shift, Alt or Meta separated by +; e.g. Ctrl+A, Ctrl+Enter, Meta+A, Ctrl+Shift+ArrowLeft. Modifiers do not remain held between calls.",
         "inputSchema": {
           "type": "object",
           "properties": {

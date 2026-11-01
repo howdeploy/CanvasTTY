@@ -72,17 +72,18 @@ export const TOOL_DEFINITIONS = Object.freeze([
     expectedRevision: integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })
   }, ["ref"]),
   tool("browser_hover", "Hover a revision-bound element ref.", { tabId, ref }, ["ref"]),
-  tool("browser_type", "Type text into an editable element. Password values are never returned by browser tools.", {
+  tool("browser_type", "Type into an observed editable element. mode: replace replaces its full contents (including contenteditable editors); insert types at its selection. Omitted preserves legacy behavior: replace input/textarea, insert in contenteditable. Password values are never returned.", {
     tabId,
     ref,
-    text
+    text,
+    mode: { type: "string", enum: ["insert", "replace"] }
   }, ["ref", "text"]),
   tool("browser_select", "Select one or more option values in a form control.", {
     tabId,
     ref,
     values: array(string({ maxLength: 2_048 }), { minItems: 1, maxItems: 64 })
   }, ["ref", "values"]),
-  tool("browser_press", "Press a keyboard key in a tab or on an element ref.", {
+  tool("browser_press", "Press a key or chord in a tab or observed element. Prefix a named key or letter/digit with Ctrl (or Control), Shift, Alt or Meta separated by +; e.g. Ctrl+A, Ctrl+Enter, Meta+A, Ctrl+Shift+ArrowLeft. Modifiers do not remain held between calls.", {
     tabId,
     ref,
     key: string({ minLength: 1, maxLength: 40 })

@@ -54,7 +54,8 @@
     "bench:terminal-hidden-renderer": "node scripts/smoke-hidden-terminal-electron.mjs --benchmark",
     "test:canvaslink": "npm test --workspace @canvastty/canvaslink",
     "build:canvaslink:android": "npm run build:android --workspace @canvastty/canvaslink",
-    "build:browser-gestures": "node scripts/build-browser-gestures.mjs"
+    "build:browser-gestures": "node scripts/build-browser-gestures.mjs",
+    "smoke:browser:editor": "node scripts/smoke-browser-editor.mjs"
   },
   "dependencies": {
     "@xterm/headless": "6.0.0",
@@ -72,6 +73,8 @@
     "yaml": "2.9.0"
   },
   "devDependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/view": "^6.43.15",
     "@electron/rebuild": "4.2.0",
     "@types/node": "26.1.2",
     "@types/react": "19.2.18",

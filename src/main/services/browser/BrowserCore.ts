@@ -395,7 +395,7 @@ export class BrowserCore {
         return { data: { hovered: true }, tabId: requiredTabId };
       }
       case "browser_type": {
-        const { point, typed } = await this.automation.type(requiredTabId, revision, command.ref, command.text, signal);
+        const { point, typed } = await this.automation.type(requiredTabId, revision, command.ref, command.text, signal, command.mode);
         this.host.touchActor(actor, requiredTabId, point);
         if (!typed) {
           // Focusing the element opened a dialog: nothing was typed. Handle the dialog, then type again.
@@ -528,6 +528,9 @@ function assertCommandArguments(command: BrowserCommand): void {
   }
   if (command.type === "browser_drag" && !(typeof command.targetRef === "string" || command.targetRef?.ref)) {
     throw new BrowserKernelError("STALE_REF", "Browser drag requires a target element reference.", { retryable: true });
+  }
+  if (command.type === "browser_type" && command.mode !== undefined && command.mode !== "insert" && command.mode !== "replace") {
+    throw new BrowserKernelError("INVALID_INPUT", "Browser text mode must be insert or replace.");
   }
   if (command.type === "browser_type" && typeof command.text !== "string") {
     throw new BrowserKernelError("PAYLOAD_TOO_LARGE", "Browser type requires text.");
@@ -682,6 +685,7 @@ function agentErrorMessage(code: BrowserErrorCode): string {
     VIEWPORT_UNAVAILABLE: "Browser view has no drawable surface. Use semantic page reading or ask the person to bring its Browser card into view, then retry. Do not switch to desktop automation.",
     STALE_REF: "Browser page changed; observe it again.",
     INVALID_URL: "Browser URL is invalid.",
+    INVALID_INPUT: "Browser input is invalid. Use a supported key chord, insert/replace text mode and an editable target.",
     NAVIGATION_BLOCKED: "Browser navigation was blocked by policy.",
     PERMISSION_DENIED: "Browser action is not allowed.",
     DIALOG_OPEN: "Browser tab has a JavaScript dialog to handle.",

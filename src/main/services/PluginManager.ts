@@ -48,6 +48,7 @@ import {
 } from "../../shared/contracts.ts";
 import { isValidSemver } from "../../shared/hostVersion.ts";
 import { PLUGIN_VISIBILITY_BRIDGE_SOURCE } from "../../shared/pluginVisibility.ts";
+import { PLUGIN_NATIVE_CODE_OFF_ERROR, PLUGIN_SERVICE_MODULE_OFF_ERROR } from "../../shared/pluginServiceNotice.ts";
 import type { PluginServiceSpec } from "./PluginServiceSupervisor.ts";
 import type { LaunchContributor } from "./LaunchPipeline.ts";
 import type { EnvironmentProvider } from "./EnvironmentRegistry.ts";
@@ -1223,10 +1224,20 @@ export class PluginManager {
     return structuredClone(contribution);
   }
 
+  /**
+   * The plugin's own UI may ask `serviceId` now: it is in the active manifest and its native code is trusted. A
+   * service whose module is off or whose native code is not trusted gets a fixed text the renderer turns into a
+   * localized notice with a way to the right settings section (pluginServiceNotice).
+   */
   assertService(pluginId: string, serviceId: string): void {
-    const plugin = activePlugin(this.requireEnabledPlugin(pluginId));
+    const installed = this.requireEnabledPlugin(pluginId);
+    const plugin = activePlugin(installed);
     if (!plugin.manifest.services?.some((service) => service.id === serviceId)) {
+      if (installed.manifest.services?.some((service) => service.id === serviceId)) throw new Error(PLUGIN_SERVICE_MODULE_OFF_ERROR);
       throw new Error("Plugin service does not exist.");
+    }
+    if (!installed.nativeCodeTrusted || !this.serviceTrust.get(pluginId)?.[serviceId]) {
+      throw new Error(PLUGIN_NATIVE_CODE_OFF_ERROR);
     }
   }
 

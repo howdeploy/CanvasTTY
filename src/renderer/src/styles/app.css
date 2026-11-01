@@ -219,6 +219,9 @@ button { border: 0; }
 .limit-row__summary { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .limit-row__summary strong { flex: 0 0 auto; overflow: hidden; color: var(--text); font: 900 27px/1 var(--font-mono); letter-spacing: -.045em; text-overflow: ellipsis; white-space: nowrap; }
 .limit-row__summary > span { min-width: 0; overflow: hidden; color: var(--text-muted-on-dark); font: 800 14px/1 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.limit-row__summary > .limit-row__share { flex: 1 1 auto; display: flex; align-items: baseline; gap: 8px; }
+.limit-row__share > span { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.limit-row__summary > .limit-row__countdown { flex: 0 0 auto; }
 .limit-row__track { position: relative; width: 100%; height: 6px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.12); }
 .limit-row__fill { position: absolute; inset: 0 auto 0 0; max-width: 100%; border-radius: inherit; background: rgba(248,247,241,.78); }
 .limit-row__empty { overflow: hidden; color: var(--text-muted-on-dark); font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
@@ -232,6 +235,7 @@ button { border: 0; }
   .limit-row__summary { gap: 7px; }
   .limit-row__summary strong { font-size: 22px; }
   .limit-row__summary > span { font-size: 11px; }
+  .limit-row__share > span { font-size: 10px; }
   .limit-row__track { height: 4px; }
   .limit-row__empty { font-size: 11px; }
 }
@@ -1362,6 +1366,8 @@ button { border: 0; }
 .update-notice__dismiss:hover, .update-notice__dismiss:focus-visible { color: var(--text); background: var(--surface-soft); }
 .toast { position: fixed; z-index: 9999; left: 50%; bottom: 24px; max-width: min(540px, calc(100% - 40px)); padding: 12px 17px; border-radius: 11px; color: white; background: rgba(37,38,48,.94); box-shadow: var(--shadow-md); opacity: 0; transform: translate(-50%, 18px); pointer-events: none; transition: all .2s ease; }
 .toast--visible { opacity: 1; transform: translate(-50%, 0); }
+.toast--action { display: flex; align-items: center; gap: 12px; pointer-events: auto; }
+.toast__action { flex: 0 0 auto; padding: 6px 8px; border-radius: 6px; color: var(--text-dark); background: var(--primary); cursor: pointer; font-size: 11px; font-weight: 700; }
 .materials-load-error { position: fixed; z-index: 9998; left: 50%; bottom: 76px; width: max-content; max-width: min(540px, calc(100% - 40px)); padding: 12px 17px; border-radius: 11px; color: var(--text); background: var(--surface); box-shadow: inset 3px 0 0 var(--danger), var(--shadow-md); transform: translateX(-50%); }
 /* Shown until the critical snapshot is in, usually for a few frames only. It keeps the window's own native
    background (main/index.ts backgroundColor) so startup does not flash a dark panel between the empty window and

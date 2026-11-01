@@ -116,8 +116,17 @@ export function pasteMarkers(screen: string): number {
 /** Visible screen rows, optionally reconstructing xterm's soft-wrapped logical lines. */
 export function terminalScreenText(terminal: import("@xterm/headless").Terminal, unwrap = false): string {
   const buffer = terminal.buffer.active;
+  return terminalRowsText(terminal, buffer.baseY, buffer.baseY + terminal.rows, unwrap);
+}
+
+/**
+ * Rows `from` to `to` (exclusive) of the active buffer as text. `unwrap` joins a row xterm wrapped onto the line it
+ * continues (untrimmed, so a space the wrap fell on stays between the words) and trims each line once it is whole.
+ */
+export function terminalRowsText(terminal: import("@xterm/headless").Terminal, from: number, to: number, unwrap = false): string {
+  const buffer = terminal.buffer.active;
   const lines: string[] = [];
-  for (let row = buffer.baseY; row < buffer.baseY + terminal.rows; row++) {
+  for (let row = from; row < to; row++) {
     const line = buffer.getLine(row);
     const text = line?.translateToString(!unwrap) ?? "";
     if (unwrap && line?.isWrapped && lines.length) lines[lines.length - 1] += text;

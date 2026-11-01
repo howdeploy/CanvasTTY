@@ -1084,7 +1084,7 @@
       },
       {
         "name": "observe_agent",
-        "description": "Read the capped terminal tail and status of one of this session's subagents.",
+        "description": "Read the status of one of this session's subagents and the end of its screen as masked plain text (once its process exited, also exitLines).",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1107,7 +1107,7 @@
       },
       {
         "name": "wait_for_agent",
-        "description": "Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason \"idle\" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), \"needs_approval\" (its card shows a prompt only the person may answer; never answer it yourself), \"done\" or \"failed\" (its process exited), \"quiet\" (it reports no status or no turn start and its screen stopped changing, so judge from output), \"closed\" (its card was closed) or \"timeout\" after timeoutSeconds (default 55, at most 600; unless this session is Claude Code, a call returns after at most 50 seconds, before its MCP client would end the call), with status, exitCode, waitedMs, the masked terminal tail as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. A timeout means it is still running: read output as its progress and call wait_for_agent again. Then read get_agent_result.",
+        "description": "Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason \"idle\" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), \"needs_approval\" (its card shows a prompt only the person may answer; never answer it yourself), \"done\" or \"failed\" (its process exited), \"quiet\" (it reports no status or no turn start and its screen stopped changing, so judge from output), \"closed\" (its card was closed) or \"timeout\" after timeoutSeconds (default 55, at most 600; unless this session is Claude Code, a call returns after at most 50 seconds, before its MCP client would end the call), with status, exitCode, waitedMs, the end of its screen as masked plain text as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. A timeout means it is still running: read output as its progress and call wait_for_agent again. Then read get_agent_result.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1130,7 +1130,7 @@
       },
       {
         "name": "get_agent_result",
-        "description": "Get one of this session's subagents' result: answer (its last turn's final reply as the agent reported it, for Codex and OpenCode subagents; truncated:true when only the end was kept), status (idle once its turn ended), the exit state (running | done | failed; an interactive CLI stays running after a task) and the masked terminal tail as output. Prefer answer; the terminal tail is raw screen output.",
+        "description": "Get one of this session's subagents' result: answer (its last turn's final reply as the agent reported it, for Codex and OpenCode subagents; truncated:true when only the end was kept), status (idle once its turn ended), the exit state (running | done | failed; an interactive CLI stays running after a task) and the end of its screen as masked plain text as output (what the terminal shows, without control sequences). Prefer answer.",
         "inputSchema": {
           "type": "object",
           "properties": {

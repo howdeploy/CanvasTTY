@@ -15,6 +15,7 @@ import type { TerminalManager } from "./TerminalManager.ts";
 import { onDiskPath, otherSpellings } from "./onDiskPath.ts";
 import { LaunchRefusal } from "./launchRefusal.ts";
 import { terminalFailureDetails } from "./terminalFailureDetails.ts";
+import { renderedTerminalText } from "./renderedTerminalText.ts";
 import { RESULT_CAPTURE_PROVIDERS } from "./resultCapture.ts";
 
 // Cards one parent may have in total, live or exited (the live limit is the person's setting).
@@ -30,8 +31,14 @@ export interface DelegationLimits {
 }
 const MAX_OBSERVE_CHARS = 8_192;
 // An exited agent's reason is in its last screen lines (OpenCode: "Error: Unexpected server error" for an unknown model).
-const MAX_EXIT_WINDOW_CHARS = 16_384;
 const MAX_EXIT_LINES = 20;
+/**
+ * How much of the scrollback (masked first) the plain-text output is rendered from: several full redraws of a
+ * full-screen TUI, and many screens of a line-based CLI, while each call still masks a bounded window.
+ */
+const MAX_SCREEN_SOURCE_CHARS = 65_536;
+/** How far before the window's start a control sequence it cuts may begin (an OSC title or hyperlink included). */
+const SEQUENCE_LOOKBACK_CHARS = 4_096;
 const CHILD_POSITION_STEP = { x: 60, y: 60 };
 
 export interface SpawnAgentRequest {
@@ -52,7 +59,7 @@ export interface SpawnAgentRequest {
 export interface AgentObservation {
   sessionId: string;
   status: SessionSnapshot["status"];
-  /** Raw terminal tail, capped; capabilities with result \"none\" see nothing. */
+  /** The screen's text as a terminal shows it (no control sequences), masked, capped to its last characters. */
   output: string;
   /** Once the process exited: its exit code and the last lines of its screen as plain text, masked. */
   exitCode?: number | null;
@@ -72,7 +79,7 @@ export interface AgentWaitResult {
   status?: SessionSnapshot["status"];
   exitCode: number | null;
   waitedMs: number;
-  /** Masked terminal tail (masked before the cut). */
+  /** The screen's text as a terminal shows it (no control sequences), masked, capped to its last characters. */
   output: string;
   /** Once the process exited: the last lines of its screen as plain text, masked (why it stopped, e.g. a bad model). */
   exitLines?: string;
@@ -109,6 +116,7 @@ export interface AgentResult {
   /** The session's status (idle once its turn ended; state stays "running" while the CLI is open). */
   status: SessionSnapshot["status"];
   exitCode: number | null;
+  /** The screen's text as a terminal shows it (no control sequences), masked, capped to its last characters. */
   output: string;
   /** Once the process exited: the last lines of its screen as plain text, masked. */
   exitLines?: string;
@@ -292,27 +300,30 @@ export class AgentControlService {
     return false;
   }
 
-  observe(sessionId: string, maxChars = MAX_OBSERVE_CHARS): AgentObservation {
-    const session = this.requireSession(sessionId);
-    if (session.provider === "terminal") throw new Error("Plain terminals are not agents.");
-    const capabilities = PROVIDER_CAPABILITIES[session.provider as AgentProviderId];
-    if (!capabilities.observe) throw new Error(`${session.provider} cannot be observed.`);
+  async observe(sessionId: string, maxChars = MAX_OBSERVE_CHARS): Promise<AgentObservation> {
+    const session = this.observableSession(sessionId);
     const buffer = this.terminals.readBuffer(sessionId).buffer;
-    const exitLines = session.exitCode === null ? null : this.exitLines(buffer);
+    const exitLines = session.exitCode === null ? null : await this.screenExitLines(sessionId, buffer);
     const delivery = this.delivery(sessionId);
     return {
       sessionId: session.id,
       status: session.status,
       ...(delivery ? { delivery } : {}),
-      // Masked before the cut (a cut inside a secret would leave a tail no pattern recognizes), over a window
-      // wider than any match rather than the whole scrollback.
-      output: this.redactTail(buffer, maxChars),
+      output: await this.screenText(sessionId, buffer, maxChars),
       ...(session.exitCode === null ? {} : { exitCode: session.exitCode }),
       ...(exitLines ? { exitLines } : {})
     };
   }
 
-  result(sessionId: string): AgentResult {
+  private observableSession(sessionId: string): SessionMetadata {
+    const session = this.requireSession(sessionId);
+    if (session.provider === "terminal") throw new Error("Plain terminals are not agents.");
+    const capabilities = PROVIDER_CAPABILITIES[session.provider as AgentProviderId];
+    if (!capabilities.observe) throw new Error(`${session.provider} cannot be observed.`);
+    return session;
+  }
+
+  async result(sessionId: string): Promise<AgentResult> {
     const session = this.requireSession(sessionId);
     if (session.provider === "terminal") throw new Error("Plain terminals are not agents.");
     const capabilities = PROVIDER_CAPABILITIES[session.provider as AgentProviderId];
@@ -325,7 +336,7 @@ export class AgentControlService {
     const buffer = capabilities.result === "terminal"
       ? this.terminals.readBuffer(sessionId).buffer
       : "";
-    const exitLines = session.exitCode === null ? null : this.exitLines(buffer);
+    const exitLines = session.exitCode === null ? null : await this.screenExitLines(sessionId, buffer);
     return {
       sessionId: session.id,
       state: session.exitCode === null
@@ -334,7 +345,7 @@ export class AgentControlService {
       status: session.status,
       exitCode: session.exitCode,
       ...(delivery ? { delivery } : {}),
-      output: this.redactTail(buffer, MAX_OBSERVE_CHARS),
+      output: buffer ? await this.screenText(sessionId, buffer, MAX_OBSERVE_CHARS) : "",
       ...(exitLines ? { exitLines } : {}),
       ...(answer ? { answer } : {})
     };
@@ -354,11 +365,11 @@ export class AgentControlService {
     const timing = this.options.waitTiming ?? AGENT_WAIT_TIMING;
     const timeoutMs = Math.min(MAX_AGENT_WAIT_MS, Math.max(0, request.timeoutMs));
     const started = Date.now();
-    const answer = (session: SessionMetadata | null, reason: AgentWaitReason): AgentWaitResult => {
+    const answer = async (session: SessionMetadata | null, reason: AgentWaitReason): Promise<AgentWaitResult> => {
       const waitedMs = Date.now() - started;
       if (!session) return { sessionId, reason, exitCode: null, waitedMs, output: "" };
       let observation: AgentObservation | null = null;
-      try { observation = this.observe(sessionId); } catch { observation = null; }
+      try { observation = await this.observe(sessionId); } catch { observation = null; }
       const answer = reason === "timeout" || reason === "needs_approval" ? null : this.answer(sessionId);
       return { sessionId, reason, status: session.status, exitCode: session.exitCode, waitedMs, output: observation?.output ?? "",
         ...(observation?.delivery ? { delivery: observation.delivery } : {}),
@@ -404,11 +415,52 @@ export class AgentControlService {
     return delivery.receipt;
   }
 
-  /** The last lines of an exited agent's screen as plain text: masked over the whole tail window before it is cut. */
-  private exitLines(buffer: string): string | null {
-    const text = terminalFailureDetails(this.redactTail(buffer, MAX_EXIT_WINDOW_CHARS));
+  /**
+   * The last lines of the screen, rendered like `output` (a TUI that redraws only the cells that changed would
+   * otherwise read as its redraws joined together) from the same window as `output` (a line drawn early and never
+   * redrawn, such as the model's status line, is still on the screen), masked before it is cut and again after.
+   */
+  private async screenExitLines(sessionId: string, buffer: string): Promise<string | null> {
+    const source = this.screenSource(buffer);
+    let screen: string;
+    try {
+      screen = this.redactTail(await renderedTerminalText(source, this.geometry(sessionId)), MAX_SCREEN_SOURCE_CHARS);
+    } catch {
+      screen = source;
+    }
+    const text = terminalFailureDetails(screen);
     if (!text) return null;
     return text.split("\n").slice(-MAX_EXIT_LINES).join("\n");
+  }
+
+  /**
+   * The text the agent's terminal shows, as plain text: a TUI's redraws (cursor moves, erases, colors) rendered by a
+   * headless terminal instead of returned as escape sequences. Masked twice: the scrollback before it is rendered
+   * (a held value the TUI wrote whole is gone before any redraw can split it), and the rendered text before its
+   * last `maxChars` are cut (a value the screen shows across wrapped rows or box sides). Should the rendering fail,
+   * the masked raw tail is returned as before.
+   */
+  private async screenText(sessionId: string, buffer: string, maxChars: number): Promise<string> {
+    const source = this.screenSource(buffer);
+    try {
+      return this.redactTail(await renderedTerminalText(source, this.geometry(sessionId)), maxChars);
+    } catch {
+      return this.redactTail(buffer, maxChars);
+    }
+  }
+
+  /**
+   * The masked window the screen is rendered from: the last MAX_SCREEN_SOURCE_CHARS, masked with a little of what
+   * precedes them so a control sequence the window's start cuts is included whole.
+   */
+  private screenSource(buffer: string): string {
+    if (buffer.length <= MAX_SCREEN_SOURCE_CHARS) return this.redactTail(buffer, MAX_SCREEN_SOURCE_CHARS);
+    const masked = this.redactTail(buffer, MAX_SCREEN_SOURCE_CHARS + SEQUENCE_LOOKBACK_CHARS);
+    return masked.slice(windowStart(masked, Math.max(0, masked.length - MAX_SCREEN_SOURCE_CHARS)));
+  }
+
+  private geometry(sessionId: string): { cols: number; rows: number } | null {
+    try { return typeof this.terminals.geometry === "function" ? this.terminals.geometry(sessionId) : null; } catch { return null; }
   }
 
   /** Plugin launch secrets never reach another agent through observed output: the tail as masking the whole text leaves it. */
@@ -532,6 +584,46 @@ function abortError(): Error {
 function tail(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return text.slice(text.length - maxChars);
+}
+
+/**
+ * Where a window cut at `cut` from the end of a terminal stream should start: at `cut`, unless an escape sequence
+ * begun before it is still open there (its rest, such as `18;9H` or `m`, a terminal would print as text); then at
+ * that sequence's escape, so the terminal reads it whole. Ordinary text at the cut is kept. Only the last escape
+ * before the cut can still be open.
+ */
+function windowStart(text: string, cut: number): number {
+  const escape = text.lastIndexOf("\u001b", cut - 1);
+  if (escape < 0) return cut;
+  return sequenceEnd(text, escape) > cut ? escape : cut;
+}
+
+/** The index just after the escape sequence starting at `start` (text.length when it is still unterminated). */
+function sequenceEnd(text: string, start: number): number {
+  const kind = text[start + 1];
+  if (kind === undefined) return text.length;
+  if (kind === "[") {
+    for (let index = start + 2; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      if (code >= 0x40 && code <= 0x7e) return index + 1;
+      if (code === 0x1b || code === 0x18 || code === 0x1a) return index;
+    }
+    return text.length;
+  }
+  if ("]PX^_".includes(kind)) {
+    // OSC, DCS, SOS, PM, APC: a string ended by BEL (OSC) or ST (ESC \\).
+    for (let index = start + 2; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      if (code === 0x07 && kind === "]") return index + 1;
+      if (code === 0x1b) return text[index + 1] === "\\" ? index + 2 : index;
+      if (code === 0x18 || code === 0x1a) return index;
+    }
+    return text.length;
+  }
+  // ESC, its intermediates (0x20-0x2f), then one final character.
+  let index = start + 1;
+  while (index < text.length && text.charCodeAt(index) >= 0x20 && text.charCodeAt(index) <= 0x2f) index++;
+  return Math.min(index + 1, text.length);
 }
 
 function spawnCanceled(): Error {

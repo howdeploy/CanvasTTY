@@ -186,6 +186,25 @@ test("RuntimeGateway: a turn whose start hook was lost still counts after an idl
   assert.equal(gateway.currentStatus("terminal-lost-start"), "idle");
 });
 
+test("RuntimeGateway: an earlier turn rejected while the next one ran cannot replace it after that turn ends", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
+  const root = await fixture(t);
+  const signals = [];
+  const gateway = new RuntimeGateway({ runtimeDirectory: root, onSignal: (id, signal) => signals.push({ id, signal }) });
+  await gateway.start();
+  t.after(() => gateway.close());
+  const capability = gateway.registerSession("terminal-stale-turn", "codex");
+  // Turn A's start hook was lost; its events arrive out of order around turn B.
+  await send(capability.address, message(capability, "working", "UserPromptSubmit", "turn-b"));
+  await send(capability.address, message(capability, "working", "PostToolUse", "turn-a"));
+  await send(capability.address, message(capability, "idle", "Stop", "turn-b"));
+  await send(capability.address, message(capability, "idle", "Stop", "turn-a"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(signals.map(({ signal }) => `${signal.state}:${signal.event}:${signal.turnId}`), [
+    "working:UserPromptSubmit:turn-b", "idle:Stop:turn-b"
+  ]);
+  assert.equal(gateway.currentStatus("terminal-stale-turn"), "idle");
+});
+
 test("RuntimeGateway propagates threadId for codex sessions with canonical UUID", POSIX_RUNTIME_GATEWAY_TEST, async (t) => {
   const root = await fixture(t);
   const signals = [];

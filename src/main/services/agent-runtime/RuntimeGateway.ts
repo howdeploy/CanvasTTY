@@ -496,7 +496,12 @@ export class RuntimeGateway {
     } else if (message.turnId && message.turnId !== lease.activeTurnId) {
       // A turn whose start hook was lost (it timed out, or the CLI skipped it) still counts: after an idle, an
       // unseen id opens the next turn. During an open turn, or for an id already seen, the event is out of order.
-      if (lease.activeTurnId && (lease.turnOpen || lease.seenTurnIds.has(message.turnId))) return null;
+      if (lease.activeTurnId && lease.seenTurnIds.has(message.turnId)) return null;
+      if (lease.activeTurnId && lease.turnOpen) {
+        // Its turn ran before this one, so a later event of it (its Stop once this turn ends) is stale as well.
+        rememberTurn(lease, message.turnId);
+        return null;
+      }
       lease.activeTurnId = message.turnId;
       lease.turnOpen = true;
       rememberTurn(lease, message.turnId);

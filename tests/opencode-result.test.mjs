@@ -198,3 +198,25 @@ test("a follow-up prompt is never answered with the previous turn's answer", asy
   terminals.recordAnswer(child.sessionId, { text: "part B done", truncated: false });
   assert.deepEqual((await execute("get_agent_result", { sessionId: child.sessionId })).answer, { text: "part B done", truncated: false });
 });
+
+test("a prompt that was not written keeps the previous turn's answer", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "ctty-ocr-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const calls = [];
+  const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner(calls));
+  t.after(() => terminals.disposeAll());
+  const orchestrator = terminals.create({ provider: "codex", cwd: root, profile: "normal", position: { x: 0, y: 0 }, role: "orchestrator" });
+  const handler = new ScopedOrchestrationHandler(new AgentControlService(terminals, { waitTiming: { checkMs: 5, settleMs: 10, quietMs: 60 } }));
+  const execute = (tool, args) => handler.execute(orchestrator.id, { id: tool, tool, arguments: args });
+  const spawning = execute("spawn_agent", { provider: "opencode", cwd: root, prompt: "do part A" });
+  await openCodeInputReady(calls, 1);
+  const child = await spawning;
+  terminals.applyProviderSignal(child.sessionId, { kind: "lifecycle", state: "working", event: "session.status:busy" });
+  terminals.applyProviderSignal(child.sessionId, { kind: "lifecycle", state: "idle", event: "session.idle" });
+  terminals.recordAnswer(child.sessionId, { text: "part A done", truncated: false });
+
+  calls[1].process.write = () => { throw new Error("PTY closed"); };
+  const sent = await execute("send_to_agent", { sessionId: child.sessionId, prompt: "do part B" }).catch((error) => ({ error }));
+  assert.notEqual(sent.delivered, true, "the failed write delivered nothing");
+  assert.deepEqual((await execute("get_agent_result", { sessionId: child.sessionId })).answer, { text: "part A done", truncated: false });
+});

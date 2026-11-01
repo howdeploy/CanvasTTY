@@ -1169,11 +1169,12 @@ export class TerminalManager {
         if (!prompt.staged) {
           if (prompt.submit && prompt.beforeSubmit?.() === false) return finish("The controller no longer owns this launch; nothing was submitted.");
           prompt.receipt.stage = prompt.submit ? "submitted" : "pasted";
-          if (prompt.submit) markSubmittedPrompt(session, session.turnStarts ?? 0);
+          if (prompt.submit) session.promptTurnMark = session.turnStarts ?? 0;
           if (!this.inputChecked(id, data + (prompt.submit ? submitKey! : ""), "automation")) {
             prompt.receipt.stage = "not-written";
             return finish("The terminal no longer accepts input.");
           }
+          if (prompt.submit) clearSubmittedPromptAnswer(session);
           return finish();
         }
         screen ??= new SessionScreen({ geometry: (id) => this.geometry(id), readBuffer: launchOutput }, id);
@@ -1206,7 +1207,7 @@ export class TerminalManager {
         const reason = invalidated();
         if (reason) return finish(reason);
         if (Date.now() >= deadline) return finish("The delivery deadline expired after the paste; Enter was not sent.");
-        markSubmittedPrompt(session, session.turnStarts ?? 0);
+        session.promptTurnMark = session.turnStarts ?? 0;
         session.automatedSubmit = { epoch, outputOffset: session.outputOffset };
         if (prompt.beforeSubmit?.() === false) return finish("The controller no longer owns this launch; Enter was not sent.");
         prompt.receipt.stage = "submitted";
@@ -1214,6 +1215,7 @@ export class TerminalManager {
           prompt.receipt.stage = "pasted";
           return finish("The paste was observed but the submit key could not be written.");
         }
+        clearSubmittedPromptAnswer(session);
         session.incompletePrompt = false;
         const acceptanceDeadline = Math.min(deadline, Date.now() + 1_000);
         while (prompt.receipt.acceptance === "unconfirmed" && !invalidated() && Date.now() < acceptanceDeadline) {
@@ -1235,7 +1237,8 @@ export class TerminalManager {
       if (gated && !data.endsWith("\r")) session.codexDraftEpoch = epoch;
       else delete session.codexDraftEpoch;
       if (data.endsWith("\r")) {
-        markSubmittedPrompt(session, mark);
+        session.promptTurnMark = mark;
+        clearSubmittedPromptAnswer(session);
         session.automatedSubmit = { epoch, outputOffset: outputBeforeWrite };
       }
       return { delivered: true };
@@ -2646,10 +2649,10 @@ function environmentBadge(environment: PersistedEnvironmentRef): NonNullable<Ses
  */
 /**
  * A submitted prompt starts a new task: wait_for_agent and get_agent_result answer it with the reply of a turn that
- * started after it, never with the one stored from the turn before.
+ * started after it, never with the one stored from the turn before. Called once the submit was written; a prompt that
+ * was not submitted leaves the last answer in place.
  */
-function markSubmittedPrompt(session: ManagedSession, turnMark: number): void {
-  session.promptTurnMark = turnMark;
+function clearSubmittedPromptAnswer(session: ManagedSession): void {
   delete session.answer;
 }
 

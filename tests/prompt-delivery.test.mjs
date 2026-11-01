@@ -205,3 +205,27 @@ test("the archive's unstyled Codex placeholder needs current native idle and unt
   assert.equal((await f.send("must not append")).delivered, false);
   assert.equal(f.writes.length, count);
 });
+
+test("a staged prompt clears the previous answer only once its Enter is written", async t => {
+  for (const failure of ["veto", "enter-write", "none"]) {
+    const calls = [], writes = [];
+    const manager = new TerminalManager(() => {}, availableRegistry(), undefined, undefined, true,
+      fakeSpawner(calls, { onWrite: (data) => writes.push(data) }));
+    t.after(() => manager.disposeAll());
+    const session = manager.create({ provider: "codex", cwd: process.cwd(), profile: "normal", position: { x: 0, y: 0 } }, { captureResult: true });
+    const pty = calls.at(-1).process;
+    pty.emitData(frame("codex"));
+    manager.recordAnswer(session.id, { text: "previous answer", truncated: false });
+    if (failure === "enter-write") {
+      const write = pty.write;
+      pty.write = data => { if (data === "\r") throw new Error("PTY closed"); write(data); };
+    }
+    const pending = manager.deliverPrompt(session.id, "task", true, undefined,
+      { waitMs: 150, ...(failure === "veto" ? { beforeSubmit: () => false } : {}) });
+    await until(() => writes.length === 1);
+    pty.emitData(frame("codex", "task"));
+    const result = await pending;
+    assert.equal(result.receipt.stage, failure === "none" ? "submitted" : "pasted", failure);
+    assert.equal(manager.answer(session.id)?.text, failure === "none" ? undefined : "previous answer", failure);
+  }
+});

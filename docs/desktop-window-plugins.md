@@ -57,7 +57,10 @@ no compiler, npm install or native plugin script is needed at runtime. Its small
 native host uses Win32 `SetParent`, `WS_CHILD`, viewport clipping and a message
 loop; it restores the original `WINDOWPLACEMENT` and styles on release. PowerShell
 runs hidden, with a process-local execution policy. No system execution policy is
-changed. The Windows backend is unchanged from the contributor's implementation.
+changed. The Windows native helper is unchanged from the contributor's
+implementation. The TypeScript service additionally ignores stale helper exits
+after replacement and finishes disposal when a failed launch closes without an
+exit event.
 
 Windows 10/11 and Windows PowerShell 5.1 with .NET Framework are required. Apps
 must use the same user, elevation and DPI-awareness mode. Differing DPI modes are

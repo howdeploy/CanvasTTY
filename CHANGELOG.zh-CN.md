@@ -2,6 +2,16 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## 1.8.5
+
+- 纳入下方记录的 beta2 优化、提示投递、代理启动模式与跨平台可靠性更新。
+- 设置支持俄语和英语搜索及直接跳转；搜索框上移，采用 SL UI 浮动标签动画，搜索目标边框不再裁切内容。HOME 配额状态可直接打开对应设置。
+- 保留 bbutterm 的 Windows Desktop SDK，新增独立 Linux X11/XWayland 后端及参考插件；窗口裁剪、HUD 遮挡与输入遵循画布层级。原生 Wayland 和 macOS 不支持此实验功能。
+- 修复浏览器延迟恢复前的标签持久化、焦点、全屏遮挡、下载操作和触控板历史导航；Files 使用本地 shell 的当前目录并保留手动根目录选择。
+- macOS 关闭窗口时保留终端渲染器，独立服务失败后继续退出，压缩较大的用量历史快照并修复小窗口报告导航。
+- 修复 Windows Codex 截图粘贴；旧 desktop helper 的延迟退出不再清除新进程，启动失败后也能完成清理。原生 C#/PowerShell 嵌入实现不变。
+- 已知限制：beta.1 的区域覆盖 HOME、嵌套 Codex 手动恢复及保守区域排序问题尚未确认解决。强制销毁 Electron 可能销毁嵌入的 Linux 窗口并丢失未保存数据。自动检查不等同于 Windows/macOS 人工验收或长期性能验证。
+
 ## 1.8.5-beta2
 
 继续优化工作的 beta 候选版本。运行验证和 macOS 性能测量尚未完成；不声明已解决所有卡顿报告。

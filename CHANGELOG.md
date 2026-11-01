@@ -2,11 +2,17 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
-## Unreleased
+## 1.8.5
 
-- Search Settings labels and descriptions in Russian or English and navigate directly to matching groups with mouse or keyboard.
+- Carry forward the beta2 optimization, prompt-delivery, provider launch-mode and cross-platform reliability updates described below.
+- Search Settings labels and descriptions in Russian or English and navigate directly to matching groups with mouse or keyboard. Move search higher in the sidebar, add SL UI floating-label transitions, and highlight only search destinations without cutting through their contents.
 - Open Agents → Limit display directly from hidden/unavailable HOME quota states, preserving existing provider switches.
 - Add experimental Windows and Linux X11/XWayland `desktop:embed` plugin support, preserving [bbutterm's Windows SDK contribution](https://github.com/howdeploy/CanvasTTY/pull/182) and adding a separate Linux backend and Linux Desktop reference plugin. Host real application windows in canvas cards, respect HUD/input layers, and restore them on detach or normal host exit. Native Wayland and macOS are unsupported; Windows DPI/elevation and foreign GPU/dialog compatibility remain experimental limits.
+- Preserve saved Browser tabs before lazy restoration; fix native Browser focus, fullscreen visibility, download actions and trackpad history navigation.
+- Resolve Files roots from the live local shell directory, retain explicit root selection, and complete Linux system-file opening without waiting on Electron's missing callback.
+- Preserve macOS terminal renderers when closing the main window, continue shutdown after independent service failures, compress large usage-history snapshots and keep report navigation visible in small windows.
+- Preserve Windows Codex screenshot paste through Ctrl+V and configured paste shortcuts. Ignore late exits from replaced desktop helpers and finish helper disposal after failed process launches; native C#/PowerShell embedding is unchanged.
+- Known limits: the beta.1 issues around regions overlapping HOME, manual nested-Codex restoration and conservative region sorting have not been established resolved. Abrupt destruction of Electron can destroy embedded Linux application windows and lose unsaved data. Desktop embedding remains experimental; native Windows/macOS acceptance and long-duration performance are not inferred from automated checks.
 
 ## 1.8.5-beta2
 

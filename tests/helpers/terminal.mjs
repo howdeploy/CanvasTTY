@@ -77,7 +77,7 @@ export function fakeSpawner(calls, { pidBase = 20_000, onWrite } = {}) {
         return { dispose() {} };
       },
       emitData(data) { dataListener(data); },
-      emitExit(exitCode) { exitListener({ exitCode, signal: 0 }); }
+      emitExit(exitCode, signal = 0) { exitListener({ exitCode, signal }); }
     };
     calls.push({ command, args, options, process });
     return process;

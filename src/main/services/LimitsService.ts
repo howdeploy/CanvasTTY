@@ -18,6 +18,7 @@ import {
   type ProviderCliRegistry
 } from "./providerCliRegistry.ts";
 import { NdjsonLineReader } from "../../agent-runtime/ndjson.mjs";
+import { codexRateLimitsNetworkUrl, codexSystemProxyEnvironment, type ResolveSystemProxy } from "./codexSystemProxy.ts";
 
 const CACHE_TTL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -43,6 +44,8 @@ interface CacheEntry<T = LimitsSnapshot> {
 
 export interface LimitsServiceOptions {
   codexIdleMs?: number;
+  /** Optional Chromium proxy resolver for Windows' limits-only Codex subprocess. */
+  resolveCodexProxy?: ResolveSystemProxy;
   /** Environment used to locate CODEX_HOME; defaults to the one the Codex app-server inherits. */
   environment?: Readonly<Record<string, string | undefined>>;
   homeDirectory?: string;
@@ -62,6 +65,7 @@ interface RawLimitBucket {
 }
 
 interface PendingRequest {
+  method: string;
   resolve(value: unknown): void;
   reject(error: LimitsAdapterError): void;
   timer: NodeJS.Timeout;
@@ -103,16 +107,18 @@ export class LimitsService {
   private disposed = false;
 
   private readonly codexIdleMs: number;
+  private readonly resolveCodexProxy?: ResolveSystemProxy;
 
   constructor(providerClis: ProviderCliRegistry, clientVersion = "unknown", options: LimitsServiceOptions = {}) {
     this.providerClis = providerClis;
     this.clientVersion = clientVersion;
     this.codexIdleMs = options.codexIdleMs ?? CODEX_IDLE_MS;
+    this.resolveCodexProxy = options.resolveCodexProxy;
     this.cacheTtlMs = options.cacheTtlMs ?? CACHE_TTL_MS;
     const environment = options.environment ?? process.env;
     this.codexHome = environment.CODEX_HOME || join(options.homeDirectory ?? homedir(), ".codex");
     this.claudeOptions = options.claude ?? {};
-    this.codex = new CodexAppServerClient(availableCli(providerClis, "codex"), clientVersion, this.codexIdleMs);
+    this.codex = new CodexAppServerClient(availableCli(providerClis, "codex"), clientVersion, this.codexIdleMs, this.resolveCodexProxy);
     this.kimi = new KimiWebUsageClient(availableCli(providerClis, "kimi"));
   }
 
@@ -167,7 +173,7 @@ export class LimitsService {
     if (this.disposed) return;
     this.codex.dispose();
     this.kimi.dispose();
-    this.codex = new CodexAppServerClient(availableCli(this.providerClis, "codex"), this.clientVersion, this.codexIdleMs);
+    this.codex = new CodexAppServerClient(availableCli(this.providerClis, "codex"), this.clientVersion, this.codexIdleMs, this.resolveCodexProxy);
     this.kimi = new KimiWebUsageClient(availableCli(this.providerClis, "kimi"));
     this.cache = null;
     this.providerCache.clear();
@@ -876,35 +882,57 @@ class CodexAppServerClient {
   private readonly cli: AvailableProviderCli | null;
   private readonly clientVersion: string;
   private readonly idleMs: number;
+  private readonly resolveProxy?: ResolveSystemProxy;
+  private proxyEnvironment: Record<string, string> = {};
 
-  constructor(cli: AvailableProviderCli | null, clientVersion: string, idleMs: number) {
+  constructor(cli: AvailableProviderCli | null, clientVersion: string, idleMs: number, resolveProxy?: ResolveSystemProxy) {
     this.cli = cli;
     this.clientVersion = clientVersion;
     this.idleMs = idleMs;
+    this.resolveProxy = resolveProxy;
   }
 
   async readRateLimits(): Promise<unknown> {
     this.clearIdleTimer();
     try {
-      await this.ensureConnected();
-      const auth = await this.request("account/read", { refreshToken: false });
-      if (!isRecord(auth) || typeof auth.requiresOpenaiAuth !== "boolean"
-        || !(auth.account === null || isRecord(auth.account) && typeof auth.account.type === "string")) {
-        throw new LimitsAdapterError("protocol-error");
+      try {
+        return await this.readAccountRateLimits();
+      } catch (error) {
+        if (!(error instanceof CodexNetworkError) || !this.resolveProxy || this.disposed) throw error;
+        // Resolve the URL the CLI actually failed to reach, including custom backends.
+        // A working direct connection and explicitly configured CLI proxies stay intact.
+        const environment = await codexSystemProxyEnvironment(
+          error.url, this.resolveProxy, { ...process.env, ...this.cli?.environment }
+        ).catch(() => ({}));
+        if (Object.keys(environment).length === 0 || this.disposed) throw error;
+        this.resetConnection();
+        this.proxyEnvironment = environment;
+        // One retry only; re-check auth in the replacement process before reading quotas.
+        return await this.readAccountRateLimits();
       }
-      if (!auth.requiresOpenaiAuth || isRecord(auth.account) && auth.account.type === "apiKey") {
-        throw new LimitsAdapterError("api-profile");
-      }
-      if (auth.account === null) throw new LimitsAdapterError("not-authenticated");
-      return await this.request("account/rateLimits/read");
     } finally {
       this.scheduleIdleStop();
     }
   }
 
+  private async readAccountRateLimits(): Promise<unknown> {
+    await this.ensureConnected();
+    const auth = await this.request("account/read", { refreshToken: false });
+    if (!isRecord(auth) || typeof auth.requiresOpenaiAuth !== "boolean"
+      || !(auth.account === null || isRecord(auth.account) && typeof auth.account.type === "string")) {
+      throw new LimitsAdapterError("protocol-error");
+    }
+    if (!auth.requiresOpenaiAuth || isRecord(auth.account) && auth.account.type === "apiKey") {
+      throw new LimitsAdapterError("api-profile");
+    }
+    if (auth.account === null) throw new LimitsAdapterError("not-authenticated");
+    return await this.request("account/rateLimits/read");
+  }
+
   /** Drops the current app-server so the next read starts one with the current login. */
   restart(): void {
     if (this.disposed) return;
+    this.proxyEnvironment = {};
     this.resetConnection();
   }
 
@@ -958,7 +986,7 @@ class CodexAppServerClient {
     try {
       child = spawn(launch.command, launch.args, {
         shell: false,
-        env: { ...process.env, ...launch.environment },
+        env: { ...process.env, ...launch.environment, ...this.proxyEnvironment },
         stdio: ["pipe", "pipe", "pipe"],
         ...(launch.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {})
       });
@@ -991,7 +1019,7 @@ class CodexAppServerClient {
         this.resetConnection();
       }, REQUEST_TIMEOUT_MS);
       timer.unref();
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { method, resolve, reject, timer });
 
       if (!this.write({ id, method, ...(params === undefined ? {} : { params }) })) {
         clearTimeout(timer);
@@ -1053,7 +1081,8 @@ class CodexAppServerClient {
     this.pending.delete(message.id);
 
     if (message.error !== undefined) {
-      pending.reject(new LimitsAdapterError("protocol-error"));
+      const url = pending.method === "account/rateLimits/read" ? codexRateLimitsNetworkUrl(message.error) : null;
+      pending.reject(url ? new CodexNetworkError(url) : new LimitsAdapterError("protocol-error"));
       return;
     }
     pending.resolve(message.result);
@@ -1115,6 +1144,15 @@ class LimitsAdapterError extends Error {
     super(reason);
     this.reason = reason;
     this.retryAt = retryAt;
+  }
+}
+
+class CodexNetworkError extends LimitsAdapterError {
+  readonly url: string;
+
+  constructor(url: string) {
+    super("protocol-error");
+    this.url = url;
   }
 }
 

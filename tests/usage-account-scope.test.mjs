@@ -23,7 +23,7 @@ function codexAuth(accountId) {
   });
 }
 
-function registry(executables) {
+function registry(executables, environment = {}) {
   const calls = [];
   return {
     calls,
@@ -37,7 +37,7 @@ function registry(executables) {
           executable,
           launcher: process.platform === "win32" ? "batch" : "native",
           commandPrompt: process.env.ComSpec,
-          environment: Object.freeze({ PATH: process.env.PATH ?? "/usr/bin:/bin" }),
+          environment: Object.freeze({ PATH: process.env.PATH ?? "/usr/bin:/bin", ...environment }),
           checked: Object.freeze([])
         })
         : Object.freeze({ state: "unavailable", provider, reason: "cli-not-found", checked: Object.freeze([]), diagnostic: "" });
@@ -65,8 +65,11 @@ const reply = (id, result) => process.stdout.write(JSON.stringify({ id, result }
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   if (typeof message.id !== "number") return;
+  const network = existsSync(root + "/network-fixture")
+    ? JSON.parse(readFileSync(root + "/network-fixture", "utf8")) : null;
   if (message.method === "initialize") return reply(message.id, {});
   if (message.method === "account/read") {
+    if (network?.account && process.env.HTTPS_PROXY === network.proxy) return reply(message.id, network.account);
     const file = root + "/account-state";
     const auth = configAtStart !== null
       ? { account: configAtStart.includes("fixture-api") ? null : { type: "chatgpt" },
@@ -78,6 +81,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (message.method !== "account/rateLimits/read") return process.stdout.write(JSON.stringify({ id: message.id, error: { code: -1 } }) + "\\n");
   appendFileSync(root + "/limit-reads", "read\\n");
+  if (network && (network.alwaysFail || process.env.HTTPS_PROXY !== network.proxy)) {
+    return process.stdout.write(JSON.stringify({ id: message.id, error: { code: -32603,
+      message: "failed to fetch codex rate limits: error sending request for url (" + network.url + ")" } }) + "\\n");
+  }
   const failure = root + "/limits-error";
   if (existsSync(failure)) return process.stdout.write(JSON.stringify({ id: message.id, error: { code: -32600, message: "Synthetic request failure" } }) + "\\n");
   const switchFile = root + "/switch-during-request";
@@ -120,6 +127,112 @@ function assertNoCodexSecrets(value) {
     assert.equal(text.includes(secret), false, "auth material must never leave the credential reader");
   }
 }
+
+const NO_PROXY_ENV = Object.fromEntries(["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]
+  .map((name) => [name, ""]));
+const NETWORK_URL = "https://custom-backend.example/backend-api/wham/usage";
+
+test("Codex limits recover through the resolved system proxy and reuse the replacement process", async () => {
+  await withRoot(async (root) => {
+    const codex = await fakeCodex(root);
+    await writeFile(join(root, "network-fixture"), JSON.stringify({ url: NETWORK_URL, proxy: "socks4a://proxy.example:1080" }));
+    const urls = [];
+    const service = new LimitsService(registry({ codex: codex.script }, NO_PROXY_ENV), "test", {
+      environment: { CODEX_HOME: codex.codexHome }, cacheTtlMs: 0,
+      resolveCodexProxy: async (url) => { urls.push(url); return "SOCKS proxy.example:1080"; }
+    });
+    try {
+      for (let i = 0; i < 2; i++) {
+        const snapshot = (await service.getProviders(["codex"])).providers[0];
+        assert.equal(snapshot.state, "available");
+        assert.equal(snapshot.windows[0].usedPercent, 20);
+        assertNoCodexSecrets(snapshot);
+      }
+      assert.deepEqual(urls, [NETWORK_URL], "resolve the actual failed backend, not a hard-coded host");
+      assert.equal(await codex.spawns(), 2);
+      assert.equal((await readFile(join(root, "limit-reads"), "utf8")).trim().split("\n").length, 3);
+    } finally { service.dispose(); }
+  });
+});
+
+for (const [name, route, expectedSpawns] of [
+  ["DIRECT", "DIRECT; SOCKS proxy.example:1080", 1],
+  ["resolver failure", null, 1],
+  ["another transport failure", "SOCKS proxy.example:1080", 2]
+]) test(`Codex proxy recovery is bounded for ${name}`, async () => {
+  await withRoot(async (root) => {
+    const codex = await fakeCodex(root);
+    await writeFile(join(root, "network-fixture"), JSON.stringify({ url: NETWORK_URL, proxy: "socks4a://proxy.example:1080", alwaysFail: true }));
+    let resolutions = 0;
+    const service = new LimitsService(registry({ codex: codex.script }, NO_PROXY_ENV), "test", {
+      environment: { CODEX_HOME: codex.codexHome },
+      resolveCodexProxy: async () => { resolutions++; if (route === null) throw new Error("Unavailable"); return route; }
+    });
+    try {
+      const snapshot = (await service.getProviders(["codex"])).providers[0];
+      assert.equal(snapshot.state, "unavailable");
+      assert.equal(snapshot.reason, "protocol-error");
+      assert.equal(resolutions, 1);
+      assert.equal(await codex.spawns(), expectedSpawns);
+    } finally { service.dispose(); }
+  });
+});
+
+test("Codex checks authentication again after restarting with the system proxy", async () => {
+  await withRoot(async (root) => {
+    const codex = await fakeCodex(root);
+    await writeFile(join(root, "network-fixture"), JSON.stringify({ url: NETWORK_URL, proxy: "socks4a://proxy.example:1080",
+      account: { account: null, requiresOpenaiAuth: true } }));
+    const service = new LimitsService(registry({ codex: codex.script }, NO_PROXY_ENV), "test", {
+      environment: { CODEX_HOME: codex.codexHome }, resolveCodexProxy: async () => "SOCKS proxy.example:1080"
+    });
+    try {
+      const snapshot = (await service.getProviders(["codex"])).providers[0];
+      assert.equal(snapshot.reason, "not-authenticated");
+      assert.equal(await codex.spawns(), 2);
+      assert.equal((await readFile(join(root, "limit-reads"), "utf8")).trim(), "read");
+    } finally { service.dispose(); }
+  });
+});
+
+test("working direct connections and ordinary RPC errors never resolve or inject a proxy", async () => {
+  await withRoot(async (root) => {
+    const codex = await fakeCodex(root);
+    let resolutions = 0;
+    const service = new LimitsService(registry({ codex: codex.script }, NO_PROXY_ENV), "test", {
+      environment: { CODEX_HOME: codex.codexHome }, cacheTtlMs: 0,
+      resolveCodexProxy: async () => { resolutions++; return "SOCKS proxy.example:1080"; }
+    });
+    try {
+      assert.equal((await service.getProviders(["codex"])).providers[0].state, "available");
+      await writeFile(join(root, "limits-error"), "fail");
+      assert.equal((await service.getProviders(["codex"])).providers[0].state, "stale");
+      assert.equal(resolutions, 0);
+      assert.equal(await codex.spawns(), 1);
+    } finally { service.dispose(); }
+  });
+});
+
+test("disposing while the proxy resolver is pending cannot spawn a replacement Codex process", async () => {
+  await withRoot(async (root) => {
+    const codex = await fakeCodex(root);
+    await writeFile(join(root, "network-fixture"), JSON.stringify({ url: NETWORK_URL, proxy: "socks4a://proxy.example:1080" }));
+    const resolving = Promise.withResolvers();
+    const route = Promise.withResolvers();
+    const service = new LimitsService(registry({ codex: codex.script }, NO_PROXY_ENV), "test", {
+      environment: { CODEX_HOME: codex.codexHome },
+      resolveCodexProxy: () => { resolving.resolve(); return route.promise; }
+    });
+    try {
+      const reading = service.getProviders(["codex"]);
+      await resolving.promise;
+      service.dispose();
+      route.resolve("SOCKS proxy.example:1080");
+      assert.equal((await reading).providers[0].state, "unavailable");
+      assert.equal(await codex.spawns(), 1);
+    } finally { service.dispose(); }
+  });
+});
 
 test("Codex API profiles report unavailable subscription limits without requesting them", async () => {
   for (const auth of [

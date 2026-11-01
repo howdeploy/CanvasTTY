@@ -804,7 +804,11 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   await applyAgentControlSetting(settings.get().agentControlEnabled);
   // Restored orchestrators need their private control grant at PTY launch, just like new cards.
   await terminalManager.restorePersistedSessions();
-  limitsService = new LimitsService(providerClis, app.getVersion());
+  limitsService = new LimitsService(providerClis, app.getVersion(), {
+    ...(process.platform === "win32"
+      ? { resolveCodexProxy: (url: string) => session.defaultSession.resolveProxy(url) }
+      : {})
+  });
   // Read-only accounting collection; history is stored in the normal app userData directory.
   usageHistory = new UsageHistoryService({
     directory: userDataPath,

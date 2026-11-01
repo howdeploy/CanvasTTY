@@ -1633,6 +1633,7 @@ export type BrowserErrorCode =
   | "VIEWPORT_UNAVAILABLE"
   | "STALE_REF"
   | "INVALID_URL"
+  | "INVALID_INPUT"
   | "NAVIGATION_BLOCKED"
   | "PERMISSION_DENIED"
   | "DIALOG_OPEN"
@@ -1735,6 +1736,8 @@ export interface BrowserCommand {
   ref?: BrowserElementRef | string;
   targetRef?: BrowserElementRef | string;
   text?: string;
+  /** Explicit insertion/replacement; omitted preserves legacy field-dependent typing. */
+  mode?: "insert" | "replace";
   values?: string[];
   key?: string;
   direction?: "up" | "down" | "left" | "right";

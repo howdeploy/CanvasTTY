@@ -10,6 +10,7 @@ import type {
   BrowserObservedElement
 } from "../../../shared/contracts.ts";
 import { BrowserKernelError, EngineFallbackRequired, throwIfAborted } from "./BrowserErrors.ts";
+import { browserKeyChord, browserTextMode } from "./BrowserInput.ts";
 import { CHROMIUM_ENGINE, ElectronTabDriver, type TabDriver } from "./TabDriver.ts";
 import { SENSITIVE_FIELD_SOURCE, isSensitiveFieldIdentity } from "../safety/sensitiveNames.ts";
 
@@ -41,10 +42,7 @@ const READABLE_ROLES = new Set([
   "StaticText", "paragraph", "heading", "link", "button", "listitem", "cell", "rowheader",
   "columnheader", "textbox", "searchbox", "alert", "status"
 ]);
-const ALLOWED_KEYS = new Set([
-  "Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft",
-  "ArrowRight", "Home", "End", "PageUp", "PageDown", "Space"
-]);
+
 
 interface CdpAxValue {
   value?: unknown;
@@ -719,11 +717,13 @@ export class BrowserAutomationService {
     revision: number,
     ref: BrowserElementRef | string | undefined,
     text: string | undefined,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    mode?: "insert" | "replace"
   ): Promise<{ point: BrowserPointerResult; typed: boolean }> {
     if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 64 * 1024) {
       throw new BrowserKernelError("PAYLOAD_TOO_LARGE", "Browser input text exceeds 64 KB.");
     }
+    const textMode = browserTextMode(mode);
     const { session, entry, point } = await this.refPoint(tabId, revision, ref);
     throwIfAborted(signal);
     const focused = await this.commandAllowDialog(session, "DOM.focus", {
@@ -734,16 +734,48 @@ export class BrowserAutomationService {
       backendNodeId: entry.value.backendNodeId
     });
     const objectId = resolved.object?.objectId;
-    if (objectId) {
-      const selected = await this.commandAllowDialog(session, "Runtime.callFunctionOn", {
-        objectId,
-        functionDeclaration: "function(){if(this instanceof HTMLInputElement||this instanceof HTMLTextAreaElement){this.focus();this.select();}}",
-        silent: true
-      });
-      if (!selected.completed) return { point, typed: false };
+    if (!objectId) throw staleRef();
+    const selected = await this.commandAllowDialog<{ result?: { value?: boolean }; exceptionDetails?: unknown }>(session, "Runtime.callFunctionOn", {
+      objectId,
+      // Validate only this observed editing host; native input below updates editor document state.
+      functionDeclaration: `function(mode){
+        const tag=this.tagName;
+        const field=tag==='INPUT'||tag==='TEXTAREA';
+        const textInput=tag!=='INPUT'||['text','search','tel','url','password','email','number'].includes(this.type);
+        if(!this.isConnected||this.disabled||this.readOnly||!textInput||(!field&&!this.isContentEditable))return false;
+        const active=this.getRootNode().activeElement;
+        if(active!==this&&!this.contains(active))return false;
+        if(mode==='legacy'&&field)this.select();
+        return true;
+      }`,
+      arguments: [{ value: textMode }],
+      returnByValue: true,
+      silent: true
+    });
+    if (!selected.completed) return { point, typed: false };
+    if (selected.value.exceptionDetails || selected.value.result?.value !== true) {
+      throw new BrowserKernelError("INVALID_INPUT", "Observed target is not an active editable text field.");
     }
-    // A dialog raised by the page's input handler comes after the text went in.
-    await this.commandAllowDialog(session, "Input.insertText", { text });
+    if (textMode === "replace") {
+      // Let editor key handlers select the entire model, including virtualized/unrendered lines.
+      const key = process.platform === "darwin" ? "Meta+A" : "Ctrl+A";
+      if (!await this.dispatchChord(session, browserKeyChord(key))) return { point, typed: false };
+      // A page key handler can move focus. Do not insert into a different element.
+      const active = await this.commandAllowDialog<{ result?: { value?: boolean } }>(session, "Runtime.callFunctionOn", {
+        objectId, functionDeclaration: "function(){return this.isConnected&&!this.disabled&&!this.readOnly&&(this.getRootNode().activeElement===this||this.contains(this.getRootNode().activeElement));}",
+        returnByValue: true, silent: true
+      });
+      if (!active.completed) return { point, typed: false };
+      if (active.value.result?.value !== true) throw new BrowserKernelError("INVALID_INPUT", "Editing target lost focus before replacement.");
+    }
+    throwIfAborted(signal);
+    if (text === "" && textMode === "replace") {
+      // An empty replacement must delete the selection as a native editing action too.
+      await this.dispatchChord(session, browserKeyChord("Backspace"));
+    } else {
+      // A dialog raised by the page's input handler comes after the text went in.
+      await this.commandAllowDialog(session, "Input.insertText", { text });
+    }
     return { point, typed: true };
   }
 
@@ -785,9 +817,7 @@ export class BrowserAutomationService {
     key: string | undefined,
     signal?: AbortSignal
   ): Promise<void> {
-    if (!key || key.length > 40 || !(ALLOWED_KEYS.has(key) || /^[a-zA-Z0-9]$/.test(key))) {
-      throw new BrowserKernelError("PERMISSION_DENIED", "Browser key is not allow-listed.");
-    }
+    const chord = browserKeyChord(key);
     const session = await this.ready(tabId, revision);
     throwIfAborted(signal);
     if (ref !== undefined) {
@@ -797,10 +827,25 @@ export class BrowserAutomationService {
       });
       if (!focused.completed) return;
     }
-    const normalized = key === "Space" ? " " : key;
-    const down = await this.commandAllowDialog(session, "Input.dispatchKeyEvent", { type: "keyDown", key: normalized });
-    if (!down.completed) return;
-    await this.commandAllowDialog(session, "Input.dispatchKeyEvent", { type: "keyUp", key: normalized });
+    await this.dispatchChord(session, chord);
+  }
+
+  private async dispatchChord(session: TabSession, chord: ReturnType<typeof browserKeyChord>): Promise<boolean> {
+    // macOS native editing shortcuts normally arrive with an editing command from the host.
+    const selectAll = process.platform === "darwin" && chord.modifiers === 4 && chord.code === "KeyA";
+    let completed = false;
+    try {
+      const down = await this.commandAllowDialog(session, "Input.dispatchKeyEvent", {
+        type: "keyDown", ...chord, ...(selectAll ? { commands: ["selectAll"] } : {})
+      });
+      completed = down.completed;
+      return completed;
+    } finally {
+      // Modifiers are scoped to each event, not held across calls. Release after dialogs/errors too.
+      const release = this.commandAllowDialog(session, "Input.dispatchKeyEvent", { type: "keyUp", ...chord });
+      if (completed) await release;
+      else void release.catch(() => undefined); // An open dialog must not block this command's result.
+    }
   }
 
   async scroll(

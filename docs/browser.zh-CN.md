@@ -60,3 +60,11 @@ Settings 中的活动列表是短期运行视图。主进程还会把 JSONL 审�
 浏览器审计记录保存在本地，不附加到用户主动发送的可选[应用问题报告](diagnostics.md)。**清除浏览器数据**会保留审计证据。如需手动删除，请先完全退出 CanvasTTY，再删除整个 `userData/browser/audit` 目录；这会永久丢弃本地审计历史。
 
 实现职责见[架构](ARCHITECTURE.zh-CN.md)，画布与交互约束见 [UI 契约](UI_CONTRACT.zh-CN.md)，其他本地数据路径见[安装、发布与本地数据](installing-and-security.zh-CN.md)。
+
+## 键盘组合与文本替换
+
+`browser_press` 支持单个 ASCII 字母、数字和命名按键，以及用 `+` 连接的 `Ctrl`（或 `Control`）、`Shift`、`Alt`、`Meta` 修饰键。例如 `Ctrl+A`、`Ctrl+Enter`、`Ctrl+Shift+ArrowLeft`，macOS 上可用 `Meta+A`。修饰键不会保持到下一次调用。无效组合返回 `INVALID_INPUT`。
+
+`browser_type({ref, text, mode: "replace"})` 替换目标可编辑字段的全部内容，包括采用常规键盘绑定的 CodeMirror。`mode: "insert"` 在当前选区插入，空字符串替换会清空字段。操作使用原生编辑输入，保留编辑器状态和撤销历史；自定义键盘处理仍由编辑器决定。只读、禁用和不可编辑目标会被拒绝。不传 `mode` 时保持旧行为：替换 input/textarea，在 contenteditable 选区插入。操作后应重新观察结果。
+
+`npm run smoke:browser:editor` 使用临时浏览器配置检查真实 Chromium 与 CodeMirror，包括多行 Unicode、大文档、清空、快捷键和撤销。升级 CanvasTTY 后，请重启代理会话以获取新 MCP 参数。

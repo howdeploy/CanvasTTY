@@ -419,11 +419,109 @@ test("every region criterion centers the existing layout, keeps grid and sizes, 
       assert.ok(placed.position.y + placed.size.height <= region.position.y + region.size.height - 20);
     }
     assert.deepEqual(planCanvasAutoSort([...bounds.keys()], plan.after, sessions, (id) => `terminal:${id}`, mode, options).after, plan.after);
+    // An obstacle on the centered spot moves the block to the nearest clear place; one covering the region refuses.
     const obstructed = new Map([...bounds, ["note:fixed", block]]);
-    assert.equal(planCanvasAutoSort([...bounds.keys()], obstructed, sessions, (id) => `terminal:${id}`, mode, options), null);
-    assert.equal(planCanvasAutoSort([...bounds.keys()], bounds, sessions, (id) => `terminal:${id}`, mode, { ...options, avoid: [block] }), null);
+    const moved = planCanvasAutoSort([...bounds.keys()], obstructed, sessions, (id) => `terminal:${id}`, mode, options);
+    assert.ok(moved, `${mode} finds a clear place beside the obstacle`);
+    assertRegionPlacement(moved.after, region, [block], true);
+    const covered = card(region.position.x + 20, region.position.y + 60, region.size.width - 40, region.size.height - 80);
+    assert.equal(planCanvasAutoSort([...bounds.keys()], bounds, sessions, (id) => `terminal:${id}`, mode, { ...options, avoid: [covered] }), null);
     assert.equal(planCanvasAutoSort([...bounds.keys()], bounds, sessions, (id) => `terminal:${id}`, mode, { within: card(3_000, 0, 800, 600) }), null);
   }
+});
+
+/** A valid region placement: inside the region's content area, gap-clear of each other and of every obstacle. */
+function assertRegionPlacement(placements, region, obstacles, snap) {
+  for (const [id, placed] of placements) {
+    assert.ok(placed.position.x >= region.position.x + 20 && placed.position.y >= region.position.y + 60, `${id} inside`);
+    assert.ok(placed.position.x + placed.size.width <= region.position.x + region.size.width - 20, `${id} inside right`);
+    assert.ok(placed.position.y + placed.size.height <= region.position.y + region.size.height - 20, `${id} inside bottom`);
+    if (snap) assert.ok(placed.position.x % 10 === 0 && placed.position.y % 10 === 0, `${id} on grid`);
+    for (const obstacle of obstacles) assert.equal(overlaps(grown(placed, GAP), obstacle), false, `${id} clear of obstacle`);
+    for (const [other, bounds] of placements) {
+      if (other !== id) assert.equal(overlaps(grown(placed, GAP), bounds), false, `${id} and ${other} keep the gap`);
+    }
+  }
+}
+
+test("a region sort uses another column count when the near-square grid does not fit but another one does", () => {
+  // Content area 2160 x 480: three 700 x 430 windows fit in one row (2140 wide) but not as a 2 x 2 grid (880 tall).
+  const region = card(3_000, 0, 2_200, 560);
+  const bounds = new Map([["a", card(3_100, 100)], ["b", card(3_900, 100)], ["c", card(3_100, 600)]]);
+  const feasible = new Map([["a", card(3_030, 90)], ["b", card(3_750, 90)], ["c", card(4_470, 90)]]);
+  assertRegionPlacement(feasible, region, [], true);
+  const plan = planCanvasAutoSort([...bounds.keys()], bounds, [], (id) => id, "grid", { within: region, snapToGrid: true });
+  assert.ok(plan, "three windows in one row fit the region");
+  assert.deepEqual(plan.after, feasible);
+  assert.deepEqual(planCanvasAutoSort([...bounds.keys()], plan.after, [], (id) => id, "grid", { within: region, snapToGrid: true }).after,
+    plan.after, "sorting again keeps the row");
+
+  // By status: one waiting and three working windows are 2160 wide side by side in the usual shape; content is 1460 x 1420.
+  // One column per group is 1440 x 1330 and fits.
+  const tall = card(3_000, 0, 1_500, 1_500);
+  const windows = [
+    terminal("w1", 3_100, 100, { status: "working" }), terminal("w2", 3_900, 100, { status: "working" }),
+    terminal("w3", 3_100, 600, { status: "working" }), terminal("n", 3_900, 600, { status: "needs_approval" })
+  ];
+  const statusBounds = new Map(windows.map(([id, value]) => [id, value]));
+  const sessions = windows.map(([, , session]) => session);
+  const columns = new Map([
+    ["terminal:n", card(3_030, 110)],
+    ["terminal:w1", card(3_770, 110)], ["terminal:w2", card(3_770, 560)], ["terminal:w3", card(3_770, 1_010)]
+  ]);
+  assertRegionPlacement(columns, tall, [], true);
+  const byStatus = planCanvasAutoSort([...statusBounds.keys()], statusBounds, sessions, (id) => `terminal:${id}`, "status", { within: tall, snapToGrid: true });
+  assert.ok(byStatus, "one column per status group fits the region");
+  assert.deepEqual(byStatus.after, columns);
+
+  // The usual shape is kept whenever it fits, so roomy regions sort exactly as before.
+  const roomy = planCanvasAutoSort([...bounds.keys()], bounds, [], (id) => id, "grid", { within: card(3_000, 0, 3_000, 2_400), snapToGrid: true });
+  assert.equal(new Set([...roomy.after.values()].map((value) => value.position.y)).size, 2, "a 2 x 2 grid in a roomy region");
+});
+
+test("a region sort places the block beside an obstacle near the center instead of refusing", () => {
+  // Content area 2960 x 2320 with a 400 x 300 note in the middle. The centered 1420 x 430 block would cover it,
+  // but the block fits 20px below it (y 1370..1800) or above it (y ..600); below is nearer the center.
+  const region = card(3_000, 0, 3_000, 2_400);
+  const note = card(4_300, 1_050, 400, 300);
+  const bounds = new Map([["a", card(3_100, 100)], ["b", card(3_100, 600)], ["note:n", note]]);
+  const feasible = new Map([["a", card(3_790, 1_370)], ["b", card(4_510, 1_370)]]);
+  assertRegionPlacement(feasible, region, [note], true);
+  const plan = planCanvasAutoSort(["a", "b"], bounds, [], (id) => id, "grid", { within: region, snapToGrid: true });
+  assert.ok(plan, "the region has room around the note");
+  assert.deepEqual(plan.after, feasible);
+  const again = new Map([...bounds, ...plan.after]);
+  assert.deepEqual(planCanvasAutoSort(["a", "b"], again, [], (id) => id, "grid", { within: region, snapToGrid: true }).after, plan.after);
+
+  // A region that overlaps this one: its part inside is an obstacle, the free part still holds the block.
+  const other = card(4_000, 0, 3_000, 1_000);
+  const shared = planCanvasAutoSort(["a", "b"], new Map([["a", card(3_100, 1_100)], ["b", card(3_100, 1_600)]]), [], (id) => id, "grid",
+    { within: region, avoid: [other], snapToGrid: true });
+  assert.ok(shared, "the region's free lower part holds the block");
+  assertRegionPlacement(shared.after, region, [other], true);
+});
+
+test("region placements are always inside, gap-clear and independent of list order", () => {
+  let seed = 7;
+  const next = (limit) => (seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648) % limit;
+  let placed = 0;
+  for (let round = 0; round < 300; round += 1) {
+    const region = card(3_000 + next(9), next(9), 900 + next(2_400), 700 + next(2_000));
+    const items = mixedItems(2 + next(7)).map((item) => ({ ...item, bounds: card(region.position.x + next(800), region.position.y + next(600), item.bounds.size.width, item.bounds.size.height) }));
+    const notes = Array.from({ length: next(4) }, (_, index) => [`note:${index}`, card(region.position.x + next(region.size.width), region.position.y + next(region.size.height), 100 + next(400), 100 + next(300))]);
+    const bounds = new Map([...items.map((item) => [item.id, item.bounds]), ...notes]);
+    const sessions = items.map((item) => ({ id: item.id, status: item.status, cwd: item.project, startedAt: item.startedAt }));
+    const snapToGrid = round % 2 === 0;
+    for (const mode of CANVAS_AUTO_SORT_MODES) {
+      const ids = items.map((item) => item.id);
+      const plan = planCanvasAutoSort(ids, bounds, sessions, (id) => id, mode, { within: region, snapToGrid });
+      assert.deepEqual(planCanvasAutoSort([...ids].reverse(), bounds, sessions, (id) => id, mode, { within: region, snapToGrid }), plan);
+      if (!plan) continue;
+      placed += 1;
+      assertRegionPlacement(plan.after, region, notes.map(([, value]) => value), snapToGrid);
+    }
+  }
+  assert.ok(placed > 100, `enough placements were checked (${placed})`);
 });
 
 test("nested or identical zones cannot sort windows shared with the other zone", () => {

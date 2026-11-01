@@ -262,7 +262,7 @@ CanvasTTY 负责卡片、PTY、保存的记录和恢复顺序；服务回答五�
 }]
 ```
 
-`pre-tool` 指每一次 shell 和写文件的工具调用，在运行之前，并且适用于所有权限模式（包括 YOLO）：Claude Code、Codex 和 Qwen Code 通过它们的 `PreToolUse` hook，OpenCode 通过 CanvasTTY 的 OpenCode 插件（`tool.execute.before`）。`appliesTo` 限定 agent；省略时为全部四个。主机发送 `canvastty.decide`（仅主机可发），最多等待 `timeoutMs`（1000 到 60000；省略时 3000）。agent 的调用会等待同样长的时间，所以只有在回答确实需要时才申请更长时间（例如让本地模型阅读命令）；CanvasTTY 在卡片启动时按适用服务中最长的预算设置该卡片的 hook，之后才被信任的服务所得时间不超过卡片允许的范围。请求以 `budgetMs` 携带该预算：
+`pre-tool` 指每一次 shell 和写文件的工具调用，在运行之前，并且适用于所有权限模式（包括 YOLO）：Claude Code、Codex 和 Qwen Code 通过它们的 `PreToolUse` hook，OpenCode 通过 CanvasTTY 的 OpenCode 插件（`tool.execute.before`）。OpenCode 的工具以 Claude Code 的名称和输入形状到达：`bash` `{command, workdir}`、`Write` `{file_path, content}`（整个新文件）、`Edit` `{file_path, old_string, new_string, replace_all}`、`MultiEdit` `{file_path, edits: [{old_string, new_string, replace_all}]}` 和 `apply_patch` `{patch}`。`appliesTo` 限定 agent；省略时为全部四个。主机发送 `canvastty.decide`（仅主机可发），最多等待 `timeoutMs`（1000 到 60000；省略时 3000）。agent 的调用会等待同样长的时间，所以只有在回答确实需要时才申请更长时间（例如让本地模型阅读命令）；CanvasTTY 在卡片启动时按适用服务中最长的预算设置该卡片的 hook，之后才被信任的服务所得时间不超过卡片允许的范围。请求以 `budgetMs` 携带该预算：
 
 ```ts
 interface DecisionRequest {

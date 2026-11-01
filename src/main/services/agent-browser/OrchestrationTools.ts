@@ -66,9 +66,9 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
         case "send_to_agent":
           return await this.send(sessionId, request.arguments, signal);
         case "observe_agent":
-          return this.observe(sessionId, request.arguments);
+          return await this.observe(sessionId, request.arguments);
         case "get_agent_result":
-          return this.result(sessionId, request.arguments);
+          return await this.result(sessionId, request.arguments);
         case "cancel_agent":
           return this.cancel(sessionId, request.arguments);
         case "list_agents":
@@ -203,9 +203,9 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     return { sessionId: args.sessionId as string, sent: true, ...(delivery ? { delivery } : {}) };
   }
 
-  private observe(orchestratorId: string, args: Record<string, unknown>): Record<string, unknown> {
+  private async observe(orchestratorId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.requireOwned(orchestratorId, args.sessionId as string);
-    const observation = this.control.observe(
+    const observation = await this.control.observe(
       args.sessionId as string,
       args.maxChars as number | undefined
     );
@@ -218,9 +218,9 @@ export class ScopedOrchestrationHandler implements OrchestrationCommandHandler {
     };
   }
 
-  private result(orchestratorId: string, args: Record<string, unknown>): Record<string, unknown> {
+  private async result(orchestratorId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.requireOwned(orchestratorId, args.sessionId as string);
-    const result = this.control.result(args.sessionId as string);
+    const result = await this.control.result(args.sessionId as string);
     return {
       sessionId: result.sessionId,
       state: result.state,

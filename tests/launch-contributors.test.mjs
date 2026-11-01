@@ -310,11 +310,11 @@ test("secret env comes from the plugin's own secrets, reaches the child, and is 
   calls[0].print(`env: PROVIDER_API_KEY=${SECRET} PLAIN=visible\n`);
 
   const control = new AgentControlService(manager);
-  const observed = control.observe(created.id).output;
+  const observed = (await control.observe(created.id)).output;
   assert.match(observed, /PROVIDER_API_KEY=<redacted:secret> PLAIN=visible/u);
   assert.doesNotMatch(observed, new RegExp(SECRET, "u"));
   calls[0].exit(1);
-  assert.doesNotMatch(control.result(created.id).output, new RegExp(SECRET, "u"));
+  assert.doesNotMatch((await control.result(created.id)).output, new RegExp(SECRET, "u"));
   assert.doesNotMatch(card(manager, created.id).failureDetails ?? "", new RegExp(SECRET, "u"));
 
   await manager.shutdown();

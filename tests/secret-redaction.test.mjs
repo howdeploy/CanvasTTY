@@ -164,7 +164,7 @@ test("the vault hands every value it reads or writes to the registry; agent-read
     lastPromptDelivery: () => undefined,
     redactSecrets: (text) => manager.redactSecrets(text)
   });
-  const observed = control.observe("s1").output;
+  const observed = (await control.observe("s1")).output;
   assert.equal(observed.includes(value) || observed.includes(secrets.github), false);
   assert.match(observed, /env OPENAI=<redacted:secret>/u);
 });
@@ -205,17 +205,17 @@ test("observe_agent and get_agent_result mask the whole buffer before cutting th
   const control = new AgentControlService(f.terminals);
   // The 300-character observation starts 12 characters before the secret ends.
   f.print(`${"a".repeat(1_000)}${PLAIN_SECRET}${"b".repeat(288)}`);
-  const observed = control.observe(f.card.id, 300).output;
+  const observed = (await control.observe(f.card.id, 300)).output;
   assert.ok(observed.length <= 300, "the bound is kept");
   assert.deepEqual(fragments(observed), []);
   // get_agent_result's 8 192-character tail, cut inside the secret the same way.
   f.print(`${PLAIN_SECRET}${"c".repeat(8_192 - 10)}`);
-  const result = control.result(f.card.id).output;
+  const result = (await control.result(f.card.id)).output;
   assert.ok(result.length <= 8_192);
   assert.deepEqual(fragments(result), []);
   // Wrapped secrets are still masked whole.
   f.print(`\r\n${PLAIN_SECRET.slice(0, 15)}\r\n${PLAIN_SECRET.slice(15)}\r\n`);
-  assert.deepEqual(fragments(control.observe(f.card.id, 8_192).output), []);
+  assert.deepEqual(fragments((await control.observe(f.card.id, 8_192)).output), []);
 });
 
 test("plugin screen text and failure details mask the whole buffer before cutting", async (t) => {
@@ -319,8 +319,8 @@ test("observe_agent, get_agent_result and the plugin screen mask a bounded windo
   f.print(scrollback(250_000));
   f.print(`${PLAIN_SECRET}${"g".repeat(200)}`);
   const control = new AgentControlService(f.terminals);
-  assert.deepEqual(fragments(control.observe(f.card.id).output), []);
-  assert.deepEqual(fragments(control.result(f.card.id).output), []);
+  assert.deepEqual(fragments((await control.observe(f.card.id)).output), []);
+  assert.deepEqual(fragments((await control.result(f.card.id)).output), []);
   const { PluginSessions } = await import("../src/main/services/PluginSessions.ts");
   const screens = [];
   const sessions = new PluginSessions({ terminals: f.terminals, notify: (_p, _s, _m, event) => { if (event.screen !== undefined) screens.push(event.screen); return true; } });
@@ -331,7 +331,8 @@ test("observe_agent, get_agent_result and the plugin screen mask a bounded windo
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(screens.length > 0);
   assert.deepEqual(fragments(screens.join("\n")), []);
-  assert.ok(masked.length >= 3 && Math.max(...masked) < 40_000, `masked ${masked} characters per call`);
+  // get_agent_result renders its plain text from a 64 KiB masked window (plus the tail margin); never the whole scrollback.
+  assert.ok(masked.length >= 3 && Math.max(...masked) < 90_000, `masked ${masked} characters per call`);
 });
 
 /**

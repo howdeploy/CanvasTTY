@@ -79,19 +79,19 @@ export const ORCHESTRATION_TOOL_DEFINITIONS = Object.freeze([
   ),
   tool(
     "observe_agent",
-    "Read the capped terminal tail and status of one of this session's subagents.",
+    "Read the status of one of this session's subagents and the end of its screen as masked plain text (once its process exited, also exitLines).",
     { sessionId, maxChars: integer({ minimum: 256, maximum: 8_192 }) },
     ["sessionId"]
   ),
   tool(
     "wait_for_agent",
-    `Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason "idle" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), "needs_approval" (its card shows a prompt only the person may answer; never answer it yourself), "done" or "failed" (its process exited), "quiet" (it reports no status or no turn start and its screen stopped changing, so judge from output), "closed" (its card was closed) or "timeout" after timeoutSeconds (default ${DEFAULT_AGENT_WAIT_SECONDS}, at most ${MAX_AGENT_WAIT_SECONDS}), with status, exitCode, waitedMs, the masked terminal tail as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. After a timeout, call it again. Then read get_agent_result.`,
+    `Wait until one of this session's subagents stops working, instead of polling observe_agent or get_agent_result; nothing is sent to it while it waits. Returns reason "idle" (the turn that answers your latest prompt ended and it waits for input; an idle before that turn started does not count), "needs_approval" (its card shows a prompt only the person may answer; never answer it yourself), "done" or "failed" (its process exited), "quiet" (it reports no status or no turn start and its screen stopped changing, so judge from output), "closed" (its card was closed) or "timeout" after timeoutSeconds (default ${DEFAULT_AGENT_WAIT_SECONDS}, at most ${MAX_AGENT_WAIT_SECONDS}), with status, exitCode, waitedMs, the end of its screen as masked plain text as output, and answer (the final reply of the turn that ended, for Codex and OpenCode subagents); when the subagent's process exited (for example at once, on a model its CLI does not know), exitLines holds the last lines of its screen as plain text, which say why. After a timeout, call it again. Then read get_agent_result.`,
     { sessionId, timeoutSeconds: integer({ minimum: 1, maximum: MAX_AGENT_WAIT_SECONDS }) },
     ["sessionId"]
   ),
   tool(
     "get_agent_result",
-    "Get one of this session's subagents' result: answer (its last turn's final reply as the agent reported it, for Codex and OpenCode subagents; truncated:true when only the end was kept), status (idle once its turn ended), the exit state (running | done | failed; an interactive CLI stays running after a task) and the masked terminal tail as output. Prefer answer; the terminal tail is raw screen output.",
+    "Get one of this session's subagents' result: answer (its last turn's final reply as the agent reported it, for Codex and OpenCode subagents; truncated:true when only the end was kept), status (idle once its turn ended), the exit state (running | done | failed; an interactive CLI stays running after a task) and the end of its screen as masked plain text as output (what the terminal shows, without control sequences). Prefer answer.",
     { sessionId },
     ["sessionId"]
   ),

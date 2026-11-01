@@ -37,6 +37,8 @@ const MAX_EXIT_LINES = 20;
  * full-screen TUI, and many screens of a line-based CLI, while each call still masks a bounded window.
  */
 const MAX_SCREEN_SOURCE_CHARS = 65_536;
+/** How far before the window's start a control sequence it cuts may begin (an OSC title or hyperlink included). */
+const SEQUENCE_LOOKBACK_CHARS = 4_096;
 const CHILD_POSITION_STEP = { x: 60, y: 60 };
 
 export interface SpawnAgentRequest {
@@ -419,7 +421,7 @@ export class AgentControlService {
    * redrawn, such as the model's status line, is still on the screen), masked before it is cut and again after.
    */
   private async screenExitLines(sessionId: string, buffer: string): Promise<string | null> {
-    const source = fromSequenceBoundary(this.redactTail(buffer, MAX_SCREEN_SOURCE_CHARS), buffer.length > MAX_SCREEN_SOURCE_CHARS);
+    const source = this.screenSource(buffer);
     let screen: string;
     try {
       screen = this.redactTail(await renderedTerminalText(source, this.geometry(sessionId)), MAX_SCREEN_SOURCE_CHARS);
@@ -439,12 +441,22 @@ export class AgentControlService {
    * the masked raw tail is returned as before.
    */
   private async screenText(sessionId: string, buffer: string, maxChars: number): Promise<string> {
-    const source = fromSequenceBoundary(this.redactTail(buffer, MAX_SCREEN_SOURCE_CHARS), buffer.length > MAX_SCREEN_SOURCE_CHARS);
+    const source = this.screenSource(buffer);
     try {
       return this.redactTail(await renderedTerminalText(source, this.geometry(sessionId)), maxChars);
     } catch {
       return this.redactTail(buffer, maxChars);
     }
+  }
+
+  /**
+   * The masked window the screen is rendered from: the last MAX_SCREEN_SOURCE_CHARS, masked with a little of what
+   * precedes them so a control sequence the window's start cuts is included whole.
+   */
+  private screenSource(buffer: string): string {
+    if (buffer.length <= MAX_SCREEN_SOURCE_CHARS) return this.redactTail(buffer, MAX_SCREEN_SOURCE_CHARS);
+    const masked = this.redactTail(buffer, MAX_SCREEN_SOURCE_CHARS + SEQUENCE_LOOKBACK_CHARS);
+    return masked.slice(windowStart(masked, Math.max(0, masked.length - MAX_SCREEN_SOURCE_CHARS)));
   }
 
   private geometry(sessionId: string): { cols: number; rows: number } | null {
@@ -575,13 +587,43 @@ function tail(text: string, maxChars: number): string {
 }
 
 /**
- * A window cut from the end of a terminal stream may begin inside an escape sequence, whose rest (`18;9H`, `m`) a
- * terminal would print as text. A cut window therefore starts at its first escape or line break instead.
+ * Where a window cut at `cut` from the end of a terminal stream should start: at `cut`, unless an escape sequence
+ * begun before it is still open there (its rest, such as `18;9H` or `m`, a terminal would print as text); then at
+ * that sequence's escape, so the terminal reads it whole. Ordinary text at the cut is kept. Only the last escape
+ * before the cut can still be open.
  */
-function fromSequenceBoundary(window: string, cut: boolean): string {
-  if (!cut) return window;
-  const starts = [window.indexOf("\u001b"), window.indexOf("\n")].filter((index) => index >= 0);
-  return starts.length > 0 ? window.slice(Math.min(...starts)) : window;
+function windowStart(text: string, cut: number): number {
+  const escape = text.lastIndexOf("\u001b", cut - 1);
+  if (escape < 0) return cut;
+  return sequenceEnd(text, escape) > cut ? escape : cut;
+}
+
+/** The index just after the escape sequence starting at `start` (text.length when it is still unterminated). */
+function sequenceEnd(text: string, start: number): number {
+  const kind = text[start + 1];
+  if (kind === undefined) return text.length;
+  if (kind === "[") {
+    for (let index = start + 2; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      if (code >= 0x40 && code <= 0x7e) return index + 1;
+      if (code === 0x1b || code === 0x18 || code === 0x1a) return index;
+    }
+    return text.length;
+  }
+  if ("]PX^_".includes(kind)) {
+    // OSC, DCS, SOS, PM, APC: a string ended by BEL (OSC) or ST (ESC \\).
+    for (let index = start + 2; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      if (code === 0x07 && kind === "]") return index + 1;
+      if (code === 0x1b) return text[index + 1] === "\\" ? index + 2 : index;
+      if (code === 0x18 || code === 0x1a) return index;
+    }
+    return text.length;
+  }
+  // ESC, its intermediates (0x20-0x2f), then one final character.
+  let index = start + 1;
+  while (index < text.length && text.charCodeAt(index) >= 0x20 && text.charCodeAt(index) <= 0x2f) index++;
+  return Math.min(index + 1, text.length);
 }
 
 function spawnCanceled(): Error {

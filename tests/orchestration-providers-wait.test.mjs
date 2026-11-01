@@ -471,3 +471,46 @@ test("a TUI that left its full screen as it exited keeps its last screen in outp
     assert.equal(/[\u0000-\u0008\u000b-\u001f\u007f]/u.test(answer.output), false);
   }
 });
+
+test("a cut window of ordinary text keeps its text: only a control sequence crossing the cut is dropped", async () => {
+  const { terminals, handler } = setup();
+  const child = terminals.sessions.get("child");
+  // One newline-terminated line longer than the rendered window (minified JSON): no escape and no line break before its end.
+  const items = Array.from({ length: 6_000 }, (_value, index) => `{"id":${index},"ok":true}`).join(",");
+  const line = `{"items":[${items}]}`;
+  assert.ok(line.length > 70_000, String(line.length));
+  child.buffer = `${line}\r\n`;
+  child.outputOffset = child.buffer.length;
+  child.status = "idle";
+  const waited = await call(handler, "wait_for_agent", { sessionId: "child", timeoutSeconds: 5 });
+  const observed = await call(handler, "observe_agent", { sessionId: "child" });
+  const result = await call(handler, "get_agent_result", { sessionId: "child" });
+  for (const output of [waited.output, observed.output, result.output]) {
+    assert.equal(output.length, 8_192);
+    assert.ok(line.endsWith(output), output.slice(-80));
+  }
+});
+
+test("leaving the full screen after long history keeps the order: history, the last frame, then what followed", async () => {
+  const { terminals, handler } = setup();
+  const child = terminals.sessions.get("child");
+  const e = "\u001b";
+  const at = (row, column) => `${e}[${row};${column}H`;
+  const history = Array.from({ length: 200 }, (_value, index) => `startup log ${index} ${"-".repeat(40)}\r\n`).join("");
+  assert.ok(history.length > 8_192, String(history.length));
+  child.buffer = history + `${e}[?1049h${e}[2J${at(1, 1)}┃ opencode  build  glm-5.3-flash${at(6, 3)}${e}[31mError: Unexpected server error${e}[0m`
+    + `${e}[?25h${e}[?1049l` + "Session ended.\r\n";
+  child.outputOffset = child.buffer.length;
+  child.exitCode = 1;
+  child.status = "failed";
+  const waited = await call(handler, "wait_for_agent", { sessionId: "child", timeoutSeconds: 5 });
+  const result = await call(handler, "get_agent_result", { sessionId: "child" });
+  for (const answer of [waited, result]) {
+    for (const text of [answer.output, answer.exitLines]) {
+      assert.match(text, /Error: Unexpected server error/u);
+      assert.ok(text.endsWith("Session ended."), text.slice(-120));
+      assert.ok(text.indexOf("Error: Unexpected") < text.indexOf("Session ended."), text.slice(-400));
+    }
+    assert.ok(answer.output.indexOf("startup log 199") < answer.output.indexOf("┃ opencode"), answer.output.slice(-600));
+  }
+});

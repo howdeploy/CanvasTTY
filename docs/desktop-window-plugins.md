@@ -90,6 +90,11 @@ follow the host skin and compensate for canvas zoom; a Linux-only
 `host.request("desktopWindows.layout", { insetTop })` reserves their measured
 height, up to 4096 local CSS pixels.
 
+Closing or hiding the embedded app removes its native viewport. Detach and host
+exit preserve the client's mapped state instead of reopening a closed/tray
+window. Hiding a card or minimizing CanvasTTY only hides the ancestor viewport;
+it does not count as closing the embedded app.
+
 Normal close, renderer teardown and SIGTERM/SIGINT wait for restoration before
 destroying the owner. XFixes protects helper disconnection while the owner stays
 alive. Abrupt destruction of Electron itself can destroy foreign child windows
@@ -121,3 +126,8 @@ The repository owner manually exercised the Linux/XWayland integration in DEV
 and confirmed the reported attachment, movement and HUD-layering behavior was
 working. No additional automated or Windows runtime validation was performed
 while preparing the combined integration.
+
+The release lifecycle regression tests run the actual Python host methods with
+a fake X11 connection (`node --test tests/desktop-linux.test.mjs`). They cover
+client hide/destroy, detach, helper exit and ancestor-only hiding. They do not
+replace native X11/XWayland acceptance with the target application.

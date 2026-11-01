@@ -12,6 +12,7 @@
 - Resolve Files roots from the live local shell directory, retain explicit root selection, and complete Linux system-file opening without waiting on Electron's missing callback.
 - Preserve macOS terminal renderers when closing the main window, continue shutdown after independent service failures, compress large usage-history snapshots and keep report navigation visible in small windows.
 - Preserve Windows Codex screenshot paste through Ctrl+V and configured paste shortcuts. Ignore late exits from replaced desktop helpers and finish helper disposal after failed process launches; native C#/PowerShell embedding is unchanged.
+- Remove the Linux native viewport when an embedded application closes or hides, and preserve its mapped state on detach and host exit instead of reopening a closed/tray window. Hiding a card keeps its live client attached.
 - Known limits: the beta.1 issues around regions overlapping HOME, manual nested-Codex restoration and conservative region sorting have not been established resolved. Abrupt destruction of Electron can destroy embedded Linux application windows and lose unsaved data. Desktop embedding remains experimental; native Windows/macOS acceptance and long-duration performance are not inferred from automated checks.
 
 ## 1.8.5-beta2

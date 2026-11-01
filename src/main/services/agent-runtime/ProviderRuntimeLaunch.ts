@@ -182,7 +182,9 @@ export class ProviderRuntimeLaunchAdapters {
     coreHooksEnabled = true,
     decisions = false,
     decisionBudgetMs?: number,
-    claudeHttpHookBase?: string
+    claudeHttpHookBase?: string,
+    /** The card's own (already filtered) environment; the launch reads the person's OpenCode inline config from it. */
+    environment: Readonly<Record<string, string | undefined>> = this.environment
   ): PreparedProviderRuntimeLaunch {
     const pluginRegistrations = this.options.pluginHooks?.list(provider) ?? [];
     const gate = decisions && this.decisionsSupported(provider);
@@ -195,7 +197,7 @@ export class ProviderRuntimeLaunchAdapters {
     // MiniMax, Devin and Antigravity must never reach Grok's shared hook overlay.
     const hasHooks = HOOK_PROVIDERS.has(provider)
       && (coreHooksEnabled || pluginCommands.length > 0 || (provider === "opencode" && (pluginRegistrations.length > 0 || openCodeDecisions)));
-    const environment = hasHooks
+    const hookEnvironment = hasHooks
       ? {
         ...(pluginRegistrations.length > 0 ? {
           [PLUGIN_HOOK_TERMINAL_SESSION_ENV]: terminalSessionId
@@ -204,13 +206,13 @@ export class ProviderRuntimeLaunchAdapters {
       : {};
     if (!hasHooks) {
       this.clearSharedOverlay(provider);
-      return prepared([], environment);
+      return prepared([], hookEnvironment);
     }
     if (provider === "claude") {
-      return prepared(claudeHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands, claudeHttpHookBase), environment);
+      return prepared(claudeHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands, claudeHttpHookBase), hookEnvironment);
     }
     if (provider === "codex") {
-      return prepared(codexHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands), environment);
+      return prepared(codexHookArgs(this.options.helper, this.platform, coreHooksEnabled, pluginCommands), hookEnvironment);
     }
     if (provider === "qwen") {
       const path = createQwenHookSettings({
@@ -222,7 +224,7 @@ export class ProviderRuntimeLaunchAdapters {
         coreHooksEnabled,
         pluginCommands
       });
-      return prepared([], { ...environment, [QWEN_SYSTEM_SETTINGS]: path }, () => unlinkIfExists(path));
+      return prepared([], { ...hookEnvironment, [QWEN_SYSTEM_SETTINGS]: path }, () => unlinkIfExists(path));
     }
     if (provider === "opencode") {
       const pluginEnvironment = this.openCodePluginEnvironment(
@@ -230,11 +232,11 @@ export class ProviderRuntimeLaunchAdapters {
         coreHooksEnabled
       );
       return prepared([], {
-        ...environment,
+        ...hookEnvironment,
         ...pluginEnvironment,
         ...(openCodeDecisions ? { [OPENCODE_DECISIONS_ENV]: "1", ...budgetEnvironment(decisionBudgetMs) } : {}),
         [OPENCODE_CONFIG_CONTENT]: openCodeLifecycleConfig(
-          this.environment[OPENCODE_CONFIG_CONTENT],
+          environment[OPENCODE_CONFIG_CONTENT],
           this.options.openCodePluginPath
         )
       });
@@ -242,16 +244,16 @@ export class ProviderRuntimeLaunchAdapters {
     if (provider === "omp" || provider === "pi") {
       return prepared(coreHooksEnabled
         ? ["--extension", join(dirname(this.options.openCodePluginPath), "omp-extension.mjs")]
-        : [], environment);
+        : [], hookEnvironment);
     }
     if (provider === "kimi") {
-      return prepared([], environment, this.acquireKimi(coreHooksEnabled, pluginCommands));
+      return prepared([], hookEnvironment, this.acquireKimi(coreHooksEnabled, pluginCommands));
     }
     if (provider === "hermes") {
-      return prepared([], environment, this.acquireHermes(coreHooksEnabled, pluginCommands));
+      return prepared([], hookEnvironment, this.acquireHermes(coreHooksEnabled, pluginCommands));
     }
-    if (provider === "grok") return prepared([], environment, this.acquireGrok(coreHooksEnabled, pluginCommands));
-    return prepared([], environment);
+    if (provider === "grok") return prepared([], hookEnvironment, this.acquireGrok(coreHooksEnabled, pluginCommands));
+    return prepared([], hookEnvironment);
   }
 
   recoverConfigurations(): void {

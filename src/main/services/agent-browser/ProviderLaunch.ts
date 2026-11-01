@@ -150,7 +150,13 @@ export class ProviderLaunchAdapters {
    * `orchestrationTools`: the canvastty_agents tools this session may use (default: the core tools). `browser: false`
    * (browser access off) leaves canvastty_browser out, so only canvastty_agents is attached.
    */
-  prepare(provider: AgentProvider, connectionId: string, options?: { orchestration?: boolean; orchestrationTools?: readonly string[]; browser?: boolean }): PreparedProviderLaunch {
+  prepare(provider: AgentProvider, connectionId: string, options?: {
+    orchestration?: boolean;
+    orchestrationTools?: readonly string[];
+    browser?: boolean;
+    /** The card's own (already filtered) environment; the launch reads the person's OpenCode inline config from it. */
+    environment?: Readonly<Record<string, string | undefined>>;
+  }): PreparedProviderLaunch {
     const providerCli = this.providerClis.get(provider);
     if (providerCli.state === "unavailable") throw new Error(providerCli.diagnostic);
     const orchestrationHelper = orchestrationHelperFor(this.options, options);
@@ -181,7 +187,7 @@ export class ProviderLaunchAdapters {
     if (provider === "opencode") {
       return {
         args: [],
-        environment: openCodeBrowserEnvironment(browserHelper, this.environment, orchestrationHelper),
+        environment: openCodeBrowserEnvironment(browserHelper, options?.environment ?? this.environment, orchestrationHelper),
         releaseConfiguration() {}
       };
     }

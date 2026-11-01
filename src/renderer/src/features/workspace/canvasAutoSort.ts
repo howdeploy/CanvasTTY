@@ -37,7 +37,7 @@ export interface CanvasAutoSortOptions {
   /** Fixed areas the block may not cover, e.g. HOME and canvas regions. */
   avoid?: readonly SessionBounds[];
   snapToGrid?: boolean;
-  /** For a region plan: center the existing arrangement inside it, or refuse the whole step. */
+  /** For a region plan: the region the arrangement must fit into (see `placeInRegion`). */
   within?: SessionBounds;
 }
 
@@ -76,8 +76,16 @@ export function planCanvasAutoSort(
   if (items.length < 2) return null;
   const sorted = new Set(items.map((item) => item.id));
   const obstacles = [...options.avoid ?? [], ...[...bounds].filter(([id]) => !sorted.has(id)).map(([, value]) => value)];
-  const arranged = arrangeCanvasAutoSort(items, mode, { avoid: options.within ? [] : obstacles, snapToGrid: options.snapToGrid });
-  const after = options.within ? centerInRegion(arranged, options.within, obstacles, options.snapToGrid === true) : arranged;
+  const snapToGrid = options.snapToGrid === true;
+  const region = options.within;
+  let after: Map<string, SessionBounds> | null = null;
+  if (!region) after = arrangeCanvasAutoSort(items, mode, { avoid: obstacles, snapToGrid });
+  else {
+    for (const columns of regionShapes(items, mode)) {
+      after = placeInRegion(arrangeWith(items, mode, [], snapToGrid, columns), region, obstacles, snapToGrid);
+      if (after) break;
+    }
+  }
   if (!after) return null;
   return {
     before: new Map(items.map((item) => [item.id, item.bounds])),
@@ -90,27 +98,72 @@ const GAP = 20;
 const GROUP_GAP = 2 * GAP;
 const GRID = 10;
 
-function centerInRegion(
+/** How many columns a grid of `count` windows gets; the default is a near-square grid. */
+type Columns = (count: number) => number;
+const nearSquare: Columns = (count) => Math.max(1, Math.ceil(Math.sqrt(count)));
+
+/**
+ * The grid shapes a region sort tries, in order: the usual near-square grid first, so a layout that
+ * fits keeps it, then every other column limit, nearest to the usual count first and fewer columns
+ * before more on a tie. The limit applies to the whole grid, or to each criterion group. The task
+ * tree has only its own shape.
+ */
+function regionShapes(items: readonly CanvasAutoSortItem[], mode: CanvasAutoSortMode): Columns[] {
+  if (mode === "task") return [nearSquare];
+  const largest = Math.max(...(mode === "grid" ? [items.length] : [...criterionGroups(items, mode).values()].map((group) => group.length)));
+  const usual = nearSquare(largest);
+  const limits = Array.from({ length: largest }, (_, index) => index + 1)
+    .filter((limit) => limit !== usual || mode !== "grid")
+    .sort((left, right) => Math.abs(left - usual) - Math.abs(right - usual) || left - right);
+  return [nearSquare, ...limits.map((limit): Columns => (count) => Math.min(count, limit))];
+}
+
+/**
+ * Where the arranged block goes inside a region, or null when no place there holds it. The block
+ * keeps 20px from the region edges and 60px below its top for the title, and the gap from every
+ * obstacle. It goes to the center when that is clear; otherwise to the clear place nearest the
+ * center (topmost, then leftmost, on a tie). With snapping every window stays on the grid.
+ */
+function placeInRegion(
   arranged: ReadonlyMap<string, SessionBounds>,
   region: SessionBounds,
   obstacles: readonly SessionBounds[],
   snap: boolean
 ): Map<string, SessionBounds> | null {
-  // Keep 20px at the edges and 60px above the content for the existing region title.
   const content = {
     position: { x: region.position.x + GAP, y: region.position.y + 3 * GAP },
     size: { width: region.size.width - 2 * GAP, height: region.size.height - 4 * GAP }
   };
   const block = boundingBox([...arranged.values()]);
+  const up = (value: number): number => snap ? Math.ceil(value / GRID) * GRID : Math.ceil(value);
+  const down = (value: number): number => snap ? Math.floor(value / GRID) * GRID : Math.floor(value);
   const round = (value: number): number => snap ? Math.round(value / GRID) * GRID : Math.round(value);
-  const x = round(content.position.x + (content.size.width - block.size.width) / 2);
-  const y = round(content.position.y + (content.size.height - block.size.height) / 2);
-  if (x < content.position.x || y < content.position.y
-    || x + block.size.width > content.position.x + content.size.width
-    || y + block.size.height > content.position.y + content.size.height) return null;
-  const margin = { position: { x: x - GAP, y: y - GAP }, size: { width: block.size.width + 2 * GAP, height: block.size.height + 2 * GAP } };
-  // shortcut: reject an obstructed centered block; add bounded placement search only if requested.
-  if (obstacles.some((obstacle) => overlaps(margin, obstacle))) return null;
+  const inside = obstacles.filter((obstacle) => overlaps(region, obstacle));
+  // Every free place can slide up and left until an edge or an obstacle stops it, so the region
+  // edges and the obstacles' edges (plus the center) are the only places worth checking.
+  const spots = (axis: "x" | "y"): { center: number; values: number[] } => {
+    const length = axis === "x" ? block.size.width : block.size.height;
+    const far = (bounds: SessionBounds): number => bounds.position[axis] + (axis === "x" ? bounds.size.width : bounds.size.height);
+    const low = up(content.position[axis]);
+    const high = down(far(content) - length);
+    const center = Math.min(high, Math.max(low, round(content.position[axis] + (far(content) - content.position[axis] - length) / 2)));
+    const values = [low, high, center, ...inside.flatMap((obstacle) => [up(far(obstacle) + GAP), down(obstacle.position[axis] - GAP - length)])]
+      .filter((value) => value >= low && value <= high);
+    return { center, values: [...new Set(values)].sort((left, right) => left - right) };
+  };
+  const xs = spots("x");
+  const ys = spots("y");
+  let best: (Point & { distance: number }) | null = null;
+  for (const y of ys.values) {
+    for (const x of xs.values) {
+      const distance = (x - xs.center) ** 2 + (y - ys.center) ** 2;
+      if (best && distance >= best.distance) continue;
+      const margin = { position: { x: x - GAP, y: y - GAP }, size: { width: block.size.width + 2 * GAP, height: block.size.height + 2 * GAP } };
+      if (!inside.some((obstacle) => overlaps(margin, obstacle))) best = { x, y, distance };
+    }
+  }
+  if (!best) return null;
+  const { x, y } = best;
   return new Map([...arranged].map(([id, bounds]) => [id,
     at(x + bounds.position.x - block.position.x, y + bounds.position.y - block.position.y, bounds)
   ]));
@@ -131,16 +184,25 @@ export function arrangeCanvasAutoSort(
   mode: CanvasAutoSortMode,
   options: CanvasAutoSortOptions = {}
 ): Map<string, SessionBounds> {
+  return arrangeWith(items, mode, options.avoid ?? [], options.snapToGrid === true, nearSquare);
+}
+
+function arrangeWith(
+  items: readonly CanvasAutoSortItem[],
+  mode: CanvasAutoSortMode,
+  avoid: readonly SessionBounds[],
+  snap: boolean,
+  columns: Columns
+): Map<string, SessionBounds> {
   if (items.length === 0) return new Map();
-  const snap = options.snapToGrid === true;
   const step: Step = (edge, gap = GAP) => (snap ? Math.ceil((edge + gap) / GRID) * GRID : edge + gap);
-  const local = arrangeAt(items, mode, step);
+  const local = arrangeAt(items, mode, step, columns);
   const extent = boundingBox([...local.values()]).size;
   const current = boundingBox(items.map((item) => item.bounds)).position;
   const start = snap
     ? { x: Math.round(current.x / GRID) * GRID, y: Math.round(current.y / GRID) * GRID }
     : { x: Math.round(current.x), y: Math.round(current.y) };
-  const origin = clearSpot(start, extent, options.avoid ?? [], step);
+  const origin = clearSpot(start, extent, avoid, step);
   const result = new Map<string, SessionBounds>();
   for (const [id, bounds] of local) result.set(id, at(bounds.position.x + origin.x, bounds.position.y + origin.y, bounds));
   return result;
@@ -167,28 +229,34 @@ function clearSpot(start: Point, size: SessionBounds["size"], obstacles: readonl
   return down.y - start.y < right.x - start.x ? down : right;
 }
 
-function arrangeAt(items: readonly CanvasAutoSortItem[], mode: CanvasAutoSortMode, step: Step): Map<string, SessionBounds> {
+function arrangeAt(items: readonly CanvasAutoSortItem[], mode: CanvasAutoSortMode, step: Step, columns: Columns): Map<string, SessionBounds> {
   const ordered = [...items].sort(readingOrder);
   if (mode === "task") return arrangeTaskTree(ordered, step);
-  if (mode === "grid") return arrangeGrid(ordered, 0, step);
-  const groups = new Map<string, CanvasAutoSortItem[]>();
-  for (const item of ordered) {
-    const key = mode === "status" ? statusGroup(item.status) : projectGroup(item.project);
-    const group = groups.get(key) ?? [];
-    group.push(item);
-    groups.set(key, group);
-  }
+  if (mode === "grid") return arrangeGrid(ordered, 0, step, columns);
+  const groups = criterionGroups(ordered, mode);
   const result = new Map<string, SessionBounds>();
   let x = 0;
   for (const key of [...groups.keys()].sort(compareText)) {
     let right = x;
-    for (const [id, bounds] of arrangeGrid(groups.get(key)!, x, step)) {
+    for (const [id, bounds] of arrangeGrid(groups.get(key)!, x, step, columns)) {
       result.set(id, bounds);
       right = Math.max(right, bounds.position.x + bounds.size.width);
     }
     x = step(right, GROUP_GAP);
   }
   return result;
+}
+
+/** The status or project groups, each in the order of `items`. */
+function criterionGroups(items: readonly CanvasAutoSortItem[], mode: "status" | "project"): Map<string, CanvasAutoSortItem[]> {
+  const groups = new Map<string, CanvasAutoSortItem[]>();
+  for (const item of items) {
+    const key = mode === "status" ? statusGroup(item.status) : projectGroup(item.project);
+    const group = groups.get(key) ?? [];
+    group.push(item);
+    groups.set(key, group);
+  }
+  return groups;
 }
 
 /** Orchestrators in a column, each subagent to the right of the session that spawned it. */
@@ -265,9 +333,9 @@ function arrangeTaskTree(ordered: readonly CanvasAutoSortItem[], step: Step): Ma
   return result;
 }
 
-/** A near-square grid; each column is as wide as its widest window and each row as tall as its tallest. */
-function arrangeGrid(ordered: readonly CanvasAutoSortItem[], left: number, step: Step): Map<string, SessionBounds> {
-  const columns = Math.max(1, Math.ceil(Math.sqrt(ordered.length)));
+/** A grid filled row by row; each column is as wide as its widest window and each row as tall as its tallest. */
+function arrangeGrid(ordered: readonly CanvasAutoSortItem[], left: number, step: Step, columnsFor: Columns): Map<string, SessionBounds> {
+  const columns = Math.max(1, Math.min(ordered.length, columnsFor(ordered.length)));
   const rows = Math.ceil(ordered.length / columns);
   const columnWidths = Array.from({ length: columns }, () => 0);
   const rowHeights = Array.from({ length: rows }, () => 0);

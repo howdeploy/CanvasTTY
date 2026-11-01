@@ -31,7 +31,7 @@ import type {
 } from "../../../../shared/contracts";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
-import { displayCanvasNavigationBinding, isRenameInputTarget, isShortcutCaptureTarget, matchesPhysicalOrLayoutKey, matchesShortcut, shouldKeepNativeKeyboardInput } from "../../lib/shortcuts";
+import { displayCanvasNavigationBinding, displayShortcutBinding, isRenameInputTarget, isShortcutCaptureTarget, matchesPhysicalOrLayoutKey, matchesShortcut, shouldKeepNativeKeyboardInput } from "../../lib/shortcuts";
 import { BrowserCard } from "../browser/BrowserCard";
 import type { FileBrowserCardProps, FileSessionOption } from "../files/FileBrowserCard";
 import { fileCardRuntimeFor, type FileCardRuntimeState } from "../files/fileCardRuntime";
@@ -1738,11 +1738,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             )}
             {settings.showShortcutHints && settings.shortcutHintsPlacement === placement && (
               <aside className="shortcut-hints" aria-label={t(settings.locale, "keyboardShortcuts")}>
-                <div><kbd>{settings.shortcuts.home}</kbd><span>{t(settings.locale, "homeShortcut")}</span></div>
-                <div><kbd>{settings.shortcuts.renameWindow}</kbd><span>{t(settings.locale, "renameWindow")}</span></div>
-                <div><kbd>{settings.shortcuts.toggleFullscreen.replace("Meta", window.canvasTTY.window.isMacOS ? "Command" : "Super")}</kbd><span>{t(settings.locale, "toggleFullscreen")}</span></div>
-                <div><kbd>{settings.shortcuts.focusUp}</kbd><span>{t(settings.locale, "keyboardFocusUp")}</span></div>
-                <div><kbd>Shift + drag</kbd><span>{t(settings.locale, "marqueeSelectionHint")}</span></div>
+                {([["home", "homeShortcut"], ["renameWindow", "renameWindow"], ["toggleFullscreen", "toggleFullscreen"],
+                  ["focusUp", "keyboardFocusUp"]] as const).map(([action, label]) => (
+                  <div key={action}><kbd>{displayShortcutBinding(settings.shortcuts[action], window.canvasTTY.window.isMacOS)}</kbd><span>{t(settings.locale, label)}</span></div>
+                ))}
+                <div><kbd>{t(settings.locale, "shortcutShiftDrag")}</kbd><span>{t(settings.locale, "marqueeSelectionHint")}</span></div>
                 {settings.canvasWheelCaptureMode === "key" && settings.canvasWheelOverride !== null && (
                   <div><kbd>{displayCanvasNavigationBinding(settings.canvasWheelOverride, window.canvasTTY.window.isMacOS)}</kbd>
                     <span>{t(settings.locale, "canvasWheelOverrideHint")}</span></div>
@@ -1754,7 +1754,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                 <button className="shortcut-hints__more" type="button" data-interactive="true"
                   aria-haspopup="dialog" onClick={props.onOpenShortcutReference}>
                   {t(settings.locale, "keyboardShortcuts")}
-                  <UiIcon name="app-window" size={14} />
+                  <UiIcon name="app-window" size="1.27em" />
                 </button>
               </aside>
             )}

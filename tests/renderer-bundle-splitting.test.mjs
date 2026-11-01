@@ -12,10 +12,17 @@ import { build } from "esbuild";
 // must shrink accordingly.
 const appEntry = fileURLToPath(new URL("../src/renderer/src/App.tsx", import.meta.url));
 
-async function bundleApp() {
-  // Only the dependency graph and byte counts are inspected; esbuild can produce
-  // both in memory without writing and deleting an entire renderer bundle.
-  const { metafile } = await build({
+let bundled;
+
+function bundleApp() {
+  bundled ??= bundleAppOnce();
+  return bundled;
+}
+
+async function bundleAppOnce() {
+  // Only the dependency graph, byte counts and chunk text are inspected; esbuild can produce
+  // them in memory without writing and deleting an entire renderer bundle.
+  const { metafile, outputFiles } = await build({
     entryPoints: [appEntry],
     bundle: true,
     splitting: true,
@@ -33,7 +40,7 @@ async function bundleApp() {
     logLevel: "silent",
     loader: { ".svg": "text", ".css": "empty", ".png": "empty", ".webp": "empty", ".ttf": "empty", ".woff2": "empty", ".ico": "empty" }
   });
-  return metafile;
+  return { metafile, outputFiles };
 }
 
 function outputFor(metafile, suffix) {
@@ -57,7 +64,7 @@ function staticallyReachableBytes(metafile, entry) {
 }
 
 test("Settings and the launch/link dialogs are split out of the app's static import graph", async () => {
-  const metafile = await bundleApp();
+  const { metafile } = await bundleApp();
   const appPath = outputFor(metafile, "App.js");
   assert.ok(appPath, "expected an App.js bundle output");
 
@@ -91,4 +98,28 @@ test("Settings and the launch/link dialogs are split out of the app's static imp
     eagerBytes < 1_100_000,
     `code statically reachable from App.js should stay bounded now that heavy UI loads on demand, got ${eagerBytes} bytes`
   );
+});
+
+// Text that only Settings shows is kept next to it (not in the startup string table), so it loads with the Settings
+// chunk. Each entry: a module that must not be statically reachable from App.js, and an English string from it that
+// must not appear in any chunk App.js loads at startup.
+const SETTINGS_ONLY_TEXT = [
+  ["src/renderer/src/features/plugins/PluginSettingsSection.tsx", "GitHub sign-in could not be cancelled"]
+];
+
+test("text that only Settings shows stays out of the startup bundle", async () => {
+  const { metafile, outputFiles } = await bundleApp();
+  const { paths: eagerPaths } = staticallyReachableBytes(metafile, outputFor(metafile, "App.js"));
+  const textOf = (path) => outputFiles.find((file) => file.path.replaceAll("\\", "/").endsWith(`/${path}`))?.text ?? "";
+  const eagerText = [...eagerPaths].map(textOf).join("\n");
+  assert.ok(eagerText.length > 0, "the startup chunks must be readable");
+  for (const [module, text] of SETTINGS_ONLY_TEXT) {
+    const holders = Object.entries(metafile.outputs).filter(([, output]) => Object.keys(output.inputs).some((input) => input.endsWith(module)));
+    assert.ok(holders.length > 0, `${module} is bundled`);
+    for (const [path] of holders) {
+      assert.ok(!eagerPaths.has(path), `${module} must only load with Settings`);
+      assert.ok(textOf(path).includes(text), `"${text}" must be bundled with ${module}`);
+    }
+    assert.ok(!eagerText.includes(text), `"${text}" must not be in the startup bundle`);
+  }
 });

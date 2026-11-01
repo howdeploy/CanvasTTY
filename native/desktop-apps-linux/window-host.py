@@ -329,7 +329,6 @@ class Host:
                 item["shape"] = shape
                 changed = True
             if not item["visible"]:
-                self.x.XMapWindow(self.display, item["window"])
                 self.x.XMapWindow(self.display, item["container"])
                 self.x.XRaiseWindow(self.display, item["container"])
                 changed = True
@@ -375,13 +374,12 @@ class Host:
             return
         if self.valid(item):
             window = item["window"]
-            self.x.XUnmapWindow(self.display, window)
+            # Reparent preserves mapped state atomically; never revive a closed/tray window.
             self.x.XReparentWindow(self.display, window, self.root, item["x"], item["y"])
             self.x.XMoveResizeWindow(self.display, window, item["x"], item["y"], item["width"], item["height"])
             self.x.XSetWindowBorderWidth(self.display, window, item["border"])
             for name, saved in item["properties"].items():
                 self.restore_property(window, name, saved)
-            self.x.XMapWindow(self.display, window)
             self.sync()
             if item["saved"]:
                 self.fixes.XFixesChangeSaveSet(self.display, window, 1, 1, 0)
@@ -409,8 +407,12 @@ class Host:
                 self.detach(token)
             else:
                 try:
+                    # Hiding an ancestor leaves the client IsUnviewable (1), not IsUnmapped (0).
+                    if self.attributes(item["window"]).map_state == 0:
+                        self.detach(token)
+                        continue
                     self.render(item, host)
-                except RuntimeError as error:
+                except (ValueError, RuntimeError) as error:
                     self.detach(token)
                     self.placement_errors[token] = str(error)
         if not self.attached:

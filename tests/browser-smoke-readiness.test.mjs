@@ -32,6 +32,78 @@ test("freeze smoke distinguishes a transition end from normal wheel idle", () =>
   assert.equal(freezeEndedBeforeIdle([{ active: false, observedAt: 900 }, active], 1_000, 250), false);
 });
 
+for (const prematureEnd of [false, true]) {
+  test(`actual freeze assertion ${prematureEnd ? "rejects a real premature end" : "ignores a previous idle event delivered during the new sequence"}`, async () => {
+    const source = await readFile(new URL("../src/main/services/browser/BrowserElectronSmoke.ts", import.meta.url), "utf8");
+    const assertion = source.slice(source.indexOf("async function assertOwnerWheelFreezesCrossingBrowser"),
+      source.indexOf("async function browserSmokePageState"));
+    let now = 0, generation = 0, nativeUpdates = 0, refreshedAt = null, previousIdleQueued = false;
+    const deliveries = [];
+    let receive;
+    const renderer = {
+      Date: { now: () => now },
+      window: { canvasTTY: { browser: { onCanvasFreezeFrame(listener) { receive = listener; return () => {}; } } } },
+    };
+    const emit = (active) => owner.webContents.send("browser:canvas-freeze-frame", {
+      active, generation: ++generation, dataUrl: "data:image/jpeg;base64,fixture",
+    });
+    const advance = (delay) => {
+      const target = now + delay;
+      if (refreshedAt !== null && now < refreshedAt + 250 && target >= refreshedAt + 250) {
+        now = refreshedAt + 250;
+        emit(false);
+      }
+      now = target;
+    };
+    const owner = {
+      getParentWindow: () => null,
+      webContents: {
+        send(_channel, payload) { deliveries.push(payload); },
+        sendInputEvent() {},
+        async executeJavaScript(code) {
+          for (const event of deliveries.splice(0)) receive?.(event);
+          const result = runInNewContext(code, renderer);
+          if (!previousIdleQueued && code.includes("event.active && event.dataUrlLength")) {
+            // Main ended the old gesture before refresh; its IPC arrives during the new gesture.
+            now = 50;
+            emit(false);
+            now = 50;
+            previousIdleQueued = true;
+          }
+          return result;
+        },
+      },
+    };
+    const originalSend = owner.webContents.send;
+    const service = {
+      setViewport(viewport) {
+        if (viewport.surface === "placeholder") { if (prematureEnd) emit(false); return; }
+        if (++nativeUpdates === 1) emit(false);
+        else if (nativeUpdates === 2) emit(true);
+      },
+      beginRendererWheelSequence() { refreshedAt = now; emit(true); },
+    };
+    const run = runInNewContext(`${stripTypeScriptTypes(assertion)}; assertOwnerWheelFreezesCrossingBrowser`, {
+      BrowserWindow: { getAllWindows: () => [owner] },
+      IPC: { browserCanvasFreezeFrame: "browser:canvas-freeze-frame" },
+      Date: { now: () => now },
+      setTimeout(callback, delay) { advance(delay); callback(); },
+      BROWSER_CANVAS_WHEEL_IDLE_MS: 250,
+      freezeEndedBeforeIdle,
+      async waitUntil(condition) {
+        for (let attempt = 0; attempt < 10; attempt++) {
+          if (await condition()) return;
+          advance(50);
+        }
+        throw new Error("fixture wait timed out");
+      },
+    });
+    if (prematureEnd) await assert.rejects(run(service), /transition ended the active canvas wheel sequence/);
+    else await run(service);
+    assert.equal(owner.webContents.send, originalSend);
+  });
+}
+
 test("physical wheel smoke requires native window and document focus on a visible loaded page", () => {
   assert.equal(isBrowserSmokeWheelReady(ready), true);
   // The observed locked-display case has usable geometry but no actual window/document focus.

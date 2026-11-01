@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { app, BrowserWindow, webContents } from "electron";
-import type { BrowserActor, BrowserCommand, BrowserElementRef, BrowserResult } from "../../../shared/contracts.ts";
+import { IPC, type BrowserActor, type BrowserCommand, type BrowserElementRef, type BrowserResult } from "../../../shared/contracts.ts";
 import type { BrowserService } from "../BrowserService.ts";
 import { BROWSER_CANVAS_WHEEL_IDLE_MS } from "./BrowserCanvasFreeze.ts";
 import { clipBrowserViewportBounds, normalizeBrowserViewportBounds } from "./BrowserViewport.ts";
@@ -645,6 +645,15 @@ async function assertOwnerWheelFreezesCrossingBrowser(service: BrowserService): 
     });
     void 0;
   `);
+  // Measure at emission: delayed IPC from the previous idle is not a new gesture ending early.
+  const emittedFreezeEvents: Array<{ active: boolean; observedAt: number }> = [];
+  const originalSend = owner.webContents.send;
+  owner.webContents.send = function (channel, ...args) {
+    if (channel === IPC.browserCanvasFreezeFrame) {
+      emittedFreezeEvents.push({ active: args[0].active, observedAt: Date.now() });
+    }
+    originalSend.call(this, channel, ...args);
+  };
   try {
     const initialViewport = {
       x: 500,
@@ -673,27 +682,27 @@ async function assertOwnerWheelFreezesCrossingBrowser(service: BrowserService): 
     ));
     // The preceding IPC/capture wait can consume the original 250 ms wheel
     // interval. Refresh it before testing the surface transition.
+    const sequenceEventStart = emittedFreezeEvents.length;
     const sequenceRefreshedAt = Date.now();
     service.beginRendererWheelSequence({ clientX: 400, clientY: 300 });
     service.setViewport({ ...initialViewport, x: 403, surface: "placeholder" });
     await new Promise((resolve) => setTimeout(resolve, 80));
     service.setViewport({ ...initialViewport, x: 403, surface: "native" });
     await new Promise((resolve) => setTimeout(resolve, 80));
-    const freezeEvents = await owner.webContents.executeJavaScript(
-      "globalThis.__canvasttyFreezeEvents ?? []"
-    ) as Array<{ active: boolean; observedAt: number }>;
     const endedDuringPlaceholder = freezeEndedBeforeIdle(
-      freezeEvents, sequenceRefreshedAt, BROWSER_CANVAS_WHEEL_IDLE_MS
+      emittedFreezeEvents.slice(sequenceEventStart), sequenceRefreshedAt, BROWSER_CANVAS_WHEEL_IDLE_MS
     );
     if (endedDuringPlaceholder) {
-      throw new Error("Native/placeholder transition ended the active canvas wheel sequence.");
+      throw new Error(`Native/placeholder transition ended the active canvas wheel sequence: ${JSON.stringify(emittedFreezeEvents)}.`);
     }
     const idleDeadline = sequenceRefreshedAt + BROWSER_CANVAS_WHEEL_IDLE_MS;
+    await waitUntil(async () => emittedFreezeEvents.slice(sequenceEventStart).some((event) => !event.active && event.observedAt >= idleDeadline));
     await waitUntil(async () => owner.webContents.executeJavaScript(`
       (globalThis.__canvasttyFreezeEvents ?? []).some((event) =>
         !event.active && event.observedAt >= ${idleDeadline})
     `));
   } finally {
+    owner.webContents.send = originalSend;
     service.setViewport({ x: 0, y: 0, width: 820, height: 620, surface: "native", canvasScale: 1 });
     await owner.webContents.executeJavaScript(`
       globalThis.__canvasttyFreezeOff?.();

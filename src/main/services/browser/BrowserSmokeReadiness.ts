@@ -22,7 +22,7 @@ export function isBrowserSmokeWheelReady(state: BrowserSmokeWheelReadiness): boo
     && state.page.focused;
 }
 
-/** A freeze release after the wheel idle deadline is expected, even if the renderer reports it late. */
+/** Observe events at emission: renderer receipt can put an old idle release inside a new gesture. */
 export function freezeEndedBeforeIdle(
   events: readonly { active: boolean; observedAt: number }[],
   sequenceRefreshedAt: number,

@@ -57,7 +57,10 @@ no compiler, npm install or native plugin script is needed at runtime. Its small
 native host uses Win32 `SetParent`, `WS_CHILD`, viewport clipping and a message
 loop; it restores the original `WINDOWPLACEMENT` and styles on release. PowerShell
 runs hidden, with a process-local execution policy. No system execution policy is
-changed. The Windows backend is unchanged from the contributor's implementation.
+changed. The Windows native helper is unchanged from the contributor's
+implementation. The TypeScript service additionally ignores stale helper exits
+after replacement and finishes disposal when a failed launch closes without an
+exit event.
 
 Windows 10/11 and Windows PowerShell 5.1 with .NET Framework are required. Apps
 must use the same user, elevation and DPI-awareness mode. Differing DPI modes are
@@ -86,6 +89,11 @@ return to the canvas focus controller to raise the correct card. Linux controls
 follow the host skin and compensate for canvas zoom; a Linux-only
 `host.request("desktopWindows.layout", { insetTop })` reserves their measured
 height, up to 4096 local CSS pixels.
+
+Closing or hiding the embedded app removes its native viewport. Detach and host
+exit preserve the client's mapped state instead of reopening a closed/tray
+window. Hiding a card or minimizing CanvasTTY only hides the ancestor viewport;
+it does not count as closing the embedded app.
 
 Normal close, renderer teardown and SIGTERM/SIGINT wait for restoration before
 destroying the owner. XFixes protects helper disconnection while the owner stays
@@ -118,3 +126,8 @@ The repository owner manually exercised the Linux/XWayland integration in DEV
 and confirmed the reported attachment, movement and HUD-layering behavior was
 working. No additional automated or Windows runtime validation was performed
 while preparing the combined integration.
+
+The release lifecycle regression tests run the actual Python host methods with
+a fake X11 connection (`node --test tests/desktop-linux.test.mjs`). They cover
+client hide/destroy, detach, helper exit and ancestor-only hiding. They do not
+replace native X11/XWayland acceptance with the target application.

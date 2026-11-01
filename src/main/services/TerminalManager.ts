@@ -4,6 +4,7 @@ import { ORCHESTRATION_ENV } from "./agent-browser/orchestration-protocol.ts";
 import { connectedLaunchEnvironment } from "../../agent-runtime/launch-environment.mjs";
 import { instrumentShellCodex, resumeShellCodex } from "./shellCodexLaunch.ts";
 import { realpathSync, statSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { basename, dirname } from "node:path";
 import { isPathInside } from "../../agent-runtime/path-inside.mjs";
 import * as pty from "node-pty";
@@ -2513,7 +2514,7 @@ export class TerminalManager {
 
     let exited!: () => void;
     this.liveProcesses.set(process, new Promise<void>((resolve) => { exited = resolve; }));
-    process.onExit(({ exitCode }) => {
+    process.onExit(({ exitCode, signal }) => {
       this.liveProcesses.delete(process);
       clearTimeout(this.closedProcessTimers.get(process));
       this.closedProcessTimers.delete(process);
@@ -2523,22 +2524,29 @@ export class TerminalManager {
       if (!current || current !== session || current.process !== process) return;
       // node-pty calls this from a native callback that aborts the whole app when JavaScript throws in it.
       try {
-        this.recordExit(id, current, exitCode);
+        this.recordExit(id, current, exitCode, signal);
       } catch (error) {
         console.warn(`PTY ${id} exit could not be recorded.`, error);
       }
     });
   }
 
-  private recordExit(id: string, current: ManagedSession, exitCode: number): void {
+  private recordExit(id: string, current: ManagedSession, reportedExitCode: number, signal?: number): void {
     this.flushOutput(id, current);
     this.releaseIsolation(id);
     if (current.extras.gitAuditSince !== undefined) void this.auditGit(id, current);
+    // node-pty reports a process killed by a signal as exitCode 0 plus the signal. That is a crash, not a clean finish:
+    // record it the way a shell does, as 128+signal, so the card, wait_for_agent and the saved session all say failed.
+    const killedBy = typeof signal === "number" && signal > 0 ? signal : 0;
+    const exitCode = killedBy ? 128 + killedBy : reportedExitCode;
     current.metadata.exitCode = exitCode;
     current.metadata.status = exitCode === 0 ? "done" : "failed";
-    current.metadata.failureDetails = exitCode === 0
+    const details = exitCode === 0
       ? null
       : terminalFailureDetails(this.redactSecrets(current.bufferChunks.slice(current.bufferStart).join("")));
+    current.metadata.failureDetails = killedBy
+      ? `${signalExitText(killedBy)}${details ? `\n${details}` : ""}`.slice(0, 8_000)
+      : details;
     current.agentBrowser?.cleanup();
     current.agentBrowser = null;
     current.agentRuntime?.cleanup();
@@ -2891,4 +2899,10 @@ function appendScrollback(session: ManagedSession, data: string): void {
     session.bufferChunks = session.bufferChunks.slice(session.bufferStart);
     session.bufferStart = 0;
   }
+}
+
+/** "The process was killed by signal SIGKILL (9)." from node-pty's signal number. */
+function signalExitText(signal: number): string {
+  const name = Object.entries(osConstants.signals).find(([, value]) => value === signal)?.[0];
+  return `The process was killed by signal ${name ? `${name} (${signal})` : signal}.`;
 }

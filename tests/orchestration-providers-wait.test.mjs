@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AGENT_PROVIDER_IDS,
+  CLIENT_SAFE_AGENT_WAIT_SECONDS,
   MAX_AGENT_WAIT_SECONDS,
   ORCHESTRATION_TOOL_DEFINITIONS,
   ORCHESTRATION_TOOL_NAMES,
@@ -306,4 +307,24 @@ test("the skill tells the orchestrator to pass a model the person names", async 
   const { readFile } = await import("node:fs/promises");
   const skill = await readFile(new URL("../agent/orchestrator/SKILL.md", import.meta.url), "utf8");
   assert.match(skill, /If the person names a model, pass it as `model`/u);
+});
+
+test("wait_for_agent returns before the orchestrator's MCP client gives up, as a timeout with the subagent's output", async () => {
+  for (const [provider, requested, expectedMs] of [
+    ["opencode", 600, 50_000], ["codex", 120, 50_000], ["opencode", undefined, 50_000], ["opencode", 20, 20_000],
+    ["claude", 600, 600_000], ["claude", undefined, 55_000]
+  ]) {
+    const { terminals, control, handler } = setup();
+    terminals.sessions.get("orch").provider = provider;
+    let received;
+    const real = control.waitFor.bind(control);
+    control.waitFor = (id, request) => { received = request.timeoutMs; return real(id, { ...request, timeoutMs: 30 }); };
+    terminals.sessions.get("child").buffer = "step 3 of 5";
+    const result = await call(handler, "wait_for_agent", { sessionId: "child", ...(requested ? { timeoutSeconds: requested } : {}) });
+    assert.equal(received, expectedMs, `${provider} asking for ${requested ?? "the default"}`);
+    assert.deepEqual([result.reason, result.status, result.output], ["timeout", "working", "step 3 of 5"]);
+  }
+  assert.ok(CLIENT_SAFE_AGENT_WAIT_SECONDS < 60, "below the 60-second tool deadline of Codex's and OpenCode's MCP clients");
+  assert.match(definition("wait_for_agent").description, /unless this session is Claude Code, a call returns after at most 50 seconds/u);
+  assert.match(definition("wait_for_agent").description, /A timeout means it is still running: read output as its progress and call wait_for_agent again/u);
 });

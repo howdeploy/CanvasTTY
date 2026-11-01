@@ -145,7 +145,7 @@ interface ManagedSession {
   turnStarts?: number;
   /** turnStarts when the last submitted prompt was delivered; undefined while none was. */
   promptTurnMark?: number;
-  /** The last turn's final answer its hook or plugin reported (captureResult only); cleared when a turn starts. */
+  /** The last turn's final answer its hook or plugin reported (captureResult only); cleared when a prompt is submitted or a turn starts. */
   answer?: { text: string; truncated: boolean; at: number };
   /**
    * Plugin options, environment ref (or, until the plugin has prepared it, the launcher's environment choice)
@@ -1169,7 +1169,7 @@ export class TerminalManager {
         if (!prompt.staged) {
           if (prompt.submit && prompt.beforeSubmit?.() === false) return finish("The controller no longer owns this launch; nothing was submitted.");
           prompt.receipt.stage = prompt.submit ? "submitted" : "pasted";
-          if (prompt.submit) session.promptTurnMark = session.turnStarts ?? 0;
+          if (prompt.submit) markSubmittedPrompt(session, session.turnStarts ?? 0);
           if (!this.inputChecked(id, data + (prompt.submit ? submitKey! : ""), "automation")) {
             prompt.receipt.stage = "not-written";
             return finish("The terminal no longer accepts input.");
@@ -1206,7 +1206,7 @@ export class TerminalManager {
         const reason = invalidated();
         if (reason) return finish(reason);
         if (Date.now() >= deadline) return finish("The delivery deadline expired after the paste; Enter was not sent.");
-        session.promptTurnMark = session.turnStarts ?? 0;
+        markSubmittedPrompt(session, session.turnStarts ?? 0);
         session.automatedSubmit = { epoch, outputOffset: session.outputOffset };
         if (prompt.beforeSubmit?.() === false) return finish("The controller no longer owns this launch; Enter was not sent.");
         prompt.receipt.stage = "submitted";
@@ -1235,7 +1235,7 @@ export class TerminalManager {
       if (gated && !data.endsWith("\r")) session.codexDraftEpoch = epoch;
       else delete session.codexDraftEpoch;
       if (data.endsWith("\r")) {
-        session.promptTurnMark = mark;
+        markSubmittedPrompt(session, mark);
         session.automatedSubmit = { epoch, outputOffset: outputBeforeWrite };
       }
       return { delivered: true };
@@ -2644,6 +2644,15 @@ function environmentBadge(environment: PersistedEnvironmentRef): NonNullable<Ses
  * card they alone end a turn. After a confirmed end, a delayed spinner cannot start it again; the next prompt hook
  * starts the next turn. Without hooks (or a remote run without a bridge) the title's idle stands.
  */
+/**
+ * A submitted prompt starts a new task: wait_for_agent and get_agent_result answer it with the reply of a turn that
+ * started after it, never with the one stored from the turn before.
+ */
+function markSubmittedPrompt(session: ManagedSession, turnMark: number): void {
+  session.promptTurnMark = turnMark;
+  delete session.answer;
+}
+
 function resetLaunchSignals(session: ManagedSession): void {
   // Nor is its conversation: its answer and turn counts would answer a wait for the new one.
   delete session.answer;

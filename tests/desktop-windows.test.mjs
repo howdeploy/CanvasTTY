@@ -1,7 +1,76 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { PassThrough } from "node:stream";
+import { runInNewContext } from "node:vm";
+import { transformSync } from "esbuild";
 import test from "node:test";
 import { validateDesktopViewport } from "../src/shared/desktopWindows.ts";
 import { DesktopWindowService } from "../src/main/services/DesktopWindowService.ts";
+
+async function transportFixture(t) {
+  const children = [];
+  const require = createRequire(import.meta.url);
+  const module = { exports: {} };
+  const source = await readFile(new URL("../src/main/services/DesktopWindowService.ts", import.meta.url), "utf8");
+  const { code } = transformSync(source, { loader: "ts", format: "cjs", target: "es2022" });
+  runInNewContext(code, {
+    module, exports: module.exports,
+    process: { platform: "win32", env: {}, pid: process.pid },
+    setTimeout, clearTimeout, setInterval, clearInterval,
+    require(name) {
+      if (name !== "node:child_process") return require(name);
+      return { spawn() {
+        const child = Object.assign(new EventEmitter(), {
+          stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), requests: []
+        });
+        child.stdin.on("data", (data) => child.requests.push(JSON.parse(data.toString())));
+        children.push(child);
+        return child;
+      } };
+    }
+  });
+  t.after(() => {
+    for (const child of children) {
+      child.emit("exit", 0);
+      child.emit("close", 0);
+      child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
+    }
+  });
+  return { service: new module.exports.DesktopWindowService("fixture.ps1", () => "1234"), children };
+}
+
+test("an old helper's late exit does not reject requests belonging to its replacement", { timeout: 1_000 }, async (t) => {
+  const { service, children } = await transportFixture(t);
+  const first = service.list("plugin/card");
+  const rejected = assert.rejects(first, /EPIPE/);
+  const old = children[0];
+  old.stdin.emit("error", new Error("EPIPE"));
+  await rejected;
+
+  const next = service.list("plugin/card");
+  const healthy = assert.doesNotReject(async () => {
+    const candidates = await next;
+    assert.ok(Array.isArray(candidates));
+    assert.equal(candidates.length, 0);
+  });
+  const replacement = children[1];
+  old.emit("exit", 1);
+  replacement.stdout.write(JSON.stringify({ id: replacement.requests[0].id, ok: true, result: [] }) + "\n");
+  await healthy;
+});
+
+test("disposing while helper spawn fails finishes on close without an exit event", { timeout: 1_000 }, async (t) => {
+  const { service, children } = await transportFixture(t);
+  const request = service.list("plugin/card");
+  const rejected = assert.rejects(request, /ENOENT/);
+  const disposal = service.dispose();
+  children[0].emit("error", new Error("spawn ENOENT"));
+  children[0].emit("close", -2);
+  await rejected;
+  await disposal;
+});
 
 test("desktop viewport refuses non-finite, oversized and malformed geometry", () => {
   const valid = { x: 10, y: 20, width: 800, height: 600, visible: true };

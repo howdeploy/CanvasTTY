@@ -114,7 +114,7 @@ export class DesktopWindowService {
     this.lease = null;
     // Closing stdin makes the native helper restore every window before exiting.
     await new Promise<void>((resolve) => {
-      child.once("exit", () => resolve());
+      child.once("close", () => resolve());
       child.stdin.end();
     });
   }
@@ -176,6 +176,7 @@ export class DesktopWindowService {
         );
     });
     const fail = (error: Error): void => {
+      if (this.child !== child) return;
       for (const request of this.pending.values()) {
         clearTimeout(request.timer);
         request.reject(error);

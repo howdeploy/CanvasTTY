@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import test from "node:test";
 
 import { AgentRuntimeBridge } from "../src/main/services/agent-runtime/AgentRuntimeBridge.ts";
@@ -51,6 +51,18 @@ async function fixture(t, { root: withRoot = true } = {}) {
 
 const exists = (path) => lstat(path).then(() => true, () => false);
 const markers = (text) => text.split(KIMI_MARKER).length - 1;
+const POSIX = process.platform !== "win32";
+
+/**
+ * A file or folder CanvasTTY made private: on POSIX exactly `mode`; on Windows, where Node reports no POSIX permission
+ * bits (privacy there comes from the user profile's ACLs), at least a real file or folder of that kind and not a link.
+ */
+async function assertPrivate(path, mode, message) {
+  const info = await lstat(path);
+  assert.equal(info.isSymbolicLink(), false, message);
+  assert.ok(mode === 0o700 ? info.isDirectory() : info.isFile(), message);
+  if (POSIX) assert.equal(info.mode & 0o777, mode, message);
+}
 
 test("accountHookHome: GROK_HOME for Grok, KIMI_CODE_HOME for Kimi, nothing for the other CLIs", () => {
   assert.equal(accountHookHome("grok", { GROK_HOME: "/data/plugin-data/a/homes/x/" }), "/data/plugin-data/a/homes/x");
@@ -65,17 +77,20 @@ test("accountHookHome: GROK_HOME for Grok, KIMI_CODE_HOME for Kimi, nothing for 
 });
 
 test("contributedHookHome: only the contributor's own data folder, only the hook home variable", () => {
-  const dataDir = "/data/plugin-data/accounts";
-  assert.equal(contributedHookHome("grok", dataDir, "GROK_HOME", `${dataDir}/homes/a/`), `${dataDir}/homes/a`);
-  assert.equal(contributedHookHome("kimi", dataDir, "KIMI_CODE_HOME", `${dataDir}/homes/k`), `${dataDir}/homes/k`);
-  assert.equal(contributedHookHome("grok", dataDir, "GROK_HOME", "/data/plugin-data/other/homes/a"), undefined);
+  // A native absolute path (a drive path on Windows), as the host's record of the contributor's data folder is.
+  const dataDir = resolve(sep, "data", "plugin-data", "accounts");
+  const homeA = join(dataDir, "homes", "a");
+  const homeK = join(dataDir, "homes", "k");
+  assert.equal(contributedHookHome("grok", dataDir, "GROK_HOME", `${homeA}${sep}`), homeA);
+  assert.equal(contributedHookHome("kimi", dataDir, "KIMI_CODE_HOME", homeK), homeK);
+  assert.equal(contributedHookHome("grok", dataDir, "GROK_HOME", resolve(sep, "data", "plugin-data", "other", "homes", "a")), undefined);
   assert.equal(contributedHookHome("grok", dataDir, "GROK_HOME", dataDir), undefined);
-  assert.equal(contributedHookHome("grok", dataDir, "GROK_HOME", `${dataDir}/../other/homes/a`), undefined);
-  assert.equal(contributedHookHome("grok", dataDir, "GROK_HOME", "homes/a"), undefined);
-  assert.equal(contributedHookHome("grok", dataDir, "KIMI_CODE_HOME", `${dataDir}/homes/a`), undefined);
-  assert.equal(contributedHookHome("kimi", dataDir, "KIMI_SHARE_DIR", `${dataDir}/homes/a`), undefined);
-  assert.equal(contributedHookHome("claude", dataDir, "CLAUDE_CONFIG_DIR", `${dataDir}/homes/a`), undefined);
-  assert.equal(contributedHookHome("grok", undefined, "GROK_HOME", `${dataDir}/homes/a`), undefined);
+  assert.equal(contributedHookHome("grok", dataDir, "GROK_HOME", `${dataDir}${sep}..${sep}other${sep}homes${sep}a`), undefined);
+  assert.equal(contributedHookHome("grok", dataDir, "GROK_HOME", join("homes", "a")), undefined);
+  assert.equal(contributedHookHome("grok", dataDir, "KIMI_CODE_HOME", homeA), undefined);
+  assert.equal(contributedHookHome("kimi", dataDir, "KIMI_SHARE_DIR", homeA), undefined);
+  assert.equal(contributedHookHome("claude", dataDir, "CLAUDE_CONFIG_DIR", homeA), undefined);
+  assert.equal(contributedHookHome("grok", undefined, "GROK_HOME", homeA), undefined);
 });
 
 test("Grok: an account home gets the status hooks, the default home is left alone, and the release removes them", async (t) => {
@@ -89,7 +104,7 @@ test("Grok: an account home gets the status hooks, the default home is left alon
   assert.match(written.hooks.UserPromptSubmit[0].hooks[0].command, /working.*UserPromptSubmit/u);
   assert.match(written.hooks.Notification[0].hooks[0].command, /needs_approval.*Notification/u);
   assert.equal(written.hooks.Notification[0].matcher, "permission_prompt");
-  assert.equal((await stat(join(home, ...GROK_FILE))).mode & 0o777, 0o600);
+  await assertPrivate(join(home, ...GROK_FILE), 0o600);
   assert.equal(await exists(join(defaultGrok, ...GROK_FILE)), false, "the default ~/.grok is not touched");
   launch.releaseConfiguration();
   assert.equal(await exists(join(home, ...GROK_FILE)), false);
@@ -103,13 +118,15 @@ test("Kimi: an account home's config.toml gets one owned block; the person's set
   const config = join(home, "config.toml");
   await writeFile(config, PERSON_KIMI);
   await chmod(config, 0o640);
+  const personMode = (await stat(config)).mode & 0o777;
+  if (POSIX) assert.equal(personMode, 0o640);
   await writeFile(join(defaultKimi, "config.toml"), "default_model = \"default\"\n");
   const launch = adapters().prepare("kimi", "card-kimi", true, false, undefined, undefined, home);
   const during = await readFile(config, "utf8");
   assert.ok(during.startsWith(PERSON_KIMI), "the person's settings stay first and unchanged");
   assert.equal(markers(during), 1);
   assert.match(during, /event = "TurnStarted"\ncommand = ".*working.*TurnStarted/u);
-  assert.equal((await stat(config)).mode & 0o777, 0o640);
+  assert.equal((await stat(config)).mode & 0o777, personMode, "the person's file mode is kept");
   assert.equal(await readFile(join(defaultKimi, "config.toml"), "utf8"), "default_model = \"default\"\n");
   assert.equal(await exists(join(defaultKimi, ".canvastty-runtime-kimi.json")), false);
   launch.releaseConfiguration();
@@ -196,7 +213,7 @@ test("a new account's home that does not exist yet is created (private, no link 
     const home = accountHome("accounts", `new-${provider}`);
     assert.equal(await exists(home), false);
     const launch = runtime.prepare(provider, `card-${provider}`, true, false, undefined, undefined, home);
-    assert.equal((await stat(home)).mode & 0o777, 0o700, `${provider}: created private`);
+    await assertPrivate(home, 0o700, `${provider}: created private`);
     if (provider === "grok") assert.equal(await exists(join(home, ...GROK_FILE)), true);
     else assert.match(await readFile(join(home, "config.toml"), "utf8"), /CanvasTTY lifecycle hooks/u);
     launch.releaseConfiguration();

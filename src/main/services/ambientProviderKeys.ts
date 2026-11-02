@@ -23,13 +23,24 @@ const APP_CREDENTIAL = /^CANVASTTY_(?:[A-Z0-9]+_)*[A-Z0-9]*(?:TOKEN|KEY|SECRET|P
  * the network and find its CLI's own state, and nothing that signs in anywhere. Proxy variables are kept on purpose
  * (without them nothing reaches the network behind a corporate proxy), although a proxy URL may carry its own
  * user:password. SSH_AUTH_SOCK, GH_TOKEN, AWS_*, cloud and provider credentials are left out; the person lists one in
- * AGENT_PASS_ENV, or a launch contribution passes it explicitly (secretEnv).
+ * AGENT_PASS_ENV, or a launch contribution passes it explicitly (secretEnv). Names only, no prefix: a prefix also
+ * admits whatever else someone names with it. No CANVASTTY_* variable is inherited: what a card needs of CanvasTTY's
+ * own (its runtime, browser and orchestration addresses and capabilities, the Codex keyboard) the launch sets itself,
+ * and the rest (CANVASTTY_HELPERS, CANVASTTY_USER_DATA_DIR, CANVASTTY_GITHUB_TOKEN, …) is read by the main process.
  */
 const DELEGATED_NAMES = new Set<string>([
   // Process basics
   "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "SHLVL", "TZ", "LANG", "LANGUAGE",
+  // Locale categories by name (POSIX and glibc). Not the LC_ prefix: ssh's usual `AcceptEnv LC_*` makes it a common
+  // way to pass arbitrary values, tokens included, into a session.
+  "LC_ALL", "LC_CTYPE", "LC_COLLATE", "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC", "LC_TIME", "LC_ADDRESS",
+  "LC_IDENTIFICATION", "LC_MEASUREMENT", "LC_NAME", "LC_PAPER", "LC_TELEPHONE",
   "TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORFGBG", "NO_COLOR", "FORCE_COLOR",
   "TMPDIR", "TEMP", "TMP", "EDITOR", "VISUAL", "PAGER", "__CF_USER_TEXT_ENCODING",
+  // XDG base directories by name, and which desktop is running (xdg-open, clipboard and browser tools pick their backend
+  // by it). Not the XDG_ prefix: XDG_SESSION_COOKIE (ConsoleKit) and XDG_ACTIVATION_TOKEN (Wayland) are secrets.
+  "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_DIRS",
+  "XDG_DATA_DIRS", "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "XDG_SESSION_TYPE",
   // Linux desktop session (addresses only)
   "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS",
   // Windows
@@ -44,12 +55,6 @@ const DELEGATED_NAMES = new Set<string>([
   "KIMI_HOME", "QWEN_HOME", "QWEN_RUNTIME_DIR", "HERMES_HOME", "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR",
   "PI_CONFIG_DIR", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "MINIMAX_DATA_DIR", "MAVIS_DATA_DIR", "CURSOR_CONFIG_DIR"
 ]);
-/**
- * Locale (LC_ALL, LC_CTYPE, …) and XDG folders. No CANVASTTY_* variable is inherited: what a card needs of CanvasTTY's
- * own (its runtime, browser and orchestration addresses and capabilities, the Codex keyboard) the launch sets itself,
- * and the rest (CANVASTTY_HELPERS, CANVASTTY_USER_DATA_DIR, CANVASTTY_GITHUB_TOKEN, …) is read by the main process.
- */
-const DELEGATED_PREFIX = /^(?:LC_|XDG_)/u;
 
 /** A plain shell card the person starts: their whole environment, without CanvasTTY's own credentials. */
 export function shellEnvironment(source: Readonly<Record<string, string>>): Record<string, string> {
@@ -67,7 +72,7 @@ export interface AgentEnvironmentInput {
  * Every launch builder (agent runtime, browser bridge, OpenCode inline config) reads this result, not process.env.
  * - The person's own top-level agent cards keep everything but admin and CanvasTTY credentials: a CLI signed in by
  *   API key keeps working, in any profile.
- * - A delegated card gets only DELEGATED_NAMES / DELEGATED_PREFIX (an allowlist, so no provider, cloud or git
+ * - A delegated card gets only DELEGATED_NAMES (an allowlist, so no provider, cloud or git
  *   credential, whatever its name); what it needs beyond that it gets explicitly, through a launch contribution's
  *   secretEnv.
  * Names in AGENT_PASS_ENV are kept. Names compare case-insensitively (Windows).
@@ -82,6 +87,6 @@ export function agentEnvironment(
     const name = key.toUpperCase();
     if (pass.has(name)) return true;
     if (ADMIN_CREDENTIAL.test(name) || APP_CREDENTIAL.test(name)) return false;
-    return !input.delegated || DELEGATED_NAMES.has(name) || DELEGATED_PREFIX.test(name);
+    return !input.delegated || DELEGATED_NAMES.has(name);
   }));
 }

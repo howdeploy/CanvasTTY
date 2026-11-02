@@ -35,6 +35,12 @@ const FAKE = {
   XAI_API_KEY: "fake-xai",
   HF_TOKEN: "fake-hf",
   NPM_TOKEN: "fake-npm",
+  // Not every XDG_ / LC_ variable is a folder or a locale: a ConsoleKit session cookie, a Wayland activation token,
+  // and a value smuggled through ssh's usual `AcceptEnv LC_*`.
+  XDG_SESSION_COOKIE: "fake-ck-cookie",
+  XDG_ACTIVATION_TOKEN: "fake-activation",
+  LC_FAKE_SMUGGLED_TOKEN: "fake-lc-token",
+  XDG_DATA_DIRS: "/fake/share",
   HTTPS_PROXY: "http://proxy:3128",
   no_proxy: "localhost",
   NODE_EXTRA_CA_CERTS: "/fake/ca.pem",
@@ -46,9 +52,10 @@ const ADMIN = ["OPENAI_ADMIN_KEY", "ANTHROPIC_ADMIN_KEY", "GITLAB_ADMIN_TOKEN"];
 const ORDINARY = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY"];
 /** Credentials that are not provider API keys by name; a delegated card gets none of them (allowlist). */
 const OTHER_CREDENTIALS = ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "SSH_AUTH_SOCK", "XAI_API_KEY", "HF_TOKEN", "NPM_TOKEN"];
+  "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "SSH_AUTH_SOCK", "XAI_API_KEY", "HF_TOKEN", "NPM_TOKEN",
+  "XDG_SESSION_COOKIE", "XDG_ACTIVATION_TOKEN", "LC_FAKE_SMUGGLED_TOKEN"];
 /** What a delegated card still needs to run and reach the network. */
-const KEPT = ["PATH", "HTTPS_PROXY", "no_proxy", "NODE_EXTRA_CA_CERTS", "LC_ALL", "EDITOR"];
+const KEPT = ["PATH", "HTTPS_PROXY", "no_proxy", "NODE_EXTRA_CA_CERTS", "LC_ALL", "EDITOR", "XDG_DATA_DIRS"];
 const SECRETS = [...ADMIN, ...ORDINARY, ...OTHER_CREDENTIALS];
 const SECRET_VALUES = [...SECRETS, "CANVASTTY_GITHUB_TOKEN"].map((name) => FAKE[name]);
 
@@ -208,13 +215,18 @@ test("the person's explicit opt-in passes named keys to every agent card, subage
 test("agentEnvironment: names compare case-insensitively (Windows); admin credentials of any provider; delegated is an allowlist", () => {
   const base = { Path: "C:\\bin", openai_api_key: "x", Openai_Admin_Key: "y", GITHUB_TOKEN: "g", AZURE_OPENAI_API_KEY: "z",
     XAI_ADMIN_API_KEY: "w", ADMIN_TOKEN: "a", SOME_ADMIN_ACCESS_TOKEN: "b", HOME: "/h", SystemRoot: "C:\\Windows",
-    https_proxy: "http://p", Lc_Ctype: "UTF-8", XDG_CONFIG_HOME: "/h/.config", CODEX_HOME: "/h/.codex", MY_SERVICE_PASSWORD: "p" };
+    https_proxy: "http://p", Lc_Ctype: "UTF-8", XDG_CONFIG_HOME: "/h/.config", CODEX_HOME: "/h/.codex", MY_SERVICE_PASSWORD: "p",
+    XDG_SESSION_COOKIE: "c", xdg_activation_token: "a", LC_MY_TOKEN: "l", XDG_RUNTIME_DIR: "/run/u", XDG_CURRENT_DESKTOP: "GNOME" };
   assert.deepEqual(agentEnvironment(base, { delegated: false }), { Path: "C:\\bin", openai_api_key: "x", GITHUB_TOKEN: "g",
     AZURE_OPENAI_API_KEY: "z", HOME: "/h", SystemRoot: "C:\\Windows", https_proxy: "http://p", Lc_Ctype: "UTF-8",
-    XDG_CONFIG_HOME: "/h/.config", CODEX_HOME: "/h/.codex", MY_SERVICE_PASSWORD: "p" });
+    XDG_CONFIG_HOME: "/h/.config", CODEX_HOME: "/h/.codex", MY_SERVICE_PASSWORD: "p", XDG_SESSION_COOKIE: "c",
+    xdg_activation_token: "a", LC_MY_TOKEN: "l", XDG_RUNTIME_DIR: "/run/u", XDG_CURRENT_DESKTOP: "GNOME" });
   const delegated = { Path: "C:\\bin", HOME: "/h", SystemRoot: "C:\\Windows", https_proxy: "http://p", Lc_Ctype: "UTF-8",
-    XDG_CONFIG_HOME: "/h/.config", CODEX_HOME: "/h/.codex" };
+    XDG_CONFIG_HOME: "/h/.config", CODEX_HOME: "/h/.codex", XDG_RUNTIME_DIR: "/run/u", XDG_CURRENT_DESKTOP: "GNOME" };
+  // XDG and locale variables by name: folders and locale categories, never a session cookie or token that shares the prefix.
   assert.deepEqual(agentEnvironment(base, { delegated: true }), delegated);
+  assert.deepEqual(agentEnvironment({ ...base, [AGENT_PASS_ENV]: "XDG_SESSION_COOKIE" }, { delegated: true }),
+    { ...delegated, XDG_SESSION_COOKIE: "c" }, "the person can still opt in");
   assert.deepEqual(agentEnvironment({ ...base, [AGENT_PASS_ENV]: "openai_admin_key GITHUB_TOKEN" }, { delegated: true }),
     { ...delegated, Openai_Admin_Key: "y", GITHUB_TOKEN: "g" });
   // CanvasTTY's own credentials reach no agent card, the person's own included; its other variables are not inherited

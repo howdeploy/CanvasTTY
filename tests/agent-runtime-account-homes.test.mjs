@@ -23,7 +23,7 @@ const KIMI_MARKER = "# >>> CanvasTTY lifecycle hooks >>>";
 const PERSON_KIMI = "# the person's own settings\ndefault_model = \"kimi-k2\"\n\n[[hooks]]\nevent = \"Stop\"\ncommand = \"notify-send done\"\n";
 
 /** userData with plugin-data/<plugin>/homes/<account>, the default CLI homes, and adapters bound to them. */
-async function fixture(t, { root: withRoot = true } = {}) {
+async function fixture(t, { root: withRoot = true, pluginHooks } = {}) {
   const base = await mkdtemp(join(tmpdir(), "canvastty-account-homes-"));
   t.after(() => rm(base, { recursive: true, force: true }));
   const pluginData = join(base, "userData", "plugin-data");
@@ -44,6 +44,7 @@ async function fixture(t, { root: withRoot = true } = {}) {
     kimiHomeDirectory: defaultKimi,
     hermesHomeDirectory: join(base, "home", ".hermes"),
     ...(withRoot ? { accountHomesRoot: pluginData } : {}),
+    ...(pluginHooks ? { pluginHooks: { ...pluginHooks, registryPath: join(base, "registry.json") } } : {}),
     platform: "linux"
   });
   return { base, pluginData, accountHome, defaultGrok, defaultKimi, adapters };
@@ -183,6 +184,31 @@ test("idempotent: two cards in one account home share one overlay; another home 
   grokAgain.releaseConfiguration();
   assert.equal(await readFile(config, "utf8"), PERSON_KIMI);
   assert.equal(await exists(join(home, ...GROK_FILE)), false);
+});
+
+test("a changed hook set refreshes an account home's overlay but keeps the earlier launches' leases", async (t) => {
+  let registrations = [];
+  const { accountHome, adapters } = await fixture(t, {
+    pluginHooks: { runner: { command: process.execPath, args: [join(tmpdir(), "runner.mjs")], env: {} }, list: () => registrations }
+  });
+  const runtime = adapters();
+  for (const provider of ["kimi", "grok"]) {
+    registrations = [];
+    const home = accountHome("accounts", provider === "kimi" ? "a" : "b");
+    const written = provider === "kimi" ? join(home, "config.toml") : join(home, ...GROK_FILE);
+    const older = runtime.prepare(provider, `card-old-${provider}`, true, false, undefined, undefined, home);
+    // A plugin hook is registered while the older card still runs: the next card's overlay carries it.
+    registrations = [{ key: "example:hook", events: ["prompt-submit"] }];
+    const newer = runtime.prepare(provider, `card-new-${provider}`, true, false, undefined, undefined, home);
+    assert.match(await readFile(written, "utf8"), /example:hook|registry\.json/u, `${provider}: the refreshed overlay has the plugin hook`);
+    if (provider === "kimi") assert.equal(markers(await readFile(written, "utf8")), 1);
+    newer.releaseConfiguration();
+    assert.equal(await exists(written), true, `${provider}: the older card still holds the home, so its overlay stays`);
+    if (provider === "kimi") assert.equal(markers(await readFile(written, "utf8")), 1);
+    older.releaseConfiguration();
+    assert.equal(await exists(written), false, `${provider}: removed with the last launch`);
+    older.releaseConfiguration();
+  }
 });
 
 test("a default home configured with a trailing separator is still the default home, not an account home", async (t) => {

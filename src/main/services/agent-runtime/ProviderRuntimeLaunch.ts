@@ -131,7 +131,7 @@ export class ProviderRuntimeLaunchAdapters {
   private grokOverlaySignature: string | null = null;
   private grokUsers = 0;
   /** Grok/Kimi overlays in account homes, by provider and home; each is removed when its last launch ends. */
-  private readonly accountOverlays = new Map<string, { overlay: { cleanup(): void }; signature: string; users: number }>();
+  private readonly accountOverlays = new Map<string, { overlay: { cleanup(): void } | null; signature: string | null; users: number }>();
 
   constructor(options: ProviderRuntimeLaunchOptions) {
     validateHelper(options.helper);
@@ -399,24 +399,37 @@ export class ProviderRuntimeLaunchAdapters {
     const key = `${provider}\0${home}`;
     const signature = overlaySignature(coreHooksEnabled, pluginCommands);
     let entry = this.accountOverlays.get(key);
-    if (!entry || entry.signature !== signature) {
-      if (entry) {
-        this.accountOverlays.delete(key);
-        entry.overlay.cleanup();
-      }
-      const overlay = provider === "kimi"
-        ? KimiRuntimeHooks.begin(home, this.options.helper, this.platform, coreHooksEnabled, pluginCommands)
-        : GrokRuntimeHooks.begin(home, this.options.helper, this.platform, coreHooksEnabled, pluginCommands);
-      entry = { overlay, signature, users: 0 };
+    if (!entry) {
+      entry = { overlay: null, signature: null, users: 0 };
       this.accountOverlays.set(key, entry);
+    }
+    // A changed hook set replaces the overlay but keeps the home's leases: launches prepared before the change still
+    // hold this home, so the overlay stays until the last of them, old or new, is released (as for the default home).
+    if (!entry.overlay || entry.signature !== signature) {
+      const previous = entry.overlay;
+      entry.overlay = null;
+      entry.signature = null;
+      previous?.cleanup();
+      try {
+        entry.overlay = provider === "kimi"
+          ? KimiRuntimeHooks.begin(home, this.options.helper, this.platform, coreHooksEnabled, pluginCommands)
+          : GrokRuntimeHooks.begin(home, this.options.helper, this.platform, coreHooksEnabled, pluginCommands);
+      } catch (error) {
+        if (entry.users === 0) this.accountOverlays.delete(key);
+        throw error;
+      }
+      entry.signature = signature;
     }
     const owned = entry;
     owned.users += 1;
     return once(() => {
       owned.users -= 1;
-      if (owned.users !== 0 || this.accountOverlays.get(key) !== owned) return;
-      this.accountOverlays.delete(key);
-      owned.overlay.cleanup();
+      if (owned.users !== 0) return;
+      if (this.accountOverlays.get(key) === owned) this.accountOverlays.delete(key);
+      const overlay = owned.overlay;
+      owned.overlay = null;
+      owned.signature = null;
+      overlay?.cleanup();
     });
   }
 

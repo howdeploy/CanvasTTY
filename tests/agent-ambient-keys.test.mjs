@@ -72,8 +72,15 @@ async function project(t) {
   return base;
 }
 
+/** Windows keeps an inherited variable under its own spelling (`Path`), and names there are case-insensitive. */
+function lookup(env, name) {
+  if (env[name] !== undefined || process.platform !== "win32") return env[name];
+  const key = Object.keys(env).find((candidate) => candidate.toUpperCase() === name.toUpperCase());
+  return key === undefined ? undefined : env[key];
+}
+
 function present(env, names) {
-  return names.filter((name) => env[name] !== undefined);
+  return names.filter((name) => lookup(env, name) !== undefined);
 }
 
 function manager(t, calls, isolation) {

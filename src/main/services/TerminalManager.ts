@@ -188,6 +188,11 @@ interface ManagedSession {
   hookSignals?: number;
   /** Set after the person answered a hooked Claude prompt; see settleAnsweredPrompt. */
   answeredPromptTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Counts the approval requests the card has shown (see approvalRequest). Never reset, a relaunch included, so a
+   * reader comparing it with an earlier value never mistakes a new request for one it already saw.
+   */
+  approvalRequests?: number;
 }
 
 type EnvironmentService = Pick<EnvironmentRegistry,
@@ -647,6 +652,17 @@ export class TerminalManager {
     if (!session) return null;
     const mark = session.promptTurnMark;
     return { promptSent: mark !== undefined, turnStartedSincePrompt: mark !== undefined && (session.turnStarts ?? 0) > mark };
+  }
+
+  /**
+   * Identifies the approval request the card shows now: it advances each time the card turns needs_approval, and on
+   * each further request hook while it stays needs_approval (a second PermissionRequest right after the person answered
+   * the first moves neither the status nor the revision). A permission_prompt Notification while the card already
+   * waits is the same prompt again and does not advance it. null when the session does not exist.
+   */
+  approvalRequest(id: string): number | null {
+    const session = this.sessions.get(id);
+    return session ? session.approvalRequests ?? 0 : null;
   }
 
   /** The session's output offset without copying its scrollback; null when it does not exist. */
@@ -1373,6 +1389,10 @@ export class TerminalManager {
     }
 
     const nextStatus = signal.state;
+    if (nextStatus === "needs_approval" && (session.metadata.status !== "needs_approval"
+      || (source === "hook" && signal.event !== "Notification"))) {
+      session.approvalRequests = (session.approvalRequests ?? 0) + 1;
+    }
     const submittedTurn = source === "hook" && signal.event === "UserPromptSubmit"
       && session.promptDelivery?.stage === "submitted" && session.promptDelivery.acceptance === "unconfirmed";
     if (nextStatus === "working") {

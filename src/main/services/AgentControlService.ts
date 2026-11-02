@@ -145,8 +145,9 @@ export class AgentControlService {
   private readonly terminals: TerminalManager;
   private readonly options: AgentControlOptions;
   /**
-   * The card revision at which wait_for_agent last returned needs_approval for a subagent. While the card is still at
-   * that same prompt, the next wait waits for the person's answer instead of returning it again.
+   * The approval request (TerminalManager.approvalRequest) wait_for_agent last returned needs_approval for, per
+   * subagent. While the card still shows that same request, the next wait waits for the person's answer instead of
+   * returning it again; a new request, even one with no status change in between, is returned at once.
    */
   private readonly reportedApprovals = new Map<string, number | undefined>();
 
@@ -375,7 +376,7 @@ export class AgentControlService {
     const started = Date.now();
     const answer = async (session: SessionMetadata | null, reason: AgentWaitReason): Promise<AgentWaitResult> => {
       const waitedMs = Date.now() - started;
-      if (reason === "needs_approval") this.reportedApprovals.set(sessionId, session?.revision);
+      if (reason === "needs_approval") this.reportedApprovals.set(sessionId, this.approvalRequest(sessionId));
       else if (session?.status !== "needs_approval") this.reportedApprovals.delete(sessionId);
       if (!session) return { sessionId, reason, exitCode: null, waitedMs, output: "" };
       let observation: AgentObservation | null = null;
@@ -395,8 +396,8 @@ export class AgentControlService {
       if (current !== offset) { offset = current; changedAt = now; }
       const quietFor = now - changedAt;
       if (session.exitCode !== null) return answer(session, session.exitCode === 0 ? "done" : "failed");
-      // A prompt this wait already returned (the card has not changed since) is the person's to answer: wait for it.
-      const reported = this.reportedApprovals.has(sessionId) && this.reportedApprovals.get(sessionId) === session.revision;
+      // A request a wait already returned (the card shows no newer one) is the person's to answer: wait for it.
+      const reported = this.reportedApprovals.has(sessionId) && this.reportedApprovals.get(sessionId) === this.approvalRequest(sessionId);
       if (session.status === "needs_approval" && !reported) return answer(session, "needs_approval");
       if (session.status !== "needs_approval") this.reportedApprovals.delete(sessionId);
       // After a prompt, an idle that no turn followed (the CLI's startup idle, or one reported before the turn began)
@@ -480,6 +481,12 @@ export class AgentControlService {
   private redactTail(text: string, maxChars: number): string {
     if (typeof this.terminals.redactSecretsTail === "function") return this.terminals.redactSecretsTail(text, maxChars);
     return tail(typeof this.terminals.redactSecrets === "function" ? this.terminals.redactSecrets(text) : text, maxChars);
+  }
+
+  /** The card's current approval request (TerminalManager.approvalRequest); undefined when the manager has none. */
+  private approvalRequest(sessionId: string): number | undefined {
+    try { return typeof this.terminals.approvalRequest === "function" ? this.terminals.approvalRequest(sessionId) ?? undefined : undefined; }
+    catch { return undefined; }
   }
 
   private turnProgress(sessionId: string): { promptSent: boolean; turnStartedSincePrompt: boolean } | null {

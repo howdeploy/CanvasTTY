@@ -264,3 +264,44 @@ test("send_to_agent is refused at every CLI's approval or permission prompt and 
       `${provider}: the orchestrator's next task once the person answered`);
   }
 });
+
+test("wait_for_agent reports each approval request once, a consecutive one with no status change in between too", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "ctty-approval-identity-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const calls = [];
+  const terminals = new TerminalManager(() => undefined, availableRegistry(), undefined, undefined, true, fakeSpawner(calls));
+  t.after(() => terminals.shutdown());
+  const control = new AgentControlService(terminals, { waitTiming: { checkMs: 5, settleMs: 20, quietMs: 60_000 } });
+  const orchestrator = terminals.create({ provider: "claude", profile: "normal", cwd: root, position: at, role: "orchestrator" });
+  const child = terminals.create({ provider: "claude", profile: "normal", cwd: root, position: at, role: "subagent", parentSessionId: orchestrator.id });
+  const pending = async (promise, ms = 150) => {
+    let settled = false;
+    void promise.then(() => { settled = true; }, () => { settled = true; });
+    await delay(ms);
+    return !settled;
+  };
+
+  terminals.applyProviderSignal(child.id, { kind: "lifecycle", state: "needs_approval", event: "PermissionRequest" });
+  const first = await control.waitFor(child.id, { timeoutMs: 5_000 });
+  assert.equal(first.reason, "needs_approval");
+  // Claude Code echoes the same prompt as a permission_prompt Notification: still that prompt, not a new one.
+  terminals.applyProviderSignal(child.id, { kind: "lifecycle", state: "needs_approval", event: "Notification" });
+  // Nor is a card change that is no approval request (its thread id arriving, say).
+  terminals.applyProviderSignal(child.id, { kind: "lifecycle", state: "needs_approval", event: "Notification", threadId: "11111111-1111-4111-8111-111111111111" });
+  const same = control.waitFor(child.id, { timeoutMs: 5_000 });
+  assert.equal(await pending(same), true, "the reported prompt waits for the person");
+
+  // The person answers in the card and Claude asks again at once: a second PermissionRequest with no status change.
+  const revision = terminals.getMetadata(child.id).revision;
+  terminals.input(child.id, "1");
+  terminals.applyProviderSignal(child.id, { kind: "lifecycle", state: "needs_approval", event: "PermissionRequest" });
+  assert.equal(terminals.getMetadata(child.id).revision, revision, "the card's revision did not move");
+  const next = await same;
+  assert.equal(next.reason, "needs_approval", "the new request is reported");
+  assert.ok(next.waitedMs < 2_000, `reported at once, not at the timeout (${next.waitedMs} ms)`);
+  // And reported once: the next wait waits for the person again.
+  assert.equal(await pending(control.waitFor(child.id, { timeoutMs: 5_000 })), true);
+  // A third one, from another CLI's request event, is new again.
+  terminals.applyProviderSignal(child.id, { kind: "lifecycle", state: "needs_approval", event: "pre_approval_request" });
+  assert.equal((await control.waitFor(child.id, { timeoutMs: 5_000 })).reason, "needs_approval");
+});

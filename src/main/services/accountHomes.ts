@@ -15,10 +15,13 @@ export function withoutTrailingSeparator(path: string): string {
   return trimmed === "" || /^[A-Za-z]:$/u.test(trimmed) ? path : trimmed;
 }
 
-/** The path segments of `path` strictly below `root`, or null when it is not strictly inside. */
+/**
+ * The path segments of `path` strictly below `root`, or null when it is not strictly inside. Only a whole `..` segment
+ * leaves the root; a folder whose name merely starts with two dots (`..cache`) is inside it.
+ */
 function segmentsBelow(root: string, path: string): string[] | null {
   const rest = relative(root, path);
-  if (rest === "" || rest.startsWith("..") || isAbsolute(rest)) return null;
+  if (rest === "" || rest === ".." || rest.startsWith(`..${sep}`) || isAbsolute(rest)) return null;
   return rest.split(sep);
 }
 
@@ -62,7 +65,8 @@ export function ownedAccountHome(options: {
   const { root, candidate } = options;
   if (!root || candidate === undefined) return null;
   const home = withoutTrailingSeparator(candidate);
-  if (!isAbsolute(home) || resolve(home) !== home || home === options.defaultHome) return null;
+  // The default home as configured may carry a trailing separator (`KIMI_CODE_HOME=/a/b/`); it names the same folder.
+  if (!isAbsolute(home) || resolve(home) !== home || home === resolve(options.defaultHome)) return null;
   const segments = segmentsBelow(resolve(root), home);
   if (!segments || segments.length < 2) return null;
   try {

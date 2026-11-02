@@ -9,7 +9,7 @@ import { LaunchPipeline } from "../src/main/services/LaunchPipeline.ts";
 import { ProviderRuntimeLaunchAdapters } from "../src/main/services/agent-runtime/ProviderRuntimeLaunch.ts";
 import { ProviderLaunchAdapters } from "../src/main/services/agent-browser/ProviderLaunch.ts";
 import { AgentBrowserBridge } from "../src/main/services/agent-browser/AgentBrowserBridge.ts";
-import { accountHookHome, contributedHookHome } from "../src/main/services/accountHomes.ts";
+import { accountHookHome, contributedHookHome, ownedAccountHome } from "../src/main/services/accountHomes.ts";
 import { TerminalManager } from "../src/main/services/TerminalManager.ts";
 
 const helper = Object.freeze({
@@ -93,6 +93,22 @@ test("contributedHookHome: only the contributor's own data folder, only the hook
   assert.equal(contributedHookHome("grok", undefined, "GROK_HOME", homeA), undefined);
 });
 
+test("a folder whose name only starts with two dots is inside, not a parent: `..cache` is the contributor's own", async (t) => {
+  const dataDir = resolve(sep, "data", "plugin-data", "accounts");
+  assert.equal(contributedHookHome("grok", dataDir, "GROK_HOME", join(dataDir, "..cache")), join(dataDir, "..cache"));
+  assert.equal(contributedHookHome("kimi", dataDir, "KIMI_CODE_HOME", join(dataDir, "homes", "..k")), join(dataDir, "homes", "..k"));
+  assert.equal(contributedHookHome("grok", dataDir, "GROK_HOME", `${dataDir}${sep}..`), undefined);
+
+  const { accountHome, defaultGrok, adapters } = await fixture(t);
+  const home = accountHome("accounts", "..cache");
+  await mkdir(home, { recursive: true });
+  const launch = adapters().prepare("grok", "card-dots", true, false, undefined, undefined, home);
+  assert.equal(await exists(join(home, ...GROK_FILE)), true, "the hooks go into the `..cache` account home");
+  assert.equal(await exists(join(defaultGrok, ...GROK_FILE)), false, "not into the default home");
+  launch.releaseConfiguration();
+  assert.equal(await exists(join(home, ...GROK_FILE)), false);
+});
+
 test("Grok: an account home gets the status hooks, the default home is left alone, and the release removes them", async (t) => {
   const { accountHome, defaultGrok, adapters } = await fixture(t);
   const home = accountHome("accounts", "a");
@@ -167,6 +183,53 @@ test("idempotent: two cards in one account home share one overlay; another home 
   grokAgain.releaseConfiguration();
   assert.equal(await readFile(config, "utf8"), PERSON_KIMI);
   assert.equal(await exists(join(home, ...GROK_FILE)), false);
+});
+
+test("a default home configured with a trailing separator is still the default home, not an account home", async (t) => {
+  const { base, pluginData, accountHome } = await fixture(t);
+  const defaultKimi = accountHome("accounts", "default");
+  await mkdir(defaultKimi, { recursive: true });
+  assert.equal(ownedAccountHome({ root: pluginData, candidate: defaultKimi, defaultHome: `${defaultKimi}${sep}`, written: [], label: "Kimi" }), null);
+  assert.equal(ownedAccountHome({ root: pluginData, candidate: `${defaultKimi}${sep}`, defaultHome: defaultKimi, written: [], label: "Kimi" }), null);
+
+  const runtime = new ProviderRuntimeLaunchAdapters({
+    helper,
+    runtimeDirectory: join(base, "runtime"),
+    openCodePluginPath: join(base, "opencode-plugin.mjs"),
+    grokHomeDirectory: join(base, "home", ".grok"),
+    kimiHomeDirectory: `${defaultKimi}${sep}`,
+    hermesHomeDirectory: join(base, "home", ".hermes"),
+    accountHomesRoot: pluginData,
+    platform: "linux"
+  });
+  const config = join(defaultKimi, "config.toml");
+  await writeFile(config, PERSON_KIMI);
+  const defaultCard = runtime.prepare("kimi", "card-default");
+  const contributed = runtime.prepare("kimi", "card-contributed", true, false, undefined, undefined, defaultKimi);
+  assert.equal(markers(await readFile(config, "utf8")), 1);
+  contributed.releaseConfiguration();
+  assert.equal(markers(await readFile(config, "utf8")), 1, "the default card still runs: its hooks stay");
+  defaultCard.releaseConfiguration();
+  assert.equal(await readFile(config, "utf8"), PERSON_KIMI);
+
+  const browser = new ProviderLaunchAdapters({
+    helper: browserHelper,
+    orchestrationHelper,
+    providerClis: registry,
+    runtimeDirectory: join(base, "browser-runtime"),
+    hermesHomeDirectory: join(base, "home", ".hermes"),
+    kimiHomeDirectory: `${defaultKimi}${sep}`,
+    probeKimiPerRunConfig: () => false,
+    accountHomesRoot: pluginData
+  });
+  const mcp = join(defaultKimi, "mcp.json");
+  await writeFile(mcp, PERSON_MCP);
+  const defaultTools = browser.prepare("kimi", "connection-default", { orchestration: true });
+  const contributedTools = browser.prepare("kimi", "connection-contributed", { orchestration: true, accountHome: defaultKimi });
+  contributedTools.releaseConfiguration();
+  assert.ok(JSON.parse(await readFile(mcp, "utf8")).mcpServers.canvastty_browser, "the default card's tools stay");
+  defaultTools.releaseConfiguration();
+  assert.equal(await readFile(mcp, "utf8"), PERSON_MCP);
 });
 
 test("symbolic links: a linked account home, a linked folder above it, or a linked config file is refused and nothing is written", async (t) => {

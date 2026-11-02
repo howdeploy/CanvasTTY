@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  profile: chill
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+  tools:
+    github-checks:
+      enabled: true
+  path_instructions:
+    - path: "**/*"
+      instructions: >-
+        Prioritize functional regressions, Windows/Linux/macOS compatibility,
+        and isolation and orchestration boundaries. Use available CI results
+        and logs to identify concrete failures and actionable fixes. Distinguish
+        failures introduced by this PR from pre-existing failures, and do not
+        claim tests or runtime behavior were verified without execution evidence.
+
+chat:
+  auto_reply: true

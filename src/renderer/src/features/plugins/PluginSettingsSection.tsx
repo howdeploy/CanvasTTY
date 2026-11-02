@@ -199,11 +199,28 @@ export function PluginSettingsSection({
   useEffect(() => {
     if (!githubCode && !githubFlowPending) return;
     let cancelled = false;
+    const showExpired = (): void => {
+      setGithubStatus((current) => ({
+        configured: true, authorized: false, login: null, tokenExpiresAt: null, ...current, deviceFlowState: "expired"
+      }));
+      setGithubCode(null);
+    };
     // The main process owns the device flow; this only reads its status, so it pauses while Settings is
     // closed and picks up (sign-in finished or code expired) as soon as Settings opens again.
     const stop = pollWhileOpen(open, (githubCode?.interval ?? GITHUB_PENDING_POLL_SECONDS) * 1000, async () => {
-      // A transient status read failure is retried on the next tick.
-      const status = await window.canvasTTY.githubAuth.status();
+      let status: GithubAuthStatus;
+      try {
+        status = await window.canvasTTY.githubAuth.status();
+      } catch (reason) {
+        if (cancelled) return STOP_POLLING;
+        // The displayed code's deadline does not depend on reading the host status.
+        if (githubCode && Date.now() >= githubCode.expiresAt) {
+          showExpired();
+          return STOP_POLLING;
+        }
+        // A transient status read failure is retried on the next tick.
+        throw reason;
+      }
       if (cancelled) return STOP_POLLING;
       if (status.authorized || isGithubFlowOutcome(status.deviceFlowState)) {
         setGithubStatus(status);

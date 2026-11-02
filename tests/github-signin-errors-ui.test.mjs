@@ -91,3 +91,27 @@ test("a sign-in still pending in the host after the section remounts keeps its C
   assert.equal(ui.button("Cancel sign-in"), undefined);
   assert.match(JSON.stringify(ui.tree()), /GitHub sign-in was cancelled\./u);
 });
+
+test("a displayed code past its deadline shows the expired notice even when the status read fails", async (t) => {
+  let reads = 0;
+  const ui = harness(t, "en", {
+    status: async () => {
+      reads += 1;
+      if (reads > 1) throw new Error("status unavailable");
+      return { configured: true, authorized: false, login: null, tokenExpiresAt: null, deviceFlowState: "idle" };
+    },
+    start: async () => ({ userCode: "TEST-CODE", verificationUri: "https://github.com/login/device", interval: 0.001, expiresAt: Date.now() - 1 }),
+    openUrl: async () => undefined
+  }, { open: true });
+  await ui.settle();
+  ui.button("Sign in with the system browser").props.onClick();
+  await ui.settle();
+  for (let i = 0; i < 20 && !/code expired/u.test(JSON.stringify(ui.tree())); i += 1) {
+    await pause(5);
+    await ui.settle();
+  }
+  const json = JSON.stringify(ui.tree());
+  assert.ok(reads > 1, "the poll tried to read the status");
+  assert.match(json, /The GitHub authorization code expired\. Start sign-in again\./u);
+  assert.doesNotMatch(json, /TEST-CODE/u, "the expired code is no longer shown");
+});

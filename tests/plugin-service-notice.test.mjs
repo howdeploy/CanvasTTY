@@ -186,13 +186,8 @@ test("the toast shows the notice's button only when it has one", async (t) => {
   assert.ok(actionable.includes(text));
 });
 
-test("the notice is wired: frames localize it, App shows it with Open settings, Settings opens Extension native code", async () => {
-  const [frame, app, settings, ipc] = await Promise.all([
-    source("src/renderer/src/features/plugins/PluginFrame.tsx"),
-    source("src/renderer/src/App.tsx"),
-    source("src/renderer/src/features/settings/PluginServicesSettings.tsx"),
-    source("src/main/ipc/registerIpc.ts")
-  ]);
+/** The wiring checks read source text, so they must hold for an LF and a CRLF (Windows autocrlf) checkout alike. */
+function assertNoticeWired({ frame, app, settings, ipc }) {
   assert.match(frame, /pluginServiceNoticeKind\(raw\)/u);
   assert.match(frame, /pluginServiceNoticeText\(notice, locale\)/u);
   assert.match(app, /onPluginError=\{showPluginError\}/u);
@@ -202,5 +197,19 @@ test("the notice is wired: frames localize it, App shows it with Open settings, 
   assert.match(app, /<Toast message=\{toast\} action=\{toastAction\} \/>/u);
   assert.match(settings, /<section data-setting-label=\{t\(locale, "pluginNativeCode"\)\} tabIndex=\{-1\} className="setting-group agent-hooks plugin-services">/u);
   // The service request path still checks the manager before the supervisor.
-  assert.match(ipc, /plugins\.assertService\(pluginId, serviceId\);\n\s+return pluginServices\.request/u);
+  assert.match(ipc, /plugins\.assertService\(pluginId, serviceId\);\s+return pluginServices\.request/u);
+}
+
+test("the notice is wired: frames localize it, App shows it with Open settings, Settings opens Extension native code", async () => {
+  const [frame, app, settings, ipc] = await Promise.all([
+    source("src/renderer/src/features/plugins/PluginFrame.tsx"),
+    source("src/renderer/src/App.tsx"),
+    source("src/renderer/src/features/settings/PluginServicesSettings.tsx"),
+    source("src/main/ipc/registerIpc.ts")
+  ]);
+  const sources = { frame, app, settings, ipc };
+  assertNoticeWired(sources);
+  // The same files as a Windows checkout with core.autocrlf=true has them.
+  const crlf = (text) => text.replace(/\r?\n/gu, "\r\n");
+  assertNoticeWired(Object.fromEntries(Object.entries(sources).map(([name, text]) => [name, crlf(text)])));
 });

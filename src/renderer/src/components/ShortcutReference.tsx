@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { AppSettings } from "../../../shared/contracts";
-import { displayCanvasNavigationBinding } from "../lib/shortcuts";
+import { displayCanvasNavigationBinding, displayShortcutBinding } from "../lib/shortcuts";
 import { UiIcon } from "./UiIcon";
 import { t, type TranslationKey } from "../lib/i18n";
 
@@ -11,9 +11,7 @@ export function ShortcutReference({ settings, onClose }: {
   const dialog = useRef<HTMLDialogElement>(null);
   const { locale, shortcuts: bindings } = settings;
   const mac = window.canvasTTY.window.isMacOS;
-  const display = (binding: string) => binding.replace("Meta", mac ? "Command" : "Super")
-    .replace("Comma", ",").replace(/ArrowUp/g, "↑").replace(/ArrowDown/g, "↓")
-    .replace(/ArrowLeft/g, "←").replace(/ArrowRight/g, "→") || t(locale, "disabled");
+  const display = (binding: string) => displayShortcutBinding(binding, mac) || t(locale, "disabled");
   const groups: { title: TranslationKey; shortcuts: [string[], TranslationKey][] }[] = [
     { title: "keyboardCanvas", shortcuts: [
       [[bindings.home], "homeShortcut"],
@@ -24,7 +22,7 @@ export function ShortcutReference({ settings, onClose }: {
       [[bindings.toggleDetail], "keyboardToggleDetail"],
       [[bindings.momEntered], "keyboardHideBackgrounds"],
       [[bindings.disableDesign], "keyboardDisableDesign"],
-      [["Shift + drag"], "marqueeSelectionHint"]
+      [[t(locale, "shortcutShiftDrag")], "marqueeSelectionHint"]
     ] },
     { title: "keyboardNavigation", shortcuts: [
       [[bindings.focusUp], "keyboardFocusUp"],

@@ -179,9 +179,14 @@ test("the toast shows the notice's button only when it has one", async (t) => {
   const plain = renderToStaticMarkup(createElement(Toast, { message: "Saved" }));
   assert.match(plain, /class="toast toast--visible"/u);
   assert.doesNotMatch(plain, /<button/u);
+  // A routine notice is announced politely, never as an alert, and the live region exists while the toast is hidden.
+  assert.match(renderToStaticMarkup(createElement(Toast, { message: null })), /^<div class="toast [^"]*" role="status">/u);
+  assert.match(plain, /role="status"/u);
   const text = pluginServiceNoticeText("native-code-off", "ru");
   const actionable = renderToStaticMarkup(createElement(Toast, { message: text, action: { label: pluginServiceNoticeText("open", "ru"), run: () => undefined } }));
   assert.match(actionable, /toast--action/u);
+  assert.match(actionable, /role="status"/u);
+  assert.doesNotMatch(actionable, /role="alert"/u);
   assert.match(actionable, /<button class="toast__action" type="button">Открыть настройки<\/button>/u);
   assert.ok(actionable.includes(text));
 });

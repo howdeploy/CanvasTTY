@@ -98,3 +98,16 @@ test("usage history says the latest quota observation is used, with what is left
     assert.ok(!/\{percent\}/u.test(text.latestValue + text.noObservationsInPeriod), "no bare percent template left");
   }
 });
+
+test("a narrow limits tile keeps the used and left text readable instead of cutting it off", async () => {
+  // Measured in a headless browser at two to four grid columns: one line clips "used · 91% left" (and the Russian
+  // text) behind the countdown. The narrow layout gives the text its own wrapping line and keeps the rail in the row.
+  const css = (await readFile(new URL("../src/renderer/src/styles/app.css", import.meta.url), "utf8")).replace(/\r\n/gu, "\n");
+  assert.match(css, /\.limits-list \{[^}]*container: limits-list \/ inline-size;/u);
+  const start = css.indexOf("@container limits-list (max-width: 440px) {");
+  assert.ok(start >= 0, "the limits tile has a narrow layout");
+  const narrow = css.slice(start, css.indexOf("\n}\n", start));
+  assert.match(narrow, /\.limit-row__summary > \.limit-row__share \{ display: contents; \}/u);
+  assert.match(narrow, /\.limit-row__share > span \{ grid-area: 2 \/ 1 \/ 3 \/ 3;[^}]*white-space: normal;/u);
+  assert.match(narrow, /\.limit-row \{[^}]*grid-template-rows: minmax\(0, 1fr\);/u, "the rail cannot be pushed out of the row");
+});

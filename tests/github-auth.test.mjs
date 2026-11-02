@@ -531,3 +531,61 @@ test("HTTP 429 and 5xx answers with an OAuth error body are retried like other t
     }
   }
 });
+
+/** A response whose headers arrived but whose body never finishes; it ignores any AbortSignal. */
+function unfinishedBody(status) {
+  return new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new TextEncoder().encode('{"error":"temporarily_')); }
+  }), { status, headers: { "content-type": "application/json" } });
+}
+
+test("a 429/5xx answer whose body never finishes is cut off by the request timeout and polled again", async () => {
+  for (const status of [429, 503]) {
+    const userData = await mkdtemp(`${tmpdir()}/canvastty-github-auth-unfinished-body-`);
+    try {
+      const { service, requests } = serviceWith(userData, (poll) => (poll === 1
+        ? unfinishedBody(status)
+        : Response.json({ access_token: "access", token_type: "bearer", scope: "" })), { requestTimeoutMs: 20 });
+      await service.startDeviceFlow();
+      await waitFor(async () => (await service.status()).authorized, 2_000);
+      assert.equal(requests.polls, 2, `HTTP ${status}: the hung body was abandoned and the next poll ran`);
+      await service.signOut();
+    } finally {
+      await rm(userData, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a 503 answer whose body never finishes cannot outlive the device code or a cancel", async () => {
+  const expiredData = await mkdtemp(`${tmpdir()}/canvastty-github-auth-unfinished-expiry-`);
+  try {
+    // The request timeout alone would wait an hour; the code's own lifetime must end the read.
+    const { service, requests } = serviceWith(expiredData, () => unfinishedBody(503), {
+      requestTimeoutMs: 3_600_000,
+      pollTimeoutMs: 50
+    });
+    await service.startDeviceFlow();
+    await waitFor(async () => (await service.status()).deviceFlowState !== "pending", 2_000);
+    assert.equal((await service.status()).deviceFlowState, "expired");
+    // A real timer may fire a moment before the host clock passes the deadline, allowing one more short poll.
+    assert.ok(requests.polls <= 2, `polls: ${requests.polls}`);
+  } finally {
+    await rm(expiredData, { recursive: true, force: true });
+  }
+
+  const cancelData = await mkdtemp(`${tmpdir()}/canvastty-github-auth-unfinished-cancel-`);
+  try {
+    const signals = [];
+    const { service } = serviceWith(cancelData, (_poll, init) => {
+      signals.push(init.signal);
+      return unfinishedBody(503);
+    }, { requestTimeoutMs: 3_600_000 });
+    await service.startDeviceFlow();
+    await waitFor(() => signals.length === 1);
+    service.cancelDeviceFlow();
+    assert.equal(signals[0].aborted, true, "the cancel reached the request that is still reading its body");
+    assert.equal((await service.status()).deviceFlowState, "cancelled");
+  } finally {
+    await rm(cancelData, { recursive: true, force: true });
+  }
+});

@@ -164,13 +164,14 @@ export class GithubAuthService {
 
     try {
       const body = new URLSearchParams({ client_id: this.clientId });
-      const response = await this.request("https://github.com/login/device/code", {
+      const payload = await this.request("https://github.com/login/device/code", {
         method: "POST",
         headers: oauthHeaders(),
         body: body.toString()
-      }, controller.signal);
-      if (!response.ok) throw new Error(`GitHub device flow failed with HTTP ${response.status}.`);
-      const payload: unknown = await response.json();
+      }, controller.signal, async (response): Promise<unknown> => {
+        if (!response.ok) throw new Error(`GitHub device flow failed with HTTP ${response.status}.`);
+        return response.json();
+      });
       if (!isRecord(payload) || typeof payload.device_code !== "string" || typeof payload.user_code !== "string") {
         throw new Error("GitHub device flow returned an invalid response.");
       }
@@ -279,13 +280,17 @@ export class GithubAuthService {
       let response: Response;
       let payload: unknown = null;
       try {
-        response = await this.request("https://github.com/login/oauth/access_token", {
+        // OAuth errors may arrive with HTTP 400 (RFC 6749 section 5.2), so read the body either way.
+        // The body read stays under the request timeout, the flow's abort and the code's remaining
+        // lifetime: a 429/5xx whose body never finishes must not keep the flow pending.
+        ({ response, payload } = await this.request("https://github.com/login/oauth/access_token", {
           method: "POST",
           headers: oauthHeaders(),
           body: body.toString()
-        }, signal);
-        // OAuth errors may arrive with HTTP 400 (RFC 6749 section 5.2), so read the body either way.
-        payload = await response.json().catch(() => null);
+        }, signal, async (answer) => ({
+          response: answer,
+          payload: await answer.json().catch(() => null) as unknown
+        }), Math.max(1, lifetimeMs - (this.now() - started))));
       } catch (error) {
         if (signal.aborted) throw error;
         if (!this.isCurrentFlow(generation, signal)) return;
@@ -363,13 +368,11 @@ export class GithubAuthService {
       refresh_token: expected.refreshToken
     });
     try {
-      const response = await this.request("https://github.com/login/oauth/access_token", {
+      const payload = await this.request("https://github.com/login/oauth/access_token", {
         method: "POST",
         headers: oauthHeaders(),
         body: body.toString()
-      });
-      if (!response.ok) return null;
-      const payload: unknown = await response.json();
+      }, undefined, async (response): Promise<unknown> => (response.ok ? response.json() : null));
       if (!isRecord(payload) || typeof payload.access_token !== "string") return null;
       if (this.generation !== generation || this.tokens !== expected) return null;
       const accessToken = payload.access_token;
@@ -391,15 +394,13 @@ export class GithubAuthService {
 
   private async fetchLogin(accessToken: string, signal: AbortSignal): Promise<string | null> {
     try {
-      const response = await this.request("https://api.github.com/user", {
+      const payload = await this.request("https://api.github.com/user", {
         headers: {
           authorization: `Bearer ${accessToken}`,
           accept: "application/vnd.github+json",
           "user-agent": "CanvasTTY plugin showcase"
         }
-      }, signal);
-      if (!response.ok) return null;
-      const payload: unknown = await response.json();
+      }, signal, async (response): Promise<unknown> => (response.ok ? response.json() : null));
       return isRecord(payload) && typeof payload.login === "string" ? payload.login : null;
     } catch (error) {
       // Rethrow only a cancelled flow; a timed-out or failed profile request is a failed sign-in.
@@ -408,15 +409,27 @@ export class GithubAuthService {
     }
   }
 
-  private async request(input: string, init: RequestInit, externalSignal?: AbortSignal): Promise<Response> {
+  /**
+   * Sends one request and reads its answer with `read`. The timeout (at most `timeoutMs`, never more
+   * than the configured request timeout) and `externalSignal` cover the whole exchange, body included:
+   * a response whose headers arrived but whose body never finishes is abandoned like a hung request.
+   */
+  private async request<T>(
+    input: string,
+    init: RequestInit,
+    externalSignal: AbortSignal | undefined,
+    read: (response: Response) => Promise<T>,
+    timeoutMs = this.requestTimeoutMs
+  ): Promise<T> {
     const controller = new AbortController();
     const abort = (): void => controller.abort();
     if (externalSignal?.aborted) controller.abort();
     else externalSignal?.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, this.requestTimeoutMs));
     timer.unref();
     try {
-      return await this.fetcher(input, { ...init, signal: controller.signal });
+      const exchange = (async (): Promise<T> => read(await this.fetcher(input, { ...init, signal: controller.signal })))();
+      return await untilAborted(exchange, controller.signal);
     } finally {
       clearTimeout(timer);
       externalSignal?.removeEventListener("abort", abort);
@@ -490,6 +503,19 @@ function abortableDelay(durationMs: number, signal: AbortSignal): Promise<void> 
       reject(abortedError());
     };
     signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
+/** Settles with `work`, or rejects with an AbortError as soon as `signal` aborts, whichever comes first. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    work.catch(() => undefined);
+    return Promise.reject(abortedError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => reject(abortedError());
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
 }
 

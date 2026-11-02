@@ -183,6 +183,9 @@ export function PluginSettingsSection({
   const [githubBusy, setGithubBusy] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
   const githubFlowNotice = githubFlowNoticeText(locale, githubStatus?.deviceFlowState);
+  // The host's flow can outlive this section (switching Settings sections remounts it and drops the code),
+  // so a pending flow is read from the host status, not from the locally kept code.
+  const githubFlowPending = !githubAuthorized && githubStatus?.deviceFlowState === "pending";
   const [showcasePreviews, setShowcasePreviews] = useState<Record<string, PluginInstallPreview>>({});
   const [showcaseManifests, setShowcaseManifests] = useState<Record<string, PluginManifest>>({});
   const [selectedShowcase, setSelectedShowcase] = useState<string | null>(null);
@@ -194,11 +197,11 @@ export function PluginSettingsSection({
   const [updatingId, setUpdatingId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!githubCode) return;
+    if (!githubCode && !githubFlowPending) return;
     let cancelled = false;
     // The main process owns the device flow; this only reads its status, so it pauses while Settings is
     // closed and picks up (sign-in finished or code expired) as soon as Settings opens again.
-    const stop = pollWhileOpen(open, githubCode.interval * 1000, async () => {
+    const stop = pollWhileOpen(open, (githubCode?.interval ?? GITHUB_PENDING_POLL_SECONDS) * 1000, async () => {
       // A transient status read failure is retried on the next tick.
       const status = await window.canvasTTY.githubAuth.status();
       if (cancelled) return STOP_POLLING;
@@ -207,7 +210,7 @@ export function PluginSettingsSection({
         setGithubCode(null);
         return STOP_POLLING;
       }
-      if (Date.now() >= githubCode.expiresAt) {
+      if (githubCode && Date.now() >= githubCode.expiresAt) {
         setGithubStatus({ ...status, deviceFlowState: "expired" });
         setGithubCode(null);
         return STOP_POLLING;
@@ -219,7 +222,7 @@ export function PluginSettingsSection({
       cancelled = true;
       stop();
     };
-  }, [githubCode, open]);
+  }, [githubCode, githubFlowPending, open]);
 
   const inspect = async (): Promise<void> => {
     if (busy || sourceUrl.trim().length === 0) return;
@@ -924,6 +927,14 @@ export function PluginSettingsSection({
               {githubSigninText(locale, "cancel")}
             </button>
           </div>
+        ) : githubFlowPending ? (
+          // The code itself was shown before the section remounted; the host flow still runs and can be stopped here.
+          <div className="plugin-github-flow">
+            <p className="plugin-github-unavailable" role="status">{githubSigninText(locale, "pending")}</p>
+            <button type="button" className="plugin-github-signout" disabled={githubBusy} onClick={() => void runGithubCancel()}>
+              {githubSigninText(locale, "cancel")}
+            </button>
+          </div>
         ) : githubStatus && !githubConfigured ? (
           <p className="plugin-github-unavailable" role="status">{t(locale, "githubAuthNotConfigured")}</p>
         ) : null}
@@ -1198,6 +1209,9 @@ function errorMessage(error: unknown, fallback: string): string {
     .slice(0, 320);
 }
 
+/** Status read interval for a host flow whose code this section no longer has (after a remount). */
+const GITHUB_PENDING_POLL_SECONDS = 5;
+
 function isGithubFlowOutcome(state: GithubDeviceFlowState | undefined): boolean {
   return state === "denied" || state === "expired" || state === "failed" || state === "cancelled";
 }
@@ -1208,6 +1222,7 @@ const GITHUB_SIGNIN_TEXT = {
     denied: "Запрос на вход в GitHub отклонён. Можно попробовать снова.",
     failed: "Не удалось завершить вход в GitHub. Можно попробовать снова.",
     cancelled: "Вход в GitHub отменён.",
+    pending: "Вход в GitHub ждёт подтверждения в браузере. Можно отменить его или начать заново.",
     cancel: "Отменить вход",
     cancelFailed: "Не удалось отменить вход в GitHub. Подробности записаны в журнал."
   },
@@ -1215,6 +1230,7 @@ const GITHUB_SIGNIN_TEXT = {
     denied: "The GitHub sign-in request was denied. You can try again.",
     failed: "GitHub sign-in could not be completed. You can try again.",
     cancelled: "GitHub sign-in was cancelled.",
+    pending: "A GitHub sign-in is waiting for approval in the browser. You can cancel it or start again.",
     cancel: "Cancel sign-in",
     cancelFailed: "GitHub sign-in could not be cancelled. Details are in the log."
   }

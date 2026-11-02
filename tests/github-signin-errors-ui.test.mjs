@@ -5,15 +5,15 @@ import { findAll, importWithFakeReact, tick } from "./helpers/fake-react.mjs";
 
 const section = await importWithFakeReact("src/renderer/src/features/plugins/PluginSettingsSection.tsx", "PluginSettingsSection");
 
-function harness(t, locale, githubAuth) {
+function harness(t, locale, githubAuth, { open = false } = {}) {
   const oldWindow = globalThis.window;
   const warnings = [];
   t.mock.method(console, "warn", (...args) => { warnings.push(args); });
-  globalThis.window = { setTimeout, clearTimeout, canvasTTY: { githubAuth, appVersion: async () => "1.8.1" } };
+  globalThis.window = { setTimeout, clearTimeout, canvasTTY: { githubAuth, appVersion: async () => "1.8.1", clipboard: { writeText: () => undefined } } };
   t.after(() => { section.__unmount(); globalThis.window = oldWindow; });
   section.__reset();
   const none = async () => ({});
-  const props = { settings: { locale }, plugins: [], open: false, onPreviewPlugin: none, onInstallPlugin: none, onSearchPlugins: async () => [],
+  const props = { settings: { locale }, plugins: [], open, onPreviewPlugin: none, onInstallPlugin: none, onSearchPlugins: async () => [],
     onShowcasePlugins: async () => [], onFetchPluginIcons: none, onPreviewManifests: none, onOpenBrowser: none, onCheckPluginUpdates: none,
     onUpdatePlugin: none, onSetPluginModules: none, onSetPluginEnabled: none, onUninstallPlugin: none, onOpenPluginContribution: none };
   let tree;
@@ -69,4 +69,25 @@ test("a failed, denied or expired sign-in reads as an error; a cancelled one as 
     assert.equal(notice.props.className, error ? "plugin-settings__error" : "plugin-github-unavailable", state);
     assert.equal(notice.props.role, error ? "alert" : "status", state);
   }
+});
+
+const pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+test("a sign-in still pending in the host after the section remounts keeps its Cancel action", async (t) => {
+  // Switching Settings sections remounts this section: the displayed code is gone, the host flow is not.
+  let state = "pending";
+  let cancels = 0;
+  const ui = harness(t, "en", {
+    status: async () => ({ configured: true, authorized: false, login: null, tokenExpiresAt: null, deviceFlowState: state }),
+    cancel: async () => { cancels += 1; state = "cancelled"; }
+  }, { open: true });
+  await ui.settle();
+  assert.match(JSON.stringify(ui.tree()), /waiting for approval in the browser/u);
+  const cancel = ui.button("Cancel sign-in");
+  assert.ok(cancel, "Cancel is offered for the host's pending flow");
+  cancel.props.onClick();
+  await ui.settle();
+  assert.equal(cancels, 1);
+  assert.equal(ui.button("Cancel sign-in"), undefined);
+  assert.match(JSON.stringify(ui.tree()), /GitHub sign-in was cancelled\./u);
 });

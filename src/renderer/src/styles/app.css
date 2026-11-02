@@ -210,7 +210,7 @@ button { border: 0; }
 @container clock-tile (max-height: 170px) { .clock-tile__date { display: none; } }
 
 .agent-overview { padding: 13px; display: grid; align-content: start; gap: 9px; background: var(--surface); }
-.limits-list { grid-template-rows: repeat(var(--limit-rows, 3), minmax(0, 1fr)); }
+.limits-list { grid-template-rows: repeat(var(--limit-rows, 3), minmax(0, 1fr)); container: limits-list / inline-size; }
 .limits-list--dense { padding: 10px; gap: 6px; }
 .limits-list__empty { display: grid; place-items: center; padding: 22px; border-radius: 12px; color: var(--text-muted-on-dark); background: var(--surface-soft); text-align: center; font-size: 13px; font-weight: 800; line-height: 1.45; }
 .limit-row { position: relative; min-width: 0; min-height: 0; padding: 3px 14px; overflow: hidden; display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; column-gap: 14px; border-radius: 12px; color: var(--text); background: var(--surface-soft); container: limit-row / size; }
@@ -219,6 +219,9 @@ button { border: 0; }
 .limit-row__summary { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .limit-row__summary strong { flex: 0 0 auto; overflow: hidden; color: var(--text); font: 900 27px/1 var(--font-mono); letter-spacing: -.045em; text-overflow: ellipsis; white-space: nowrap; }
 .limit-row__summary > span { min-width: 0; overflow: hidden; color: var(--text-muted-on-dark); font: 800 14px/1 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.limit-row__summary > .limit-row__share { flex: 1 1 auto; display: flex; align-items: baseline; gap: 8px; }
+.limit-row__share > span { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.limit-row__summary > .limit-row__countdown { flex: 0 0 auto; }
 .limit-row__track { position: relative; width: 100%; height: 6px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.12); }
 .limit-row__fill { position: absolute; inset: 0 auto 0 0; max-width: 100%; border-radius: inherit; background: rgba(248,247,241,.78); }
 .limit-row__empty { overflow: hidden; color: var(--text-muted-on-dark); font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
@@ -232,8 +235,35 @@ button { border: 0; }
   .limit-row__summary { gap: 7px; }
   .limit-row__summary strong { font-size: 22px; }
   .limit-row__summary > span { font-size: 11px; }
+  .limit-row__share > span { font-size: 10px; }
   .limit-row__track { height: 4px; }
   .limit-row__empty { font-size: 11px; }
+}
+/* A narrow limits tile (up to four grid columns): the countdown stays beside the percentage and the used/left text
+   gets its own line below them, wrapping at its spaces instead of being cut off. The rail always stays in the row. */
+@container limits-list (max-width: 440px) {
+  .limit-row { padding: 2px 8px; grid-template-columns: 30px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); column-gap: 8px; }
+  .limit-row > .provider-icon--medium { --provider-icon-art-size: 22px; width: 30px; height: 30px; }
+  .limit-row__metric { max-height: 100%; grid-template-rows: minmax(0, 1fr) 4px; gap: 4px; }
+  .limit-row__summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: end; align-items: baseline; gap: 2px 6px; }
+  .limit-row__summary > .limit-row__share { display: contents; }
+  .limit-row__summary strong { grid-area: 1 / 1; font-size: 20px; }
+  .limit-row__summary > .limit-row__countdown { grid-area: 1 / 2; font-size: 11px; }
+  .limit-row__share > span { grid-area: 2 / 1 / 3 / 3; font-size: 10px; line-height: 1.15; white-space: normal; }
+  .limit-row__track { height: 4px; }
+}
+@container limits-list (max-width: 440px) {
+  @container limit-row (max-height: 52px) {
+    .limit-row__metric { gap: 2px; }
+    .limit-row__summary { row-gap: 1px; }
+    .limit-row__summary strong { font-size: 14px; }
+    .limit-row__summary > .limit-row__countdown { font-size: 10px; }
+    .limit-row__share > span { font-size: 9px; line-height: 1.05; }
+  }
+  /* Too short for two text lines (a two-row tile with three providers): one line, shortened as in a wide row. */
+  @container limit-row (max-height: 44px) {
+    .limit-row__share > span { white-space: nowrap; }
+  }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -1364,6 +1394,8 @@ button { border: 0; }
 .update-notice__dismiss:hover, .update-notice__dismiss:focus-visible { color: var(--text); background: var(--surface-soft); }
 .toast { position: fixed; z-index: 9999; left: 50%; bottom: 24px; max-width: min(540px, calc(100% - 40px)); padding: 12px 17px; border-radius: 11px; color: white; background: rgba(37,38,48,.94); box-shadow: var(--shadow-md); opacity: 0; transform: translate(-50%, 18px); pointer-events: none; transition: all .2s ease; }
 .toast--visible { opacity: 1; transform: translate(-50%, 0); }
+.toast--action { display: flex; align-items: center; gap: 12px; pointer-events: auto; }
+.toast__action { flex: 0 0 auto; padding: 6px 8px; border-radius: 6px; color: var(--text-dark); background: var(--primary); cursor: pointer; font-size: 11px; font-weight: 700; }
 .materials-load-error { position: fixed; z-index: 9998; left: 50%; bottom: 76px; width: max-content; max-width: min(540px, calc(100% - 40px)); padding: 12px 17px; border-radius: 11px; color: var(--text); background: var(--surface); box-shadow: inset 3px 0 0 var(--danger), var(--shadow-md); transform: translateX(-50%); }
 /* Shown until the critical snapshot is in, usually for a few frames only. It keeps the window's own native
    background (main/index.ts backgroundColor) so startup does not flash a dark panel between the empty window and

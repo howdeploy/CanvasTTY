@@ -165,7 +165,9 @@ test("Claude's unstyled hint requires native idle, cursor at the start and untou
 });
 
 test("the queue retains the entire paste/observe/Enter transaction and supports owned paste-only drafts", async t => {
-  const f = fixture(t);
+  // The second task's deadline also covers its wait behind the first, so a 150 ms budget is
+  // spent by a few 25 ms polling ticks on a coarse (Windows) timer. Ordering is under test here.
+  const f = fixture(t, "codex", 5_000);
   const first = f.send("one"), second = f.send("two");
   await until(() => f.writes.length === 1);
   f.draw("one");
@@ -187,7 +189,9 @@ test("the queue retains the entire paste/observe/Enter transaction and supports 
   const extension = f.send(" continued");
   await until(() => f.writes.length === 6);
   f.draw("draft continued");
-  await extension;
+  await until(() => f.writes.length === 7);
+  f.manager.applyProviderSignal(f.session.id, { kind: "lifecycle", state: "working", event: "UserPromptSubmit" });
+  assert.equal((await extension).receipt.acceptance, "confirmed");
   assert.deepEqual(f.writes.slice(-3), ["\x1b[200~draft\x1b[201~", "\x1b[200~ continued\x1b[201~", "\r"]);
 });
 

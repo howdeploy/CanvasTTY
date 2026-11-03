@@ -16,6 +16,8 @@ export interface PrepareAgentBrowserLaunchInput {
   orchestrationTools?: readonly string[];
   /** Kimi: the launch's own account home (`KIMI_CODE_HOME` inside the contributing plugin's data), for its config. */
   accountHome?: string;
+  /** The card's own (already filtered) environment, which the launch builds from instead of the app's. */
+  environment?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface PreparedAgentBrowserPtyLaunch {
@@ -68,13 +70,15 @@ export class AgentBrowserBridge implements AgentBrowserLaunchCoordinator {
     // Browser access off: no canvastty_browser and no browser capability, but a session that gets canvastty_agents
     // (orchestrators, plugin tools) still gets it; that server has its own capability and gateway.
     if (!this.gateway.isEnabled) return input.includeOrchestration ? this.prepareOrchestrationOnly(input) : null;
-    const capability = this.gateway.registerAgent(input);
+    const { environment, ...agent } = input;
+    const capability = this.gateway.registerAgent(agent);
     let providerLaunch;
     try {
       providerLaunch = this.providers.prepare(input.provider, capability.connectionId, {
         ...(input.includeOrchestration ? { orchestration: true } : {}),
         ...(input.orchestrationTools ? { orchestrationTools: input.orchestrationTools } : {}),
-        ...(input.accountHome ? { accountHome: input.accountHome } : {})
+        ...(input.accountHome ? { accountHome: input.accountHome } : {}),
+        ...(environment ? { environment } : {})
       });
     } catch (error) {
       this.gateway.revokeTerminalSession(input.terminalSessionId);
@@ -97,7 +101,8 @@ export class AgentBrowserBridge implements AgentBrowserLaunchCoordinator {
       orchestration: true,
       browser: false,
       ...(input.orchestrationTools ? { orchestrationTools: input.orchestrationTools } : {}),
-      ...(input.accountHome ? { accountHome: input.accountHome } : {})
+      ...(input.accountHome ? { accountHome: input.accountHome } : {}),
+      ...(input.environment ? { environment: input.environment } : {})
     });
     return this.launchWith(providerLaunch, "", connectionId, () => undefined, {});
   }

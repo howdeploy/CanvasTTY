@@ -161,7 +161,14 @@ export class ProviderLaunchAdapters {
    * the `KIMI_CODE_HOME` a launch contributor started this launch with; Kimi's temporary configuration goes there when
    * it is an account home (accountHomes.ts), since that is the only home this Kimi reads.
    */
-  prepare(provider: AgentProvider, connectionId: string, options?: { orchestration?: boolean; orchestrationTools?: readonly string[]; browser?: boolean; accountHome?: string }): PreparedProviderLaunch {
+  prepare(provider: AgentProvider, connectionId: string, options?: {
+    orchestration?: boolean;
+    orchestrationTools?: readonly string[];
+    browser?: boolean;
+    accountHome?: string;
+    /** The card's own (already filtered) environment; the launch reads the person's OpenCode inline config from it. */
+    environment?: Readonly<Record<string, string | undefined>>;
+  }): PreparedProviderLaunch {
     const providerCli = this.providerClis.get(provider);
     if (providerCli.state === "unavailable") throw new Error(providerCli.diagnostic);
     const orchestrationHelper = orchestrationHelperFor(this.options, options);
@@ -192,7 +199,7 @@ export class ProviderLaunchAdapters {
     if (provider === "opencode") {
       return {
         args: [],
-        environment: openCodeBrowserEnvironment(browserHelper, this.environment, orchestrationHelper),
+        environment: openCodeBrowserEnvironment(browserHelper, options?.environment ?? this.environment, orchestrationHelper),
         releaseConfiguration() {}
       };
     }

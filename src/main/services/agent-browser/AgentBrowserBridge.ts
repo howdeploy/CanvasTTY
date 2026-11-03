@@ -14,6 +14,8 @@ export interface PrepareAgentBrowserLaunchInput {
   includeOrchestration?: boolean;
   /** The canvastty_agents tools this session may use (default: the core tools). */
   orchestrationTools?: readonly string[];
+  /** Kimi: the launch's own account home (`KIMI_CODE_HOME` inside the contributing plugin's data), for its config. */
+  accountHome?: string;
 }
 
 export interface PreparedAgentBrowserPtyLaunch {
@@ -71,7 +73,8 @@ export class AgentBrowserBridge implements AgentBrowserLaunchCoordinator {
     try {
       providerLaunch = this.providers.prepare(input.provider, capability.connectionId, {
         ...(input.includeOrchestration ? { orchestration: true } : {}),
-        ...(input.orchestrationTools ? { orchestrationTools: input.orchestrationTools } : {})
+        ...(input.orchestrationTools ? { orchestrationTools: input.orchestrationTools } : {}),
+        ...(input.accountHome ? { accountHome: input.accountHome } : {})
       });
     } catch (error) {
       this.gateway.revokeTerminalSession(input.terminalSessionId);
@@ -93,7 +96,8 @@ export class AgentBrowserBridge implements AgentBrowserLaunchCoordinator {
     const providerLaunch = this.providers.prepare(input.provider, connectionId, {
       orchestration: true,
       browser: false,
-      ...(input.orchestrationTools ? { orchestrationTools: input.orchestrationTools } : {})
+      ...(input.orchestrationTools ? { orchestrationTools: input.orchestrationTools } : {}),
+      ...(input.accountHome ? { accountHome: input.accountHome } : {})
     });
     return this.launchWith(providerLaunch, "", connectionId, () => undefined, {});
   }

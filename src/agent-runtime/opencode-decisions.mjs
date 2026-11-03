@@ -62,9 +62,13 @@ export function createOpenCodeDecisions({ client, env = process.env, send = exch
 }
 
 /**
- * An OpenCode tool call in the shape the decision hook reads (the Claude/Codex hook tool names), or null for a tool
- * that neither runs commands nor writes files. OpenCode's own names: bash {command, workdir}, write {filePath,
- * content}, edit {filePath, oldString, newString}, multiedit {filePath, edits}, apply_patch {patchText}.
+ * An OpenCode tool call in the shape the decision hook reads (Claude Code's hook tool names and input shapes), or null
+ * for a tool that neither runs commands nor writes files. OpenCode's own names: bash {command, workdir}, write
+ * {filePath, content}, edit {filePath, oldString, newString, replaceAll}, multiedit {filePath, edits: [{filePath,
+ * oldString, newString, replaceAll}]}, apply_patch {patchText}. They go out as bash {command, workdir}, Write {file_path,
+ * content} (the whole new file), Edit {file_path, old_string, new_string, replace_all} (one replacement in the file),
+ * MultiEdit {file_path, edits: [{old_string, new_string, replace_all}]} and apply_patch {patch}, so a decision service
+ * can tell a whole-file write from a partial edit and sees the text an edit replaces.
  */
 export function guardedCall(tool, args) {
   if (!tool || !args || typeof args !== "object") return null;
@@ -74,13 +78,15 @@ export function guardedCall(tool, args) {
     return { toolName: "bash", toolInput: { command: args.command, ...(workdir ? { workdir } : {}) } };
   }
   if (tool === "write" || tool === "edit" || tool === "multiedit") {
-    const filePath = typeof args.filePath === "string" && args.filePath.length > 0 ? args.filePath
-      : typeof args.file_path === "string" && args.file_path.length > 0 ? args.file_path : null;
+    const filePath = pathOf(args);
     if (!filePath) return null;
-    const content = typeof args.content === "string" ? args.content
-      : typeof args.newString === "string" ? args.newString
-        : multieditText(args.edits);
-    return { toolName: "edit", toolInput: { file_path: filePath, ...(content !== null ? { content } : {}) } };
+    if (tool === "write") {
+      return { toolName: "Write", toolInput: { file_path: filePath, ...(typeof args.content === "string" ? { content: args.content } : {}) } };
+    }
+    if (tool === "edit") return { toolName: "Edit", toolInput: { file_path: filePath, ...replacement(args) } };
+    const edits = Array.isArray(args.edits) ? args.edits.filter((edit) => edit && typeof edit === "object").map(replacement)
+      .filter((edit) => Object.keys(edit).length > 0) : [];
+    return { toolName: "MultiEdit", toolInput: { file_path: filePath, edits } };
   }
   if (tool === "apply_patch" || tool === "patch") {
     const patch = typeof args.patchText === "string" ? args.patchText : typeof args.patch === "string" ? args.patch : null;
@@ -89,11 +95,22 @@ export function guardedCall(tool, args) {
   return null;
 }
 
-/** Every multiedit edit's new text, one per line (what the batch writes), or null. */
-function multieditText(edits) {
-  if (!Array.isArray(edits)) return null;
-  const texts = edits.flatMap((edit) => edit && typeof edit === "object" && typeof edit.newString === "string" ? [edit.newString] : []);
-  return texts.length > 0 ? texts.join("\n") : null;
+function pathOf(args) {
+  return typeof args.filePath === "string" && args.filePath.length > 0 ? args.filePath
+    : typeof args.file_path === "string" && args.file_path.length > 0 ? args.file_path : null;
+}
+
+/** One OpenCode replacement {oldString, newString, replaceAll} as Claude's Edit input (fields that are not text are left out). */
+function replacement(edit) {
+  const text = (camel, snake) => typeof edit[camel] === "string" ? edit[camel] : typeof edit[snake] === "string" ? edit[snake] : null;
+  const oldString = text("oldString", "old_string");
+  const newString = text("newString", "new_string");
+  const replaceAll = typeof edit.replaceAll === "boolean" ? edit.replaceAll : typeof edit.replace_all === "boolean" ? edit.replace_all : null;
+  return {
+    ...(oldString !== null ? { old_string: oldString } : {}),
+    ...(newString !== null ? { new_string: newString } : {}),
+    ...(replaceAll !== null ? { replace_all: replaceAll } : {})
+  };
 }
 
 /** POST /permission/{requestID}/reply with `once`. False on any failure (OpenCode's prompt stays for the person). */

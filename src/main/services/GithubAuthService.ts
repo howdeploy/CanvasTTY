@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as electron from "electron";
 import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
+import type { GithubDeviceFlowState } from "../../shared/contracts";
 
 /** GitHub OAuth Device Flow for the plugin showcase. */
 
@@ -10,6 +11,7 @@ export interface GithubAuthStatus {
   authorized: boolean;
   login: string | null;
   tokenExpiresAt: number | null;
+  deviceFlowState: GithubDeviceFlowState;
 }
 
 interface StoredTokens {
@@ -60,6 +62,7 @@ export class GithubAuthService {
   private readonly pollTimeoutMs: number;
   private generation = 0;
   private deviceFlow: { generation: number; controller: AbortController } | null = null;
+  private deviceFlowState: GithubDeviceFlowState = "idle";
   private storeWrite = Promise.resolve();
 
   constructor(userDataPath: string, clientId?: string, options: GithubAuthServiceOptions = {}) {
@@ -126,13 +129,20 @@ export class GithubAuthService {
 
   async status(): Promise<GithubAuthStatus> {
     if (!this.tokens) {
-      return { configured: this.clientConfigured, authorized: false, login: null, tokenExpiresAt: null };
+      return {
+        configured: this.clientConfigured,
+        authorized: false,
+        login: null,
+        tokenExpiresAt: null,
+        deviceFlowState: this.deviceFlowState
+      };
     }
     return {
       configured: this.clientConfigured,
       authorized: true,
       login: this.tokens.login,
-      tokenExpiresAt: this.tokens.expiresAt
+      tokenExpiresAt: this.tokens.expiresAt,
+      deviceFlowState: this.deviceFlowState
     };
   }
 
@@ -146,20 +156,22 @@ export class GithubAuthService {
       throw new Error("GitHub OAuth is not configured (missing client id).");
     }
 
-    this.cancelDeviceFlow();
+    this.abortDeviceFlow();
     const generation = ++this.generation;
     const controller = new AbortController();
     this.deviceFlow = { generation, controller };
+    this.deviceFlowState = "pending";
 
     try {
       const body = new URLSearchParams({ client_id: this.clientId });
-      const response = await this.request("https://github.com/login/device/code", {
+      const payload = await this.request("https://github.com/login/device/code", {
         method: "POST",
         headers: oauthHeaders(),
         body: body.toString()
-      }, controller.signal);
-      if (!response.ok) throw new Error(`GitHub device flow failed with HTTP ${response.status}.`);
-      const payload: unknown = await response.json();
+      }, controller.signal, async (response): Promise<unknown> => {
+        if (!response.ok) throw new Error(`GitHub device flow failed with HTTP ${response.status}.`);
+        return response.json();
+      });
       if (!isRecord(payload) || typeof payload.device_code !== "string" || typeof payload.user_code !== "string") {
         throw new Error("GitHub device flow returned an invalid response.");
       }
@@ -176,7 +188,11 @@ export class GithubAuthService {
 
       void this.pollDeviceCode(deviceCode, interval, flowLifetimeMs, generation, controller.signal)
         .catch((error) => {
-          if (!isAbortError(error)) console.warn("CanvasTTY GitHub OAuth device poll failed.", error);
+          // Only this flow's own abort (Cancel, sign-out, a new sign-in) is a cancellation; a request
+          // that hit its timeout also throws an AbortError, and that is a failure the person must see.
+          if (controller.signal.aborted) return;
+          this.finishDeviceFlow(generation, "failed");
+          console.warn("CanvasTTY GitHub OAuth device poll failed.", error);
         })
         .finally(() => {
           if (this.deviceFlow?.generation === generation) this.deviceFlow = null;
@@ -184,14 +200,26 @@ export class GithubAuthService {
 
       return { userCode, verificationUri, interval, expiresAt: this.now() + flowLifetimeMs };
     } catch (error) {
-      if (this.deviceFlow?.generation === generation) this.deviceFlow = null;
+      if (this.deviceFlow?.generation === generation) {
+        this.deviceFlow = null;
+        // The caller receives this error directly, so no separate outcome is kept.
+        this.deviceFlowState = "idle";
+      }
       throw error;
     }
   }
 
+  /** Stops a pending device sign-in. A completed sign-in or an existing session is left untouched. */
+  cancelDeviceFlow(): void {
+    if (!this.deviceFlow || this.deviceFlowState !== "pending") return;
+    this.abortDeviceFlow();
+    this.deviceFlowState = "cancelled";
+  }
+
   async signOut(): Promise<void> {
     this.generation += 1;
-    this.cancelDeviceFlow();
+    this.abortDeviceFlow();
+    this.deviceFlowState = "idle";
     this.tokens = null;
     this.refreshPromise = null;
     await this.enqueueStoreWrite(async () => {
@@ -199,9 +227,17 @@ export class GithubAuthService {
     });
   }
 
-  private cancelDeviceFlow(): void {
-    this.deviceFlow?.controller.abort();
+  private abortDeviceFlow(): void {
+    const flow = this.deviceFlow;
+    // Clear the flow before aborting so a fetcher that ignores its AbortSignal
+    // cannot apply a late response: every step re-checks isCurrentFlow().
     this.deviceFlow = null;
+    flow?.controller.abort();
+  }
+
+  private finishDeviceFlow(generation: number, state: GithubDeviceFlowState): void {
+    if (this.deviceFlow?.generation !== generation || this.deviceFlowState !== "pending") return;
+    this.deviceFlowState = state;
   }
 
   private isCurrentFlow(generation: number, signal: AbortSignal): boolean {
@@ -217,51 +253,92 @@ export class GithubAuthService {
   ): Promise<void> {
     const started = this.now();
     let interval = initialInterval;
+    let transientFailures = 0;
+    // A dropped connection, the request timeout, HTTP 429/5xx or an unreadable
+    // body is not the end of the flow: the person may still approve the code.
+    // Back off (RFC 8628 section 3.5) and poll again, but give up after a few
+    // failures in a row instead of polling a broken endpoint until the code expires.
+    const retryOrFail = (): boolean => {
+      transientFailures += 1;
+      if (transientFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+        this.finishDeviceFlow(generation, "failed");
+        return false;
+      }
+      interval = backedOff(interval);
+      return true;
+    };
     while (this.now() - started < lifetimeMs) {
       await this.wait(interval * 1000, signal);
       if (!this.isCurrentFlow(generation, signal)) return;
+      if (this.now() - started >= lifetimeMs) break;
 
       const body = new URLSearchParams({
         client_id: this.clientId,
         device_code: deviceCode,
         grant_type: "urn:ietf:params:oauth:grant-type:device_code"
       });
-      // A dropped connection, the 15 s request timeout or a GitHub 5xx is not
-      // the end of the flow: the person may still approve the code. Back off
-      // (RFC 8628 section 3.5) and poll again until the code expires.
-      let payload: unknown;
+      let response: Response;
+      let payload: unknown = null;
       try {
-        const response = await this.request("https://github.com/login/oauth/access_token", {
+        // OAuth errors may arrive with HTTP 400 (RFC 6749 section 5.2), so read the body either way.
+        // The body read stays under the request timeout, the flow's abort and the code's remaining
+        // lifetime: a 429/5xx whose body never finishes must not keep the flow pending.
+        ({ response, payload } = await this.request("https://github.com/login/oauth/access_token", {
           method: "POST",
           headers: oauthHeaders(),
           body: body.toString()
-        }, signal);
-        if (!response.ok) {
-          interval = backedOff(interval);
-          continue;
-        }
-        payload = await response.json();
+        }, signal, async (answer) => ({
+          response: answer,
+          payload: await answer.json().catch(() => null) as unknown
+        }), Math.max(1, lifetimeMs - (this.now() - started))));
       } catch (error) {
         if (signal.aborted) throw error;
-        interval = backedOff(interval);
-        continue;
+        if (!this.isCurrentFlow(generation, signal)) return;
+        if (retryOrFail()) continue;
+        return;
       }
-      if (!isRecord(payload)) {
-        interval = backedOff(interval);
-        continue;
+      if (!this.isCurrentFlow(generation, signal)) return;
+      const providerError = isRecord(payload) && typeof payload.error === "string" ? payload.error : null;
+      // HTTP 429/5xx is transient whatever its body says (e.g. {"error":"temporarily_unavailable"});
+      // slow_down keeps its own handling below, which also raises the interval.
+      if (!response.ok && isTransientStatus(response.status) && providerError !== "slow_down") {
+        if (retryOrFail()) continue;
+        return;
       }
-      if (payload.error === "authorization_pending" || payload.error === "slow_down") {
-        if (payload.error === "slow_down") {
+      if (providerError === null && (!response.ok || !isRecord(payload))) {
+        if (response.ok) {
+          if (retryOrFail()) continue;
+          return;
+        }
+        this.finishDeviceFlow(generation, "failed");
+        return;
+      }
+      if (providerError === "authorization_pending" || providerError === "slow_down") {
+        transientFailures = 0;
+        if (providerError === "slow_down") {
           // +5 s for this and later polls; GitHub may name a longer interval.
-          const requested = typeof payload.interval === "number" && Number.isFinite(payload.interval) ? payload.interval : 0;
+          const requested = isRecord(payload) && typeof payload.interval === "number" && Number.isFinite(payload.interval)
+            ? payload.interval
+            : 0;
           interval = Math.max(interval + 5, Math.min(requested, MAX_POLL_INTERVAL_SECONDS));
         }
         continue;
       }
-      if (payload.error === "access_denied" || payload.error === "expired_token") return;
-      if (typeof payload.access_token === "string") {
+      if (providerError === "access_denied") {
+        this.finishDeviceFlow(generation, "denied");
+        return;
+      }
+      if (providerError === "expired_token") {
+        this.finishDeviceFlow(generation, "expired");
+        return;
+      }
+      if (providerError === null && isRecord(payload) && typeof payload.access_token === "string") {
         const login = await this.fetchLogin(payload.access_token, signal);
-        if (!login || !this.isCurrentFlow(generation, signal)) return;
+        if (!this.isCurrentFlow(generation, signal)) return;
+        if (!login) {
+          this.finishDeviceFlow(generation, "failed");
+          return;
+        }
         const expiresIn = typeof payload.expires_in === "number" && payload.expires_in > 0
           ? payload.expires_in
           : null;
@@ -272,11 +349,15 @@ export class GithubAuthService {
           login
         };
         this.tokens = next;
+        this.deviceFlowState = "idle";
         await this.persist(next, generation);
         return;
       }
+      // Any other provider error (device_flow_disabled, incorrect_client_credentials, ...) is final.
+      this.finishDeviceFlow(generation, "failed");
       return;
     }
+    this.finishDeviceFlow(generation, "expired");
   }
 
   private async refreshAccessToken(expected: StoredTokens, generation: number): Promise<string | null> {
@@ -287,13 +368,11 @@ export class GithubAuthService {
       refresh_token: expected.refreshToken
     });
     try {
-      const response = await this.request("https://github.com/login/oauth/access_token", {
+      const payload = await this.request("https://github.com/login/oauth/access_token", {
         method: "POST",
         headers: oauthHeaders(),
         body: body.toString()
-      });
-      if (!response.ok) return null;
-      const payload: unknown = await response.json();
+      }, undefined, async (response): Promise<unknown> => (response.ok ? response.json() : null));
       if (!isRecord(payload) || typeof payload.access_token !== "string") return null;
       if (this.generation !== generation || this.tokens !== expected) return null;
       const accessToken = payload.access_token;
@@ -315,31 +394,42 @@ export class GithubAuthService {
 
   private async fetchLogin(accessToken: string, signal: AbortSignal): Promise<string | null> {
     try {
-      const response = await this.request("https://api.github.com/user", {
+      const payload = await this.request("https://api.github.com/user", {
         headers: {
           authorization: `Bearer ${accessToken}`,
           accept: "application/vnd.github+json",
           "user-agent": "CanvasTTY plugin showcase"
         }
-      }, signal);
-      if (!response.ok) return null;
-      const payload: unknown = await response.json();
+      }, signal, async (response): Promise<unknown> => (response.ok ? response.json() : null));
       return isRecord(payload) && typeof payload.login === "string" ? payload.login : null;
     } catch (error) {
-      if (isAbortError(error)) throw error;
+      // Rethrow only a cancelled flow; a timed-out or failed profile request is a failed sign-in.
+      if (signal.aborted && isAbortError(error)) throw error;
       return null;
     }
   }
 
-  private async request(input: string, init: RequestInit, externalSignal?: AbortSignal): Promise<Response> {
+  /**
+   * Sends one request and reads its answer with `read`. The timeout (at most `timeoutMs`, never more
+   * than the configured request timeout) and `externalSignal` cover the whole exchange, body included:
+   * a response whose headers arrived but whose body never finishes is abandoned like a hung request.
+   */
+  private async request<T>(
+    input: string,
+    init: RequestInit,
+    externalSignal: AbortSignal | undefined,
+    read: (response: Response) => Promise<T>,
+    timeoutMs = this.requestTimeoutMs
+  ): Promise<T> {
     const controller = new AbortController();
     const abort = (): void => controller.abort();
     if (externalSignal?.aborted) controller.abort();
     else externalSignal?.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, this.requestTimeoutMs));
     timer.unref();
     try {
-      return await this.fetcher(input, { ...init, signal: controller.signal });
+      const exchange = (async (): Promise<T> => read(await this.fetcher(input, { ...init, signal: controller.signal })))();
+      return await untilAborted(exchange, controller.signal);
     } finally {
       clearTimeout(timer);
       externalSignal?.removeEventListener("abort", abort);
@@ -416,6 +506,19 @@ function abortableDelay(durationMs: number, signal: AbortSignal): Promise<void> 
   });
 }
 
+/** Settles with `work`, or rejects with an AbortError as soon as `signal` aborts, whichever comes first. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    work.catch(() => undefined);
+    return Promise.reject(abortedError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => reject(abortedError());
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
 function abortedError(): DOMException {
   return new DOMException("GitHub OAuth operation was cancelled.", "AbortError");
 }
@@ -433,6 +536,12 @@ function isMissingFile(error: unknown): boolean {
 }
 
 const MAX_POLL_INTERVAL_SECONDS = 60;
+/** Consecutive network, timeout, HTTP 429/5xx or unreadable answers before the sign-in is reported as failed. */
+const MAX_CONSECUTIVE_POLL_FAILURES = 5;
+
+function isTransientStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
 
 function backedOff(interval: number): number {
   return Math.min(Math.max(interval * 2, interval + 1), MAX_POLL_INTERVAL_SECONDS);

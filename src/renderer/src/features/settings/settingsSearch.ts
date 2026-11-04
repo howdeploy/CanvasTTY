@@ -198,6 +198,11 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   },
   {
     "section": "agents",
+    "label": "pluginNativeCode",
+    "description": "pluginNativeCodeDescription"
+  },
+  {
+    "section": "agents",
     "label": "agentControlEnabled",
     "description": "agentControlEnabledDescription"
   },

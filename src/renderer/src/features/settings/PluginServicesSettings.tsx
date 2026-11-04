@@ -79,10 +79,16 @@ export function PluginServicesSettings({
   };
 
   return (
-    <section className="setting-group agent-hooks plugin-services">
-      <h3>{t(locale, "pluginNativeCode")}</h3>
-      <p className="setting-group__description">{t(locale, "pluginNativeCodeDescription")}</p>
-      <div className="agent-hooks__list">
+    <section
+      className="setting-group setting-group--field setting-group--stacked agent-hooks plugin-services"
+      data-setting-label={t(locale, "pluginNativeCode")}
+      tabIndex={-1}
+    >
+      <div className="setting-group__copy">
+        <h3>{t(locale, "pluginNativeCode")}</h3>
+        <p className="setting-group__description">{t(locale, "pluginNativeCodeDescription")}</p>
+      </div>
+      <div className="setting-group__control agent-hooks__list">
         {rows.map((plugin) => {
           const pluginId = plugin.manifest.id;
           const trusted = plugin.nativeCodeTrusted;
@@ -118,9 +124,10 @@ export function PluginServicesSettings({
                       <dt>{service.title}</dt>
                       <dd>
                         <code>{service.entry}</code>
-                        {" · "}
-                        {t(locale, stateKey(status?.state ?? "stopped"))}
-                        {status?.lastError ? ` · ${status.lastError}` : ""}
+                        <span className="plugin-services__state" data-state={status?.state ?? "stopped"}>
+                          {t(locale, stateKey(status?.state ?? "stopped"))}
+                        </span>
+                        {status?.lastError && <span className="plugin-services__error">{status.lastError}</span>}
                       </dd>
                     </div>
                   );

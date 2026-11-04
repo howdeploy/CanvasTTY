@@ -1039,6 +1039,31 @@ button { border: 0; }
 .plugin-services__log { margin-top: 9px; font-size: 10px; font-weight: 750; }
 .plugin-services__log summary { color: var(--text-muted); cursor: pointer; }
 .plugin-services__log pre { max-height: 180px; margin: 6px 0 0; padding: 8px; overflow: auto; border-radius: 8px; background: rgba(255,255,255,.43); font: 700 9px/1.45 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.plugin-services .agent-hooks__row { min-width: 0; padding: 1em; }
+.plugin-services .agent-hooks__row-main { align-items: center; gap: 1em; }
+.plugin-services .agent-hooks__copy strong { font-size: .92em; line-height: 1.35; overflow-wrap: anywhere; }
+.plugin-services .agent-hooks__copy small { font-family: inherit; font-size: .78em; font-weight: 500; line-height: 1.4; }
+.plugin-services .agent-hooks__meta { margin-top: 1em; gap: .65em; }
+.plugin-services .agent-hooks__meta > div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .35em 1em; font-size: .82em; line-height: 1.45; }
+.plugin-services .agent-hooks__meta dt { flex: 1 1 12em; color: var(--text-muted-on-dark); font-weight: 500; overflow-wrap: anywhere; }
+.plugin-services .agent-hooks__meta dd { min-width: 0; flex: 1 1 18em; display: flex; flex-wrap: wrap; align-items: baseline; gap: .35em .75em; font-weight: 500; }
+.plugin-services .agent-hooks__meta code { min-width: 0; font: 500 1em/1.45 var(--font-mono); }
+.plugin-services__state { padding: .15em .6em; border-radius: .5em; color: var(--text-muted-on-dark); background: var(--surface); }
+.plugin-services__state[data-state="running"] { color: var(--text-dark); background: var(--success); }
+.plugin-services__state[data-state="failed"], .plugin-services__error { color: var(--danger); }
+.plugin-services__error { flex-basis: 100%; }
+.plugin-services .agent-hooks__toggle { min-width: 8em; min-height: 3em; padding: .5em .75em; gap: .65em; border-radius: .85em; font-size: .82em; font-weight: 650; white-space: nowrap; }
+.plugin-services .agent-hooks__toggle > span { box-sizing: content-box; flex-shrink: 0; width: 2.4em; height: 1.4em; padding: .2em; }
+.plugin-services .agent-hooks__toggle > span::after { flex-shrink: 0; width: 1.4em; height: 1.4em; }
+.plugin-services .agent-hooks__toggle--on > span::after { transform: translateX(1em); }
+.plugin-services :is(button, summary):focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.plugin-services .agent-hooks__confirm { padding: 1em; border-radius: .8em; }
+.plugin-services .agent-hooks__confirm p { font-size: .85em; line-height: 1.45; }
+.plugin-services .agent-hooks__confirm > div { flex-wrap: wrap; }
+.plugin-services .agent-hooks__confirm button { min-height: 3em; font-size: .82em; }
+.plugin-services .plugin-services__log { margin-top: 1em; font-size: .82em; font-weight: 500; }
+.plugin-services .plugin-services__log summary { color: var(--text-muted-on-dark); }
+.plugin-services .plugin-services__log pre { padding: .8em; color: var(--text); background: var(--surface); font: 500 1em/1.5 var(--font-mono); }
 .agent-hooks__disabled, .agent-hooks__error { margin: 8px 0 0; color: #8f3939; font-size: 10px; font-weight: 800; line-height: 1.4; }
 .shortcut-editor { display: grid; gap: 8px; }
 .shortcut-editor__row { min-height: 54px; padding: 8px 9px 8px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; border-radius: 12px; background: rgba(255,255,255,.4); }

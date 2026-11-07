@@ -377,15 +377,17 @@ test("sessions:control-any types into any agent card but never a plain terminal"
   t.after(() => terminals.disposeAll());
   const agent = terminals.create({ provider: "claude", cwd, profile: "normal", position: at, title: "Person's agent" });
   const shell = terminals.create({ provider: "terminal", cwd, profile: "normal", position: at });
+  const foreign = terminals.create({ provider: "codex", cwd, profile: "normal", position: at, title: "Another plugin's agent" });
+  terminals.setPluginOwner(foreign.id, "p2");
   terminals.applyProviderSignal(agent.id, { kind: "lifecycle", state: "idle" });
   await flush();
   const control = ["sessions:control"];
   const any = ["sessions:control", "sessions:control-any"];
   // Without the permission a person's card stays out of reach.
   assert.throws(() => sessions.handle("p1", "svc", "sessions.send", { sessionId: agent.id, text: "continue" }, control), /No session this plugin started/u);
-  // control-any needs control itself, and never reaches plain terminals, unknown ids or stop.
+  // control-any needs control itself, and never reaches plain terminals, other plugins' cards, unknown ids or stop.
   assert.throws(() => sessions.handle("p1", "svc", "sessions.send", { sessionId: agent.id, text: "x" }, ["sessions:control-any"]), /sessions:control/u);
-  for (const id of [shell.id, "missing"]) {
+  for (const id of [shell.id, foreign.id, "missing"]) {
     assert.throws(() => sessions.handle("p1", "svc", "sessions.send", { sessionId: id, text: "rm -rf ." }, any), /No session this plugin started/u);
   }
   assert.throws(() => sessions.handle("p1", "svc", "sessions.stop", { sessionId: agent.id }, any), /No session this plugin started/u);
@@ -398,6 +400,7 @@ test("sessions:control-any types into any agent card but never a plain terminal"
   terminals.applyProviderSignal(agent.id, { kind: "lifecycle", state: "working", event: "UserPromptSubmit" });
   assert.equal((await pending).sent, true);
   assert.deepEqual(calls[1].writes, [], "the plain terminal got nothing");
+  assert.deepEqual(calls[2].writes, [], "another plugin's card got nothing");
 });
 
 test("sessions.dismiss presses Esc only for an idle agent menu, like agent-control dismiss", async (t) => {
@@ -416,9 +419,19 @@ test("sessions.dismiss presses Esc only for an idle agent menu, like agent-contr
   terminals.applyProviderSignal(agent.id, { kind: "lifecycle", state: "working" });
   assert.equal((await sessions.handle("p1", "svc", "sessions.dismiss", { sessionId: agent.id }, any)).dismissed, false);
   assert.deepEqual(calls[0].writes, []);
+  // The person typed during that turn: their draft is not a menu, so idle alone does not allow Esc.
+  terminals.inputChecked(agent.id, "draft");
+  terminals.applyProviderSignal(agent.id, { kind: "lifecycle", state: "idle" });
+  assert.match((await sessions.handle("p1", "svc", "sessions.dismiss", { sessionId: agent.id }, any)).reason, /typed/u);
+  // A clean turn later, the menu is dismissed.
+  terminals.applyProviderSignal(agent.id, { kind: "lifecycle", state: "working" });
   terminals.applyProviderSignal(agent.id, { kind: "lifecycle", state: "idle" });
   assert.deepEqual(await sessions.handle("p1", "svc", "sessions.dismiss", { sessionId: agent.id }, any), { sessionId: agent.id, dismissed: true });
-  assert.deepEqual(calls[0].writes, ["\x1b"]);
+  assert.deepEqual(calls[0].writes, ["draft", "\x1b"]);
+  // An Esc hint far above the last lines is earlier output, not a menu.
+  calls[0].print(`\x1b[2J\x1b[HPress Esc to cancel the build\r\n${Array.from({ length: 10 }, (_, line) => `output ${line}`).join("\r\n")}`);
+  assert.equal((await sessions.handle("p1", "svc", "sessions.dismiss", { sessionId: agent.id }, any)).dismissed, false);
+  assert.deepEqual(calls[0].writes, ["draft", "\x1b"]);
 });
 
 test("a plugin keeps control of the cards it started after a restore; the owner is saved on the record", async (t) => {

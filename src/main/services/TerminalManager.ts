@@ -227,6 +227,8 @@ export const PTY_EXIT_WAIT_MS = 2_000;
 export const PTY_KILL_WAIT_MS = 1_000;
 /** Longer than every plugin step of a launch together (prepare, resume, launch options, wrap). */
 export const LAUNCH_INPUT_WAIT_MS = 60_000;
+/** A menu's "Esc to cancel" hint sits in its last lines; output above them is not a menu. */
+const DISMISS_HINT_LINES = 8;
 
 /** `delivered` acknowledges a PTY write, not the CLI accepting or submitting it. */
 export type InputDelivery = ({ delivered: true } | { delivered: false; reason: string }) & { receipt?: PromptDeliveryReceipt };
@@ -1005,12 +1007,16 @@ export class TerminalManager {
   /**
    * Presses Esc in an idle agent card that shows a dismissible menu (such as Claude's usage-limit options), the guard
    * agent-control `dismiss` uses: never while a turn runs, an approval waits, input is queued, or the composer is ready.
+   * Nor after the person typed since the last clean turn: their draft is not a menu. The hint must be in the last
+   * lines of the screen, where menus put it, not in the agent's earlier output.
    */
   async dismissIdleMenu(id: string): Promise<{ dismissed: boolean; reason?: string }> {
     const session = this.sessions.get(id);
     if (!session || session.metadata.exitCode !== null || !session.process) return { dismissed: false, reason: "The session does not accept input." };
     const busy = (): boolean => session.metadata.status === "working" || session.metadata.status === "needs_approval";
     if (busy() || session.inputQueue) return { dismissed: false, reason: "The agent is busy; nothing was written." };
+    const typed = (): boolean => (session.manualInputRevision ?? 0) !== (session.cleanInputRevision ?? 0);
+    if (typed()) return { dismissed: false, reason: "The person typed into the card; nothing was written." };
     const provider = session.metadata.provider;
     const screen = new SessionScreen({ geometry: (target) => this.geometry(target), readBuffer: (target) => this.readBuffer(target) }, id);
     try {
@@ -1020,13 +1026,14 @@ export class TerminalManager {
             : provider === "codex" ? codexTerminalComposerReady(terminal, this.codexUnstyledComposerAllowed(id)) : false,
         text: terminalScreenText(terminal)
       }));
-      if (!state || state.ready || !/\besc(?:ape)?\s+to\s+(?:cancel|exit|go back)|Press[^\n]*(?:esc|escape)/iu.test(state.text)) {
+      const footer = state?.text.split("\n").filter((line) => line.trim()).slice(-DISMISS_HINT_LINES).join("\n") ?? "";
+      if (!state || state.ready || !/\besc(?:ape)?\s+to\s+(?:cancel|exit|go back)|Press[^\n]*(?:esc|escape)/iu.test(footer)) {
         return { dismissed: false, reason: "No dismissible idle menu is visible." };
       }
     } finally {
       screen.dispose();
     }
-    if (this.sessions.get(id) !== session || busy()) {
+    if (this.sessions.get(id) !== session || busy() || typed()) {
       return { dismissed: false, reason: "The card changed; nothing was written." };
     }
     return this.inputChecked(id, "\x1b", "automation") ? { dismissed: true } : { dismissed: false, reason: "The terminal no longer accepts input." };

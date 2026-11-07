@@ -140,7 +140,7 @@ Script запускается отдельным процессом из кат�
 | `limits.get` | запрос | `limits:read` | `{ state: "ready", snapshot }`: тот же `LimitsSnapshot` без данных аккаунта, что получают веб-поверхности (окна провайдеров с `usedPercent` и `resetsAt`) |
 | `sessions.subscribe` / `sessions.list` / `sessions.unsubscribe` | запрос | `sessions:events` | События окон и список открытых окон (см. «События сессий») |
 | `sessions.create` | запрос | `sessions:launch` | Запускает окно, которым владеет плагин |
-| `sessions.send` / `sessions.stop` | запрос | `sessions:control` | Только для окон, запущенных этим плагином |
+| `sessions.send` / `sessions.dismiss` / `sessions.stop` | запрос | `sessions:control` | Только для окон, запущенных этим плагином; `sessions:control-any` добавляет send и dismiss для окон агентов, открытых человеком |
 | `cards.setBadge` `{ sessionId, badge }` | запрос | `cards:decorate` | Короткая текстовая метка на любом окне (см. «Метки и действия на окнах») |
 
 Хост привязывает каждый вызов к плагину самого сервиса: сервис не может назвать другой плагин или прочитать секреты другого плагина, а к сессиям обращается только через разрешения `sessions:*` ниже. Пример [`service-echo`](../examples/plugins/service-echo) сохраняет токен со своей страницы через `host.secrets.set`, а его сервис читает его через `secrets.get` и отвечает только, задан ли он.
@@ -341,8 +341,8 @@ interface PluginSessionEvent {
 | Запрос | Условие | Действие |
 |:--|:--|:--|
 | `sessions.create` `{ provider, cwd, profile?, title?, launchOptions?, environment? }` | `sessions:launch` | Запускает окно `agent` через обычный конвейер запуска (включая опции запуска и среды; отказ показывается на окне). Окно видимо и никогда не забирает фокус. Не больше 16 на плагин. Ответ `{ sessionId }` |
-| `sessions.send` `{ sessionId, text, submit? }` | `sessions:control` | Вводит текст (с Enter, если не `submit: false`) в окно, запущенное этим плагином, а с `sessions:control-any` — в любое окно агента. Доставка та же: ждёт пустое поле ввода и отказывает, пока окно ждёт подтверждения. Окно, чей запуск ещё готовят плагины, получает его, когда запуск начался; `sent` равен false, если запуск не состоялся (текст отбрасывается) |
-| `sessions.dismiss` `{ sessionId }` | `sessions:control` | Нажимает Esc в окне, куда плагину можно писать, только если окно простаивает и показывает закрываемое меню (например, меню лимита Claude); иначе `dismissed` равен false и ничего не вводится |
+| `sessions.send` `{ sessionId, text, submit? }` | `sessions:control` | Вводит текст (с Enter, если не `submit: false`) в окно, запущенное этим плагином, а с `sessions:control-any` — в окно агента, открытое человеком. Доставка та же: ждёт пустое поле ввода и отказывает, пока окно ждёт подтверждения. Окно, чей запуск ещё готовят плагины, получает его, когда запуск начался; `sent` равен false, если запуск не состоялся (текст отбрасывается) |
+| `sessions.dismiss` `{ sessionId }` | `sessions:control` | Нажимает Esc в окне, куда плагину можно писать, только если окно простаивает, человек ничего не вводил в него после прошлого хода, а подсказка закрываемого меню стоит в последних строках (например, меню лимита Claude); иначе `dismissed` равен false и ничего не вводится |
 | `sessions.stop` `{ sessionId }` | `sessions:control` | Закрывает окно, запущенное этим плагином; данные его среды сохраняются |
 
 Чужой или неизвестный id получает одну и ту же ошибку, поэтому плагин не может прощупывать другие окна. Удаления и чтения экрана через управление нет.
@@ -406,7 +406,7 @@ host.onStorageChange(listener) сообщает всем открытым пов
 | `sessions:read-screen` | `screen` в событиях status и exited | Конец вывода каждого окна (замаскированный): личные данные |
 | `sessions:launch` | `sessions.create` | Запускает видимые окна агентов через обычный запуск |
 | `sessions:control` | `sessions.send`, `sessions.stop` | Вводит текст и закрывает только окна, запущенные плагином |
-| `sessions:control-any` | `sessions.send`, `sessions.dismiss` (вместе с `sessions:control`) | Вводит текст и в окна агентов, открытые человеком; никогда в обычные терминалы и без `sessions.stop` |
+| `sessions:control-any` | `sessions.send`, `sessions.dismiss` (вместе с `sessions:control`) | Вводит текст и в окна агентов, открытые человеком; никогда в обычные терминалы, окна других плагинов и без `sessions.stop` |
 | `cards:decorate` | `cards.setBadge`, `cardActions` сервиса, `canvastty.cards.invoke` | Текстовые метки на окнах и действия в их меню |
 | `browser:engine` | `browserEngine` сервиса и `canvastty.browserEngine.*` | Получает URL фоновых вкладок агентов и открывает их в своём движке; без cookies, профиля и учётных данных |
 | `limits:read` | `limits.get` (поверхности и сервисы) | Тот же очищенный `LimitsSnapshot`, который использует HOME |

@@ -41,6 +41,8 @@ export interface PluginServiceHost {
    * does not know. `permissions` are the plugin's active manifest permissions; it checks them per method.
    */
   sessions?(pluginId: string, serviceId: string, method: string, params: unknown, permissions: readonly PluginPermission[]): unknown;
+  /** `limits.get`, already checked for `limits:read`: the same account-free snapshot web surfaces get. */
+  limits?(pluginId: string): Promise<unknown>;
   /** `cards.setBadge` (EP-7), already checked for `cards:decorate`. */
   setBadge?(pluginId: string, params: unknown): unknown;
   /** The service process ended (stopped, crashed or removed): its subscriptions end with it. */
@@ -627,6 +629,10 @@ export class PluginServiceSupervisor {
       }
       this.options.host.registerSecrets?.(spec.pluginId, values.values as string[]);
       return null;
+    }
+    if (method === "limits.get" && this.options.host.limits) {
+      if (!spec.permissions.includes("limits:read")) throw new Error("Plugin does not have the limits:read permission.");
+      return this.options.host.limits(spec.pluginId);
     }
     if (method === "cards.setBadge" && this.options.host.setBadge) {
       if (!spec.permissions.includes("cards:decorate")) throw new Error("Plugin does not have the cards:decorate permission.");

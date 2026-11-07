@@ -61,6 +61,7 @@ interface TerminalPort {
   setPluginOwner(id: string, pluginId: string): void;
   readBuffer(id: string): TerminalBufferSnapshot;
   deliverPrompt(id: string, text: string, submit?: boolean, signal?: AbortSignal): Promise<InputDelivery>;
+  dismissIdleMenu(id: string): Promise<{ dismissed: boolean; reason?: string }>;
   dispose(id: string, options?: { keepEnvironmentData?: boolean }): void;
   redactSecrets(text: string): string;
   redactSecretsTail(text: string, maxChars: number): string;
@@ -88,7 +89,8 @@ const MAX_SCREEN_CHARS = 4_000;
  * the redacted end of the output only with `sessions:read-screen`). It can start cards through the normal launch
  * pipeline (launch options and environments included), and send text to and stop only the cards it started:
  * the same ownership rule as the agent-control gateway. Ownership lives on the card's saved record, so a restored
- * card stays under the plugin that started it.
+ * card stays under the plugin that started it. With `sessions:control-any` a service may also send text to any
+ * agent card (never a plain terminal, and never stop it).
  */
 export class PluginSessions {
   private readonly deps: PluginSessionsDependencies;
@@ -123,7 +125,10 @@ export class PluginSessions {
         return this.create(pluginId, values);
       case "sessions.send":
         need("sessions:control");
-        return this.send(pluginId, values);
+        return this.send(pluginId, values, permissions.includes("sessions:control-any"));
+      case "sessions.dismiss":
+        need("sessions:control");
+        return this.dismiss(pluginId, values, permissions.includes("sessions:control-any"));
       case "sessions.stop":
         need("sessions:control");
         return this.stop(pluginId, values);
@@ -248,14 +253,20 @@ export class PluginSessions {
   }
 
   /** `sent` confirms a PTY write, not provider submission/acceptance. */
-  private send(pluginId: string, values: Record<string, unknown>): Promise<{ sessionId: string; sent: boolean; delivery?: PromptDeliveryReceipt }> {
-    const sessionId = this.requireOwned(pluginId, values.sessionId);
+  private send(pluginId: string, values: Record<string, unknown>, anyAgent: boolean): Promise<{ sessionId: string; sent: boolean; delivery?: PromptDeliveryReceipt }> {
+    const sessionId = anyAgent && this.isAgentCard(values.sessionId) ? values.sessionId : this.requireOwned(pluginId, values.sessionId);
     if (typeof values.text !== "string" || values.text.length === 0 || values.text.length > MAX_SEND_CHARS) {
       throw new Error(`text must be 1 to ${MAX_SEND_CHARS} characters.`);
     }
     const submit = values.submit === undefined ? true : values.submit === true;
     return this.deps.terminals.deliverPrompt(sessionId, values.text, submit)
       .then((delivery) => ({ sessionId, sent: delivery.delivered, ...(delivery.receipt ? { delivery: delivery.receipt } : {}) }));
+  }
+
+  /** Esc for an idle card's menu (such as Claude's usage-limit options); the host checks the menu is on screen. */
+  private dismiss(pluginId: string, values: Record<string, unknown>, anyAgent: boolean): Promise<{ sessionId: string; dismissed: boolean; reason?: string }> {
+    const sessionId = anyAgent && this.isAgentCard(values.sessionId) ? values.sessionId : this.requireOwned(pluginId, values.sessionId);
+    return this.deps.terminals.dismissIdleMenu(sessionId).then((result) => ({ sessionId, ...result }));
   }
 
   private stop(pluginId: string, values: Record<string, unknown>): { sessionId: string; stopped: true } {
@@ -267,6 +278,12 @@ export class PluginSessions {
 
   private owner(sessionId: string): string | null {
     return this.deps.terminals.pluginContext(sessionId)?.owner ?? null;
+  }
+
+  /** A card running an agent provider; plain terminals stay reachable only by the plugin that started them. */
+  private isAgentCard(sessionId: unknown): sessionId is string {
+    const provider = typeof sessionId === "string" ? this.deps.terminals.pluginContext(sessionId)?.metadata.provider : undefined;
+    return provider !== undefined && provider !== "terminal";
   }
 
   /** A foreign or unknown id gets the same answer, so a plugin cannot probe other cards. */

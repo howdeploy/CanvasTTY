@@ -66,7 +66,7 @@ import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from ".
 import { SecretRedactionRegistry } from "./safety/SecretRedaction.ts";
 import type { DecisionSession } from "./DecisionHooks.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
-import { SessionScreen } from "./materials/sessionScreen.ts";
+import { SessionScreen, terminalScreenText } from "./materials/sessionScreen.ts";
 import { TerminalReplayState } from "./terminalReplayState.ts";
 import { codexPromptInput, codexTerminalComposerReady } from "./codexInput.ts";
 import { claudeTerminalComposerReady, promptComposer, promptPasteObserved, type PromptDeliveryReceipt } from "./promptDelivery.ts";
@@ -1000,6 +1000,36 @@ export class TerminalManager {
       receipt: { stage: "not-written", acceptance: "unconfirmed" } };
     const data = staged || options.bracketedPaste ? codexPromptInput(text, false) : text;
     return this.deliverInput(id, data, options.waitMs ?? LAUNCH_INPUT_WAIT_MS, signal, provider === "codex", prompt);
+  }
+
+  /**
+   * Presses Esc in an idle agent card that shows a dismissible menu (such as Claude's usage-limit options), the guard
+   * agent-control `dismiss` uses: never while a turn runs, an approval waits, input is queued, or the composer is ready.
+   */
+  async dismissIdleMenu(id: string): Promise<{ dismissed: boolean; reason?: string }> {
+    const session = this.sessions.get(id);
+    if (!session || session.metadata.exitCode !== null || !session.process) return { dismissed: false, reason: "The session does not accept input." };
+    const busy = (): boolean => session.metadata.status === "working" || session.metadata.status === "needs_approval";
+    if (busy() || session.inputQueue) return { dismissed: false, reason: "The agent is busy; nothing was written." };
+    const provider = session.metadata.provider;
+    const screen = new SessionScreen({ geometry: (target) => this.geometry(target), readBuffer: (target) => this.readBuffer(target) }, id);
+    try {
+      const state = await screen.inspect((terminal) => ({
+        ready: provider === "claude" ? claudeTerminalComposerReady(terminal, this.claudeUnstyledComposerAllowed(id))
+          : provider === "kimi" ? kimiComposerReady(terminal)
+            : provider === "codex" ? codexTerminalComposerReady(terminal, this.codexUnstyledComposerAllowed(id)) : false,
+        text: terminalScreenText(terminal)
+      }));
+      if (!state || state.ready || !/\besc(?:ape)?\s+to\s+(?:cancel|exit|go back)|Press[^\n]*(?:esc|escape)/iu.test(state.text)) {
+        return { dismissed: false, reason: "No dismissible idle menu is visible." };
+      }
+    } finally {
+      screen.dispose();
+    }
+    if (this.sessions.get(id) !== session || busy()) {
+      return { dismissed: false, reason: "The card changed; nothing was written." };
+    }
+    return this.inputChecked(id, "\x1b", "automation") ? { dismissed: true } : { dismissed: false, reason: "The terminal no longer accepts input." };
   }
 
   lastPromptDelivery(id: string): PromptDeliveryReceipt | undefined {

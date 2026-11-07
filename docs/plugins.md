@@ -156,9 +156,10 @@ A service may call back this host API (the base that later extension points add 
 | `event` `{ event, data }` | notification | none | Delivered to this plugin's live surfaces through `host.service.onEvent` |
 | `redaction.register` `{ values }` | request | none | Up to 32 strings (4096 characters each, 8 or more to count) that CanvasTTY masks in every text one agent reads from another; kept in memory only |
 | `secrets.get` `{ key }` | request | `secrets` permission | The plugin's own secret (the same store as `host.secrets`), or `null`. The value is then masked like `redaction.register` values. For keys a service needs itself (an API key for a model it calls); never send one back to a surface |
+| `limits.get` | request | `limits:read` | `{ state: "ready", snapshot }`: the same account-free `LimitsSnapshot` web surfaces get (per provider windows with `usedPercent` and `resetsAt`) |
 | `sessions.subscribe` / `sessions.list` / `sessions.unsubscribe` | request | `sessions:events` | Card events and the open cards (see [Session events](#session-events-and-plugin-owned-cards-sessions)) |
 | `sessions.create` | request | `sessions:launch` | Starts a card the plugin owns |
-| `sessions.send` / `sessions.stop` | request | `sessions:control` | Only for cards the plugin started |
+| `sessions.send` / `sessions.dismiss` / `sessions.stop` | request | `sessions:control` | Only for cards the plugin started; `sessions:control-any` adds send and dismiss for any agent card |
 | `cards.setBadge` `{ sessionId, badge }` | request | `cards:decorate` | A short plain-text badge on any card (see [Card badges and actions](#card-badges-and-actions-cardsdecorate)) |
 
 The host binds every call to the service's own plugin; a service cannot name another plugin or read another plugin's secrets, and reaches sessions only through the `sessions:*` permissions below. The example [`service-echo`](../examples/plugins/service-echo) saves a token from its page with `host.secrets.set` and its service reads it with `secrets.get`, answering only whether one is set.
@@ -362,7 +363,8 @@ Control follows the agent-control gateway's model: the service is one controller
 | Request | Gate | Effect |
 |:--|:--|:--|
 | `sessions.create` `{ provider, cwd, profile?, title?, launchOptions?, environment? }` | `sessions:launch` | Starts an `agent` card through the normal launch pipeline (launch options and environments included; a refusal shows on the card). The card is visible and never takes focus. At most 16 per plugin. Answer `{ sessionId }` |
-| `sessions.send` `{ sessionId, text, submit? }` | `sessions:control` | Types the text (Enter unless `submit: false`) into a card this plugin started. A card whose launch its plugins still prepare gets it once that launch started; `sent` is false when the launch did not start (the text is dropped) |
+| `sessions.send` `{ sessionId, text, submit? }` | `sessions:control` | Types the text (Enter unless `submit: false`) into a card this plugin started, or with `sessions:control-any` into any agent card. Delivery is the same staged path: it waits for an empty composer and refuses while the card needs approval. A card whose launch its plugins still prepare gets it once that launch started; `sent` is false when the launch did not start (the text is dropped) |
+| `sessions.dismiss` `{ sessionId }` | `sessions:control` | Presses Esc in a card it may send to, only when the card is idle and shows a dismissible menu (such as Claude's usage-limit options); `dismissed` is false otherwise and nothing is written |
 | `sessions.stop` `{ sessionId }` | `sessions:control` | Closes a card this plugin started; its environment data is kept |
 
 A foreign or unknown id gets the same error, so a plugin cannot probe other cards. There is no delete and no screen-reading control call.
@@ -425,10 +427,11 @@ host.onStorageChange(listener) notifies every live contribution of the same plug
 | `sessions:events` | `sessions.subscribe`, `sessions.list` | Card metadata: provider, role, parent, title, status, folders, environment ref; no screen text |
 | `sessions:read-screen` | `screen` in status and exit events | The end of every card's output (masked): private data |
 | `sessions:launch` | `sessions.create` | Starts visible agent cards through the normal launch |
-| `sessions:control` | `sessions.send`, `sessions.stop` | Types into and closes only the cards the plugin started |
+| `sessions:control` | `sessions.send`, `sessions.dismiss`, `sessions.stop` | Types into and closes only the cards the plugin started |
+| `sessions:control-any` | `sessions.send`, `sessions.dismiss` (with `sessions:control`) | Also types into agent cards the person opened; never plain terminals, never `sessions.stop` |
 | `cards:decorate` | `cards.setBadge`, a service's `cardActions`, `canvastty.cards.invoke` | Plain-text badges on cards and actions in their menu |
 | `browser:engine` | A service's `browserEngine` and `canvastty.browserEngine.*` | Receives the URLs of agents' background tabs and serves them from its own engine; no cookies, profile or credentials |
-| `limits:read` | `limits.get` | The same sanitized `LimitsSnapshot` used by HOME |
+| `limits:read` | `limits.get` (surfaces and services) | The same sanitized `LimitsSnapshot` used by HOME |
 | `launcher:open` | `launcher.open` | Opens the built-in provider Focus Card or terminal action; it does not bypass user launch choices |
 | `external:open` | `external.open` | Opens only an explicit HTTP(S) URL through the OS |
 | `browser:open` | `browser.open` | Opens only an explicit HTTP(S) URL in CanvasTTY's embedded Browser card and its shared browser session, including localhost |

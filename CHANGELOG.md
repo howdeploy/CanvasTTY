@@ -2,6 +2,15 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## 1.8.6-beta1
+
+- Keep the current main-branch FPS improvements and plugin settings fixes.
+- Update the selection cleanup contract check for cached renderer disposal without changing runtime selection behavior.
+- Expose a private per-card Codex app-server on Linux for local integrations, including voice bridges, while keeping the official CLI as the terminal frontend. Requires Codex CLI 0.163.0 or newer; older CLIs keep their existing launch.
+- Preserve launch-scoped browser/runtime configuration, isolation and explicit launch permissions when resuming a thread by ID. Close the owned backend when its terminal exits.
+- Keep macOS, Windows, optional native frontends and local-only CLI modes on their existing launch paths. A new or reopened card is required; already-running embedded servers cannot be attached in place.
+- Live audio is provided by the separately installed voice bridge. This beta does not bundle speaker firmware, a voice service or an API key, and actual voice latency remains subject to manual verification.
+
 ## 1.8.5
 
 - Carry forward the beta2 optimization, prompt-delivery, provider launch-mode and cross-platform reliability updates described below.

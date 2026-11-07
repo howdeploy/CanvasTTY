@@ -119,9 +119,28 @@ and [upstream server-version notice](https://github.com/openai/codex/blob/rust-v
 
 ## Launch-scoped browser configuration
 
-Codex launches carrying CanvasTTY's browser/runtime inline config use `--no-daemon` so each launch receives
+Codex launches carrying CanvasTTY's browser/runtime inline config retain a separate server so each launch receives
 its own browser capability rather than reusing a daemon's earlier configuration.
-Editor keymap overrides alone do not force `--no-daemon`.
+On Linux, `src/agent-runtime/codex-session.mjs` starts the resolved official CLI as a private app-server and
+connects that same CLI's TUI using `--remote unix://…`. Requires Codex CLI 0.163.0 or newer;
+older or unrecognized versions retain their original launch. This applies to Codex cards and the observed `codex`
+command in shell cards. The server keeps the card's environment, isolation and inline browser/runtime config.
+The socket is `ctty-tui-*/rpc.sock` under the launch's temporary directory (0700 directory, 0600 socket).
+It remains available to same-user local integrations, including the Mini voice bridge, for the card's lifetime.
+The launcher closes its own server process group and removes its temporary directory when the frontend exits.
+No TCP listener, API key, shared-daemon configuration or duplicate agent is introduced.
+
+For `resume ID`, the launcher first applies explicitly selected launch permissions through the official
+`app-server proxy --sock` RPC, then attaches the TUI to the same loaded thread. This is necessary because
+the stock remote TUI restores saved permissions on resume. The preparation sends no user turn.
+Resume pickers without an explicit ID, `--worktree`, local-model flags, `--profile`, `--add-dir`, hook-trust bypass, named permission
+overrides and noninteractive CLI commands retain their original launch without this private endpoint.
+macOS and Windows retain their existing launchers. Existing optional native TUI selection takes precedence.
+Other launches with inline config still use `--no-daemon`; editor keymap overrides alone do not force it.
+
+This change requires a newly launched/resumed card; it cannot expose an already-running embedded server.
+The launcher's exported `selfCheck()` covers argument routing and permission forwarding without starting Codex;
+live startup, shutdown and voice latency still need manual verification with the separately installed integration.
 A successfully spawned PTY retains its unused browser capability while the user
 is in a trust dialog or resume picker. Exit, close and failed-spawn cleanup still
 revoke the capability; standalone unused capabilities keep their existing TTL.

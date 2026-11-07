@@ -650,6 +650,15 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       notifications.forget(payload.id);
     }
   }, providerClis, agentBrowserBridge ?? undefined, agentRuntimeBridge ?? undefined, settings.get().agentLifecycleHooksEnabled);
+  if (process.platform === "linux") {
+    terminalManager.configureCodexSessionLauncher({
+      command: process.execPath,
+      args: [app.isPackaged
+        ? join(process.resourcesPath, "agent-runtime", "codex-session.mjs")
+        : join(app.getAppPath(), "src", "agent-runtime", "codex-session.mjs")],
+      env: { ELECTRON_RUN_AS_NODE: "1" }
+    });
+  }
   terminalManager.configureRedaction(redaction);
   terminalManager.setKeyboardShortcuts(settings.get().shortcuts);
   // The operating-system isolation layer (Settings → Agents → Agent isolation) and YOLO only where the person

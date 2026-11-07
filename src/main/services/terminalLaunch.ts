@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import type { HelperLaunch } from "./agentHelpers.ts";
 import { posix, win32 } from "node:path";
 import type { ProviderId, ShortcutBindings } from "../../shared/contracts.ts";
 import { CODEX_KEYMAP_NEWLINE_SEQUENCE, CODEX_KEYMAP_SUBMIT_SEQUENCE } from "../../shared/codexKeyboard.ts";
@@ -19,6 +20,7 @@ export interface TerminalLaunch {
 }
 
 interface LaunchResolutionOptions {
+  codexSessionLauncher?: HelperLaunch;
   shortcuts?: ShortcutBindings;
   platform?: NodeJS.Platform;
   environment?: Readonly<NodeJS.ProcessEnv>;
@@ -151,6 +153,14 @@ export function resolveTerminalLaunch(
     };
   }
   if (providerCli.launcher === "native") {
+    if (provider === "codex" && options.codexSessionLauncher && platform === "linux") {
+      const launcher = options.codexSessionLauncher;
+      return {
+        command: launcher.command,
+        args: [...launcher.args, "--backend", providerCli.executable, "--", ...providerArgs],
+        environment: { ...combinedEnvironment, ...launcher.env }
+      };
+    }
     return {
       command: providerCli.executable,
       args: providerArgs,

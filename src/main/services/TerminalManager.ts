@@ -3,6 +3,7 @@ import { codexPromptSubmit } from "../../shared/codexKeyboard.ts";
 import { ORCHESTRATION_ENV } from "./agent-browser/orchestration-protocol.ts";
 import { connectedLaunchEnvironment } from "../../agent-runtime/launch-environment.mjs";
 import { instrumentShellCodex, resumeShellCodex } from "./shellCodexLaunch.ts";
+import type { HelperLaunch } from "./agentHelpers.ts";
 import { realpathSync, statSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { basename, dirname } from "node:path";
@@ -263,6 +264,7 @@ type Emit = (
 ) => void;
 
 export class TerminalManager {
+  private codexSessionLauncher?: HelperLaunch;
   private keyboardShortcuts: ShortcutBindings = { ...DEFAULT_SHORTCUTS };
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly emit: Emit;
@@ -368,6 +370,10 @@ export class TerminalManager {
 
   configureOrchestration(coordinator: OrchestrationLaunchCoordinator | null): void {
     this.agentOrchestration = coordinator;
+  }
+
+  configureCodexSessionLauncher(launcher: HelperLaunch): void {
+    this.codexSessionLauncher = launcher;
   }
 
   setKeyboardShortcuts(shortcuts: ShortcutBindings): void {
@@ -2133,6 +2139,7 @@ export class TerminalManager {
       // Plugin arguments follow the core's own and precede the resume selection.
       if (contribution) providerArgs.push(...contribution.args);
       let launch = resolveTerminalLaunch(provider, profile, providerArgs, {
+        codexSessionLauncher: this.codexSessionLauncher,
         shortcuts: this.keyboardShortcuts,
         environment: { ...baseEnvironment, ...providerEnvironment },
         ...(providerCli ? { providerCli } : {}),

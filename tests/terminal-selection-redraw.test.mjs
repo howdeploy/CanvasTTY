@@ -55,7 +55,11 @@ test("the guard matches the xterm build the app bundles and every card installs 
   assert.match(xterm, /handleSelectionChanged\(\w,\w,\w\)\{this\._selectionState\.start=\w,this\._selectionState\.end=\w/u);
   const card = await readFile(new URL("../src/renderer/src/features/terminal/TerminalCard.tsx", import.meta.url), "utf8");
   assert.match(card, /const restoreSelectionRedraws = skipEmptySelectionRedraws\(terminal\);/u);
-  assert.match(card, /restoreSelectionRedraws\(\);\r?\n\s+terminal\.dispose\(\);/u);
+  const restore = card.indexOf("restoreSelectionRedraws();");
+  const dispose = card.indexOf("terminal.dispose();", restore);
+  const cacheDispose = card.indexOf("rendererCache?.dispose();", restore);
+  assert.ok(restore >= 0 && dispose > restore, "restore the selection guard before disposing the terminal");
+  assert.ok(cacheDispose > restore && cacheDispose < dispose, "dispose cached renderers before disposing the terminal");
 });
 
 

@@ -19,7 +19,8 @@ test("a hidden or unmeasurable card cannot report placeholder geometry as a meas
   const fit = runInNewContext(stripTypeScriptTypes(source + "\nfit;"), {
     terminal, fitAddon,
     fitTerminalPreservingViewport(_terminal, callback) { callback(); },
-    reportGrid: (cols, rows) => reported.push([cols, rows])
+    reportGrid: (cols, rows) => reported.push([cols, rows]),
+    invalidatePinnedLayout() {}
   });
   for (const unmeasurable of [undefined, { cols: NaN, rows: 20 }, { cols: 80, rows: NaN }]) {
     dimensions = unmeasurable;

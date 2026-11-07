@@ -31,17 +31,18 @@ function harness({ budget = 3, viewport = { width: 1000, height: 1000 } } = {}) 
     }
   });
   const cards = new Map();
-  const card = (id, rect, { eligible = true, focused = false, attachable = true } = {}) => {
-    const state = { rect, attachable, attached: false, attaches: 0, detaches: 0, tries: 0 };
+  const card = (id, rect, { eligible = true, focused = false, attachable = true, parkable = false } = {}) => {
+    const state = { rect, attachable, attached: false, active: false, attaches: 0, detaches: 0, tries: 0 };
     state.unregister = pool.register(id, {
       measure: () => state.rect,
       attach: () => {
         state.tries += 1;
         if (!state.attachable) return false;
-        state.attached = true; state.attaches += 1; log.push(`+${id}`);
+        state.attached = true; state.active = true; state.attaches += 1; log.push(`+${id}`);
         return true;
       },
-      detach: () => { state.attached = false; state.detaches += 1; log.push(`-${id}`); }
+      detach: () => { state.attached = false; state.active = false; state.detaches += 1; log.push(`-${id}`); },
+      ...(parkable ? { setActive: (active) => { state.active = active; log.push(`${active ? "resume" : "park"}:${id}`); } } : {})
     });
     pool.update(id, { eligible, focused });
     cards.set(id, state);
@@ -64,6 +65,85 @@ function harness({ budget = 3, viewport = { width: 1000, height: 1000 } } = {}) 
 }
 
 const rect = (left, top, width, height) => ({ left, top, right: left + width, bottom: top + height });
+
+test("zoom switches a warm card to DOM immediately and reuses its bounded context after settling", () => {
+  const h = harness({ budget: 1 });
+  const a = h.card("a", rect(0, 0, 100, 100), { parkable: true });
+  h.advance(WEBGL_SETTLE_MS);
+  for (let i = 0; i < 5; i++) {
+    h.pool.viewportChanged();
+    h.pool.update("a", { eligible: false, focused: false });
+    assert.equal(a.active, false, "the upscaled raster stops drawing immediately");
+    h.advance(WEBGL_SETTLE_MS);
+    assert.deepEqual(h.pool.holders(), ["a"], "the parked context still counts against the budget");
+    h.pool.update("a", { eligible: true, focused: false });
+    h.advance(WEBGL_SETTLE_MS);
+    assert.equal(a.active, true);
+  }
+  assert.equal(a.attaches, 1, "crossing zoom thresholds does not recompile shaders");
+  assert.equal(a.detaches, 0);
+  a.unregister();
+  assert.equal(a.detaches, 1, "unmount really frees the parked or active context");
+});
+
+test("a parked context yields to another visible card before a new context is attached", () => {
+  const h = harness({ budget: 1 });
+  const a = h.card("a", rect(0, 0, 100, 100), { parkable: true });
+  h.advance(WEBGL_SETTLE_MS);
+  h.pool.update("a", { eligible: false, focused: false });
+  h.card("b", rect(0, 0, 100, 100), { parkable: true });
+  h.advance(WEBGL_SETTLE_MS);
+  assert.deepEqual(h.pool.holders(), ["b"]);
+  assert.equal(a.detaches, 1);
+  assert.deepEqual(h.log.slice(-2), ["-a", "+b"]);
+});
+
+test("a plan measures all cards before detaching and tells off-screen cards to skip snapshots", () => {
+  const events = [];
+  let outside = false;
+  const pool = new WebglContextPool({
+    now: () => 0, viewport: () => ({ width: 100, height: 100 }),
+    schedule: () => () => {}
+  });
+  for (const id of ["a", "b"]) {
+    pool.register(id, {
+      measure: () => {
+        events.push(`measure:${id}`);
+        return rect(outside && id === "a" ? 200 : 0, 0, 50, 50);
+      },
+      attach: () => true,
+      detach: (visible) => events.push(`detach:${id}:${visible}`)
+    });
+    pool.update(id, { eligible: true, focused: false });
+  }
+  pool.plan();
+  events.length = 0;
+  outside = true;
+  pool.plan();
+  assert.deepEqual(events, ["measure:a", "measure:b", "detach:a:false"]);
+  assert.deepEqual(pool.holders(), ["b"]);
+  events.length = 0;
+  pool.update("b", { eligible: false, focused: false });
+  assert.deepEqual(events, ["measure:b", "detach:b:true"], "an on-screen transition can still preserve its last frame");
+});
+
+test("a zoom threshold checks current visibility rather than the pool's pre-pan area", () => {
+  let outside = false;
+  const snapshots = [];
+  const pool = new WebglContextPool({
+    now: () => 0, viewport: () => ({ width: 100, height: 100 }), schedule: () => () => {}
+  });
+  pool.register("a", {
+    measure: () => rect(outside ? 200 : 0, 0, 50, 50),
+    attach: () => true, detach: (visible) => snapshots.push(visible)
+  });
+  pool.update("a", { eligible: true, focused: false });
+  pool.plan();
+  outside = true;
+  pool.viewportChanged();
+  pool.update("a", { eligible: false, focused: false });
+  assert.deepEqual(snapshots, [false]);
+});
 
 test("the budget stays below Chromium's 16 active WebGL contexts per renderer", () => {
   assert.ok(WEBGL_CONTEXT_BUDGET >= 8 && WEBGL_CONTEXT_BUDGET <= 12);

@@ -13,8 +13,8 @@
  * time has passed since the last camera or layout change. A card that holds a context keeps it unless
  * another card is clearly larger on screen, so a pan or a wheel zoom does not create and drop contexts on
  * every frame. A holder that has been idle for a while loses that edge: a card of the same size that is
- * printing output takes its place. A card losing eligibility (semantic zoom, zoom above the raster limit)
- * gives its context back straight away; a card that left the screen gives it back at the next plan.
+ * printing output takes its place. Clients that can park a renderer switch to DOM immediately when
+ * ineligible; their warm contexts occupy spare slots only and yield to any eligible on-screen card.
  *
  * The pool knows nothing about xterm or the DOM: a card registers a client that measures its on-screen
  * rectangle and attaches or detaches the renderer. That keeps the policy testable in node.
@@ -55,7 +55,9 @@ export interface WebglPoolClient {
   /** Load the WebGL renderer. False when WebGL2 is unavailable; the card stays on the DOM renderer. */
   attach(): boolean;
   /** Drop the WebGL renderer; xterm draws with the DOM renderer again. Terminal state is untouched. */
-  detach(): void;
+  detach(visible: boolean): void;
+  /** Switch drawing without destroying a leased context; parked contexts still count against the budget. */
+  setActive?(active: boolean): void;
 }
 
 export interface WebglPoolOptions {
@@ -74,6 +76,7 @@ interface Entry {
   focused: boolean;
   lastUsed: number;
   holding: boolean;
+  active: boolean;
   grantedAt: number;
   blockedUntil: number;
   losses: number;
@@ -139,7 +142,7 @@ export class WebglContextPool {
   register(id: string, client: WebglPoolClient): () => void {
     this.remove(id);
     this.entries.set(id, {
-      client, eligible: false, focused: false, lastUsed: this.options.now(), holding: false,
+      client, eligible: false, focused: false, lastUsed: this.options.now(), holding: false, active: false,
       grantedAt: 0, blockedUntil: 0, losses: 0, area: 0
     });
     this.settle();
@@ -149,8 +152,8 @@ export class WebglContextPool {
   }
 
   /**
-   * The card's own state. Losing eligibility releases the context now (a zoomed-in WebGL raster would be
-   * upscaled); gaining it, or gaining focus, waits for the settle time like a camera move.
+   * Losing eligibility switches to DOM now, so a zoomed-in WebGL raster is never upscaled.
+   * A warm context can stay leased while there is room; activation waits for the camera to settle.
    */
   update(id: string, state: { eligible: boolean; focused: boolean }): void {
     const entry = this.entries.get(id);
@@ -159,7 +162,15 @@ export class WebglContextPool {
     entry.eligible = state.eligible;
     entry.focused = state.focused;
     if (state.focused) entry.lastUsed = this.options.now();
-    if (!state.eligible) this.release(entry);
+    if (!state.eligible && entry.holding) {
+      if (entry.client.setActive) {
+        this.setActive(entry, false);
+        entry.area = 0;
+      } else {
+        entry.area = visibleArea(entry.client.measure(), this.options.viewport());
+        this.release(entry);
+      }
+    }
     if (changed) this.settle();
   }
 
@@ -194,6 +205,7 @@ export class WebglContextPool {
     const entry = this.entries.get(id);
     if (!entry) return;
     entry.holding = false;
+    entry.active = false;
     this.backOff(entry);
     this.settle();
   }
@@ -218,19 +230,33 @@ export class WebglContextPool {
     for (const [id, entry] of this.entries) {
       const allowed = entry.eligible && entry.blockedUntil <= now;
       const area = allowed ? visibleArea(entry.client.measure(), viewport) : 0;
-      // Off screen, ineligible or in backoff: give the context back whatever the ranking says.
-      if (area === 0) this.release(entry);
       entry.area = area;
       const pinned = entry.holding && now - entry.grantedAt < (this.options.minHoldMs ?? WEBGL_MIN_HOLD_MS);
       const idle = !entry.focused && now - entry.lastUsed >= WEBGL_IDLE_MS;
       candidates.push({ id, area, focused: entry.focused, holding: entry.holding, idle, pinned, lastUsed: entry.lastUsed });
     }
     const wanted = new Set(rankWebglCandidates(candidates, this.budget));
+    // Spare slots keep parked contexts warm. They never displace an on-screen candidate.
+    const retained = new Set([...this.entries]
+      .filter(([id, entry]) => !wanted.has(id) && entry.holding && entry.client.setActive)
+      .sort(([, a], [, b]) => b.lastUsed - a.lastUsed)
+      .slice(0, Math.max(0, this.budget - wanted.size))
+      .map(([id]) => id));
+    // Measure every card before detach/attach changes DOM and fits terminal grids.
     // Release before attaching, so the live context count never goes over the budget.
-    for (const [id, entry] of this.entries) if (!wanted.has(id)) this.release(entry);
+    for (const [id, entry] of this.entries) {
+      if (retained.has(id)) this.setActive(entry, false);
+      else if (!wanted.has(id)) this.release(entry);
+    }
     for (const id of wanted) {
       const entry = this.entries.get(id)!;
-      if (entry.holding) continue;
+      if (entry.holding) {
+        if (!entry.active) {
+          this.setActive(entry, true);
+          entry.grantedAt = now;
+        }
+        continue;
+      }
       if (!entry.client.attach()) {
         // No WebGL2 context for this card (blocklisted GPU, acceleration off, GPU process in trouble):
         // it stays on the DOM renderer and backs off like a lost context.
@@ -238,6 +264,7 @@ export class WebglContextPool {
         continue;
       }
       entry.holding = true;
+      entry.active = true;
       entry.grantedAt = now;
     }
     // A pinned holder kept a better-ranked card waiting: look again when the pin runs out.
@@ -253,6 +280,7 @@ export class WebglContextPool {
     for (const entry of this.entries.values()) {
       if (!entry.holding) continue;
       holders += 1;
+      if (!entry.active) return true;
       if (!entry.focused && now - entry.lastUsed >= WEBGL_IDLE_MS) return true;
     }
     return holders < this.budget;
@@ -289,7 +317,14 @@ export class WebglContextPool {
   private release(entry: Entry): void {
     if (!entry.holding) return;
     entry.holding = false;
-    entry.client.detach();
+    entry.active = false;
+    entry.client.detach(entry.area > 0);
+  }
+
+  private setActive(entry: Entry, active: boolean): void {
+    if (entry.active === active) return;
+    entry.client.setActive?.(active);
+    entry.active = active;
   }
 
   private remove(id: string): void {

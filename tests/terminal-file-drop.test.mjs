@@ -51,17 +51,20 @@ test("drop handler consumes native file drops once and leaves other drag payload
   let prevented = 0;
   let stopped = 0;
   let focused = 0;
+  let dropFailed = false;
   const file = { name: "video.mp4" };
   const onDrop = runInNewContext(`(${handler}\n})`, {
     window: { canvasTTY: { terminal: { fileDropText: (files) => {
       assert.equal(files[0], file);
+      if (dropFailed) throw new Error("unavailable path");
       return terminalFileDropText(["/videos/my video.mp4"], "linux");
     } } } },
     terminalRef: { current: {
       focus: () => focused++,
       paste: (text) => pasted.push(text),
-      write: (text) => errors.push(text)
+      write: () => assert.fail("drop errors must use the ordered output queue")
     } },
+    terminalWriterRef: { current: (text) => errors.push(text) },
     sessionExited,
     renaming: false,
     session: { id: "drop-target" },
@@ -87,4 +90,9 @@ test("drop handler consumes native file drops once and leaves other drag payload
   onDrop({ ...event, dataTransfer: { types: ["text/plain"], files: [] } });
   assert.equal(prevented, 2);
   assert.equal(stopped, 2);
+  sessionExited.current = false;
+  dropFailed = true;
+  onDrop(event);
+  assert.deepEqual(errors, ["\r\n[CanvasTTY] Drop failed\r\n"]);
+  assert.equal(pasted.length, 1, "a failed drop cannot paste partial paths");
 });

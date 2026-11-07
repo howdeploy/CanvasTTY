@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
 import { createPinnedInputRefresh, limitPinnedTerminalInput, pinnedTerminalInput } from "../src/renderer/src/features/terminal/terminalPinnedInput.ts";
 
@@ -162,4 +164,44 @@ test("disposing a pinned input refresh cancels pending work and prevents late ca
   callback();
   refresh.schedule();
   assert.equal(calls, 0);
+});
+
+test("steady output touches no pinned DOM or layout until the row or its geometry changes", async () => {
+  const card = await readFile(new URL("../src/renderer/src/features/terminal/TerminalCard.tsx", import.meta.url), "utf8");
+  const source = card.slice(card.indexOf("    let pinnedRows ="), card.indexOf("    const pinnedRefresh ="));
+  let reads = 0, writes = 0;
+  const style = { setProperty() { writes++; }, removeProperty() { writes++; } };
+  const node = () => ({ style: { ...style, set left(_value) { writes++; }, set width(_value) { writes++; } },
+    dataset: {}, classList: { add() {} }, append() {}, replaceChildren() { writes++; } });
+  const host = { get clientHeight() { reads++; return 400; }, classList: { toggle() { writes++; } }, style };
+  const screen = { get offsetLeft() { reads++; return 0; }, get clientWidth() { reads++; return 600; } };
+  const terminal = { cols: 80, rows: 6, buffer: { active: buffer({ viewportY: 10 }) } };
+  const h = runInNewContext(stripTypeScriptTypes(source + `
+    ({ render: renderPinnedInput, resize: () => { pinnedLayoutChanged = true; renderPinnedInput(); } });`), {
+    terminal, host, screen, pinnedInput: node(), pinnedTerminalInput, limitPinnedTerminalInput,
+    document: { createElement: node, createTextNode: (text) => ({ text }) },
+    requestAnimationFrame: () => 1, surfaceIsLive: () => true, lifecycleRef: { current: "visible" }, fitRef: { current: null }
+  });
+  for (let i = 0; i < 100; i++) h.render();
+  assert.equal(reads, 0, "follow-output needs no layout");
+  assert.equal(writes, 0, "no pinned strip exists to update");
+  terminal.buffer.active.viewportY = 3;
+  h.render();
+  assert.ok(reads > 0 && writes > 0, "scrolling into history creates the pinned row");
+  reads = 0; writes = 0;
+  for (let i = 0; i < 100; i++) h.render();
+  assert.equal(reads, 0, "an unchanged pinned row needs no new measurement");
+  assert.equal(writes, 0, "an unchanged pinned row does not invalidate layout");
+  terminal.buffer.active.cursorX++;
+  h.render();
+  assert.equal(reads, 0, "cursor or text changes reuse the measured geometry");
+  assert.ok(writes > 0, "the changed cursor is rendered");
+  reads = 0; writes = 0;
+  h.resize();
+  assert.ok(reads > 0 && writes > 0, "a size change refreshes geometry even when text and columns are unchanged");
+  terminal.buffer.active.viewportY = 10;
+  h.render();
+  reads = 0; writes = 0;
+  h.render();
+  assert.equal(reads + writes, 0, "after removing the row, follow-output is idle again");
 });

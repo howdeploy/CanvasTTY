@@ -17,6 +17,10 @@ function navigation({ platform = "darwin", zoom = 1, snapToGrid = false } = {}) 
   react.__reset();
   const previousWindow = globalThis.window;
   const previousElement = globalThis.Element;
+  const previousRequestFrame = globalThis.requestAnimationFrame;
+  const previousCancelFrame = globalThis.cancelAnimationFrame;
+  globalThis.requestAnimationFrame = () => assert.fail("group drags must not schedule camera frames");
+  globalThis.cancelAnimationFrame = () => {};
   globalThis.Element = class {};
   const listeners = new Map();
   globalThis.window = {
@@ -76,7 +80,13 @@ function navigation({ platform = "darwin", zoom = 1, snapToGrid = false } = {}) 
     event, starts, commits, boundsByLayer, listeners, groupDragBasis,
     get controller() { render(); return controller; },
     get captureCalls() { return captureCalls; },
-    close() { react.__unmount(); globalThis.window = previousWindow; globalThis.Element = previousElement; }
+    close() {
+      react.__unmount();
+      globalThis.window = previousWindow;
+      globalThis.Element = previousElement;
+      globalThis.requestAnimationFrame = previousRequestFrame;
+      globalThis.cancelAnimationFrame = previousCancelFrame;
+    }
   };
 }
 

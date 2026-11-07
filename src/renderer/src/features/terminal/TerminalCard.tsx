@@ -4,12 +4,13 @@ import type { TerminalBackgroundId } from "../../../../shared/terminalBackground
 const AsciiTerminalBackground = lazy(() =>
   import("./AsciiTerminalBackground").then((m) => ({ default: m.AsciiTerminalBackground }))
 );
-import { summaryScaleForZoom, useCameraSelector, type CameraStore } from "../workspace/cameraStore";
+import { SUMMARY_ZOOM, useCameraSelector, type CameraStore } from "../workspace/cameraStore";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { clearPreservedWebglFrames } from "./terminalWebglFrames";
+import { drawTerminalWebglSnapshot } from "./terminalWebglFrames";
+import { cacheTerminalRenderers } from "./terminalRendererCache";
 import { Terminal } from "@xterm/xterm";
 import {
   INITIAL_TERMINAL_COLS,
@@ -54,6 +55,7 @@ import {
 } from "./terminalShortcuts";
 import { attachTerminalRedrawViewport, fitTerminalPreservingViewport } from "./terminalViewport";
 import { attachTerminalOutput, createTerminalDeliveryGate } from "./terminalOutput";
+import { terminalWriteScheduler } from "./terminalWriteScheduler";
 import { surfaceIsLive, surfaceLifecycle, type SurfaceGate } from "../workspace/surfaceLifecycle";
 import { createPinnedInputRefresh, limitPinnedTerminalInput, pinnedTerminalInput, type PinnedTerminalInput } from "./terminalPinnedInput";
 import { terminalLinkTarget } from "./terminalLinkTarget";
@@ -232,6 +234,7 @@ function TerminalCardView({
   const terminalHost = useRef<HTMLDivElement>(null);
   const backgroundOutputActivity = useRef<(() => void) | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const terminalWriterRef = useRef<((data: string) => void) | null>(null);
   const shortcutsRef = useRef(shortcuts);
   shortcutsRef.current = shortcuts;
   const nativeEditorRef = useRef(session.nativeEditor);
@@ -295,10 +298,8 @@ function TerminalCardView({
     return () => window.clearTimeout(timer);
   }, [actionToast]);
   const liveBounds = useRef<SessionBounds>({ position: session.position, size: session.size });
-  // The card renders when these derived values change, not on every camera move: a pan renders no card,
-  // and a zoom only at the summary and WebGL thresholds (and while the summary scale grows).
-  const summaryScale = useCameraSelector(camera, (current) => summaryScaleForZoom(current.zoom));
-  const summaryMode = summaryScale > 1;
+  // Continuous summary scaling is inherited from the scene without rendering every card.
+  const summaryMode = useCameraSelector(camera, (current) => current.zoom < SUMMARY_ZOOM);
   const webglScaleAllowed = useCameraSelector(camera, (current) => current.zoom <= WEBGL_MAX_SCALE);
   const hasAsciiBackground = background !== "none";
   const asciiBackgroundRef = useRef(hasAsciiBackground);
@@ -309,6 +310,7 @@ function TerminalCardView({
   const terminalForeground = terminalColors.foreground;
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const webglAddonRef = useRef<WebglAddon | null>(null);
+  const rendererCacheRef = useRef<ReturnType<typeof cacheTerminalRenderers>>(null);
   const fitRef = useRef<(() => void) | null>(null);
   const rendererTransitionRef = useRef<{
     snapshot: HTMLElement;
@@ -339,6 +341,7 @@ function TerminalCardView({
       ? screen.querySelector<HTMLCanvasElement>("canvas:not([class])") : null;
     if (webglCanvas?.getContext("webgl2")?.isContextLost()) return null;
     const snapshot = screen.cloneNode(true) as HTMLElement;
+    snapshot.querySelectorAll("[data-renderer-parked]").forEach((element) => element.remove());
     // DOM renderer disposal removes its owner class; keep the cloned row styles scoped to the snapshot.
     for (const className of element.classList) {
       if (className.startsWith("xterm-dom-renderer-owner-") || className === "focus") snapshot.classList.add(className);
@@ -354,7 +357,9 @@ function TerminalCardView({
     // cloneNode copies DOM rows, but canvas pixels must be copied before disposing WebGL.
     const canvases = snapshot.querySelectorAll("canvas");
     try {
-      screen.querySelectorAll("canvas").forEach((canvas, index) => {
+      // Read back in the draw's task before Chromium discards the unpreserved buffer.
+      if (webglCanvas && !drawTerminalWebglSnapshot(webglAddonRef.current, terminal.rows)) return null;
+      screen.querySelectorAll<HTMLCanvasElement>("canvas:not([data-renderer-parked])").forEach((canvas, index) => {
         const context = canvases[index].getContext("2d");
         if (!context) throw new Error("Renderer snapshot unavailable");
         context.drawImage(canvas, 0, 0);
@@ -504,6 +509,8 @@ function TerminalCardView({
       terminal, openFile, (reference) => window.canvasTTY.terminal.canOpenFile(session.id, reference)
     ));
     terminal.open(host);
+    const rendererCache = cacheTerminalRenderers(terminal);
+    rendererCacheRef.current = rendererCache;
     const screen = terminal.element?.querySelector<HTMLElement>(".xterm-screen");
     const pinnedInput = document.createElement("div");
     pinnedInput.className = "terminal-card__pinned-input";
@@ -512,26 +519,43 @@ function TerminalCardView({
     host.append(pinnedInput);
     let pinnedRows = 0;
     let pinnedFitFrame: number | null = null;
+    let onScreen = false;
+    let pinnedLayoutChanged = true;
+    let maxPinnedRows = 1;
     let renderedPinnedInput: (PinnedTerminalInput & { cols: number }) | null = null;
     const renderPinnedInput = (): void => {
       // Include reserved rows so showing the pinned input cannot sustain its own visibility.
       const completePinned = pinnedTerminalInput(terminal.buffer.active, terminal.rows + pinnedRows);
-      const maxPinnedRows = Math.max(1, Math.floor(host.clientHeight / (14 * 1.2) / 2));
+      const previous = renderedPinnedInput;
+      if (!completePinned && previous === null) return;
+      const layoutChanged = pinnedLayoutChanged || previous === null;
+      if (completePinned && layoutChanged) maxPinnedRows = Math.max(1, Math.floor(host.clientHeight / (14 * 1.2) / 2));
       const pinned = completePinned ? limitPinnedTerminalInput(completePinned, maxPinnedRows) : null;
       const nextRows = pinned?.rows.length ?? 0;
-      pinnedInput.hidden = pinned === null;
-      host.classList.toggle("terminal-card__surface--pinned-input", pinned !== null);
+      const changed = pinned && (!previous || previous.cols !== terminal.cols
+        || previous.cursorRow !== pinned.cursorRow || previous.cursorColumn !== pinned.cursorColumn
+        || previous.rows.length !== pinned.rows.length
+        || pinned.rows.some((text, index) => text !== previous.rows[index]));
+      if (pinned && !changed && !layoutChanged) return;
+      // Finish geometry reads before mutating classes, styles or rows.
+      const left = pinned && layoutChanged ? screen?.offsetLeft ?? 0 : 0;
+      const width = pinned && layoutChanged ? screen?.clientWidth ?? host.clientWidth : 0;
+      pinnedLayoutChanged = false;
+      if ((pinned !== null) !== (previous !== null)) {
+        pinnedInput.hidden = pinned === null;
+        host.classList.toggle("terminal-card__surface--pinned-input", pinned !== null);
+      }
       if (pinned) {
-        host.style.setProperty("--pinned-input-height", `calc(${nextRows} * 1.2em)`);
-        pinnedInput.style.left = `${screen?.offsetLeft ?? 0}px`;
-        pinnedInput.style.width = `${screen?.clientWidth ?? host.clientWidth}px`;
-        pinnedInput.style.setProperty("--pinned-terminal-columns", String(terminal.cols));
-        pinnedInput.style.setProperty("--pinned-row-count", String(nextRows));
-        const previous = renderedPinnedInput;
-        if (!previous || previous.cols !== terminal.cols
-          || previous.cursorRow !== pinned.cursorRow || previous.cursorColumn !== pinned.cursorColumn
-          || previous.rows.length !== pinned.rows.length
-          || pinned.rows.some((text, index) => text !== previous.rows[index])) {
+        if (nextRows !== pinnedRows) {
+          host.style.setProperty("--pinned-input-height", `calc(${nextRows} * 1.2em)`);
+          pinnedInput.style.setProperty("--pinned-row-count", String(nextRows));
+        }
+        if (layoutChanged) {
+          pinnedInput.style.left = `${left}px`;
+          pinnedInput.style.width = `${width}px`;
+        }
+        if (previous?.cols !== terminal.cols) pinnedInput.style.setProperty("--pinned-terminal-columns", String(terminal.cols));
+        if (changed) {
           pinnedInput.replaceChildren(...pinned.rows.map((text, rowIndex) => {
             const row = document.createElement("div");
             row.className = "terminal-card__pinned-input-row";
@@ -572,13 +596,23 @@ function TerminalCardView({
       }
     };
     const pinnedRefresh = createPinnedInputRefresh({
-      isLive: () => surfaceIsLive(lifecycleRef.current),
+      isLive: () => surfaceIsLive(lifecycleRef.current) && onScreen && !document.hidden,
       refresh: renderPinnedInput,
       requestFrame: (callback) => requestAnimationFrame(callback),
       cancelFrame: (frame) => cancelAnimationFrame(frame)
     });
     const updatePinnedInput = pinnedRefresh.schedule;
-    pinnedInputRefreshRef.current = updatePinnedInput;
+    const invalidatePinnedLayout = (): void => {
+      pinnedLayoutChanged = true;
+      updatePinnedInput();
+    };
+    const pinnedVisibility = new IntersectionObserver(([entry]) => {
+      onScreen = entry.isIntersecting;
+      if (onScreen) invalidatePinnedLayout();
+    });
+    pinnedVisibility.observe(host);
+    document.addEventListener("visibilitychange", invalidatePinnedLayout);
+    pinnedInputRefreshRef.current = invalidatePinnedLayout;
     const pinnedScroll = terminal.onScroll(updatePinnedInput);
     const pinnedCursor = terminal.onCursorMove(updatePinnedInput);
     const pinnedOutput = terminal.onWriteParsed(updatePinnedInput);
@@ -594,20 +628,25 @@ function TerminalCardView({
     };
     const resize = terminal.onResize(({ cols, rows }) => {
       reportGrid(cols, rows);
-      updatePinnedInput();
+      invalidatePinnedLayout();
     });
     const pool = webglContextPool();
+    const outputWriter = terminalWriteScheduler().create((data, parsed) => terminal.write(data, parsed), (error) => {
+      console.error("CanvasTTY could not parse terminal output.", error);
+      setActionToast({ tone: "error", message: error instanceof Error ? error.message : String(error) });
+    });
+    terminalWriterRef.current = outputWriter.write;
     const unsubscribe = attachTerminalOutput(
       window.canvasTTY.terminal,
       session.id,
       (data, parsed) => {
         pool.touch(session.id);
         backgroundOutputActivity.current?.();
-        terminal.write(data, parsed);
+        outputWriter.write(data, parsed);
       },
       (error) => {
         console.error("CanvasTTY could not load terminal history.", error);
-        terminal.write(`\r\n[CanvasTTY] ${t(locale, "terminalHistoryFailed")}\r\n`);
+        outputWriter.write(`\r\n[CanvasTTY] ${t(locale, "terminalHistoryFailed")}\r\n`);
       },
       // Same locale capture as the notice above: this effect is scoped to the session.
       (missing) => t(locale, "terminalReplayTrimmed").replace("{count}", String(missing))
@@ -618,6 +657,7 @@ function TerminalCardView({
         if (!dimensions || !Number.isFinite(dimensions.cols) || !Number.isFinite(dimensions.rows)) return;
         fitTerminalPreservingViewport(terminal, () => fitAddon.fit());
         reportGrid(terminal.cols, terminal.rows);
+        invalidatePinnedLayout();
       } catch {
         // A hidden semantic-zoom surface has no measurable rows yet.
       }
@@ -772,7 +812,11 @@ function TerminalCardView({
     const unregisterWebgl = pool.register(session.id, {
       measure: () => host.checkVisibility({ visibilityProperty: true }) ? host.getBoundingClientRect() : null,
       attach: () => enableWebgl(terminal),
-      detach: () => disableWebgl(terminal)
+      detach: (visible) => disableWebgl(terminal, visible),
+      ...(rendererCache ? { setActive: (active: boolean) => {
+        if (active) enableWebgl(terminal);
+        else parkWebgl(terminal);
+      } } : {})
     });
 
     const queryReplies = terminalQueryReplies(terminal);
@@ -808,15 +852,19 @@ function TerminalCardView({
       detachCopyOnSelect();
       detachScrollbarCoordinateAdapter();
       unsubscribe();
+      if (terminalWriterRef.current === outputWriter.write) terminalWriterRef.current = null;
+      outputWriter.dispose();
       resizeObserver.disconnect();
       input.dispose();
       queryReplies.dispose();
       pinnedScroll.dispose();
       pinnedCursor.dispose();
       pinnedOutput.dispose();
+      pinnedVisibility.disconnect();
+      document.removeEventListener("visibilitychange", invalidatePinnedLayout);
       pinnedRefresh.dispose();
       if (pinnedFitFrame !== null) cancelAnimationFrame(pinnedFitFrame);
-      if (pinnedInputRefreshRef.current === updatePinnedInput) pinnedInputRefreshRef.current = null;
+      if (pinnedInputRefreshRef.current === invalidatePinnedLayout) pinnedInputRefreshRef.current = null;
       host.classList.remove("terminal-card__surface--pinned-input");
       host.style.removeProperty("--pinned-input-height");
       pinnedInput.remove();
@@ -829,6 +877,8 @@ function TerminalCardView({
       if (terminalRef.current === terminal) terminalRef.current = null;
       detachRedrawViewport();
       restoreSelectionRedraws();
+      rendererCache?.dispose();
+      if (rendererCacheRef.current === rendererCache) rendererCacheRef.current = null;
       terminal.dispose();
     };
   }, [session.id]);
@@ -864,16 +914,21 @@ function TerminalCardView({
 
   const enableWebgl = (terminal: Terminal): boolean => {
     if (asciiBackgroundRef.current) return false;
-    if (webglAddonRef.current) return true;
+    if (webglAddonRef.current) {
+      if (terminal.element?.dataset.renderer === "webgl") return true;
+      const transitionElement = beginRendererTransition(terminal);
+      rendererCacheRef.current?.webgl(webglAddonRef.current);
+      terminal.element?.setAttribute("data-renderer", "webgl");
+      fitRef.current?.();
+      if (transitionElement) revealRendererTransition(terminal, transitionElement);
+      return true;
+    }
     const transitionElement = beginRendererTransition(terminal);
     // WebglAddon takes no transparency argument in 0.19.0: it reads the stored
     // terminal options, and this terminal is constructed with allowTransparency,
     // so cell backgrounds stay transparent and the card's palette background
     // keeps showing through the canvas exactly as it does in the DOM renderer.
-    // Preserve the last painted frame for the short snapshot when switching back to DOM. A one-shot
-    // readback after compositing is not reliable with preserveDrawingBuffer disabled; the bounded WebGL
-    // pool still limits the number of contexts that pay this cost.
-    const webgl = new WebglAddon(true);
+    const webgl = new WebglAddon();
     webgl.onContextLoss(() => {
       // GPU context gone and not restored: drop the renderer, xterm falls back to the DOM renderer with
       // the buffer intact, and the pool keeps this card off WebGL for a while.
@@ -883,9 +938,9 @@ function TerminalCardView({
     });
     try {
       terminal.loadAddon(webgl);
-      if (!clearPreservedWebglFrames(webgl)) throw new Error("Unsupported WebGL renderer.");
     } catch {
-      // WebGL2 unavailable or its frame hook changed — stay on the DOM renderer.
+      // WebGL2 unavailable — stay on the DOM renderer.
+      rendererCacheRef.current?.release(webgl);
       webgl.dispose();
       restoreRendererTransition();
       return false;
@@ -897,13 +952,24 @@ function TerminalCardView({
     return true;
   };
 
-  const disableWebgl = (terminal: Terminal): void => {
+  const parkWebgl = (terminal: Terminal): void => {
+    if (!webglAddonRef.current || terminal.element?.dataset.renderer !== "webgl") return;
+    const transitionElement = beginRendererTransition(terminal);
+    rendererCacheRef.current?.dom();
+    terminal.element?.setAttribute("data-renderer", "dom");
+    fitRef.current?.();
+    if (transitionElement) revealRendererTransition(terminal, transitionElement);
+  };
+
+  const disableWebgl = (terminal: Terminal, visible = true): void => {
     const webgl = webglAddonRef.current;
     if (!webgl) return;
-    const transitionElement = fitRef.current && !asciiBackgroundRef.current ? beginRendererTransition(terminal) : null;
+    const transitionElement = visible && fitRef.current && !asciiBackgroundRef.current
+      && terminal.element?.dataset.renderer === "webgl" ? beginRendererTransition(terminal) : null;
     webglAddonRef.current = null;
     // The WebGL canvas is the one xterm-screen child without a layer class (the link layer is a 2D canvas).
     const canvas = terminal.element?.querySelector<HTMLCanvasElement>(".xterm-screen > canvas:not([class])");
+    rendererCacheRef.current?.release(webgl);
     webgl.dispose();
     terminal.element?.setAttribute("data-renderer", "dom");
     // WebGL snaps the cell width down to whole device pixels, so its cells can be narrower than the DOM
@@ -1306,7 +1372,7 @@ function TerminalCardView({
           terminal.focus();
           terminal.paste(text);
         } catch {
-          terminal.write(`\r\n[CanvasTTY] ${t(locale, "terminalFileDropFailed")}\r\n`);
+          terminalWriterRef.current?.(`\r\n[CanvasTTY] ${t(locale, "terminalFileDropFailed")}\r\n`);
         }
       }}
       style={{
@@ -1314,8 +1380,8 @@ function TerminalCardView({
         height: size.height,
         zIndex: stackIndex,
         transform: `translate(${position.x}px, ${position.y}px)`,
-        "--summary-scale": summaryScale,
-        "--summary-content-width": `${Math.max(0, ((pixelSurfaceBounds ? pixelSurfaceBounds.right - pixelSurfaceBounds.left : size.width) - 72) / summaryScale)}px`,
+        "--summary-scale": "var(--terminal-summary-scale, 1)",
+        "--summary-content-width": `max(0px, calc(${(pixelSurfaceBounds ? pixelSurfaceBounds.right - pixelSurfaceBounds.left : size.width) - 72}px / var(--terminal-summary-scale, 1)))`,
         "--terminal-background": terminalBackground,
         "--terminal-text-backdrop-strength": backgroundReadabilityStrength / 100,
         "--terminal-foreground": terminalForeground,

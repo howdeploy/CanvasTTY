@@ -62,7 +62,7 @@ import { CanvasRegionCard } from "./CanvasRegionCard";
 import { CanvasRegionMenu } from "./CanvasRegionMenu";
 import type { CanvasAutoSortState } from "./canvasAutoSortScope";
 import { cameraFittingContent } from "./canvasCameraGeometry";
-import { fixedCameraStore, sceneTransform, useCameraSelector, type CameraStore } from "./cameraStore";
+import { fixedCameraStore, sceneTransform, summaryScaleForZoom, useCameraSelector, type CameraStore } from "./cameraStore";
 import {
   clampCanvasMenuPosition,
   routeCanvasContextMenu,
@@ -365,8 +365,15 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   useLayoutEffect(() => {
     // The scene follows the camera without a React render: the transform is written straight to the DOM,
     // synchronously, before anything that measures the scene (the browser card) renders.
+    let summaryScale = -1;
     const apply = (): void => {
-      if (scene.current) scene.current.style.transform = sceneTransform(camera.get());
+      if (!scene.current) return;
+      scene.current.style.transform = sceneTransform(camera.get());
+      const nextScale = summaryScaleForZoom(camera.get().zoom);
+      if (nextScale !== summaryScale) {
+        summaryScale = nextScale;
+        scene.current.style.setProperty("--terminal-summary-scale", String(nextScale));
+      }
     };
     apply();
     return camera.subscribe(() => {

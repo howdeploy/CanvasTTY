@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
 import {
   createCameraStore,
@@ -64,6 +66,39 @@ test("cards read the zoom from the store: drags when they move, rendering only d
     assert.doesNotMatch(card, /\) \/ zoom\b/u, `${path}: drag math reads the live zoom`);
   }
   const terminal = await source("features/terminal/TerminalCard.tsx");
-  assert.match(terminal, /useCameraSelector\(camera, \(current\) => summaryScaleForZoom\(current\.zoom\)\)/u);
+  assert.match(terminal, /useCameraSelector\(camera, \(current\) => current\.zoom < SUMMARY_ZOOM\)/u);
+  assert.doesNotMatch(terminal, /useCameraSelector\(camera, \(current\) => summaryScaleForZoom/u);
+  assert.match(terminal, /"--summary-scale": "var\(--terminal-summary-scale, 1\)"/u);
   assert.match(terminal, /useCameraSelector\(camera, \(current\) => current\.zoom <= WEBGL_MAX_SCALE\)/u);
+});
+
+test("the scene scales six terminal summaries without changing their React snapshots", async () => {
+  const camera = createCameraStore({ x: 0, y: 0, zoom: 0.4 });
+  const writes = [];
+  const scene = { current: { style: { setProperty: (...args) => writes.push(args) } } };
+  const workspace = await source("features/workspace/WorkspaceCanvas.tsx");
+  const body = workspace.slice(workspace.indexOf("    let summaryScale = -1;"), workspace.indexOf("\n  }, [camera]);"));
+  const unsubscribe = runInNewContext(stripTypeScriptTypes(`(function () { ${body} })()`), {
+    camera, scene, sceneTransform, summaryScaleForZoom,
+    webglContextPool: () => ({ viewportChanged() {} })
+  });
+  let cardUpdates = 0;
+  const cards = Array.from({ length: 6 }, () => {
+    let snapshot = camera.get().zoom < 0.5;
+    return camera.subscribe(() => {
+      const next = camera.get().zoom < 0.5;
+      if (next !== snapshot) { cardUpdates++; snapshot = next; }
+    });
+  });
+  for (const zoom of [0.41, 0.42, 0.45, 0.49]) camera.set({ x: 0, y: 0, zoom });
+  assert.equal(cardUpdates, 0);
+  assert.deepEqual(writes.at(-1), ["--terminal-summary-scale", String(0.5 / 0.49)]);
+  const count = writes.length;
+  camera.set({ ...camera.get(), x: 50 });
+  assert.equal(writes.length, count, "pan leaves summary scale alone");
+  camera.set({ ...camera.get(), zoom: 0.5 });
+  assert.equal(cardUpdates, 6, "each card changes mode once at the boundary");
+  assert.deepEqual(writes.at(-1), ["--terminal-summary-scale", "1"]);
+  unsubscribe();
+  cards.forEach((dispose) => dispose());
 });

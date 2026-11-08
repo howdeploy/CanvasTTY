@@ -200,7 +200,7 @@ function assertNoticeWired({ frame, app, settings, ipc }) {
   // Open settings uses the same destination as the HOME links: Agents scrolls to Extension native code.
   assert.match(app, /setSettingsTarget\(section === "agents" \? \{ section, label: "pluginNativeCode" \} : \{ section \}\)/u);
   assert.match(app, /<Toast message=\{toast\} action=\{toastAction\} \/>/u);
-  assert.match(settings, /<section data-setting-label=\{t\(locale, "pluginNativeCode"\)\} tabIndex=\{-1\} className="setting-group agent-hooks plugin-services">/u);
+  assert.match(settings, /<section\s+className="setting-group setting-group--field setting-group--stacked agent-hooks plugin-services"\s+data-setting-label=\{t\(locale, "pluginNativeCode"\)\}\s+tabIndex=\{-1\}\s*>/u);
   // The service request path still checks the manager before the supervisor.
   assert.match(ipc, /plugins\.assertService\(pluginId, serviceId\);\s+return pluginServices\.request/u);
 }

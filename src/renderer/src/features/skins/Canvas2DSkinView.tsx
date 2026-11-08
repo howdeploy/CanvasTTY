@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PixelTerminalBorderSkinId, SessionStatus } from "../../../../shared/contracts";
 import { acquireSkinImage, isPixelSkinPackId, PILOT_SKIN_ASSETS, usePixelSkinPackAssets } from "./SkinAssets";
 import { pixelSkinArtworkBounds, pixelSkinSurfaceBounds } from "./SkinLayout";
@@ -18,6 +18,14 @@ const THEME_COLORS: Record<PixelSkinThemeId, string> = {
   "gothic-eclipse": "#db7955"
 };
 
+interface SkinArtwork {
+  theme: PixelSkinThemeId | PixelTerminalBorderSkinId;
+  artState: PixelSkinArtState;
+  detail: ArtworkDetail;
+  image: HTMLImageElement;
+  transparentCenter: boolean;
+}
+
 interface ViewState {
   theme: PixelSkinThemeId | PixelTerminalBorderSkinId;
   status: SessionStatus;
@@ -25,10 +33,29 @@ interface ViewState {
   width: number;
   height: number;
   detail: ArtworkDetail;
-  assetUrl: string | null;
-  loadedUrl: string | null;
   image: HTMLImageElement | null;
+  transparentCenter: boolean;
   surfaceBounds: PixelSkinSurfaceBounds;
+}
+
+function fadePreviousCanvas(canvas: HTMLCanvasElement, transitions: Set<() => void>): void {
+  const snapshot = canvas.cloneNode(false) as HTMLCanvasElement;
+  const context = snapshot.getContext("2d");
+  if (!context) return;
+  context.drawImage(canvas, 0, 0);
+  // Insert under older fading snapshots so a rapid status change keeps the current composite visible.
+  canvas.after(snapshot);
+  const animation = snapshot.animate([{ opacity: 1 }, { opacity: 0 }], {
+    duration: 180, easing: "ease-in-out", fill: "forwards"
+  });
+  const cleanup = (): void => {
+    animation.onfinish = animation.oncancel = null;
+    animation.cancel();
+    snapshot.remove();
+    transitions.delete(cleanup);
+  };
+  transitions.add(cleanup);
+  animation.onfinish = animation.oncancel = cleanup;
 }
 
 function paintFallback(context: CanvasRenderingContext2D, state: ViewState, width: number, height: number): void {
@@ -74,9 +101,12 @@ function paint(canvas: HTMLCanvasElement, state: ViewState, frameOnly = false): 
   context.imageSmoothingEnabled = false;
   context.clearRect(0, 0, width, height);
 
-  const image = state.loadedUrl === state.assetUrl ? state.image : null;
+  const image = state.image;
+  if (!frameOnly && state.transparentCenter) return;
   if (frameOnly) {
     if (!image) return;
+  }
+  if (frameOnly && !state.transparentCenter) {
     const { left, right, top, bottom } = state.surfaceBounds;
     if (![left, right, top, bottom].every(Number.isFinite) || left >= right || top >= bottom) return;
     context.save();
@@ -110,7 +140,7 @@ function paint(canvas: HTMLCanvasElement, state: ViewState, frameOnly = false): 
     context.fillRect(width / 2 - 1, 6, 3, 4);
     context.fillRect(width / 2 + 3, 6, 3, 4);
   }
-  if (frameOnly) context.restore();
+  if (frameOnly && !state.transparentCenter) context.restore();
 }
 
 export function Canvas2DSkinView({ theme, status, artState, width, height, detail, surfaceBounds }: {
@@ -124,7 +154,9 @@ export function Canvas2DSkinView({ theme, status, artState, width, height, detai
 }): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLCanvasElement>(null);
-  const [centerMode, setCenterMode] = useState<{ url: string; transparent: boolean } | null>(null);
+  const [artwork, setArtwork] = useState<SkinArtwork | null>(null);
+  const previousArtwork = useRef<SkinArtwork | null>(null);
+  const transitions = useRef(new Set<() => void>());
   const packUrls = usePixelSkinPackAssets(isPixelSkinPackId(theme) ? theme : null);
   const stateName = artState ?? pixelSkinStateForSession(status);
   const resolution = isPixelSkinThemeId(theme)
@@ -132,60 +164,47 @@ export function Canvas2DSkinView({ theme, status, artState, width, height, detai
     : null;
   const assetUrl = resolution?.kind === "asset" ? resolution.url
     : packUrls ? packUrls[`${detail}_${stateName}`] : null;
-  const transparentCenter = centerMode?.url === assetUrl && centerMode.transparent;
-  const opaqueCenter = centerMode?.url === assetUrl && !centerMode.transparent;
+  const transparentCenter = artwork?.transparentCenter ?? false;
   const bounds = surfaceBounds ?? pixelSkinSurfaceBounds(theme, detail, width, height);
-  const state = useRef<ViewState>({
-    theme, status, artState: stateName, width, height,
-    detail: "minimal", assetUrl, loadedUrl: null, image: null,
-    surfaceBounds: bounds
-  });
 
   useEffect(() => {
-    if (!assetUrl) {
-      state.current.image = null;
-      state.current.loadedUrl = null;
-      setCenterMode(null);
-      return;
-    }
+    if (!assetUrl) return;
     const acquired = acquireSkinImage(assetUrl);
     let mounted = true;
     void acquired.image.then((image) => {
       if (!mounted) return;
-      state.current.image = image;
-      state.current.loadedUrl = assetUrl;
-      setCenterMode({ url: assetUrl, transparent: imageHasTransparentCenter(image) });
-      if (canvasRef.current) paint(canvasRef.current, state.current);
+      setArtwork({ theme, detail, artState: stateName, image, transparentCenter: imageHasTransparentCenter(image) });
     }).catch(() => {
-      if (!mounted) return;
-      state.current.image = null;
-      state.current.loadedUrl = assetUrl;
-      setCenterMode(null);
-      if (canvasRef.current) paint(canvasRef.current, state.current);
+      // Keep the last decoded artwork; an initial failure already has the fallback frame.
     });
     return () => {
       mounted = false;
       acquired.release();
     };
-  }, [assetUrl]);
+  }, [assetUrl, theme, detail, stateName]);
 
-  useEffect(() => {
-    const current = state.current;
-    current.theme = theme;
-    current.status = status;
-    current.artState = stateName;
-    current.width = width;
-    current.height = height;
-    current.detail = detail;
-    current.assetUrl = assetUrl;
-    current.surfaceBounds = bounds;
+  useLayoutEffect(() => {
+    const current: ViewState = {
+      theme, status, artState: stateName, detail, image: null, transparentCenter: false,
+      ...artwork, width, height, surfaceBounds: bounds
+    };
+    if (previousArtwork.current && previousArtwork.current !== artwork && !document.hidden
+      && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      if (canvasRef.current) fadePreviousCanvas(canvasRef.current, transitions.current);
+      if (frameRef.current) fadePreviousCanvas(frameRef.current, transitions.current);
+    }
     if (canvasRef.current) paint(canvasRef.current, current);
     if (frameRef.current) paint(frameRef.current, current, true);
-  }, [theme, status, stateName, width, height, detail, assetUrl,
-    bounds.left, bounds.right, bounds.top, bounds.bottom, opaqueCenter]);
+    previousArtwork.current = artwork;
+  }, [artwork, theme, status, stateName, width, height, detail,
+    bounds.left, bounds.right, bounds.top, bounds.bottom]);
+
+  useLayoutEffect(() => () => {
+    for (const cleanup of transitions.current) cleanup();
+  }, []);
 
   return <>
-    <canvas ref={canvasRef} className="terminal-skin-canvas" data-detail={detail} data-overlay={transparentCenter} aria-hidden="true" />
-    {opaqueCenter && <canvas ref={frameRef} className="terminal-skin-canvas terminal-skin-canvas--frame" aria-hidden="true" />}
+    <canvas ref={canvasRef} className="terminal-skin-canvas" data-detail={artwork?.detail ?? detail} aria-hidden="true" />
+    <canvas ref={frameRef} className="terminal-skin-canvas terminal-skin-canvas--frame" data-overlay={transparentCenter} aria-hidden="true" />
   </>;
 }

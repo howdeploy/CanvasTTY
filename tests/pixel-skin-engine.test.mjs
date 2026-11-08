@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
 import { layoutNineSliceFrame, layoutTiledFrame, pixelSkinArtworkBounds, pixelSkinControlLayout, pixelSkinSurfaceBounds, skinDetailLevel } from "../src/renderer/src/features/skins/SkinLayout.ts";
 import { createSakuraSkin } from "../src/renderer/src/features/skins/skinSchema.ts";
@@ -166,13 +168,99 @@ test("master terminal openings keep output within the themed frame", async () =>
   assert.match(css, /\.terminal-card\[data-pixel-skin="true"\] \.terminal-card__actions--pixel\s*\{[^}]*z-index:\s*5;/s);
   const canvas = await readFile(new URL("../src/renderer/src/features/skins/Canvas2DSkinView.tsx", import.meta.url), "utf8");
   assert.match(canvas, /data-overlay=\{transparentCenter\}/);
-  assert.match(canvas, /opaqueCenter && <canvas ref=\{frameRef\} className="terminal-skin-canvas terminal-skin-canvas--frame"/);
+  assert.match(canvas, /<canvas ref=\{frameRef\} className="terminal-skin-canvas terminal-skin-canvas--frame"/);
+  assert.doesNotMatch(canvas, /opaqueCenter &&/);
   assert.match(canvas, /context\.clip\("evenodd"\)/);
   assert.doesNotMatch(canvas, /overview|artworkDetail/);
   assert.match(canvas, /context\.drawImage\(image,\s*art\.x \* image\.naturalWidth/s);
   assert.match(css, /\.terminal-skin-canvas\[data-overlay="true"\]\s*\{\s*z-index:\s*3;/s);
   assert.match(canvas, /if \(canvasRef\.current\) paint\(canvasRef\.current, current\);/);
   assert.doesNotMatch(canvas, /drawSakura|sakuraAtlas|petalSprite/);
+});
+
+test("skin changes retain decoded artwork while loading, ignore stale loads and respect reduced motion", async () => {
+  const source = await readFile(new URL("../src/renderer/src/features/skins/Canvas2DSkinView.tsx", import.meta.url), "utf8");
+  const body = source.slice(source.indexOf("  const canvasRef ="), source.indexOf("  return <>"));
+  const slots = [], effects = [], loads = [], paints = [], fades = [];
+  const canvases = [{}, {}];
+  let cursor = 0, reducedMotion = false;
+  const effect = (callback, dependencies) => {
+    const index = cursor++;
+    const previous = slots[index];
+    if (!previous || dependencies.some((value, i) => !Object.is(value, previous.dependencies[i]))) {
+      effects.push(() => {
+        previous?.cleanup?.();
+        slots[index] = { dependencies, cleanup: callback() };
+      });
+    }
+  };
+  const component = runInNewContext(stripTypeScriptTypes(`(props) => {
+    const { theme, status, artState, width, height, detail, surfaceBounds } = props;
+    ${body}
+    return [canvasRef, frameRef];
+  }`), {
+    useRef(initial) {
+      const index = cursor++;
+      return slots[index] ??= { current: initial };
+    },
+    useState(initial) {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = initial;
+      return [slots[index], value => { slots[index] = value; }];
+    },
+    useEffect: effect, useLayoutEffect: effect,
+    isPixelSkinPackId: () => true, isPixelSkinThemeId: () => false,
+    usePixelSkinPackAssets: () => ({ minimal_idle: "idle", minimal_working: "working", minimal_completed: "completed" }),
+    pixelSkinStateForSession, pixelSkinSurfaceBounds,
+    acquireSkinImage(url) {
+      const load = { url, released: false };
+      const image = new Promise((resolve, reject) => Object.assign(load, { resolve, reject }));
+      loads.push(load);
+      return { image, release() { load.released = true; } };
+    },
+    imageHasTransparentCenter: image => image.transparent,
+    paint: (_canvas, state, frameOnly) => { if (!frameOnly) paints.push(state); },
+    fadePreviousCanvas: canvas => fades.push(canvas),
+    document: { hidden: false },
+    window: { matchMedia: () => ({ matches: reducedMotion }) }
+  });
+  const render = status => {
+    cursor = 0;
+    const refs = component({ theme: "pixel:test", status, width: 1200, height: 800, detail: "minimal" });
+    refs.forEach((ref, index) => { ref.current = canvases[index]; });
+    effects.splice(0).forEach(callback => callback());
+  };
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const idle = { transparent: false }, working = { transparent: true };
+  render("idle");
+  assert.equal(paints.at(-1).image, null, "only the initial load uses the fallback");
+  loads.at(-1).resolve(idle);
+  await settle();
+  render("idle");
+  render("working");
+  assert.equal(paints.at(-1).image, idle);
+  assert.equal(paints.at(-1).transparentCenter, false, "loading cannot change the terminal's backing layer");
+  const stale = loads.at(-1);
+  render("done");
+  assert.equal(stale.released, true);
+  stale.resolve(working);
+  loads.at(-1).reject(new Error("broken artwork"));
+  await settle();
+  render("done");
+  assert.equal(paints.at(-1).image, idle, "stale and failed loads preserve the previous artwork");
+  render("working");
+  loads.at(-1).resolve(working);
+  await settle();
+  render("working");
+  assert.equal(paints.at(-1).image, working);
+  assert.equal(fades.length, 2, "only the two skin layers fade, once the replacement is ready");
+  reducedMotion = true;
+  render("idle");
+  loads.at(-1).resolve(idle);
+  await settle();
+  render("idle");
+  assert.equal(paints.at(-1).image, idle);
+  assert.equal(fades.length, 2, "reduced motion swaps ready artwork without animation");
 });
 
 test("pixel cards grow to a readable terminal size and separate neighboring windows", () => {

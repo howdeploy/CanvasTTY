@@ -144,6 +144,12 @@ export class PromptNotDeliveredError extends Error {
 export class AgentControlService {
   private readonly terminals: TerminalManager;
   private readonly options: AgentControlOptions;
+  /**
+   * The approval request (TerminalManager.approvalRequest) wait_for_agent last returned needs_approval for, per
+   * subagent. While the card still shows that same request, the next wait waits for the person's answer instead of
+   * returning it again; a new request, even one with no status change in between, is returned at once.
+   */
+  private readonly reportedApprovals = new Map<string, number | undefined>();
 
   constructor(terminals: TerminalManager, options: AgentControlOptions = {}) {
     this.terminals = terminals;
@@ -225,6 +231,9 @@ export class AgentControlService {
     if (!capabilities.send) throw new Error(`${session.provider} cannot receive prompts.`);
     if (typeof text !== "string" || text.length === 0) throw new Error("Prompt text is required.");
     if (session.exitCode !== null) throw new Error("Agent session has already exited.");
+    // The card shows a prompt only the person may answer (OpenCode's own shell prompt, for example): text typed into
+    // it now, or the Enter after it, would answer that prompt on the person's behalf.
+    if (session.status === "needs_approval") throw new DelegationRefusal(APPROVAL_REFUSAL);
     return this.deliver(sessionId, text, submit, "text", signal);
   }
 
@@ -367,6 +376,8 @@ export class AgentControlService {
     const started = Date.now();
     const answer = async (session: SessionMetadata | null, reason: AgentWaitReason): Promise<AgentWaitResult> => {
       const waitedMs = Date.now() - started;
+      if (reason === "needs_approval") this.reportedApprovals.set(sessionId, this.approvalRequest(sessionId));
+      else if (session?.status !== "needs_approval") this.reportedApprovals.delete(sessionId);
       if (!session) return { sessionId, reason, exitCode: null, waitedMs, output: "" };
       let observation: AgentObservation | null = null;
       try { observation = await this.observe(sessionId); } catch { observation = null; }
@@ -385,7 +396,10 @@ export class AgentControlService {
       if (current !== offset) { offset = current; changedAt = now; }
       const quietFor = now - changedAt;
       if (session.exitCode !== null) return answer(session, session.exitCode === 0 ? "done" : "failed");
-      if (session.status === "needs_approval") return answer(session, "needs_approval");
+      // A request a wait already returned (the card shows no newer one) is the person's to answer: wait for it.
+      const reported = this.reportedApprovals.has(sessionId) && this.reportedApprovals.get(sessionId) === this.approvalRequest(sessionId);
+      if (session.status === "needs_approval" && !reported) return answer(session, "needs_approval");
+      if (session.status !== "needs_approval") this.reportedApprovals.delete(sessionId);
       // After a prompt, an idle that no turn followed (the CLI's startup idle, or one reported before the turn began)
       // is not the answer: only an idle after a turn that started since that prompt is. A CLI that never reports its
       // turns still ends as "quiet" once its screen stops changing.
@@ -469,6 +483,12 @@ export class AgentControlService {
     return tail(typeof this.terminals.redactSecrets === "function" ? this.terminals.redactSecrets(text) : text, maxChars);
   }
 
+  /** The card's current approval request (TerminalManager.approvalRequest); undefined when the manager has none. */
+  private approvalRequest(sessionId: string): number | undefined {
+    try { return typeof this.terminals.approvalRequest === "function" ? this.terminals.approvalRequest(sessionId) ?? undefined : undefined; }
+    catch { return undefined; }
+  }
+
   private turnProgress(sessionId: string): { promptSent: boolean; turnStartedSincePrompt: boolean } | null {
     try { return typeof this.terminals.turnProgress === "function" ? this.terminals.turnProgress(sessionId) : null; } catch { return null; }
   }
@@ -498,6 +518,11 @@ export class AgentControlService {
     return session;
   }
 }
+
+/** send_to_agent while the subagent's card waits for the person (needs_approval). */
+export const APPROVAL_REFUSAL = "This subagent is waiting for the person to answer a prompt in its card (needs_approval); "
+  + "only the person may answer it, so nothing was sent. Tell the person what it asks (wait_for_agent's output shows it), "
+  + "then call wait_for_agent again: it waits for their answer.";
 
 /** A delegation rule refused the request; the text says why, for the orchestrator to adapt instead of retrying. */
 export class DelegationRefusal extends LaunchRefusal {

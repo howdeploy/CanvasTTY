@@ -45,7 +45,10 @@ test("the native helper is chosen on macOS and Linux when built; Windows, a miss
     orchestration: { command: "/app/Resources/helpers/canvastty-helper", args: ["mcp-orchestration"] },
     hook: { command: "/app/Resources/helpers/canvastty-helper", args: ["hook"] },
     permissionGate: { command: "/app/Resources/helpers/canvastty-helper", args: ["permission-gate"] },
-    shellCodex: { command: "/app/CanvasTTY", args: ["/app/Resources/agent-runtime/shell-codex.mjs"], env: { ELECTRON_RUN_AS_NODE: "1" } }
+    shellCodex: { command: "/app/CanvasTTY", args: ["/app/Resources/agent-runtime/shell-codex.mjs"], env: { ELECTRON_RUN_AS_NODE: "1" } },
+    claudeChannel: { command: "/app/CanvasTTY", args: ["/app/Resources/agent-runtime/claude-channel.mjs"], env: { ELECTRON_RUN_AS_NODE: "1" } },
+    grokAcp: { command: "/app/CanvasTTY", args: ["/app/Resources/agent-runtime/grok-acp.mjs"], env: { ELECTRON_RUN_AS_NODE: "1" } },
+    kimiAcp: { command: "/app/CanvasTTY", args: ["/app/Resources/agent-runtime/kimi-acp.mjs"], env: { ELECTRON_RUN_AS_NODE: "1" } }
   });
   const node = agentHelperLaunches(location({ packaged: true, environment: { [AGENT_HELPERS_ENV]: "node" } }));
   assert.deepEqual(node.browser, { command: "/app/CanvasTTY", args: ["/app/Resources/agent-browser/mcp-helper.mjs"], env: { ELECTRON_RUN_AS_NODE: "1" } });

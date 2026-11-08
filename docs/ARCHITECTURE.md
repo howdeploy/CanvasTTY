@@ -117,6 +117,10 @@ The built-in browser is split across surfaces: `BrowserCard` renders trusted win
 
 Renderer IPC and the agent gateway call the same `BrowserCore.execute(actor, command, signal)` boundary. Reads may run concurrently. Mutations are ordered FIFO per tab while different tabs remain independent; a repeated mutation request ID returns the recorded result. Navigation and document changes advance the revision, so stale accessibility refs fail before side effects. Agent activity is recorded as a redacted append-only hash chain: typed/page text, screenshots, URL query/fragment, credentials, headers, cookies, and tokens are not stored.
 
+The MCP/ACP block in Agents → Hooks has independent, off-by-default switches for Claude Code and Grok Build. Both transports use `RuntimeGateway.promptChannel` with a launch-scoped capability; disabling one revokes only that provider's delivery channel. `src/agent-runtime/grok-acp.mjs` wraps `grok agent stdio` in a text terminal frontend, preserving the launch's account environment, model, effort and session identity. ACP prompts wait for session setup, stream responses onto the card and report lifecycle events. Permission requests display their details and wait for an explicit numbered selection; another orchestrator task cannot answer them. Loading a saved Grok session explicitly disables code restoration. Disabling ACP delivery leaves the running Grok card available for manual input; enabling it requires a new or restarted card.
+
+Kimi has its own opt-in ACP transport (`kimiAcpEnabled`), independent of Claude MCP and Grok ACP and off by default. `kimi-acp.mjs` and `grok-acp.mjs` share `acp-client.mjs`: tasks use `session/prompt`, answers stream through `session/update`, and permission requests wait for the person's numbered choice in the card. Kimi runs `kimi acp`, checks the existing login, restores the requested session through ACP, and applies the launch's model and permission mode through protocol methods. Unsupported TUI launch options fail explicitly rather than being ignored. Disabling Kimi ACP revokes task delivery immediately without falling back to TUI injection; enabling it applies to new or restarted cards. The Kimi card uses CanvasTTY's text interface while ACP is enabled.
+
 ## Renderer boundaries
 
 `App.tsx` is the orchestration boundary. It loads settings/sessions, subscribes to main-process events, and coordinates dialogs and persistence. Feature components do not call unrelated feature APIs.
@@ -138,7 +142,7 @@ App
 │   └── CanvasMinimap      viewport/entity overview, camera recentering, and canvas-direction drag panning
 ├── AgentLaunchDialog      fixed provider + folder + profile + launch
 └── SettingsPanel          two-pane icon-sidebar modal for General, Appearance, Agents, Controls, Browser, Plugins, and About
-    ├── AgentHooksSettings built-in status revocation and explicit plugin-hook trust
+    ├── AgentHooksSettings status revocation, opt-in Claude MCP / Grok ACP / Kimi ACP and explicit plugin-hook trust
     ├── PluginServicesSettings per-plugin native-code trust, service state and log
     ├── AboutSettings      app identity and expandable hook/data/security FAQ
     └── PluginSettingsSection install preview, permissions, registry, and contributions

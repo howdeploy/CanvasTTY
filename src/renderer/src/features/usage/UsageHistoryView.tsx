@@ -23,6 +23,7 @@ import {
   formatTimeZone,
   formatTokens,
   providerName,
+  quotaShareText,
   shortScope,
   usageText
 } from "./usageText.ts";
@@ -264,7 +265,7 @@ function QuotaWindow({ quota, format }: { quota: WindowReport; format: Format })
       {quota.accounts.length === 0 && quota.latest !== null && (
         <p className="usage-history__note">
           {fill(text.noObservationsInPeriod, {
-            percent: format.points(quota.latest.percent),
+            share: quotaShareText(format.locale, quota.latest.percent),
             time: format.time(quota.latest.at),
             account: quota.latest.scope ? shortScope(quota.latest.scope) : text.accountUnknown
           })}
@@ -305,7 +306,7 @@ function AccountQuota({ account, format }: { account: AccountSeries; format: For
         </div>
         <div>
           <dt>{text.latest}</dt>
-          <dd>{account.latest ? fill(text.latestValue, { percent: format.points(account.latest.percent), time: format.time(account.latest.at) }) : "—"}</dd>
+          <dd>{account.latest ? fill(text.latestValue, { share: quotaShareText(format.locale, account.latest.percent), time: format.time(account.latest.at) }) : "—"}</dd>
         </div>
         <div>
           <dt>{text.reset}</dt>

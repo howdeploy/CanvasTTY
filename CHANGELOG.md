@@ -2,6 +2,16 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## 1.8.6-beta2
+
+- Integrate the reviewed PR development branch with the current main-branch performance and private Linux Codex session updates.
+- Add opt-in Claude Code MCP and Grok Build/Kimi ACP task delivery with manual permission choices and delivery receipts. Grok and Kimi use CanvasTTY's text interface instead of their native TUIs. Transport switches apply to new or restarted cards and remain off by default.
+- Preserve an agent's conversation across follow-up ACP prompts. Manual evaluation confirmed first-prompt delivery, multiline Unicode/Windows-path fidelity and context retention for Kimi; live Grok account validation remains pending.
+- Crossfade pixel window artwork when task status or detail level changes, retaining the current frame while replacement assets load to avoid whole-window flashes.
+- Collapse long agent settings lists by default, add Expand/Collapse controls and reveal matching groups when navigating from settings search. Shorten optional plugin-hook copy while retaining the local-code warning.
+- Keep subagent approval requests with the person, normalize OpenCode tool decisions, and preserve contributed account-home leases and provider lifecycle hooks.
+- Harden GitHub device sign-in cancellation, expiry and retry handling. Explain disabled plugin services, improve quota used/remaining labels and keep service notices accessible.
+
 ## 1.8.6-beta1
 
 - Keep the current main-branch FPS improvements and plugin settings fixes.

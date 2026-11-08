@@ -198,6 +198,9 @@ export function AgentLaunchDialog({
         {role === "orchestrator" && (
           <div className={`role-note ${endpointMissing ? "role-note--off" : ""}`}>
             <span>{t(locale, "orchestratorRoleNote")}</span>
+            {!settings.claudeCodeMcpEnabled && <strong>{t(locale, "orchestratorClaudeMcpOff")}</strong>}
+            {!settings.grokAcpEnabled && <strong>{t(locale, "orchestratorGrokAcpOff")}</strong>}
+            {!settings.kimiAcpEnabled && <strong>{t(locale, "orchestratorKimiAcpOff")}</strong>}
             {endpointMissing && (
               <>
                 <strong>{t(locale, "orchestratorEndpointOff")}</strong>

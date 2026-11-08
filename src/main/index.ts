@@ -536,7 +536,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       providerClis,
       runtimeDirectory,
       hermesHomeDirectory,
-      kimiHomeDirectory
+      kimiHomeDirectory,
+      accountHomesRoot: join(userDataPath, "plugin-data")
     });
     // Off the startup path: the first Kimi launch then finds the probe answered instead of blocking on it.
     const bridge = agentBrowserBridge;
@@ -584,10 +585,18 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     agentRuntimeBridge = new AgentRuntimeBridge(runtimeGateway, {
       helper: agentRuntimeHelper,
       shellCodexHelper: helpers.shellCodex,
+      claudeChannelHelper: helpers.claudeChannel,
+      claudeCodeMcpEnabled: settings.get().claudeCodeMcpEnabled,
+      grokAcpHelper: helpers.grokAcp,
+      grokAcpEnabled: settings.get().grokAcpEnabled,
+      kimiAcpHelper: helpers.kimiAcp,
+      kimiAcpEnabled: settings.get().kimiAcpEnabled,
       runtimeDirectory: lifecycleRuntimeDirectory,
       openCodePluginPath,
       hermesHomeDirectory,
       kimiHomeDirectory,
+      // Account homes a launch contributor starts Grok/Kimi with live in plugin data (ProviderRuntimeLaunch.ownAccountHome).
+      accountHomesRoot: join(userDataPath, "plugin-data"),
       recoverOnStart: true,
       coreHooksEnabled: settings.get().agentLifecycleHooksEnabled,
       permissionGate: helpers.permissionGate,
@@ -900,6 +909,9 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       terminalManager?.setKeyboardShortcuts(next.shortcuts);
       installMacMenu?.();
       agentRuntimeBridge?.setCoreHooksEnabled(next.agentLifecycleHooksEnabled);
+      agentRuntimeBridge?.setClaudeCodeMcpEnabled(next.claudeCodeMcpEnabled);
+      agentRuntimeBridge?.setGrokAcpEnabled(next.grokAcpEnabled);
+      agentRuntimeBridge?.setKimiAcpEnabled(next.kimiAcpEnabled);
       terminalManager?.setLifecycleHooksEnabled(next.agentLifecycleHooksEnabled);
       // Awaited so the renderer's settings.update resolves with the endpoint live
       // (the launch dialog enables it right before launching an orchestrator).

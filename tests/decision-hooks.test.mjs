@@ -345,7 +345,7 @@ test("OpenCode: the guard throws a deny, remembers an allow and answers OpenCode
   const sent = [];
   const decisions = createOpenCodeDecisions({ client, env, send: async (_address, message) => { sent.push(message); return next; } });
   await assert.rejects(decisions.guard({ tool: "write", callID: "c1" }, { args: { filePath: "/etc/hosts", content: "x" } }), /Not outside the project/u);
-  assert.equal(sent[0].toolName, "edit");
+  assert.equal(sent[0].toolName, "Write", "a whole-file write keeps its own name");
   next = { behavior: "allow", message: "" };
   await decisions.guard({ tool: "bash", callID: "c2" }, { args: { command: "ls" } });
   assert.equal(await decisions.permissionAsked({ id: "r1", tool: { callID: "c2" } }), true);
@@ -358,9 +358,27 @@ test("OpenCode: the guard throws a deny, remembers an allow and answers OpenCode
   assert.equal(sent.length, 3, "tools that neither run commands nor write files are not sent");
   assert.equal(createOpenCodeDecisions({ env: { ...env, [OPENCODE_DECISIONS_ENV]: "0" } }).enabled, false);
   assert.deepEqual(guardedCall("apply_patch", { patchText: "*** Begin Patch" }), { toolName: "apply_patch", toolInput: { patch: "*** Begin Patch" } });
-  // multiedit: every edit's new text reaches the decision, as Claude's MultiEdit tool_input does.
-  assert.deepEqual(guardedCall("multiedit", { filePath: "/p/a.ts", edits: [{ oldString: "a", newString: "TOKEN=1" }, { oldString: "b", newString: "rm -rf /" }, { newString: 5 }] }),
-    { toolName: "edit", toolInput: { file_path: "/p/a.ts", content: "TOKEN=1\nrm -rf /" } });
+  // OpenCode's file tools go out in Claude Code's shapes: Write is the whole new file; Edit and MultiEdit carry the
+  // text they replace as well as the new text (OpenCode run 15: edit {filePath, oldString, newString, replaceAll}).
+  assert.deepEqual(guardedCall("write", { filePath: "/p/new.mjs", content: "export const a = 1;\n" }), { toolName: "Write", toolInput: { file_path: "/p/new.mjs", content: "export const a = 1;\n" } });
+  assert.deepEqual(guardedCall("edit", { filePath: "/p/a.ts", oldString: "const a = 1;", newString: "const a = 2;", replaceAll: false }),
+    { toolName: "Edit", toolInput: { file_path: "/p/a.ts", old_string: "const a = 1;", new_string: "const a = 2;", replace_all: false } });
+  assert.deepEqual(guardedCall("edit", { filePath: "/p/a.ts", oldString: "x", newString: "" }),
+    { toolName: "Edit", toolInput: { file_path: "/p/a.ts", old_string: "x", new_string: "" } }, "a deletion keeps its empty new text; replaceAll absent stays absent");
+  assert.deepEqual(guardedCall("multiedit", { filePath: "/p/a.ts", edits: [{ filePath: "/p/a.ts", oldString: "a", newString: "TOKEN=1" },
+    { oldString: "b", newString: "rm -rf /", replaceAll: true }, { newString: 5 }, null] }),
+  { toolName: "MultiEdit", toolInput: { file_path: "/p/a.ts", edits: [{ old_string: "a", new_string: "TOKEN=1" },
+    { old_string: "b", new_string: "rm -rf /", replace_all: true }] } });
+  assert.equal(guardedCall("edit", { oldString: "a", newString: "b" }), null, "no path, nothing to check");
+  // Through the host: base protection still finds the path, and the service gets the edit's kind, path and both texts.
+  const calls = [];
+  const host = hooks({ services: [service("p")], answers: { p: null }, calls });
+  const edit = guardedCall("edit", { filePath: join(project, "a.ts"), oldString: "a", newString: "b" });
+  assert.equal((await host.decide("s1", request(edit.toolName, edit.toolInput), live())).behavior, "none");
+  assert.deepEqual(calls[0].params.tool, { name: "Edit", kind: "edit", command: null, paths: [join(project, "a.ts")] });
+  assert.deepEqual(calls[0].params.input, { file_path: join(project, "a.ts"), old_string: "a", new_string: "b" });
+  const outside = guardedCall("multiedit", { filePath: "/etc/hosts", edits: [{ oldString: "a", newString: "b" }] });
+  assert.equal((await host.decide("s1", request(outside.toolName, outside.toolInput), live())).behavior, "deny", "MultiEdit outside the project");
 });
 
 test("manifest: decide needs decision:provide, lists pre-tool, and at most one service per plugin decides", () => {

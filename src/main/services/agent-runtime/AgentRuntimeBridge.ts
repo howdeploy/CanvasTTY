@@ -9,7 +9,7 @@ import {
   CAPTURE_ANSWER_EXPIRES_AT_ENV,
   CAPTURE_RESULT_ENV
 } from "../../../agent-runtime/runtime-protocol.mjs";
-import type { RuntimeGateway, RuntimeLifecycleState } from "./RuntimeGateway.ts";
+import type { AgentPromptChannel, RuntimeGateway, RuntimeLifecycleState } from "./RuntimeGateway.ts";
 import {
   ProviderRuntimeLaunchAdapters,
   codexLifecycleArgs,
@@ -28,9 +28,16 @@ export interface PrepareAgentRuntimeLaunchInput {
   decisions?: boolean;
   /** Claude Code: what decides whether its lifecycle hooks may go over HTTP (see ClaudeHttpHooks.ts). */
   claudeHttp?: ClaudeHttpLaunchFacts;
+  /** Grok/Kimi: the CLI home a launch contributor started the launch with (`accountHookHome`), for its status hooks. */
+  accountHome?: string;
+  /** The card's own (already filtered) environment, which the launch builds from instead of the app's. */
+  environment?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface PreparedAgentRuntimePtyLaunch {
+  claudeChannel?: AgentPromptChannel & { helper: HelperLaunch };
+  grokAcp?: AgentPromptChannel & { helper: HelperLaunch };
+  kimiAcp?: AgentPromptChannel & { helper: HelperLaunch };
   args: string[];
   environment: Record<string, string>;
   /** The decision hook was installed (the provider has one and the gateway runs). */
@@ -48,6 +55,12 @@ export interface AgentRuntimeLaunchCoordinator {
 }
 
 export interface AgentRuntimeBridgeOptions extends ProviderRuntimeLaunchOptions {
+  claudeChannelHelper?: HelperLaunch;
+  claudeCodeMcpEnabled?: boolean;
+  grokAcpHelper?: HelperLaunch;
+  grokAcpEnabled?: boolean;
+  kimiAcpHelper?: HelperLaunch;
+  kimiAcpEnabled?: boolean;
   shellCodexHelper?: HelperLaunch;
   recoverOnStart?: boolean;
   coreHooksEnabled?: boolean;
@@ -64,9 +77,12 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
   private readonly providers: ProviderRuntimeLaunchAdapters;
   /** Running sessions and whether each got the decision hook. */
   /** Live launches by card id; the entry object is the launch identity a late cleanup checks against. */
-  private readonly activeSessions = new Map<string, { decisions: boolean; trackIdentity?: boolean }>();
+  private readonly activeSessions = new Map<string, { decisions: boolean; trackIdentity?: boolean; channel?: boolean }>();
   private readonly options: AgentRuntimeBridgeOptions;
   private coreHooksEnabled: boolean;
+  private claudeCodeMcpEnabled: boolean;
+  private grokAcpEnabled: boolean;
+  private kimiAcpEnabled: boolean;
   private readonly wantsDecisions: AgentRuntimeBridgeOptions["wantsDecisions"];
   private readonly decisionBudgetMs: AgentRuntimeBridgeOptions["decisionBudgetMs"];
   private readonly claudeHttpHooks: AgentRuntimeBridgeOptions["claudeHttpHooks"];
@@ -79,6 +95,9 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
     this.claudeHttpHooks = options.claudeHttpHooks;
     this.providers = new ProviderRuntimeLaunchAdapters(options);
     this.coreHooksEnabled = options.coreHooksEnabled !== false;
+    this.claudeCodeMcpEnabled = options.claudeCodeMcpEnabled === true;
+    this.grokAcpEnabled = options.grokAcpEnabled === true;
+    this.kimiAcpEnabled = options.kimiAcpEnabled === true;
     if (options.recoverOnStart) this.providers.recoverConfigurations();
   }
 
@@ -124,35 +143,43 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
   }
 
   prepareLaunch(input: PrepareAgentRuntimeLaunchInput): PreparedAgentRuntimePtyLaunch {
+    const channelHelper = input.provider === "claude" && this.claudeCodeMcpEnabled ? this.options.claudeChannelHelper
+      : input.provider === "grok" && this.grokAcpEnabled ? this.options.grokAcpHelper
+        : input.provider === "kimi" && this.kimiAcpEnabled ? this.options.kimiAcpHelper : undefined;
     // The decision hook talks to the gateway over its own capability, with or without agent status hooks.
     const decisions = (input.decisions ?? this.wantsDecisions?.(input.provider) === true)
       && this.providers.decisionsSupported(input.provider);
     let budgetMs: number | undefined;
     try { budgetMs = decisions ? this.decisionBudgetMs?.(input.provider) : undefined; } catch { budgetMs = undefined; }
-    const capability = this.coreHooksEnabled || decisions
+    const capability = this.coreHooksEnabled || decisions || channelHelper
       ? this.gateway.registerSession(
         input.terminalSessionId,
         input.provider,
         input.captureResult === true,
         isLiveGrant(input.answerCaptureGrantExpiresAt) ? input.answerCaptureGrantExpiresAt : undefined,
         decisions,
-        budgetMs
+        budgetMs,
+        false,
+        Boolean(channelHelper)
       )
       : null;
     const httpHookBase = capability && this.coreHooksEnabled ? this.claudeHttpHookBase(input) : null;
     let prepared;
     try {
       prepared = this.providers.prepare(input.provider, input.terminalSessionId, this.coreHooksEnabled, decisions, budgetMs,
-        httpHookBase ?? undefined);
+        httpHookBase ?? undefined, input.accountHome, input.environment);
     } catch (error) {
       if (capability) this.gateway.revokeTerminalSession(input.terminalSessionId, capability.capabilityToken);
       throw error;
     }
-    const launch = { decisions };
+    const launch = { decisions, channel: Boolean(channelHelper) };
     this.activeSessions.set(input.terminalSessionId, launch);
     let cleaned = false;
     return {
       args: prepared.args,
+      ...(channelHelper && capability ? {
+        [input.provider === "grok" ? "grokAcp" : input.provider === "kimi" ? "kimiAcp" : "claudeChannel"]: { helper: channelHelper, ...this.gateway.promptChannel(capability) }
+      } : {}),
       decisions,
       httpHooks: httpHookBase !== null,
       environment: {
@@ -205,9 +232,24 @@ export class AgentRuntimeBridge implements AgentRuntimeLaunchCoordinator {
     this.coreHooksEnabled = next;
     if (next) return;
     // A session with the decision hook keeps its lease: its protection must not silently stop.
-    for (const [terminalSessionId, { decisions, trackIdentity }] of this.activeSessions) {
-      if (!decisions && !trackIdentity) this.gateway.revokeTerminalSession(terminalSessionId);
+    for (const [terminalSessionId, { decisions, trackIdentity, channel }] of this.activeSessions) {
+      if (!decisions && !trackIdentity && !channel) this.gateway.revokeTerminalSession(terminalSessionId);
     }
+  }
+
+  setClaudeCodeMcpEnabled(enabled: boolean): void {
+    this.claudeCodeMcpEnabled = enabled;
+    if (!enabled) this.gateway.revokePromptChannels("claude");
+  }
+
+  setGrokAcpEnabled(enabled: boolean): void {
+    this.grokAcpEnabled = enabled;
+    if (!enabled) this.gateway.revokePromptChannels("grok");
+  }
+
+  setKimiAcpEnabled(enabled: boolean): void {
+    this.kimiAcpEnabled = enabled;
+    if (!enabled) this.gateway.revokePromptChannels("kimi");
   }
 }
 

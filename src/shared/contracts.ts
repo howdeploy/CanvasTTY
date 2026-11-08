@@ -498,6 +498,12 @@ export interface AppSettings {
   radialLauncherEnabled: boolean;
   radialLauncherItems: RadialLauncherItemId[];
   agentLifecycleHooksEnabled: boolean;
+  /** Receive tasks through the built-in Claude Code MCP channel; off by default. */
+  claudeCodeMcpEnabled: boolean;
+  /** Launch Grok cards through the built-in ACP adapter; off by default. */
+  grokAcpEnabled: boolean;
+  /** Launch Kimi cards through the built-in ACP adapter; off by default. */
+  kimiAcpEnabled: boolean;
   /** Base protection: deny-only hard rules for agents' tool calls (writes outside the folder, sudo, …). */
   baseProtectionEnabled: boolean;
   uiScale: number;
@@ -1170,7 +1176,11 @@ export interface GithubAuthStatus {
   authorized: boolean;
   login: string | null;
   tokenExpiresAt: number | null;
+  /** Outcome of the most recent device sign-in; "idle" when none is pending or to report. */
+  deviceFlowState: GithubDeviceFlowState;
 }
+
+export type GithubDeviceFlowState = "idle" | "pending" | "denied" | "expired" | "failed" | "cancelled";
 
 export interface GithubDeviceFlowStart {
   userCode: string;
@@ -1421,11 +1431,11 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<AgentProviderId, AgentCapabi
   codex: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
   claude: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
   qwen: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
-  kimi: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
+  kimi: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: true }),
   // OpenCode reports status through its structured event plugin.
   opencode: Object.freeze({ send: true, observe: true, lifecycle: "structured", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
   hermes: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "mcp", acp: false }),
-  grok: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
+  grok: Object.freeze({ send: true, observe: true, lifecycle: "hooks", result: "terminal", approvals: "terminal", browser: "none", acp: true }),
   omp: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
   pi: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
   cursor: Object.freeze({ send: true, observe: true, lifecycle: "process", result: "terminal", approvals: "terminal", browser: "none", acp: false }),
@@ -2091,6 +2101,7 @@ export interface CanvasTTYApi {
   githubAuth: {
     status(): Promise<GithubAuthStatus>;
     start(): Promise<GithubDeviceFlowStart>;
+    cancel(): Promise<void>;
     signOut(): Promise<void>;
     openUrl(url: string): Promise<void>;
   };
@@ -2292,6 +2303,7 @@ export const IPC = {
   githubAuthStatus: "github-auth:status",
   githubAuthStart: "github-auth:start",
   githubAuthSignOut: "github-auth:sign-out",
+  githubAuthCancel: "github-auth:cancel",
   githubAuthOpenUrl: "github-auth:open-url",
   terminalList: "terminal:list",
   terminalOpenFile: "terminal:open-file",

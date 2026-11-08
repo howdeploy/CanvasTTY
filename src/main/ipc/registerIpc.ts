@@ -929,6 +929,10 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     assertMainRenderer(event, getMainWindow);
     return githubAuth.signOut();
   });
+  ipcMain.handle(IPC.githubAuthCancel, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    githubAuth.cancelDeviceFlow();
+  });
   ipcMain.handle(IPC.githubAuthOpenUrl, (event, value: unknown) => {
     assertMainRenderer(event, getMainWindow);
     if (typeof value !== "string") throw new Error("URL is required.");

@@ -81,6 +81,9 @@ import { isPixelSkinPackId, usePixelSkinPackSummary } from "../skins/SkinAssets"
 import { pixelSkinControlLayout, pixelSkinSurfaceBounds, skinDetailLevel } from "../skins/SkinLayout";
 
 interface TerminalCardProps {
+  claudeCodeMcpEnabled?: boolean;
+  grokAcpEnabled?: boolean;
+  kimiAcpEnabled?: boolean;
   session: SessionSnapshot;
   shortcuts: ShortcutBindings;
   locale: LocaleId;
@@ -178,6 +181,9 @@ export const TerminalCard = memo(TerminalCardView, canvasCardPropsEqual);
 
 function TerminalCardView({
   session,
+  claudeCodeMcpEnabled = false,
+  grokAcpEnabled = false,
+  kimiAcpEnabled = false,
   locale,
   palette,
   shortcuts,
@@ -1440,6 +1446,12 @@ function TerminalCardView({
           )}
           {session.role === "orchestrator" && (
             <span className="terminal-card__role" title={t(locale, "orchestratorRoleNote")}>{t(locale, "roleOrchestrator")}</span>
+          )}
+          {session.role === "orchestrator" && (!claudeCodeMcpEnabled || !grokAcpEnabled || !kimiAcpEnabled) && (
+            <span className="terminal-card__role terminal-card__mcp-off" role="note"
+              title={[!claudeCodeMcpEnabled && t(locale, "orchestratorClaudeMcpOff"), !grokAcpEnabled && t(locale, "orchestratorGrokAcpOff"), !kimiAcpEnabled && t(locale, "orchestratorKimiAcpOff")].filter(Boolean).join("\n")}>
+              {t(locale, "agentTransportsRequired")}
+            </span>
           )}
           {session.profile === "auto" && (
             <span className="terminal-card__role" title={t(locale, session.autoDowngraded ? "autoDowngradedNote" : profileNoteKey(session.provider, session.profile) ?? "autoProfileNote")}>

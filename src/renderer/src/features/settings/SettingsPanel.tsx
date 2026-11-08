@@ -255,6 +255,7 @@ export function SettingsPanel({
   onOpenMascotLog,
 }: SettingsPanelProps): React.JSX.Element {
   const locale = settings.locale;
+  const agentListDisclosure = { expand: t(locale, "expand"), collapse: t(locale, "collapse") };
   const appearance = resolveAppearanceSettings(settings);
   const homeLauncherProviders = resolveHomeLauncherProviders(settings);
   const homeLimitProviders = resolveHomeLimitProviders(settings);
@@ -281,7 +282,7 @@ export function SettingsPanel({
       .find((element) => element.dataset.settingLabel === searchTarget);
     if (group) {
       // Reveal collapsed ancestors before measuring the destination.
-      for (let parent = group.parentElement; parent; parent = parent.parentElement) {
+      for (let parent: HTMLElement | null = group; parent; parent = parent.parentElement) {
         if (parent instanceof HTMLDetailsElement) parent.open = true;
       }
       group.scrollIntoView({ block: "center" });
@@ -1097,6 +1098,7 @@ export function SettingsPanel({
                 layout="stacked"
                 label={t(locale, "agentDefaultLaunchProfiles")}
                 description={t(locale, "agentDefaultLaunchProfilesDescription")}
+                disclosure={agentListDisclosure}
               >
                 <div className="agent-launcher-settings">
                   {AGENT_PROVIDERS.map((provider) => {
@@ -1177,6 +1179,7 @@ export function SettingsPanel({
                 layout="stacked"
                 label={t(locale, "canvasLauncherItems")}
                 description={t(locale, "canvasLauncherItemsDescription")}
+                disclosure={agentListDisclosure}
               >
                 <div className="canvas-menu canvas-launcher-settings-menu">
                   <CanvasMenuLabel>{t(locale, "canvasLauncherSettingsLabel")}</CanvasMenuLabel>
@@ -1213,6 +1216,7 @@ export function SettingsPanel({
                 layout="stacked"
                 label={t(locale, "quickLauncher")}
                 description={t(locale, "quickLauncherDescription")}
+                disclosure={agentListDisclosure}
               >
                 <div className="quick-launcher-settings">
                 <Segmented
@@ -1260,6 +1264,7 @@ export function SettingsPanel({
                 layout="stacked"
                 label={t(locale, "homeLauncherAgents")}
                 description={t(locale, "homeLauncherAgentsDescription")}
+                disclosure={agentListDisclosure}
               >
                 <div className="agent-launcher-settings">
                   {AGENT_PROVIDERS.map((provider) => {
@@ -1291,6 +1296,7 @@ export function SettingsPanel({
                 layout="stacked"
                 label={t(locale, "homeLimitProviders")}
                 description={t(locale, "homeLimitProvidersDescription")}
+                disclosure={agentListDisclosure}
               >
                 <div className="agent-launcher-settings">
                   {LIMIT_PROVIDERS.map((provider: LimitProviderId) => {
@@ -1322,6 +1328,7 @@ export function SettingsPanel({
                 layout="stacked"
                 label={t(locale, "providerApiKeys")}
                 description={t(locale, "providerApiKeysDescription")}
+                disclosure={agentListDisclosure}
               >
                 <ProviderSecretsSettings locale={locale} />
               </SettingGroup>
@@ -2292,19 +2299,38 @@ export function SettingGroup({
   label,
   description,
   layout = "field",
+  disclosure,
   children
 }: {
   label: string;
   description?: string;
   layout?: "field" | "stacked";
+  disclosure?: { expand: string; collapse: string };
   children: React.ReactNode;
 }): React.JSX.Element {
+  const copy = (
+    <div className="setting-group__copy">
+      <h3>{label}</h3>
+      {description && <p className="setting-group__description">{description}</p>}
+    </div>
+  );
+  if (disclosure) {
+    return (
+      <details data-setting-label={label} tabIndex={-1} className="setting-group setting-group--field setting-group--stacked setting-group--collapsible">
+        <summary>
+          {copy}
+          <span className="setting-inline-action setting-group__disclosure">
+            <span className="setting-group__expand">{disclosure.expand}</span>
+            <span className="setting-group__collapse">{disclosure.collapse}</span>
+          </span>
+        </summary>
+        <div className="setting-group__control">{children}</div>
+      </details>
+    );
+  }
   return (
     <section data-setting-label={label} tabIndex={-1} className={`setting-group setting-group--field${layout === "stacked" ? " setting-group--stacked" : ""}`}>
-      <div className="setting-group__copy">
-        <h3>{label}</h3>
-        {description && <p className="setting-group__description">{description}</p>}
-      </div>
+      {copy}
       <div className="setting-group__control">{children}</div>
     </section>
   );

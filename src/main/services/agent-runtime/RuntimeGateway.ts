@@ -7,6 +7,7 @@ import { posix, win32 } from "node:path";
 import { AGENT_PROVIDERS, type ProviderId } from "../../../shared/contracts.ts";
 import {
   CLAUDE_HTTP_HOOK,
+  MAX_CHANNEL_MESSAGE_BYTES,
   MAX_ANSWER_CHARS,
   MAX_HOOK_INPUT_BYTES,
   MAX_RUNTIME_MESSAGE_BYTES,
@@ -76,6 +77,7 @@ export interface RuntimeSessionCapability {
 }
 
 interface RuntimeLease {
+  channel?: { socket?: AgentGatewaySocket; pending?: string };
   shellTracking?: boolean;
   terminalSessionId: string;
   provider: Exclude<ProviderId, "terminal">;
@@ -93,6 +95,11 @@ interface RuntimeLease {
   /** How long a decision may take for this session (sized at launch from the decision services' budgets). */
   gatewayMs: number;
   checks: Set<AbortController>;
+}
+
+export interface AgentPromptChannel {
+  ready(): boolean;
+  send(text: string): void;
 }
 
 /** One decision hook call (permission-gate.mjs). The tool input is agent-influenced data, never instructions. */
@@ -267,7 +274,8 @@ export class RuntimeGateway {
     answerCaptureGrantExpiresAt?: number,
     decisions = false,
     decisionBudgetMs?: number,
-    shellTracking = false
+    shellTracking = false,
+    promptChannel = false
   ): RuntimeSessionCapability {
     if (!this.endpoint || (!this.server && !this.windowsTransport?.isRunning)) {
       throw new Error("Agent runtime gateway must be started before launching agents.");
@@ -286,6 +294,7 @@ export class RuntimeGateway {
       ? captureResultOrGrantExpiresAt : answerCaptureGrantExpiresAt;
     this.leases.set(terminalSessionId, {
       terminalSessionId,
+      ...(promptChannel && (provider === "claude" || provider === "grok" || provider === "kimi") ? { channel: {} } : {}),
       ...(shellTracking ? { shellTracking: true } : {}),
       provider,
       tokenDigest: tokenDigest(capabilityToken),
@@ -311,6 +320,43 @@ export class RuntimeGateway {
     return this.leases.get(terminalSessionId)?.latest?.state ?? null;
   }
 
+  promptChannel(capability: RuntimeSessionCapability): AgentPromptChannel {
+    const lease = this.leases.get(capability.terminalSessionId);
+    const label = capability.provider === "grok" ? "Grok ACP" : capability.provider === "kimi" ? "Kimi ACP" : "Claude Code MCP";
+    const current = () => {
+      if (!lease || this.leases.get(capability.terminalSessionId) !== lease || !lease.channel
+        || !tokenMatches(capability.capabilityToken, lease.tokenDigest)) {
+        throw new Error(`The ${label} channel was disabled or revoked. Enable it in Agents → Hooks → MCP/ACP and restart this card.`);
+      }
+      return lease.channel;
+    };
+    return {
+      ready: () => {
+        const channel = current();
+        return Boolean(channel.socket && !channel.socket.destroyed && !channel.pending
+          && (lease!.provider === "claude" || lease!.latest?.state === "idle"));
+      },
+      send: (text) => {
+        const channel = current();
+        if (!channel.socket || channel.socket.destroyed || channel.pending
+          || (lease!.provider !== "claude" && lease!.latest?.state !== "idle")) throw new Error(`The ${label} channel is not ready; no task was sent.`);
+        const id = randomBytes(16).toString("hex");
+        const packet = Buffer.from(`${JSON.stringify({ v: RUNTIME_PROTOCOL_VERSION, type: "channel-prompt", id, text })}\n`);
+        if (packet.length > MAX_CHANNEL_MESSAGE_BYTES) throw new Error(`The ${label} task exceeds the 512 KiB message limit; no task was sent.`);
+        channel.socket.write(packet);
+        channel.pending = id;
+      }
+    };
+  }
+
+  revokePromptChannels(provider: "claude" | "grok" | "kimi"): void {
+    for (const lease of this.leases.values()) {
+      if (lease.provider !== provider) continue;
+      lease.channel?.socket?.destroy();
+      delete lease.channel;
+    }
+  }
+
   /**
    * Ends a session's lease. A launch's own cleanup passes its capability token, so a cleanup that runs
    * late (after the card was relaunched under the same id) cannot revoke the newer launch's lease.
@@ -320,6 +366,7 @@ export class RuntimeGateway {
     if (!lease) return;
     if (capabilityToken !== undefined && !tokenMatches(capabilityToken, lease.tokenDigest)) return;
     lease.tokenDigest.fill(0);
+    lease.channel?.socket?.destroy();
     this.leases.delete(terminalSessionId);
     for (const check of lease.checks) check.abort();
     if (lease.answerCaptureGrantExpiresAt !== null) {
@@ -390,6 +437,7 @@ export class RuntimeGateway {
     this.sockets.add(socket);
     const lines = new NdjsonLineReader({ maxLineBytes: MAX_RUNTIME_MESSAGE_BYTES });
     let handled = false;
+    let channelLease: RuntimeLease | undefined;
     const close = () => {
       clearTimeout(firstMessage);
       this.sockets.delete(socket);
@@ -399,6 +447,18 @@ export class RuntimeGateway {
     firstMessage.unref?.();
     socket.setNoDelay(true);
     socket.on("data", (chunk) => {
+      if (channelLease) {
+        try {
+          for (const line of lines.push(chunk)) {
+            const ack: unknown = JSON.parse(line.toString("utf8"));
+            const channel = channelLease.channel;
+            if (!channel || channel.socket !== socket || !isRecord(ack) || ack.v !== RUNTIME_PROTOCOL_VERSION
+              || ack.type !== "channel-forwarded" || typeof ack.id !== "string" || ack.id !== channel.pending) return close();
+            delete channel.pending;
+          }
+        } catch { close(); }
+        return;
+      }
       if (handled) return;
       let line: Buffer | undefined;
       try {
@@ -411,6 +471,16 @@ export class RuntimeGateway {
       clearTimeout(firstMessage);
       try {
         const value: unknown = JSON.parse(line.toString("utf8"));
+        if (isRecord(value) && value.type === "channel-subscribe") {
+          const lease = typeof value.terminalSessionId === "string" ? this.leases.get(value.terminalSessionId) : undefined;
+          if (value.v !== RUNTIME_PROTOCOL_VERSION || (value.provider !== "claude" && value.provider !== "grok" && value.provider !== "kimi") || !lease || lease.provider !== value.provider
+            || !lease.channel || lease.channel.socket || typeof value.capabilityToken !== "string"
+            || !tokenMatches(value.capabilityToken, lease.tokenDigest)) return close();
+          channelLease = lease;
+          lease.channel.socket = socket;
+          socket.write(Buffer.from(`${JSON.stringify({ v: RUNTIME_PROTOCOL_VERSION, type: "channel-connected" })}\n`));
+          return;
+        }
         // Decision hooks keep the socket open for the answer; every other message is unchanged.
         if (isPermissionRequest(value)) return this.acceptPermission(socket, value, close);
         if (isAnswerCaptureCheck(value)) {
@@ -436,6 +506,11 @@ export class RuntimeGateway {
     socket.on("close", () => {
       clearTimeout(firstMessage);
       this.sockets.delete(socket);
+      if (channelLease?.channel?.socket === socket) {
+        delete channelLease.channel.socket;
+        // A lost connection after a write cannot be retried safely under this launch's capability.
+        if (channelLease.channel.pending) delete channelLease.channel;
+      }
     });
   }
 

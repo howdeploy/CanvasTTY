@@ -193,6 +193,9 @@ export class SettingsStore {
         || !("radialLauncherItems" in source)
         || !("radialLauncherEnabled" in source)
         || !("agentLifecycleHooksEnabled" in source)
+        || !("claudeCodeMcpEnabled" in source)
+        || !("grokAcpEnabled" in source)
+        || !("kimiAcpEnabled" in source)
         || !("baseProtectionEnabled" in source)
         || !("uiScale" in source)
         || !("canvasColor" in source)
@@ -420,6 +423,9 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     radialLauncherItems: [...DEFAULT_RADIAL_LAUNCHER_ITEMS],
     radialLauncherEnabled: false,
     agentLifecycleHooksEnabled: true,
+    claudeCodeMcpEnabled: false,
+    grokAcpEnabled: false,
+    kimiAcpEnabled: false,
     baseProtectionEnabled: false,
     uiScale: DEFAULT_UI_SCALE,
     canvasColor: "sage",
@@ -679,6 +685,9 @@ export function normalizeSettings(
     agentLifecycleHooksEnabled: typeof source.agentLifecycleHooksEnabled === "boolean"
       ? source.agentLifecycleHooksEnabled
       : fallback.agentLifecycleHooksEnabled,
+    claudeCodeMcpEnabled: source.claudeCodeMcpEnabled === true,
+    grokAcpEnabled: source.grokAcpEnabled === true,
+    kimiAcpEnabled: source.kimiAcpEnabled === true,
     // Preserve explicit choices; new profiles opt in to protection.
     baseProtectionEnabled: typeof source.baseProtectionEnabled === "boolean"
       ? source.baseProtectionEnabled

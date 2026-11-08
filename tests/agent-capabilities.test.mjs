@@ -47,8 +47,8 @@ test("browser bridging matches the TerminalManager exclusion list", () => {
   }
 });
 
-test("no provider claims ACP before the adapter exists", () => {
+test("Grok and Kimi have optional ACP adapters", () => {
   for (const [provider, capabilities] of Object.entries(PROVIDER_CAPABILITIES)) {
-    assert.equal(capabilities.acp, false, provider);
+    assert.equal(capabilities.acp, provider === "grok" || provider === "kimi", provider);
   }
 });

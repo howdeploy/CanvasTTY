@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import type { HelperLaunch } from "./agentHelpers.ts";
 import { posix, win32 } from "node:path";
 import type { ProviderId, ShortcutBindings } from "../../shared/contracts.ts";
 import { CODEX_KEYMAP_NEWLINE_SEQUENCE, CODEX_KEYMAP_SUBMIT_SEQUENCE } from "../../shared/codexKeyboard.ts";
@@ -7,6 +6,7 @@ import { normalizeThreadId } from "../../agent-runtime/runtime-protocol.mjs";
 import { openCodeAutoEnvironment, openCodeYoloEnvironment } from "./openCodeConfig.ts";
 import { autoKind, CLAUDE_SANDBOX_SETTINGS, profileArguments, profileAvailable, type LaunchProfile } from "../../shared/autoMode.ts";
 import { providerEffortArguments, providerModelArguments, type ReasoningEffort } from "../../shared/launchModel.ts";
+import type { HelperLaunch } from "./agentHelpers.ts";
 import {
   providerTerminalBatchCommandLine,
   windowsCommandPromptPath,
@@ -21,6 +21,8 @@ export interface TerminalLaunch {
 
 interface LaunchResolutionOptions {
   codexSessionLauncher?: HelperLaunch;
+  grokAcpHelper?: HelperLaunch;
+  kimiAcpHelper?: HelperLaunch;
   shortcuts?: ShortcutBindings;
   platform?: NodeJS.Platform;
   environment?: Readonly<NodeJS.ProcessEnv>;
@@ -137,6 +139,24 @@ export function resolveTerminalLaunch(
     ...launchEnvironment,
     ...(keyboard ? { CANVASTTY_CODEX_KEYBOARD: JSON.stringify(keyboard) } : {})
   };
+  const acpHelper = provider === "grok" ? options.grokAcpHelper : provider === "kimi" ? options.kimiAcpHelper : undefined;
+  if (acpHelper) {
+    const helper = acpHelper;
+    return {
+      command: helper.command,
+      args: [...helper.args, JSON.stringify({
+        executable: providerCli.executable,
+        launcher: providerCli.launcher,
+        ...(providerCli.commandPrompt ? { commandPrompt: providerCli.commandPrompt } : {}),
+        args: providerArgs,
+        profile,
+        ...(options.resumePrevious ? { resume: options.resumeThreadId ?? true } : {}),
+        ...(options.model ? { model: options.model } : {}),
+        ...(options.effort ? { effort: options.effort } : {})
+      })],
+      environment: { ...combinedEnvironment, ...helper.env }
+    };
+  }
   if (provider === "codex" && frontend) {
     const launcher = qaFrontend ? environment.CANVASTTY_CODEX_TUI_LAUNCHER_QA : bundledLauncher;
     if ((platform !== "darwin" && platform !== "linux") || providerCli.launcher !== "native"

@@ -28,6 +28,9 @@ export interface AgentHelperLaunches {
   hook: HelperLaunch;
   permissionGate: HelperLaunch;
   shellCodex: HelperLaunch;
+  claudeChannel: HelperLaunch;
+  grokAcp: HelperLaunch;
+  kimiAcp: HelperLaunch;
 }
 
 export interface AgentHelperLocation {
@@ -86,6 +89,9 @@ export function agentHelperLaunches(location: AgentHelperLocation): AgentHelperL
     env: { ELECTRON_RUN_AS_NODE: "1" }
   });
   const shellCodex = node("agent-runtime", "shell-codex.mjs");
+  const claudeChannel = node("agent-runtime", "claude-channel.mjs");
+  const grokAcp = node("agent-runtime", "grok-acp.mjs");
+  const kimiAcp = node("agent-runtime", "kimi-acp.mjs");
   const native = nativeHelperPath(location);
   if (native) {
     return {
@@ -94,7 +100,10 @@ export function agentHelperLaunches(location: AgentHelperLocation): AgentHelperL
       orchestration: { command: native, args: ["mcp-orchestration"] },
       hook: { command: native, args: ["hook"] },
       permissionGate: { command: native, args: ["permission-gate"] },
-      shellCodex
+      shellCodex,
+      claudeChannel,
+      grokAcp,
+      kimiAcp
     };
   }
   return {
@@ -103,7 +112,10 @@ export function agentHelperLaunches(location: AgentHelperLocation): AgentHelperL
     orchestration: node("agent-browser", "orchestration-helper.mjs"),
     hook: node("agent-runtime", "hook-helper.mjs"),
     permissionGate: node("agent-runtime", "permission-gate.mjs"),
-    shellCodex
+    shellCodex,
+    claudeChannel,
+    grokAcp,
+    kimiAcp
   };
 }
 

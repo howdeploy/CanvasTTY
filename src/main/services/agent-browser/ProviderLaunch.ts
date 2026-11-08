@@ -16,12 +16,14 @@ import {
   canonicalStringify
 } from "../../../agent-browser/tool-catalog.mjs";
 import { ORCHESTRATION_MCP_SERVER_NAME, ORCHESTRATION_TOOL_NAMES } from "../../../agent-browser/orchestration-catalog.mjs";
+import { CLAUDE_CHANNEL_SERVER_NAME } from "../../../agent-runtime/runtime-protocol.mjs";
 import { AGENT_BROWSER_ENV, type AgentProvider } from "./protocol.ts";
 import {
   HermesTemporaryConfiguration,
   resolveHermesHomeDirectory
 } from "../hermesConfig.ts";
 import { openCodeBrowserEnvironment } from "../openCodeConfig.ts";
+import { ownedAccountHome } from "../accountHomes.ts";
 import {
   acquireConfigurationLock,
   atomicWrite,
@@ -74,6 +76,11 @@ export interface ProviderLaunchOptions {
   /** The same probe off the main thread, for warmKimiProbe; defaults to the sync probe's answer when only that is given. */
   probeKimiPerRunConfigAsync?: (cli: AvailableProviderCli) => Promise<boolean>;
   environment?: Readonly<Record<string, string | undefined>>;
+  /**
+   * `<userData>/plugin-data`: where an account home (the `KIMI_CODE_HOME` a launch contributor started Kimi with) may be
+   * for Kimi's temporary configuration to be written into it (accountHomes.ts). Without it no account home gets it.
+   */
+  accountHomesRoot?: string;
 }
 
 interface KimiLockHooks extends ConfigurationLockHooks {
@@ -95,8 +102,8 @@ export class ProviderLaunchAdapters {
   private kimiWarmed: { executable: string; generation: number; result: boolean } | null = null;
   private kimiWarming: Promise<void> | null = null;
   private kimiGeneration = 0;
-  private kimiConfiguration: KimiTemporaryConfiguration | null = null;
-  private kimiConfigurationUsers = 0;
+  /** The temporary Kimi configuration per Kimi home (the default home and account homes) and its launches. */
+  private readonly kimiConfigurations = new Map<string, { configuration: KimiTemporaryConfiguration; users: number }>();
   private hermesConfiguration: HermesTemporaryConfiguration | null = null;
   private hermesConfigurationUsers = 0;
 
@@ -108,6 +115,9 @@ export class ProviderLaunchAdapters {
     this.kimiHomeDirectory = validateKimiHomeDirectory(
       options.kimiHomeDirectory ?? join(homedir(), ".kimi-code")
     );
+    if (options.accountHomesRoot !== undefined && !isAbsolute(options.accountHomesRoot)) {
+      throw new Error("Account homes root must be absolute.");
+    }
     this.environment = options.environment ?? process.env;
     // The probe runs Kimi with this adapter's environment (a fake HOME, an account's), never the app's own.
     this.probe = options.probeKimiPerRunConfig ?? ((cli) => probeKimiPerRunMcpConfig(cli, undefined, this.environment));
@@ -148,18 +158,29 @@ export class ProviderLaunchAdapters {
 
   /**
    * `orchestrationTools`: the canvastty_agents tools this session may use (default: the core tools). `browser: false`
-   * (browser access off) leaves canvastty_browser out, so only canvastty_agents is attached.
+   * (browser access off) leaves canvastty_browser out, so only canvastty_agents is attached. `accountHome` (Kimi only):
+   * the `KIMI_CODE_HOME` a launch contributor started this launch with; Kimi's temporary configuration goes there when
+   * it is an account home (accountHomes.ts), since that is the only home this Kimi reads.
    */
-  prepare(provider: AgentProvider, connectionId: string, options?: { orchestration?: boolean; orchestrationTools?: readonly string[]; browser?: boolean }): PreparedProviderLaunch {
+  prepare(provider: AgentProvider, connectionId: string, options?: {
+    claudeChannel?: StdioHelperLaunch;
+    orchestration?: boolean;
+    orchestrationTools?: readonly string[];
+    browser?: boolean;
+    accountHome?: string;
+    /** The card's own (already filtered) environment; the launch reads the person's OpenCode inline config from it. */
+    environment?: Readonly<Record<string, string | undefined>>;
+  }): PreparedProviderLaunch {
     const providerCli = this.providerClis.get(provider);
     if (providerCli.state === "unavailable") throw new Error(providerCli.diagnostic);
     const orchestrationHelper = orchestrationHelperFor(this.options, options);
     if (orchestrationHelper) validateStdioHelperLaunch(orchestrationHelper);
     const browserHelper = options?.browser === false ? null : this.options.helper;
-    if (!browserHelper && !orchestrationHelper) throw new Error("A provider launch needs at least one CanvasTTY MCP server.");
+    const claudeChannel = provider === "claude" ? options?.claudeChannel : undefined;
+    if (!browserHelper && !orchestrationHelper && !claudeChannel) throw new Error("A provider launch needs at least one CanvasTTY MCP server.");
     if (provider === "claude") {
       return {
-        args: claudeMcpArgs(browserHelper, orchestrationHelper),
+        args: claudeMcpArgs(browserHelper, orchestrationHelper, claudeChannel),
         environment: {},
         releaseConfiguration() {}
       };
@@ -181,7 +202,7 @@ export class ProviderLaunchAdapters {
     if (provider === "opencode") {
       return {
         args: [],
-        environment: openCodeBrowserEnvironment(browserHelper, this.environment, orchestrationHelper),
+        environment: openCodeBrowserEnvironment(browserHelper, options?.environment ?? this.environment, orchestrationHelper),
         releaseConfiguration() {}
       };
     }
@@ -192,7 +213,14 @@ export class ProviderLaunchAdapters {
         releaseConfiguration: this.acquireHermesConfiguration(browserHelper, orchestrationHelper)
       };
     }
-    return this.prepareKimi(connectionId, browserHelper, orchestrationHelper);
+    const home = ownedAccountHome({
+      root: this.options.accountHomesRoot,
+      candidate: options?.accountHome,
+      defaultHome: this.kimiHomeDirectory,
+      written: KIMI_WRITTEN,
+      label: "Kimi"
+    }) ?? this.kimiHomeDirectory;
+    return this.prepareKimi(connectionId, browserHelper, orchestrationHelper, home);
   }
 
   recoverKimiConfiguration(): void {
@@ -234,7 +262,7 @@ export class ProviderLaunchAdapters {
     };
   }
 
-  private prepareKimi(connectionId: string, browserHelper: StdioHelperLaunch | null, orchestrationHelper?: StdioHelperLaunch): PreparedProviderLaunch {
+  private prepareKimi(connectionId: string, browserHelper: StdioHelperLaunch | null, orchestrationHelper: StdioHelperLaunch | undefined, home: string): PreparedProviderLaunch {
     const kimiCli = this.providerClis.get("kimi");
     if (kimiCli.state === "unavailable") throw new Error(kimiCli.diagnostic);
     if (this.kimiProbedExecutable !== kimiCli.executable) {
@@ -252,6 +280,7 @@ export class ProviderLaunchAdapters {
     // The per-run document carries orchestration per launch, so the shared
     // fallback configuration only tracks it when mcp.json is actually mutated.
     const releaseShared = this.acquireKimiConfiguration(
+      home,
       !supportsPerRun,
       browserHelper,
       supportsPerRun ? undefined : orchestrationHelper
@@ -286,6 +315,7 @@ export class ProviderLaunchAdapters {
   }
 
   private acquireKimiConfiguration(
+    home: string,
     includeMcpEntry: boolean,
     browserHelper: StdioHelperLaunch | null,
     orchestrationHelper?: StdioHelperLaunch
@@ -293,40 +323,43 @@ export class ProviderLaunchAdapters {
     const requiresOrchestration = includeMcpEntry && orchestrationHelper !== undefined;
     // The shared mcp.json carries the browser entry only while browser access is on.
     const includeBrowser = includeMcpEntry && browserHelper !== null;
-    if (!this.kimiConfiguration) {
-      this.kimiConfiguration = KimiTemporaryConfiguration.begin({
-        homeDirectory: this.kimiHomeDirectory,
+    let shared = this.kimiConfigurations.get(home);
+    if (!shared) {
+      shared = { configuration: KimiTemporaryConfiguration.begin({
+        homeDirectory: home,
         helper: includeBrowser ? browserHelper : null,
         includeMcpEntry,
         ...(requiresOrchestration && orchestrationHelper ? { orchestrationHelper } : {})
-      });
-    } else if (this.kimiConfiguration.includeMcpEntry !== includeMcpEntry) {
+      }), users: 0 };
+      this.kimiConfigurations.set(home, shared);
+    } else if (shared.configuration.includeMcpEntry !== includeMcpEntry) {
       throw new Error("Kimi MCP capability changed while temporary configuration is active.");
-    } else if (includeMcpEntry && this.kimiConfiguration.hasBrowserEntry !== includeBrowser) {
+    } else if (includeMcpEntry && shared.configuration.hasBrowserEntry !== includeBrowser) {
       throw new Error("Kimi browser access cannot change while a temporary Kimi configuration is active.");
-    } else if (requiresOrchestration && !this.kimiConfiguration.hasOrchestrationEntry) {
+    } else if (requiresOrchestration && !shared.configuration.hasOrchestrationEntry) {
       // Mirrors the Hermes guard: never silently drop the canvastty_agents
       // entry an orchestrator needs because a plain launch owns the config.
       throw new Error("Kimi MCP orchestration cannot be enabled while a temporary Kimi configuration is active.");
     }
-    this.kimiConfigurationUsers += 1;
+    const owned = shared;
+    owned.users += 1;
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      this.kimiConfigurationUsers -= 1;
-      if (this.kimiConfigurationUsers !== 0) return;
-      const configuration = this.kimiConfiguration;
-      this.kimiConfiguration = null;
-      configuration?.cleanup();
+      owned.users -= 1;
+      if (owned.users !== 0) return;
+      if (this.kimiConfigurations.get(home) === owned) this.kimiConfigurations.delete(home);
+      owned.configuration.cleanup();
     };
   }
 }
 
-/** `helper` null: browser access is off, only canvastty_agents is attached (and no browser tools are allowed). */
-export function claudeMcpArgs(helper: StdioHelperLaunch | null, orchestrationHelper?: StdioHelperLaunch): string[] {
+/** One per-run config preserves the independently enabled browser, orchestration and input servers. */
+export function claudeMcpArgs(helper: StdioHelperLaunch | null, orchestrationHelper?: StdioHelperLaunch, channelHelper?: StdioHelperLaunch): string[] {
   if (helper) validateStdioHelperLaunch(helper);
   if (orchestrationHelper) validateStdioHelperLaunch(orchestrationHelper);
+  if (channelHelper) validateStdioHelperLaunch(channelHelper);
   const config = {
     mcpServers: {
       ...(helper ? {
@@ -337,12 +370,14 @@ export function claudeMcpArgs(helper: StdioHelperLaunch | null, orchestrationHel
           ...(helper.env && Object.keys(helper.env).length > 0 ? { env: helper.env } : {})
         }
       } : {}),
-      ...(orchestrationHelper ? orchestrationServerEntry(orchestrationHelper) : {})
+      ...(orchestrationHelper ? orchestrationServerEntry(orchestrationHelper) : {}),
+      ...(channelHelper ? { [CLAUDE_CHANNEL_SERVER_NAME]: { type: "stdio", ...channelHelper } } : {})
     }
   };
   return [
     "--mcp-config",
     canonicalStringify(config),
+    ...(channelHelper ? ["--dangerously-load-development-channels", `server:${CLAUDE_CHANNEL_SERVER_NAME}`] : []),
     ...(helper ? ["--allowedTools", CLAUDE_RULE_PATTERN] : [])
   ];
 }
@@ -866,6 +901,9 @@ function parseJournal(raw: string, paths: ReturnType<typeof kimiPaths>): Recover
   }
   return value as unknown as RecoveryJournal;
 }
+
+/** What KimiTemporaryConfiguration writes in a Kimi home (kimiPaths); none may be a symbolic link in an account home. */
+const KIMI_WRITTEN = ["mcp.json", "config.toml", ".canvastty-browser.lock", ".canvastty-browser-recovery.json", ".canvastty-browser-backups"];
 
 function kimiPaths(homeDirectory: string) {
   return {

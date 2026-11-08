@@ -61,6 +61,18 @@ export function AgentHooksSettings({
     }
   };
 
+  const setTransportEnabled = async (key: "claudeCodeMcpEnabled" | "grokAcpEnabled" | "kimiAcpEnabled", enabled: boolean): Promise<void> => {
+    setBusy(key);
+    setError(null);
+    try {
+      await onChange({ [key]: enabled });
+    } catch {
+      setError(t(locale, "pluginHookChangeFailed"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <section className="setting-group agent-hooks">
       <h3>{t(locale, "agentHooks")}</h3>
@@ -76,6 +88,47 @@ export function AgentHooksSettings({
           disabled={busy !== null}
           locale={locale}
           onClick={() => void setCoreEnabled(!settings.agentLifecycleHooksEnabled)}
+        />
+      </div>
+
+      <div className="agent-hooks__subheading"><strong>MCP/ACP</strong></div>
+      <div className="agent-hooks__core">
+        <span>
+          <strong>Claude Code</strong>
+          <small>{t(locale, "claudeCodeMcpDescription")}</small>
+        </span>
+        <HookToggle
+          enabled={settings.claudeCodeMcpEnabled}
+          label={t(locale, "claudeCodeMcp")}
+          disabled={busy !== null}
+          locale={locale}
+          onClick={() => void setTransportEnabled("claudeCodeMcpEnabled", !settings.claudeCodeMcpEnabled)}
+        />
+      </div>
+      <div className="agent-hooks__core">
+        <span>
+          <strong>Grok Build</strong>
+          <small>{t(locale, "grokAcpDescription")}</small>
+        </span>
+        <HookToggle
+          enabled={settings.grokAcpEnabled}
+          label={t(locale, "grokAcp")}
+          disabled={busy !== null}
+          locale={locale}
+          onClick={() => void setTransportEnabled("grokAcpEnabled", !settings.grokAcpEnabled)}
+        />
+      </div>
+      <div className="agent-hooks__core">
+        <span>
+          <strong>Kimi</strong>
+          <small>{t(locale, "kimiAcpDescription")}</small>
+        </span>
+        <HookToggle
+          enabled={settings.kimiAcpEnabled}
+          label={t(locale, "kimiAcp")}
+          disabled={busy !== null}
+          locale={locale}
+          onClick={() => void setTransportEnabled("kimiAcpEnabled", !settings.kimiAcpEnabled)}
         />
       </div>
 
@@ -149,11 +202,13 @@ function HookToggle({
   enabled,
   disabled,
   locale,
+  label,
   onClick
 }: {
   enabled: boolean;
   disabled: boolean;
   locale: LocaleId;
+  label?: string;
   onClick(): void;
 }): React.JSX.Element {
   return (
@@ -162,6 +217,7 @@ function HookToggle({
       type="button"
       role="switch"
       aria-checked={enabled}
+      aria-label={label}
       disabled={disabled}
       onClick={onClick}
     >

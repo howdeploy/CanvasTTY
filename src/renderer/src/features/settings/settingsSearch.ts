@@ -208,6 +208,21 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   },
   {
     "section": "agents",
+    "label": "claudeCodeMcp",
+    "description": "claudeCodeMcpDescription"
+  },
+  {
+    "section": "agents",
+    "label": "grokAcp",
+    "description": "grokAcpDescription"
+  },
+  {
+    "section": "agents",
+    "label": "kimiAcp",
+    "description": "kimiAcpDescription"
+  },
+  {
+    "section": "agents",
     "label": "canvasLauncherItems",
     "description": "canvasLauncherItemsDescription"
   },

@@ -102,7 +102,8 @@ export function openCodeYoloEnvironment(
  * Auto's rules: read, glob, grep, list allowed, except `.env` files (they ask, like OpenCode's default); edit (edit,
  * write, apply_patch) allowed; bash allowed only when `shellGuarded` (CanvasTTY's base protection is on and its guard
  * runs in this OpenCode), otherwise it asks. external_directory is not touched: a path outside the project still asks.
- * `thirdPartyModel` (a launch contributor put OpenCode on another model) keeps bash asking, like accept-edits.
+ * `thirdPartyModel` (a launch contributor put OpenCode on another model) keeps bash asking, like accept-edits, in a
+ * subagent's card too: that ask reaches the person through needs_approval, and the orchestrator cannot answer it.
  */
 export function openCodeAutoEnvironment(
   environment: Readonly<Record<string, string | undefined>>,

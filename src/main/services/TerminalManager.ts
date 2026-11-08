@@ -59,6 +59,7 @@ import {
   type ControlConnection
 } from "./agent-control/controlCapabilities.ts";
 import { codexTrustArguments, mergeOpenCodeLaunchEnvironment } from "./agent-runtime/ProviderRuntimeLaunch.ts";
+import { accountHookHome } from "./accountHomes.ts";
 import { openCodeProjectFolderEnvironment } from "./openCodeConfig.ts";
 import { onDiskPath } from "./onDiskPath.ts";
 import { processWorkingDirectory } from "./processWorkingDirectory.ts";
@@ -83,6 +84,7 @@ import { LaunchRefusal } from "./launchRefusal.ts";
 import { configuredMode } from "./configuredMode.ts";
 import { envKey, RESERVED_ENV, type LaunchPipeline, type PreparedLaunch } from "./LaunchPipeline.ts";
 import type { EnvironmentRegistry } from "./EnvironmentRegistry.ts";
+import { agentEnvironment, shellEnvironment } from "./ambientProviderKeys.ts";
 import {
   persistedTerminalSession,
   normalizeNestedCodex,
@@ -189,6 +191,11 @@ interface ManagedSession {
   hookSignals?: number;
   /** Set after the person answered a hooked Claude prompt; see settleAnsweredPrompt. */
   answeredPromptTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Counts the approval requests the card has shown (see approvalRequest). Never reset, a relaunch included, so a
+   * reader comparing it with an earlier value never mistakes a new request for one it already saw.
+   */
+  approvalRequests?: number;
 }
 
 type EnvironmentService = Pick<EnvironmentRegistry,
@@ -655,6 +662,17 @@ export class TerminalManager {
     return { promptSent: mark !== undefined, turnStartedSincePrompt: mark !== undefined && (session.turnStarts ?? 0) > mark };
   }
 
+  /**
+   * Identifies the approval request the card shows now: it advances each time the card turns needs_approval, and on
+   * each further request hook while it stays needs_approval (a second PermissionRequest right after the person answered
+   * the first moves neither the status nor the revision). A permission_prompt Notification while the card already
+   * waits is the same prompt again and does not advance it. null when the session does not exist.
+   */
+  approvalRequest(id: string): number | null {
+    const session = this.sessions.get(id);
+    return session ? session.approvalRequests ?? 0 : null;
+  }
+
   /** The session's output offset without copying its scrollback; null when it does not exist. */
   outputOffset(id: string): number | null {
     return this.sessions.get(id)?.outputOffset ?? null;
@@ -1087,12 +1105,15 @@ export class TerminalManager {
     if (!session) return { delivered: false, reason: "The session does not exist." };
     const epoch = session.launchEpoch;
     const deadline = Date.now() + waitMs;
-    const gated = waitForCodexComposer || session.metadata.provider === "kimi" || Boolean(prompt && session.metadata.provider === "claude");
+    const gated = waitForCodexComposer || session.metadata.provider === "kimi" || Boolean(prompt && ["claude", "grok"].includes(session.metadata.provider));
+    const promptChannel = () => prompt?.submit ? session.agentRuntime?.grokAcp ?? session.agentRuntime?.kimiAcp ?? session.agentRuntime?.claudeChannel : undefined;
+    const usesChannel = (): boolean => Boolean(promptChannel());
+    const channelLabel = session.metadata.provider === "grok" ? "Grok ACP" : session.metadata.provider === "kimi" ? "Kimi ACP" : "Claude Code MCP";
     const manualRevision = session.manualInputRevision ?? 0;
     const invalidated = (): string | null => signal?.aborted ? "The delivery was cancelled."
       : this.sessions.get(id) !== session || session.launchEpoch !== epoch || session.metadata.exitCode !== null
         ? "The session closed, exited or restarted during delivery."
-        : (session.manualInputRevision ?? 0) !== manualRevision ? "Manual input interrupted delivery; nothing further was sent."
+        : !usesChannel() && (session.manualInputRevision ?? 0) !== manualRevision ? "Manual input interrupted delivery; nothing further was sent."
           : session.metadata.status === "needs_approval" ? "The agent is waiting for approval; nothing further was sent." : null;
     if (prompt && session.incompletePrompt) return { delivered: false,
       reason: "A previous prompt was pasted but not submitted. Inspect the card before sending another task." };
@@ -1121,19 +1142,32 @@ export class TerminalManager {
         if (interrupted) return { delivered: false, reason: interrupted };
         if (session.metadata.status === "needs_approval") return { delivered: false, reason: "The agent is waiting for an approval; automated prompt input was not written." };
         if (session.process && !inputReady) {
-          screen ??= new SessionScreen({ geometry: (id) => this.geometry(id), readBuffer: launchOutput }, id);
-          const snapshot = launchOutput();
-          screen.feed({ id, data: snapshot.buffer, outputOffset: snapshot.outputOffset });
-          const fresh = session.automatedSubmit?.epoch !== epoch || snapshot.outputOffset > session.automatedSubmit.outputOffset;
-          if (fresh && await screen.inspect((terminal) => session.metadata.provider === "kimi" ? kimiComposerReady(terminal)
-            : session.metadata.provider === "claude" ? claudeTerminalComposerReady(terminal, this.claudeUnstyledComposerAllowed(id))
-              : codexTerminalComposerReady(terminal, this.codexUnstyledComposerAllowed(id)))) {
+          if (usesChannel()) {
+            try {
+              inputReady = promptChannel()!.ready();
+            } catch (error) {
+              return { delivered: false, reason: error instanceof Error ? error.message : `The ${channelLabel} channel is unavailable.` };
+            }
+            if (inputReady) continue;
+          } else if (session.metadata.provider === "grok") {
             inputReady = true;
             continue;
+          } else {
+            screen ??= new SessionScreen({ geometry: (id) => this.geometry(id), readBuffer: launchOutput }, id);
+            const snapshot = launchOutput();
+            screen.feed({ id, data: snapshot.buffer, outputOffset: snapshot.outputOffset });
+            const fresh = session.automatedSubmit?.epoch !== epoch || snapshot.outputOffset > session.automatedSubmit.outputOffset;
+            if (fresh && await screen.inspect((terminal) => session.metadata.provider === "kimi" ? kimiComposerReady(terminal)
+              : session.metadata.provider === "claude" ? claudeTerminalComposerReady(terminal, this.claudeUnstyledComposerAllowed(id))
+                : codexTerminalComposerReady(terminal, this.codexUnstyledComposerAllowed(id)))) {
+              inputReady = true;
+              continue;
+            }
           }
         }
         const remaining = deadline - Date.now();
         if (remaining <= 0) {
+          if (usesChannel()) return { delivered: false, reason: `${channelLabel} did not become ready before the delivery deadline. Check the card for connection, authentication or permission errors. No prompt was sent; inspect the card before retrying.` };
           if (session.process && !this.startupReady(id)) return { delivered: false, reason: "OpenCode did not show its verified startup input cursor before the delivery deadline; nothing was written. A CLI without that sequence is unsupported by this readiness check." };
           if (session.process && !inputReady) return { delivered: false, reason: `${session.metadata.provider} did not become ready for input within ${Math.round(waitMs / 1000)} s; no prompt was written.` };
           return { delivered: false, reason: `The session did not start within ${Math.round(waitMs / 1000)} s.` };
@@ -1170,6 +1204,19 @@ export class TerminalManager {
             ? { delivered: false, reason: reason ?? "No prompt was written.", receipt: { ...prompt.receipt } }
             : { delivered: true, receipt: { ...prompt.receipt } };
         };
+        if (usesChannel()) {
+          if (prompt.beforeSubmit?.() === false) return finish("The controller no longer owns this launch; nothing was submitted.");
+          try {
+            promptChannel()!.send(prompt.text);
+          } catch (error) {
+            return finish(error instanceof Error ? error.message : `The ${channelLabel} channel could not send the task.`);
+          }
+          prompt.receipt.stage = "submitted";
+          prompt.receipt.reason = `The task was written to the ${channelLabel} channel; native acceptance remains unconfirmed. Do not resend it blindly.`;
+          session.promptTurnMark = session.turnStarts ?? 0;
+          clearSubmittedPromptAnswer(session);
+          return finish();
+        }
         const submitKey = session.metadata.provider === "codex"
           ? codexPromptSubmit("\r", session.metadata.nativeEditor?.submit, session.metadata.nativeEditor?.submitSequence) : "\r";
         if (prompt.submit && submitKey === null) return finish("The configured Codex submit shortcut cannot be encoded.");
@@ -1379,12 +1426,17 @@ export class TerminalManager {
     }
 
     const nextStatus = signal.state;
+    if (nextStatus === "needs_approval" && (session.metadata.status !== "needs_approval"
+      || (source === "hook" && signal.event !== "Notification"))) {
+      session.approvalRequests = (session.approvalRequests ?? 0) + 1;
+    }
     const submittedTurn = source === "hook" && signal.event === "UserPromptSubmit"
       && session.promptDelivery?.stage === "submitted" && session.promptDelivery.acceptance === "unconfirmed";
     if (nextStatus === "working") {
       if (session.metadata.status !== "working" || submittedTurn) session.workingInputRevision = session.manualInputRevision ?? 0;
       if (session.promptDelivery?.stage === "submitted" && (source === "hook"
-        ? signal.event === "UserPromptSubmit" : session.metadata.status !== "working")) {
+        ? signal.event === "UserPromptSubmit" || (signal.event === "AcpPromptAccepted" && Boolean(session.agentRuntime?.grokAcp ?? session.agentRuntime?.kimiAcp))
+        : session.metadata.status !== "working")) {
         session.promptDelivery.acceptance = "confirmed";
         session.promptDelivery.evidence = source;
         delete session.promptDelivery.reason;
@@ -2067,20 +2119,33 @@ export class TerminalManager {
   ): PlannedSpawn | { failure: LaunchFailure } {
     const providerCli = provider === "terminal" ? undefined : this.providerClis.get(provider);
     if (providerCli?.state === "unavailable") return { failure: providerCli };
+    // The person's environment: a plain shell the person starts keeps all of it but CanvasTTY's own credentials; their
+    // own agent cards also lose admin keys; a delegated card (a subagent, or any card a plugin started, plain shell
+    // included, since its owner drives it) gets only an allowlist (ambientProviderKeys.ts). Every launch builder below
+    // reads this, never process.env; what a launch sets explicitly is added on top.
+    const delegated = this.isDelegated(id, role);
+    const baseEnvironment = provider === "terminal" && !delegated
+      ? shellEnvironment(terminalEnvironment())
+      : agentEnvironment(terminalEnvironment(), { delegated });
     // What decides whether Claude's lifecycle hooks may go over HTTP (ClaudeHttpHooks.ts): where and how it runs.
     const claudeHttp = provider === "claude" && providerCli?.state === "available" ? {
       executable: providerCli.executable,
       profile,
       environmentWrapped,
-      env: { ...terminalEnvironment(), ...providerCli.environment, ...(contribution?.env ?? {}) },
+      env: { ...baseEnvironment, ...providerCli.environment, ...(contribution?.env ?? {}) },
       args: contribution?.args ?? [],
       cwd
     } : undefined;
     const shellCli = provider === "terminal" && !environmentWrapped ? this.providerClis.get("codex") : undefined;
+    // Grok and Kimi read their hooks (Kimi also its MCP servers) from their home: the launch's own account home (inside
+    // the data folder of the plugin that set it) gets CanvasTTY's temporary configuration there.
+    const hookHome = accountHookHome(provider, contribution?.env);
+    const accountHome = hookHome !== undefined && hookHome === contribution?.accountHome ? hookHome : undefined;
     const agentRuntime = provider === "terminal"
-      ? shellCli?.state === "available" ? this.agentRuntime?.prepareShellLaunch?.({ terminalSessionId: id, cli: shellCli, environment: terminalEnvironment() }) ?? null : null
-      : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd,
+      ? shellCli?.state === "available" ? this.agentRuntime?.prepareShellLaunch?.({ terminalSessionId: id, cli: shellCli, environment: baseEnvironment }) ?? null : null
+      : this.agentRuntime?.prepareLaunch({ terminalSessionId: id, provider, cwd, environment: baseEnvironment,
         ...(captureResult ? { captureResult: true } : {}),
+        ...(accountHome ? { accountHome } : {}),
         ...(claudeHttp ? { claudeHttp } : {}),
         ...(answerCaptureGrantExpiresAt === undefined ? {} : { answerCaptureGrantExpiresAt }) }) ?? null;
     let pluginTools: string[] = [];
@@ -2112,12 +2177,14 @@ export class TerminalManager {
           terminalSessionId: id,
           provider,
           cwd,
+          ...(agentRuntime?.claudeChannel ? { claudeChannel: agentRuntime.claudeChannel.helper } : {}),
+          ...(accountHome ? { accountHome } : {}),
+          environment: baseEnvironment,
           ...(bridged ? {
             includeOrchestration: true,
             orchestrationTools: [...(role === "orchestrator" ? ORCHESTRATION_TOOL_NAMES : []), ...pluginTools]
           } : {})
         }) ?? null;
-      const baseEnvironment = terminalEnvironment();
       const browserEnvironment = agentBrowser?.environment ?? {};
       const runtimeEnvironment = agentRuntime?.environment ?? {};
       const orchestrationEnvironment = agentOrchestration?.environment ?? {};
@@ -2140,6 +2207,8 @@ export class TerminalManager {
       if (contribution) providerArgs.push(...contribution.args);
       let launch = resolveTerminalLaunch(provider, profile, providerArgs, {
         codexSessionLauncher: this.codexSessionLauncher,
+        ...(agentRuntime?.grokAcp ? { grokAcpHelper: agentRuntime.grokAcp.helper } : {}),
+        ...(agentRuntime?.kimiAcp ? { kimiAcpHelper: agentRuntime.kimiAcp.helper } : {}),
         shortcuts: this.keyboardShortcuts,
         environment: { ...baseEnvironment, ...providerEnvironment },
         ...(providerCli ? { providerCli } : {}),

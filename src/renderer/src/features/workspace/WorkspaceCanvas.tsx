@@ -1123,6 +1123,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     <TerminalCard
       key={session.id}
       session={withGroupNudge(terminalLayerId(session.id), session)}
+      claudeCodeMcpEnabled={settings.claudeCodeMcpEnabled}
+      grokAcpEnabled={settings.grokAcpEnabled}
+      kimiAcpEnabled={settings.kimiAcpEnabled}
       shortcuts={settings.shortcuts}
       locale={settings.locale}
       palette={settings.palette}

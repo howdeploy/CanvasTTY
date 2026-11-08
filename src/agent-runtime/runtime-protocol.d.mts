@@ -1,5 +1,7 @@
 export const RUNTIME_PROTOCOL_VERSION: 1;
 export const MAX_RUNTIME_MESSAGE_BYTES: number;
+export const CLAUDE_CHANNEL_SERVER_NAME: string;
+export const MAX_CHANNEL_MESSAGE_BYTES: number;
 export const CAPTURE_RESULT_ENV: string;
 export const MAX_RESULT_CHARS: number;
 export const CAPTURE_ANSWER_ENV: string;

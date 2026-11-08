@@ -308,7 +308,11 @@ export interface CanvasTTYDecisionRequest {
   /** The agent's current folder, when its CLI reports it. */
   agentCwd: string | null;
   tool: { name: string; kind: "shell" | "edit" | "other"; command: string | null; paths: string[] };
-  /** The tool input as the agent sent it; null when it was over 40 KB (then `truncated`). */
+  /**
+   * The tool input as the agent sent it; null when it was over 40 KB (then `truncated`). OpenCode's tools come in Claude
+   * Code's names and shapes: bash {command, workdir}, Write {file_path, content}, Edit {file_path, old_string, new_string,
+   * replace_all}, MultiEdit {file_path, edits: [{old_string, new_string, replace_all}]}, apply_patch {patch}.
+   */
   input: unknown;
   truncated: boolean;
   /** How long the host waits for this answer (the service's `timeoutMs`). */

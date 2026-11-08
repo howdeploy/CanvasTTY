@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -65,7 +66,7 @@ async function fixture(t, enabled = true) {
 }
 
 test("Claude MCP is opt-in, survives reload and rejects malformed persisted values", async t => {
-  const root = await mkdtemp("/tmp/ctty-ch-settings-");
+  const root = await mkdtemp(join(tmpdir(), "ctty-ch-settings-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const store = new SettingsStore(root, "en-US");
   await store.load();

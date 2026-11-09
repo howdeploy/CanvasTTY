@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { delimiter } from "node:path";
 import { reportLifecycle } from "./runtime-client.mjs";
 import { windowsBatchShellCommand } from "./windows-batch.mjs";
-import { runCodexSession } from "./codex-session.mjs";
+import { codexSessionFailure, runCodexSession } from "./codex-session.mjs";
 
 // The recipe is private to one shell card; it never contains commands from shell history.
 const [recipePath, ...userArgs] = process.argv.slice(2);
@@ -24,6 +24,7 @@ const args = ["--no-daemon", ...recipe.hooks, ...userArgs];
 const batch = recipe.cli.launcher === "batch";
 if (!batch && process.platform === "linux") {
   try { process.exitCode = await runCodexSession(recipe.cli.executable, args, environment); }
+  catch (error) { console.error(codexSessionFailure(error)); process.exitCode = 1; }
   finally { await reportLifecycle({ state: "idle", event: "ShellCodexEnd", cwd: process.cwd() }); }
 } else {
   const child = spawn(batch ? recipe.cli.commandPrompt : recipe.cli.executable,

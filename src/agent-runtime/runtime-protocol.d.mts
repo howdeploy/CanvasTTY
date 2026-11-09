@@ -1,4 +1,5 @@
 export const RUNTIME_PROTOCOL_VERSION: 1;
+export const CODEX_STARTUP_FAILED_EXIT_CODE: 78;
 export const MAX_RUNTIME_MESSAGE_BYTES: number;
 export const CLAUDE_CHANNEL_SERVER_NAME: string;
 export const MAX_CHANNEL_MESSAGE_BYTES: number;

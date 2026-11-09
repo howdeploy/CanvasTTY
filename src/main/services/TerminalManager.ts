@@ -50,6 +50,7 @@ import {
   CAPTURE_ANSWER_ENV,
   CAPTURE_ANSWER_EXPIRES_AT_ENV,
   CAPTURE_RESULT_ENV,
+  CODEX_STARTUP_FAILED_EXIT_CODE,
   normalizeThreadId
 } from "../../agent-runtime/runtime-protocol.mjs";
 import {
@@ -1752,6 +1753,9 @@ export class TerminalManager {
       }
     }
 
+    if (descriptor.provider === "codex" && descriptor.lastState === "running"
+      && step.launch !== "stopped" && metadata.status === "failed") extras.heldState = "running";
+
     // A card that started (or whose plugins are preparing its launch) comes back tied to
     // the conversation the plan chose (none for a fresh start); one that did not start
     // keeps its recorded id for Continue.
@@ -2339,6 +2343,7 @@ export class TerminalManager {
       })
       .then((outcome) => {
         if (outcome === "superseded" || this.sessions.get(id) !== session || session.launchToken !== token) return;
+        if (outcome === "failed" && restoring && metadata.provider === "codex") session.extras.heldState = "running";
         if (outcome === "failed" && metadata.status !== "failed") {
           metadata.status = "failed";
           metadata.exitCode = 1;
@@ -2618,6 +2623,10 @@ export class TerminalManager {
     // record it the way a shell does, as 128+signal, so the card, wait_for_agent and the saved session all say failed.
     const killedBy = typeof signal === "number" && signal > 0 ? signal : 0;
     const exitCode = killedBy ? 128 + killedBy : reportedExitCode;
+    // A failed restore bootstrap did not finish the saved conversation; retry it next time.
+    if (!killedBy && current.restored && current.metadata.provider === "codex" && exitCode === CODEX_STARTUP_FAILED_EXIT_CODE) {
+      current.extras.heldState = "running";
+    }
     current.metadata.exitCode = exitCode;
     current.metadata.status = exitCode === 0 ? "done" : "failed";
     const details = exitCode === 0

@@ -1,4 +1,6 @@
 export const RUNTIME_PROTOCOL_VERSION = 1;
+// A private Codex launcher failed before starting its terminal frontend.
+export const CODEX_STARTUP_FAILED_EXIT_CODE = 78;
 export const MAX_RUNTIME_MESSAGE_BYTES = 64 * 1024;
 export const CLAUDE_CHANNEL_SERVER_NAME = "canvastty_input";
 export const MAX_CHANNEL_MESSAGE_BYTES = 512 * 1024;

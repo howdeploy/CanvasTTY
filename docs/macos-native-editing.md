@@ -137,6 +137,8 @@ For `resume ID`, the launcher first applies explicitly selected launch permissio
 connection to the same private Unix socket, then attaches the TUI to the same loaded thread. The byte-only
 `app-server proxy --sock` relay cannot supply the WebSocket handshake or framing. This is necessary because
 the stock remote TUI restores saved permissions on resume. The preparation sends no user turn.
+The TUI receives no explicit permission flags or permission config overrides for that resume; these remain on
+the backend and are applied by the preparation RPC, since remote TUI resume rejects CLI permission overrides.
 An active-writer conflict is reported as an already-open conversation without printing the raw server response.
 Launcher preparation errors use exit code 78. A restored Codex card that fails this preparation, or fails before
 its PTY starts, preserves its running restore state and conversation ID for the next application launch.

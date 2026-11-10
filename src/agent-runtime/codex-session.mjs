@@ -30,11 +30,13 @@ function supportsPrivateServer(executable, env) {
 
 /** Keep launch-local config on the owned backend; the official CLI remains its frontend. */
 export function sessionArguments(args) {
-  const frontend = [], backend = [];
+  const frontend = [], resumeFrontend = [], backend = [];
   const permissionKeys = new Set();
   let resuming = false, resumeThread;
   let cwd = process.cwd(), sandbox, approval, automatic = false, bypass = false;
   for (let i = 0; i < args.length; i++) {
+    const frontendStart = frontend.length;
+    let permission = false;
     const token = args[i];
     if (typeof token !== "string" || token.includes("\0")) throw new Error("Invalid Codex argument.");
     const separator = token.startsWith("--") ? token.indexOf("=") : -1;
@@ -55,7 +57,8 @@ export function sessionArguments(args) {
       if (equals < 1) throw new Error("Invalid Codex configuration override.");
       backend.push("-c", entry);
       const key = entry.slice(0, equals).trim();
-      if (["approval_policy", "approvals_reviewer", "sandbox_mode", "sandbox_workspace_write", "sandbox_workspace_write.writable_roots"].includes(key)) permissionKeys.add(key);
+      permission = ["approval_policy", "approvals_reviewer", "sandbox_mode", "sandbox_workspace_write", "sandbox_workspace_write.writable_roots"].includes(key);
+      if (permission) permissionKeys.add(key);
       if (key === "permissions" || key.startsWith("permissions.")) return null;
       // Remote TUI requires workspace roots to be configured on the server.
       if (key !== "sandbox_workspace_write" && key !== "sandbox_workspace_write.writable_roots") frontend.push("-c", entry);
@@ -64,12 +67,14 @@ export function sessionArguments(args) {
       frontend.push(flag, entry);
       if (flag === "-s" || flag === "--sandbox") sandbox = entry;
       if (flag === "-a" || flag === "--ask-for-approval") approval = entry;
+      permission = ["-s", "--sandbox", "-a", "--ask-for-approval"].includes(flag);
       if (flag === "-C" || flag === "--cd") cwd = resolve(entry);
       if (flag === "-m" || flag === "--model") backend.push("-c", `model=${JSON.stringify(entry)}`);
     } else {
       frontend.push(token);
       if (flag === "--approve-for-me") automatic = true;
       if (["--dangerously-bypass-approvals-and-sandbox", "--yolo", "-yolo"].includes(flag)) bypass = true;
+      permission = ["--approve-for-me", "--dangerously-bypass-approvals-and-sandbox", "--yolo", "-yolo"].includes(flag);
       if (flag === "--search") backend.push("-c", 'web_search="live"');
       if (flag === "--strict-config") backend.push(flag);
       if (flag === "--enable" || flag === "--disable") {
@@ -79,6 +84,7 @@ export function sessionArguments(args) {
         backend.push(flag, entry);
       }
     }
+    if (!permission) resumeFrontend.push(...frontend.slice(frontendStart));
   }
   if (automatic && (bypass || sandbox || approval)) throw new Error("Conflicting Codex permission modes.");
   if (bypass && approval) throw new Error("Conflicting Codex permission modes.");
@@ -94,7 +100,8 @@ export function sessionArguments(args) {
   }
   // shortcut: the stock remote picker cannot preserve a launch profile; use the original picker until its RPC supports this.
   if (resuming && !resumeThread) return null;
-  return { frontend, backend, cwd, resumeThread, permissionKeys };
+  // Resume permissions are applied through RPC; the remote TUI rejects explicit CLI permission overrides.
+  return { frontend: resumeThread ? resumeFrontend : frontend, backend, cwd, resumeThread, permissionKeys };
 }
 
 class CodexResumeError extends Error {
@@ -351,9 +358,25 @@ export async function selfCheck() {
   assert.equal(privateServerVersion("unexpected output"), false);
   const thread = "12345678-1234-4234-8234-123456789abc";
   const config = sessionArguments(["--no-daemon", "--approve-for-me", "-c", "hooks.Stop=[]", "resume", thread]);
-  assert.deepEqual(config.frontend, ["--approve-for-me", "-c", "hooks.Stop=[]", "resume", thread]);
+  assert.deepEqual(config.frontend, ["-c", "hooks.Stop=[]", "resume", thread]);
   assert.ok(config.backend.includes('approvals_reviewer="auto_review"'));
   assert.ok(config.backend.includes("hooks.Stop=[]"));
+  assert.deepEqual(sessionArguments(["--approve-for-me"]).frontend, ["--approve-for-me"]);
+  for (const permissions of [
+    ["--approve-for-me"],
+    ["-s", "read-only", "-a", "on-request"],
+    ["--sandbox=workspace-write", "--ask-for-approval=never"],
+    ["--dangerously-bypass-approvals-and-sandbox"], ["--yolo"], ["-yolo"],
+    ["-c", 'approval_policy="never"', "-c", 'sandbox_mode="read-only"', "-c", 'approvals_reviewer="user"']
+  ]) {
+    for (const args of [[...permissions, "resume", thread], ["resume", thread, ...permissions]]) {
+      const restored = sessionArguments(args);
+      assert.deepEqual(restored.frontend, ["resume", thread]);
+      assert.ok(restored.permissionKeys.size, "resume keeps its permission selection for the RPC");
+      assert.deepEqual(restored.backend, sessionArguments(permissions).backend,
+        "resume keeps its permission configuration on the backend");
+    }
+  }
   assert.throws(() => sessionArguments(["--remote", "unix:///another.sock"]));
   assert.throws(() => sessionArguments(["--approve-for-me", "--sandbox", "read-only"]));
   assert.equal(sessionArguments(["--profile", "custom"]), null);

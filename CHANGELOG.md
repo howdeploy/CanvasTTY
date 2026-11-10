@@ -2,6 +2,14 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## 1.8.6
+
+- Publish the 1.8.6 development updates as a stable release, including the performance, plugin settings, optional task-delivery transports and pixel artwork transitions described below.
+- Fix Linux Codex conversation restoration with a private app-server: apply selected permissions through the preparation RPC and attach the official TUI without repeating permission overrides that remote resume rejects. Preserve the selected permissions and exact conversation ID.
+- Use WebSocket RPC over the private Unix socket for resume preparation, keep conversation IDs after bootstrap failures, and supervise backend cleanup when the launcher exits.
+- Manual Linux validation confirmed both Continue and automatic restoration after restarting CanvasTTY. Previously failed cards retain their saved conversation IDs and need Continue once before they can resume automatically on later launches.
+- Existing experimental integrations and platform-specific limitations remain as documented below; this release does not claim to resolve all startup lag or establish native Windows/macOS acceptance.
+
 ## 1.8.6-beta2
 
 - Integrate the reviewed PR development branch with the current main-branch performance and private Linux Codex session updates.

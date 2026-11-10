@@ -10,6 +10,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const MAX_RESPONSE_BYTES = 256 * 1024;
 const HEX_TOKEN = /^[a-f0-9]{64}$/;
+// The shared prompt queue has a 60-second deadline; wait for its receipt before timing out the client.
+const SEND_TIMEOUT_MS = 65_000;
 
 export function defaultConnectionPath(environment = process.env, platform = process.platform) {
   if (environment.CANVASTTY_CONTROL_CONNECTION) return resolve(environment.CANVASTTY_CONTROL_CONNECTION);
@@ -47,7 +49,7 @@ export async function connectionScope(connectionPath) {
   catch { return "person"; }
 }
 
-export async function controlRequest({ connectionPath, clientPath, method, params = {}, requestId = randomUUID(), timeoutMs = 8000 }) {
+export async function controlRequest({ connectionPath, clientPath, method, params = {}, requestId = randomUUID(), timeoutMs = method === "send" ? SEND_TIMEOUT_MS : 8000 }) {
   let connection;
   try { connection = JSON.parse(await privateFile(connectionPath)); }
   catch (error) {
@@ -164,6 +166,9 @@ list
 status <session-id>
 screen <session-id>
 send <session-id> --prompt-file <file>  (or --text <text>)
+  With Claude MCP enabled, send waits for its channel; screen.composerReady is
+  only about terminal input and does not gate channel delivery. Resolve Claude's
+  channel confirmation in the card; send never confirms it for you.
 result <session-id> [--after <result-revision>]
 interrupt <session-id>
 choose <session-id> --choice <number> --revision <observed-menu-revision>
@@ -245,7 +250,7 @@ export async function runCli(argv) {
   const requestId = options["request-id"] || randomUUID();
   try {
     const result = await controlRequest({ connectionPath, clientPath, method, params, requestId,
-      timeoutMs: method === "skin-install" ? 120_000 : 8_000 });
+      ...(method === "skin-install" ? { timeoutMs: 120_000 } : {}) });
     return { requestId, result };
   } catch (error) { error.requestId = requestId; throw error; }
 }

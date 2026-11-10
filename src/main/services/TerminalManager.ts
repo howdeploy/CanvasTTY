@@ -1011,6 +1011,12 @@ export class TerminalManager {
       && (!waitsForOpenCodeStartup(session.metadata.provider) || session.openCodeStartup?.ready));
   }
 
+  /** Channel delivery waits on the transport, independently of the terminal's composer. */
+  hasPromptChannel(id: string): boolean {
+    const runtime = this.sessions.get(id)?.agentRuntime;
+    return Boolean(runtime?.claudeChannel || runtime?.grokAcp || runtime?.kimiAcp);
+  }
+
   /**
    * MCP, native control and plugins share one per-launch queue. Codex/Claude/Kimi wait for an empty composer,
    * then acknowledge a paste before a separate submit. POSIX OpenCode retains its startup cursor gate.

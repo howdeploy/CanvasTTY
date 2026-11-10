@@ -37,11 +37,11 @@ function registry() {
     environment: {}, checked: [] }), snapshot: () => ({}) };
 }
 
-async function fixture(t, gatewayOptions = {}, agentBrowser) {
+async function fixture(t, gatewayOptions = {}, agentBrowser, agentRuntime) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "ctty-control-test-")));
   const calls = [];
   let gateway;
-  const terminals = new TerminalManager((channel, payload) => gateway?.observe(channel, payload), registry(), agentBrowser, undefined, true,
+  const terminals = new TerminalManager((channel, payload) => gateway?.observe(channel, payload), registry(), agentBrowser, agentRuntime, true,
     (command, args, options) => {
       let onData = () => {};
       let onExit = () => {};
@@ -1024,6 +1024,41 @@ test("the control CLI reads a connection's scope as the person's only when there
   } finally {
     await chmod(path, 0o600);
   }
+});
+
+test("native control delivers Claude channel tasks without a terminal composer and keeps ownership and approval checks", localSocket, async (t) => {
+  const messages = [];
+  let connected = false;
+  const runtime = {
+    currentStatus: () => null,
+    prepareLaunch: () => ({ args: [], environment: {}, cleanup() {}, claudeChannel: {
+      helper: { command: process.execPath, args: [] },
+      ready: () => connected,
+      send: (text) => messages.push(text)
+    } })
+  };
+  const f = await fixture(t, {}, undefined, runtime);
+  const { session } = await f.request("create", { provider: "claude", profile: "normal", cwd: f.root });
+  const pty = f.calls.at(-1).pty;
+  pty.data("\x1b[2J\x1b[HClaude is starting");
+  assert.equal((await f.request("screen", { sessionId: session.id })).composerReady, false);
+  const text = "Задача\nsecond line 🐈";
+  const pending = runCli(["--connection", f.connectionPath, "--client-file", f.clientPath,
+    "send", session.id, "--text", text]);
+  await delay(20);
+  assert.deepEqual(messages, [], "delivery waits for the selected channel, not terminal text");
+  connected = true;
+  assert.equal((await pending).result.receipt.stage, "submitted");
+  f.signal(session.id, "working");
+  f.signal(session.id, "idle");
+  await assert.rejects(f.request("send", { sessionId: session.id, text: "foreign" }, randomUUID(), join(f.root, "other.json")),
+    error => error.code === "SESSION_NOT_FOUND");
+  f.signal(session.id, "needs_approval");
+  await assert.rejects(f.request("send", { sessionId: session.id, text: "must wait" }), error => error.code === "NOT_READY");
+  f.signal(session.id, "idle");
+  assert.equal((await f.request("send", { sessionId: session.id, text: "follow-up" })).receipt.stage, "submitted");
+  assert.deepEqual(messages, [text, "follow-up"]);
+  assert.deepEqual(pty.writes, [], "channel tasks never paste text or Enter into the terminal");
 });
 
 test("native control never sends into a draft after a historical suggestion", localSocket, async (t) => {

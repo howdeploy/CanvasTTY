@@ -2,6 +2,14 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
+## 1.8.6-hotfix.1
+
+- Fix Claude prompt delivery from agents and plugins: MCP channel delivery waits for its transport instead of requiring a terminal composer match.
+- Remove the dependency on Claude's exact placeholder wording for guarded native terminal delivery. Preserve ownership, approval and manual-input checks.
+- Let the native control CLI wait for the shared prompt-delivery receipt instead of timing out after eight seconds.
+- Publish hotfix tags as regular Latest releases; beta tags remain prereleases. Existing 1.8.6 installations filter suffixed versions in their built-in updater, so install this hotfix from the release downloads.
+- Automated regression coverage and type checking passed. Live Claude startup confirmations remain user-controlled; this release does not claim to fix a missing native MCP server configuration.
+
 ## 1.8.6
 
 - Publish the 1.8.6 development updates as a stable release, including the performance, plugin settings, optional task-delivery transports and pixel artwork transitions described below.

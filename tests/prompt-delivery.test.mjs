@@ -143,8 +143,8 @@ test("a terminal query reply between paste and Enter is not a manual edit", asyn
   assert.deepEqual(f.writes, ["\x1b[200~task\x1b[201~", "\x1b[1;3R", "\r"]);
 });
 
-test("Claude's unstyled hint requires native idle, cursor at the start and untouched input", async t => {
-  const hint = 'Try "edit <filepath> to..."';
+for (const hint of ['Try "create a util logging.py that..."', "Любая новая подсказка", "A different suggestion"])
+test(`Claude's unstyled composer uses native idle and untouched input, not hint wording: ${hint}`, async t => {
   const archiveFrame = frame("claude", hint) + "\x1b[1;3H";
   const f = fixture(t, "claude");
   f.pty.emitData(archiveFrame);

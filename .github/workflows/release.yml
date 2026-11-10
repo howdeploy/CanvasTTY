@@ -184,7 +184,9 @@ jobs:
             --title "CanvasTTY ${GITHUB_REF_NAME}"
             --generate-notes
           )
-          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+          if [[ "${GITHUB_REF_NAME}" == *-beta* ]]; then
             args+=(--prerelease --latest=false)
+          else
+            args+=(--latest)
           fi
           gh "${args[@]}"

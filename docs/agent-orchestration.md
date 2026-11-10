@@ -134,6 +134,10 @@ bracketed paste, observation of new text or a new collapsed-paste marker in the 
 input field, then a separate submit key using the launch's keymap. Transcript echoes
 do not acknowledge a paste. MCP, native control CLI and plugin sends use the same path.
 Manual input, cancellation, exit or restart before submission stops further writes.
+With Claude Code MCP enabled for a launch, native control sends tasks through that channel without requiring a
+terminal composer or matching a placeholder. The shared delivery queue waits for the channel to connect; the CLI
+waits for its delivery receipt. Claude's channel confirmation and permission prompts still require the person.
+Without MCP, Claude readiness uses native idle, an untouched input field and cursor position rather than hint wording.
 An unobserved paste remains `pasted` and blocks a new automatic task until the person
 resolves the card; `submit:false` retains an automation-owned draft that can be extended.
 Fresh output alone never acknowledges acceptance. Startup output and a previous launch's

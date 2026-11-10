@@ -37,10 +37,19 @@ test("release gate requires the matching stable, hotfix or beta tag and complete
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("evaluation releases are prereleases and never replace the latest stable release", async () => {
+test("beta releases stay prereleases while stable and hotfix releases become latest", async () => {
   const workflow = YAML.parse(await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8"));
   const publish = workflow.jobs.release.steps.find(step => step.name === "Create GitHub release").run;
-  assert.match(publish, /if \[\[ "\$\{GITHUB_REF_NAME\}" == \*-\* \]\]; then\s+args\+=\(--prerelease --latest=false\)/);
+  for (const [tag, prerelease] of [["v1.8.6-beta2", true], ["v1.8.6", false], ["v1.8.6-hotfix.1", false]]) {
+    const result = spawnSync("bash", ["-c", `gh() { printf '%s\\n' "$@"; };\n${publish}`], {
+      encoding: "utf8", env: { ...process.env, GITHUB_REF_NAME: tag, GITHUB_REPOSITORY: "howdeploy/CanvasTTY" }
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const args = result.stdout.trim().split("\n");
+    assert.equal(args.includes("--prerelease"), prerelease, tag);
+    assert.equal(args.includes("--latest=false"), prerelease, tag);
+    assert.equal(args.includes("--latest"), !prerelease, tag);
+  }
 });
 
 test("macOS CI can package pull requests without the release owner's key", async () => {

@@ -45,8 +45,8 @@ export function promptComposer(terminal: Terminal, provider: string, throughCurs
 export function claudeTerminalComposerReady(terminal: Terminal, allowUnstyled = false): boolean {
   const composer = promptComposer(terminal, "claude");
   if (!composer || /\[(?:Pasted text #\d+|Pasted Content|Image #\d+)/u.test(composer.text)) return false;
-  // shortcut: only the beta2 archive's exact unstyled hint is known; extend with new native evidence.
-  return composer.typed === "" || Boolean(allowUnstyled && composer.atStart && composer.text === 'Try "edit <filepath> to..."');
+  // Native idle and untouched input authorize the cursor-at-start fallback, independently of hint wording.
+  return composer.typed === "" || Boolean(allowUnstyled && composer.atStart);
 }
 
 /** Repeated text needs a new occurrence; an old collapsed paste is not an acknowledgement. */

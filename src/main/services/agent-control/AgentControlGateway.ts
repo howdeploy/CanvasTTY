@@ -66,6 +66,7 @@ interface TerminalPort {
   launchPending?(id: string): boolean;
   /** The current OpenCode launch's native input view is up; not a composer/draft check. */
   startupReady?(id: string): boolean;
+  hasPromptChannel?(id: string): boolean;
   geometry(id: string): { cols: number; rows: number };
   /** Masks plugin launch secrets in text handed to a controller. */
   redactSecrets?(text: string): string;
@@ -681,7 +682,9 @@ export class AgentControlGateway {
       if (!["idle", "unavailable"].includes(fresh.status)) throw new ControlError("NOT_READY", "The session is not idle; inspect screen and wait for the current activity to finish.");
       if (capabilities.menus && !composerReady) throw new ControlError("NOT_READY", "Codex is not at an empty task composer; inspect screen and resolve startup or approvals without changing its sandbox.");
       if (fresh.provider === "kimi" && !composerReady) throw new ControlError("NOT_READY", "Kimi is not at a verified empty Kimi 2.x task composer; inspect screen and resolve startup or approvals. Nothing was written.");
-      if (fresh.provider === "claude" && !composerReady) throw new ControlError("NOT_READY", "Claude is not at an empty task composer; inspect screen and resolve startup or approvals. Nothing was written.");
+      if (fresh.provider === "claude" && !composerReady && !this.options.terminals.hasPromptChannel?.(id)) {
+        throw new ControlError("NOT_READY", "Claude is not at an empty task composer; inspect screen and resolve startup or approvals. Nothing was written.");
+      }
       if (fresh.provider === "opencode" && this.options.terminals.startupReady?.(id) === false) throw new ControlError("NOT_READY", "OpenCode has not shown its startup input cursor; nothing was written. Inspect the card and wait for its input view.");
       if (fresh.provider === "codex" && codexPromptSubmit("\r", fresh.nativeEditor?.submit, fresh.nativeEditor?.submitSequence) === null) {
         throw new ControlError("NOT_SUPPORTED", "The configured Codex submit shortcut cannot be encoded; nothing was written.");

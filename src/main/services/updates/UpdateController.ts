@@ -14,11 +14,18 @@ export interface UpdateAdapter {
   install(): Promise<void>;
 }
 
+export function isStableUpdateVersion(value: unknown): value is string {
+  return typeof value === "string" && /^\d+\.\d+\.\d+(?:-hotfix\.(?:0|[1-9]\d*))?$/.test(value);
+}
+
 export function isNewStableVersion(candidate: string, current: string): boolean {
-  if (!/^\d+\.\d+\.\d+$/.test(candidate) || !isValidSemver(current)) return false;
+  if (!isStableUpdateVersion(candidate) || !isValidSemver(current)) return false;
   const difference = compareSemver(candidate, current);
-  // A stable release also replaces a prerelease with the same numeric version.
-  return difference > 0 || (difference === 0 && current.split("+")[0]!.includes("-"));
+  if (difference !== 0) return difference > 0;
+  const currentRelease = current.split("+")[0]!;
+  if (!isStableUpdateVersion(currentRelease)) return true;
+  // Hotfixes follow their base release, unlike SemVer prereleases.
+  return BigInt(candidate.split("-hotfix.")[1] ?? "-1") > BigInt(currentRelease.split("-hotfix.")[1] ?? "-1");
 }
 
 export class UpdateController implements UpdateService {

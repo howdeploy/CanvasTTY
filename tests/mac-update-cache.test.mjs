@@ -24,6 +24,43 @@ test("Mac check treats an older release without update assets as up to date", as
   }
 });
 
+test("Mac hotfix check and download preserve the exact version and signed-feed probe", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "canvastty-mac-hotfix-"));
+  const originalFetch = globalThis.fetch;
+  const version = "1.8.6-hotfix.1";
+  const prefix = `https://github.com/howdeploy/CanvasTTY/releases/download/v${version}/`;
+  const archive = Buffer.from("hotfix archive");
+  const feed = Buffer.from("signed appcast");
+  try {
+    globalThis.fetch = async input => {
+      const url = String(input);
+      if (url.endsWith("/releases/latest")) return new Response(JSON.stringify({
+        tag_name: `v${version}`, draft: false, prerelease: false, body: "hotfix notes",
+        assets: [
+          { name: `CanvasTTY-${version}-mac-arm64.zip`, browser_download_url: prefix + `CanvasTTY-${version}-mac-arm64.zip`, size: archive.length },
+          { name: "appcast.xml", browser_download_url: prefix + "appcast.xml", size: feed.length }
+        ]
+      }));
+      if (url === prefix + "appcast.xml") return new Response(feed);
+      if (url === prefix + `CanvasTTY-${version}-mac-arm64.zip`) return new Response(archive);
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+    const updater = new MacSparkleUpdater(directory, "unused.app", "unused-helper", "unused-server", "1.8.6");
+    let probed;
+    updater.probeSignedFeed = async (path, selectedVersion) => { probed = selectedVersion; return true; };
+    const controller = new UpdateController(updater, "1.8.6");
+    await controller.check();
+    assert.equal(probed, version);
+    assert.deepEqual(controller.status(), { type: "available", version, notes: "hotfix notes" });
+    await controller.download();
+    assert.deepEqual(controller.status(), { type: "ready", version });
+    assert.deepEqual(await readFile(updater.cached.archivePath), archive);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 for (const mode of ["normal", "crash"]) {
   test(`Mac staged download does not install after ${mode} exit`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "canvastty-mac-update-"));
@@ -68,7 +105,8 @@ test("Mac check clears abandoned downloads but leaves an active installer cache"
   }
 });
 
-test("Mac update server removes its cache after the installer exits", async () => {
+for (const version of ["1.6.0", "1.8.6-hotfix.1"])
+test(`Mac update server accepts ${version} and removes its cache after the installer exits`, async () => {
   const directory = await mkdtemp(join(tmpdir(), "canvastty-mac-server-cleanup-"));
   try {
     const cache = join(directory, "mac-finished");
@@ -80,7 +118,7 @@ test("Mac update server removes its cache after the installer exits", async () =
     await writeFile(appcast, "appcast");
     await writeFile(archive, "archive");
     const child = spawnSync(process.execPath, ["src/native/updates/mac-update-server.mjs",
-      process.execPath, helper, appcast, archive, "1.6.0"], {
+      process.execPath, helper, appcast, archive, version], {
       cwd: process.cwd(), encoding: "utf8", timeout: 10_000
     });
     assert.equal(child.status, 0, child.stderr);

@@ -24,3 +24,6 @@ execFileSync("ditto", [join(distribution, "Sparkle.framework"), join(destination
 execFileSync("clang", ["-fobjc-arc", "-fblocks", "-mmacosx-version-min=12.0", "-F", distribution,
   "-framework", "Cocoa", "-framework", "Sparkle", "-Wl,-rpath,@executable_path/../Frameworks",
   "-o", join(destination, "canvastty-update-helper"), "src/native/updates/mac-sparkle-helper.m"], { stdio: "inherit" });
+execFileSync(join(destination, "canvastty-update-helper"), ["--self-check"], {
+  stdio: "inherit", env: { ...process.env, DYLD_FRAMEWORK_PATH: distribution }
+});

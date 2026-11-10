@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { basename, dirname } from "node:path";
 
 const [helper, app, appcast, archive, version, mode] = process.argv.slice(2);
-if (!helper || !app || !appcast || !archive || !/^\d+\.\d+\.\d+$/.test(version ?? "") ||
+if (!helper || !app || !appcast || !archive || !/^\d+\.\d+\.\d+(?:-hotfix\.(?:0|[1-9]\d*))?$/.test(version ?? "") ||
     (mode !== undefined && mode !== "probe")) process.exit(2);
 const token = randomUUID();
 const appcastSize = (await stat(appcast)).size;

@@ -1,4 +1,4 @@
-import type { AvailableUpdate, UpdateAdapter } from "./UpdateController.ts";
+import { isStableUpdateVersion, type AvailableUpdate, type UpdateAdapter } from "./UpdateController.ts";
 
 interface GithubRelease { tag_name?: unknown; body?: unknown; draft?: unknown; prerelease?: unknown; html_url?: unknown }
 
@@ -11,7 +11,7 @@ export class ManualReleaseAdapter implements UpdateAdapter {
     if (!response.ok) throw new Error(`Release check failed (${response.status})`);
     const release = await response.json() as GithubRelease;
     if (release.draft || release.prerelease || typeof release.tag_name !== "string" ||
-      !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) return null;
+      !release.tag_name.startsWith("v") || !isStableUpdateVersion(release.tag_name.slice(1))) return null;
     const version = release.tag_name.slice(1);
     return { version, notes: typeof release.body === "string" ? release.body.slice(0, 10000) : undefined,
       manualUrl: "https://github.com/howdeploy/CanvasTTY/releases/tag/" + encodeURIComponent(release.tag_name) };

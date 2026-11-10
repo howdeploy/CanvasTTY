@@ -1,9 +1,21 @@
 #import <Cocoa/Cocoa.h>
 #import <Sparkle/Sparkle.h>
 
+// Sparkle ignores dash suffixes; encode our release order as numeric components.
+static NSString *CanvasOrderingVersion(NSString *version) {
+  NSString *release = [[version componentsSeparatedByString:@"+"] firstObject];
+  NSString *base = [[release componentsSeparatedByString:@"-"] firstObject];
+  if ([base rangeOfString:@"^[0-9]+\\.[0-9]+\\.[0-9]+$" options:NSRegularExpressionSearch].location == NSNotFound) return version;
+  if ([release isEqualToString:base]) return [base stringByAppendingString:@".1"];
+  if ([release rangeOfString:@"-hotfix\\.(0|[1-9][0-9]*)$" options:NSRegularExpressionSearch].location != NSNotFound) {
+    return [release stringByReplacingOccurrencesOfString:@"-hotfix." withString:@".2."];
+  }
+  return [base stringByAppendingFormat:@".0%@", [release substringFromIndex:base.length + 1]];
+}
+
 // Electron has already shown the update and received the user's install action.
 // Sparkle starts only here, so a normal exit after Download cannot install it.
-@interface CanvasUpdateDriver : NSObject <SPUUserDriver, SPUUpdaterDelegate>
+@interface CanvasUpdateDriver : NSObject <SPUUserDriver, SPUUpdaterDelegate, SUVersionComparison>
 @property (nonatomic, copy) NSString *feedURL;
 @property (nonatomic, copy) NSString *archiveURL;
 @property (nonatomic, copy) NSString *version;
@@ -11,6 +23,10 @@
 @end
 
 @implementation CanvasUpdateDriver
+- (id<SUVersionComparison>)versionComparatorForUpdater:(SPUUpdater *)updater { return self; }
+- (NSComparisonResult)compareVersion:(NSString *)versionA toVersion:(NSString *)versionB {
+  return [[SUStandardVersionComparator defaultComparator] compareVersion:CanvasOrderingVersion(versionA) toVersion:CanvasOrderingVersion(versionB)];
+}
 - (NSString *)feedURLStringForUpdater:(SPUUpdater *)updater { return self.feedURL; }
 - (BOOL)updaterShouldPromptForPermissionToCheckForUpdates:(SPUUpdater *)updater { return NO; }
 - (void)updater:(SPUUpdater *)updater didFindValidUpdate:(SUAppcastItem *)item {
@@ -78,6 +94,19 @@
 
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
+    if (argc == 2 && strcmp(argv[1], "--self-check") == 0) {
+      CanvasUpdateDriver *driver = [CanvasUpdateDriver new];
+      NSArray<NSString *> *versions = @[@"1.8.5-hotfix.10", @"1.8.6-beta2", @"1.8.6", @"1.8.6-hotfix.0", @"1.8.6-hotfix.1", @"1.8.6-hotfix.2", @"1.8.6-hotfix.10", @"1.8.7"];
+      for (NSUInteger i = 0; i < versions.count; i++) {
+        for (NSUInteger j = 0; j < versions.count; j++) {
+          NSComparisonResult expected = i < j ? NSOrderedAscending : i > j ? NSOrderedDescending : NSOrderedSame;
+          if ([driver compareVersion:versions[i] toVersion:versions[j]] != expected) return 20;
+        }
+      }
+      if ([driver compareVersion:@"1.8.6-hotfix.1+build.2" toVersion:@"1.8.6-hotfix.1"] != NSOrderedSame) return 21;
+      puts("Update version ordering self-check passed");
+      return 0;
+    }
     if (argc != 5 && argc != 6) return 2;
     NSString *applicationPath = [NSString stringWithUTF8String:argv[1]];
     NSBundle *applicationBundle = [NSBundle bundleWithPath:applicationPath];

@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, open, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
-import { isNewStableVersion, type AvailableUpdate, type UpdateAdapter } from "./UpdateController.ts";
+import { isNewStableVersion, isStableUpdateVersion, type AvailableUpdate, type UpdateAdapter } from "./UpdateController.ts";
 
 interface ReleaseAsset { name: string; browser_download_url: string; size: number }
 interface Release { tag_name: string; body: string | null; draft: boolean; prerelease: boolean; assets: ReleaseAsset[] }
@@ -28,7 +28,7 @@ async function getRelease(): Promise<Release> {
   const value: unknown = await response.json();
   if (!value || typeof value !== "object") throw new Error("Invalid release response");
   const release = value as Partial<Release>;
-  if (typeof release.tag_name !== "string" || !/^v\d+\.\d+\.\d+$/.test(release.tag_name) ||
+  if (typeof release.tag_name !== "string" || !release.tag_name.startsWith("v") || !isStableUpdateVersion(release.tag_name.slice(1)) ||
       typeof release.draft !== "boolean" || typeof release.prerelease !== "boolean" ||
       !Array.isArray(release.assets)) throw new Error("Invalid release response");
   return release as Release;

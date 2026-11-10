@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { createRequire, stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
-import { UpdateController } from "../src/main/services/updates/UpdateController.ts";
+import { isNewStableVersion, UpdateController } from "../src/main/services/updates/UpdateController.ts";
 import { ManualReleaseAdapter } from "../src/main/services/updates/ManualReleaseAdapter.ts";
 import { terminalShutdownMessage } from "../src/main/services/updates/updateMessages.ts";
 
@@ -110,6 +113,62 @@ test("prereleases and equal versions are excluded", async () => {
   assert.equal(isNewStableVersion("1.8.5", "invalid"), false);
 });
 
+test("stable hotfixes follow their base release without allowing downgrades or beta updates", () => {
+  const versions = ["1.8.5-hotfix.10", "1.8.6-beta2", "1.8.6", "1.8.6-hotfix.0", "1.8.6-hotfix.1", "1.8.6-hotfix.2", "1.8.6-hotfix.10", "1.8.7"];
+  for (const [i, candidate] of versions.entries()) {
+    for (const [j, current] of versions.entries()) {
+      assert.equal(isNewStableVersion(candidate, current), i > j && !candidate.includes("-beta"), `${current} -> ${candidate}`);
+    }
+  }
+  assert.equal(isNewStableVersion("1.8.6-hotfix.1", "1.8.6-hotfix.1+build.2"), false);
+  for (const invalid of ["1.8.6-hotfix", "1.8.6-hotfix.01", "1.8.6-hotfix.1-beta", "1.8.6-rc.1"]) {
+    assert.equal(isNewStableVersion(invalid, "1.8.5"), false);
+  }
+});
+
+test("Electron hotfix delivery passes native availability checks and retains a downloadable receipt", async () => {
+  const { AppImageUpdater } = createRequire(import.meta.url)("electron-updater");
+  const source = await readFile(new URL("../src/main/services/updates/ElectronUpdaterAdapter.ts", import.meta.url), "utf8");
+  for (const [current, candidate, offered, supported = true, rollout = true] of [
+    ["1.8.6", "1.8.6-hotfix.1", true],
+    ["1.8.6-beta2", "1.8.6-hotfix.1", true],
+    ["1.8.6-hotfix.2", "1.8.6-hotfix.10", true],
+    ["1.8.6-hotfix.1", "1.8.7", true],
+    ["1.8.6-hotfix.2", "1.8.6-hotfix.1", false],
+    ["1.8.6-hotfix.1", "1.8.6", false],
+    ["1.8.7", "1.8.6-hotfix.10", false],
+    ["1.8.6", "1.8.7-beta2", false],
+    ["1.8.6", "1.8.6-hotfix.1", false, false],
+    ["1.8.6", "1.8.6-hotfix.1", false, true, false]
+  ]) {
+    const updater = new AppImageUpdater(undefined, { version: current });
+    updater.logger = null;
+    updater.isUpdateSupported = () => supported;
+    updater.isUserWithinRollout = () => rollout;
+    updater.getUpdateInfoAndProvider = async () => ({ info: { version: candidate, files: [], releaseNotes: "notes" }, provider: {} });
+    updater.checkForUpdates = () => updater.doCheckForUpdates();
+    let downloaded;
+    updater.doDownloadUpdate = async options => { downloaded = options.updateInfoAndProvider.info.version; return []; };
+    const Adapter = runInNewContext(`${stripTypeScriptTypes(source.replace(/^import .*;\r?\n/gmu, "").replace("export class", "class"))}; ElectronUpdaterAdapter`, {
+      electronUpdater: { autoUpdater: updater }, app: { getVersion: () => current },
+      process: { platform: "linux" }, isNewStableVersion, AwaitedNsisUpdater: class {}, console
+    });
+    const adapter = new Adapter();
+    const result = await adapter.check();
+    assert.equal(Boolean(result), offered, `${current} -> ${candidate}, supported=${supported}, rollout=${rollout}`);
+    assert.equal(updater.allowPrerelease, false);
+    assert.equal(updater.autoDownload, false);
+    if (offered) {
+      assert.equal(result.version, candidate);
+      await adapter.download(() => {});
+      assert.equal(downloaded, candidate);
+    } else {
+      await assert.rejects(adapter.download(), /No selected release/);
+      assert.equal(downloaded, undefined);
+    }
+  }
+});
+
 test("network and permission failures are visible and cannot advance the stage", async () => {
   const network = new UpdateController({
     async check() { throw new Error("Network unavailable"); },
@@ -149,6 +208,15 @@ test("portable updater refuses draft and prerelease releases", async () => {
     assert.deepEqual(await adapter.check(), {
       version: "1.6.0", notes: "notes", manualUrl: "https://github.com/howdeploy/CanvasTTY/releases/tag/v1.6.0"
     });
+    release.tag_name = "v1.8.6-hotfix.1";
+    const controller = new UpdateController(adapter, "1.8.6-beta2");
+    await controller.check();
+    assert.deepEqual(controller.status(), {
+      type: "available", version: "1.8.6-hotfix.1", notes: "notes",
+      manualUrl: "https://github.com/howdeploy/CanvasTTY/releases/tag/v1.8.6-hotfix.1"
+    });
+    release.prerelease = true;
+    assert.equal(await adapter.check(), null, "a hotfix published as a prerelease remains excluded");
     await assert.rejects(adapter.download());
   } finally { globalThis.fetch = originalFetch; }
 });

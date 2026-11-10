@@ -1,7 +1,7 @@
 import electronUpdater, { type AppUpdater } from "electron-updater";
 import { app } from "electron";
 import { AwaitedNsisUpdater } from "./AwaitedNsisUpdater";
-import type { AvailableUpdate, UpdateAdapter } from "./UpdateController.ts";
+import { isNewStableVersion, type AvailableUpdate, type UpdateAdapter } from "./UpdateController.ts";
 
 export class ElectronUpdaterAdapter implements UpdateAdapter {
   private readonly updater: AppUpdater;
@@ -19,13 +19,16 @@ export class ElectronUpdaterAdapter implements UpdateAdapter {
     this.updater.autoInstallOnAppQuit = false;
     this.updater.autoRunAppAfterInstall = true;
     this.updater.allowPrerelease = false;
-    this.updater.allowDowngrade = false;
+    // SemVer ranks hotfixes below their base; our release-order gate below prevents actual downgrades.
+    this.updater.allowDowngrade = true;
   }
 
   async check(): Promise<AvailableUpdate | null> {
+    this.checked = null;
+    this.downloaded = false;
     const result = await this.updater.checkForUpdates();
     const info = result?.updateInfo;
-    if (!info || info.version.includes("-")) return null;
+    if (!result?.isUpdateAvailable || !info || !isNewStableVersion(info.version, app.getVersion())) return null;
     let notes = typeof info.releaseNotes === "string" ? info.releaseNotes.slice(0, 10000)
       : Array.isArray(info.releaseNotes) ? info.releaseNotes.map(entry => entry.note).filter(Boolean).join("\n\n").slice(0, 10000)
         : undefined;

@@ -135,9 +135,10 @@ Hook-only 插件使用空的 `contributions` 与非空的 `hooks`。安装只复
 | `event` `{ event, data }` | 通知 | 无 | 通过 `host.service.onEvent` 发送给该插件的活动界面 |
 | `redaction.register` `{ values }` | 请求 | 无 | 最多 32 个字符串（每个最多 4096 字符，8 字符以上才生效），CanvasTTY 会在一个 agent 读取另一个 agent 的所有文本中遮蔽它们；只保存在内存中 |
 | `secrets.get` `{ key }` | 请求 | `secrets` 权限 | 插件自己的机密（与 `host.secrets` 同一存储），或 `null`。之后该值会像 `redaction.register` 的值一样被遮蔽。用于服务自身需要的密钥（例如它调用的模型的 API 密钥）；绝不要把它发回界面 |
+| `limits.get` | 请求 | `limits:read` | `{ state: "ready", snapshot }`：与网页界面相同、不含账户信息的 `LimitsSnapshot`（各提供方窗口的 `usedPercent` 与 `resetsAt`） |
 | `sessions.subscribe` / `sessions.list` / `sessions.unsubscribe` | 请求 | `sessions:events` | 卡片事件和当前打开的卡片（见“会话事件”） |
 | `sessions.create` | 请求 | `sessions:launch` | 启动一张归插件所有的卡片 |
-| `sessions.send` / `sessions.stop` | 请求 | `sessions:control` | 仅限该插件启动的卡片 |
+| `sessions.send` / `sessions.dismiss` / `sessions.stop` | 请求 | `sessions:control` | 仅限该插件启动的卡片；`sessions:control-any` 还允许向用户打开的智能体卡片 send 与 dismiss |
 | `cards.setBadge` `{ sessionId, badge }` | 请求 | `cards:decorate` | 在任意卡片上显示简短的纯文本标记（见“卡片标记与动作”） |
 
 宿主把每次调用绑定到服务自身的插件：服务无法指定其他插件或读取其他插件的机密，只能通过下面的 `sessions:*` 权限访问会话。示例 [`service-echo`](../examples/plugins/service-echo) 在其页面用 `host.secrets.set` 保存令牌，其服务用 `secrets.get` 读取，只回答是否已设置。
@@ -338,7 +339,8 @@ interface PluginSessionEvent {
 | 请求 | 条件 | 效果 |
 |:--|:--|:--|
 | `sessions.create` `{ provider, cwd, profile?, title?, launchOptions?, environment? }` | `sessions:launch` | 通过常规启动流程启动一张 `agent` 卡片（包括启动选项和环境；拒绝原因显示在卡片上）。卡片可见且从不抢占焦点。每个插件最多 16 张。回答 `{ sessionId }` |
-| `sessions.send` `{ sessionId, text, submit? }` | `sessions:control` | 向本插件启动的卡片输入文本（除非 `submit: false`，否则带回车）。启动仍由插件准备中的卡片在启动开始后收到文本；启动未成功时 `sent` 为 false（文本被丢弃） |
+| `sessions.send` `{ sessionId, text, submit? }` | `sessions:control` | 向本插件启动的卡片输入文本（除非 `submit: false`，否则带回车），具有 `sessions:control-any` 时也可向用户打开的智能体卡片输入。启动仍由插件准备中的卡片在启动开始后收到文本；启动未成功时 `sent` 为 false（文本被丢弃） |
+| `sessions.dismiss` `{ sessionId }` | `sessions:control` | 在可输入的卡片中按 Esc：仅当卡片空闲、上一轮之后用户未输入，且最后几行显示可关闭菜单的提示（例如 Claude 的用量限制菜单）；否则 `dismissed` 为 false，不写入任何内容 |
 | `sessions.stop` `{ sessionId }` | `sessions:control` | 关闭本插件启动的卡片；保留其环境数据 |
 
 他人的或未知的 id 得到相同的错误，因此插件无法探测其他卡片。没有删除操作，也没有读取屏幕的控制调用。
@@ -401,7 +403,8 @@ host.onStorageChange(listener) 会把 host.storage.set 的写入通知给同一�
 | `sessions:events` | `sessions.subscribe`、`sessions.list` | 卡片元数据：服务商、角色、父级、标题、状态、文件夹、环境 ref；不含屏幕文本 |
 | `sessions:read-screen` | status 和 exited 事件中的 `screen` | 每张卡片输出的末尾（已遮蔽）：私人数据 |
 | `sessions:launch` | `sessions.create` | 通过常规启动流程启动可见的 agent 卡片 |
-| `sessions:control` | `sessions.send`、`sessions.stop` | 只能向本插件启动的卡片输入文本并关闭它们 |
+| `sessions:control` | `sessions.send`、`sessions.dismiss`、`sessions.stop` | 只能向本插件启动的卡片输入文本并关闭它们 |
+| `sessions:control-any` | `sessions.send`、`sessions.dismiss`（需同时具有 `sessions:control`） | 也可向用户打开的智能体卡片输入文本；不包括普通终端和其他插件的卡片，也不能 `sessions.stop` |
 | `cards:decorate` | `cards.setBadge`、服务的 `cardActions`、`canvastty.cards.invoke` | 卡片上的纯文本标记及其菜单中的动作 |
 | `browser:engine` | 服务的 `browserEngine` 和 `canvastty.browserEngine.*` | 接收 agent 后台标签页的 URL 并用自己的引擎打开；没有 cookie、配置文件或凭据 |
 | `limits:read` | `limits.get` | 与 HOME 使用的同一个脱敏 `LimitsSnapshot` |

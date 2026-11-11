@@ -100,7 +100,7 @@ export interface CanvasTTYPluginContext {
     id: string;
     name: string;
     version: string;
-    permissions: Array<"storage" | "secrets" | "sessions:read" | "limits:read" | "launcher:open" | "external:open" | "browser:open" | "media:library" | "playlists:read" | "playlists:write" | "hermes:hud" | "desktop:embed" | "network" | "launch:contribute" | "environment:provide" | "decision:provide" | "tools:agents" | "sessions:events" | "sessions:read-screen" | "sessions:launch" | "sessions:control" | "cards:decorate" | "browser:engine">;
+    permissions: Array<"storage" | "secrets" | "sessions:read" | "limits:read" | "launcher:open" | "external:open" | "browser:open" | "media:library" | "playlists:read" | "playlists:write" | "hermes:hud" | "desktop:embed" | "network" | "launch:contribute" | "environment:provide" | "decision:provide" | "tools:agents" | "sessions:events" | "sessions:read-screen" | "sessions:launch" | "sessions:control" | "sessions:control-any" | "cards:decorate" | "browser:engine">;
     modules: string[];
   };
   contribution: {
@@ -527,7 +527,7 @@ export interface CanvasTTYServiceHostApi {
     launchOptions?: Record<string, Record<string, boolean | string>>;
     environment?: { pluginId: string; kind: string; options?: Record<string, boolean | string> };
   }): { sessionId: string };
-  /** Needs `sessions:control`; only cards this plugin created. Enter is added unless `submit: false`. */
+  /** Needs `sessions:control`; only cards this plugin created, or with `sessions:control-any` an agent card the person opened (not plain terminals or other plugins' cards). Enter is added unless `submit: false`. */
   /** Waits until a launch its plugins prepare has started; `sent` is false (and the text dropped) when it did not start. */
   "sessions.send"(params: { sessionId: string; text: string; submit?: boolean }): {
     sessionId: string;
@@ -539,8 +539,12 @@ export interface CanvasTTYServiceHostApi {
       reason?: string;
     };
   };
+  /** Needs `sessions:control` (and `sessions:control-any` for agent cards the person opened). Esc only for an idle card the person has not typed into since its last turn, with a dismissible menu's hint in its last lines. */
+  "sessions.dismiss"(params: { sessionId: string }): { sessionId: string; dismissed: boolean; reason?: string };
   /** Needs `sessions:control`; only cards this plugin created. Closes the card, keeps its environment data. */
   "sessions.stop"(params: { sessionId: string }): { sessionId: string; stopped: true };
+  /** Needs `limits:read`. The same account-free snapshot `host.limits.get` gives surfaces. */
+  "limits.get"(params?: Record<string, never>): { state: "ready"; snapshot: unknown };
   /** Needs `cards:decorate`. `null` removes this plugin's badge from the card. */
   "cards.setBadge"(params: { sessionId: string; badge: { text: string; tone?: CanvasTTYCardTone; tooltip?: string } | null }): null;
 }

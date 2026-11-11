@@ -317,6 +317,28 @@ test("the host API is minimal: unknown methods and storage without permission ar
   assert.match(replies[1], /storage permission/);
 });
 
+test("limits.get gives a service the account-free limits snapshot only with limits:read", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "canvastty-service-limits-"));
+  const calls = [];
+  const snapshot = { state: "ready", snapshot: { fetchedAt: 1, providers: [] } };
+  const { instance } = supervisor({ host: {
+    storageGet: async () => null, storageSet: async () => {}, emit: () => {},
+    limits: async (pluginId) => { calls.push(pluginId); return snapshot; }
+  } });
+  t.after(async () => { await instance.dispose(); await rm(root, { recursive: true, force: true }); });
+  await instance.sync([
+    await specFor(join(root, "a"), "com.example.a", "probe", PROBE, []),
+    await specFor(join(root, "b"), "com.example.b", "probe", PROBE, ["limits:read"])
+  ]);
+  await instance.request("com.example.a", "probe", "host", { method: "limits.get", params: {} });
+  await instance.request("com.example.b", "probe", "host", { method: "limits.get", params: {} });
+  const reply = (pluginId) => instance.report(pluginId).log.find((entry) => entry.message.startsWith("host-reply"))?.message;
+  await waitFor(() => reply("com.example.a") && reply("com.example.b"));
+  assert.match(reply("com.example.a"), /limits:read permission/);
+  assert.deepEqual(JSON.parse(reply("com.example.b").slice("host-reply ".length)).result, snapshot);
+  assert.deepEqual(calls, ["com.example.b"]);
+});
+
 test("message sizes are bounded in both directions", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "canvastty-service-sizes-"));
   const { instance } = supervisor({ maxFrameBytes: 4_096 });

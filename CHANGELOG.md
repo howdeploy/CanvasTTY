@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md) · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh-CN.md)
 
-## Unreleased
+## 1.8.7
 
 - Recognize regular stable and `hotfix.N` releases in update checks across manual installs, Windows/Linux packages and macOS. Order hotfixes after their base release without offering beta releases or older versions.
 - Preserve Electron's native compatibility/rollout checks and verified download path, and use the same release order in the native Sparkle helper.

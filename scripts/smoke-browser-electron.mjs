@@ -9,6 +9,7 @@ import electronPath from "electron";
 const PROJECT_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const READY_MARKER = "CANVASTTY_BROWSER_SMOKE_READY";
 const FOCUS_MARKER = "CANVASTTY_BROWSER_SMOKE_FOCUS ";
+const OUTPUT_CLOSE_TIMEOUT_MS = 2_000;
 const TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_BYTES = 128 * 1024;
 
@@ -35,6 +36,7 @@ try {
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
+  const outputClosed = new Promise(resolveClosed => child.once("close", resolveClosed));
   await new Promise((resolveReady, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -81,8 +83,26 @@ try {
   if (exit.code !== 0 || exit.signal !== null) {
     throw new Error(`Browser smoke exited unsuccessfully (code=${exit.code}, signal=${exit.signal}). Output:\n${output}`);
   }
-  if (process.env.CANVASTTY_TEST_DISPLAY && focusViolation) {
-    throw new Error(`Browser smoke activated the app or focused a window. Output:\n${output}`);
+  if (process.env.CANVASTTY_TEST_DISPLAY) {
+    // Output can arrive after exit, including a focus marker just before shutdown.
+    let timer;
+    try {
+      await Promise.race([
+        outputClosed,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            child.stdout.destroy();
+            child.stderr.destroy();
+            reject(new Error(`Electron output did not close within ${OUTPUT_CLOSE_TIMEOUT_MS} ms.`));
+          }, OUTPUT_CLOSE_TIMEOUT_MS);
+        })
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (focusViolation) {
+      throw new Error(`Browser smoke activated the app or focused a window. Output:\n${output}`);
+    }
   }
   process.stdout.write(output);
 } finally {

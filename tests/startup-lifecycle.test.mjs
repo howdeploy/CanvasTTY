@@ -28,12 +28,14 @@ test("Mac window close keeps the renderer; quit and other platforms still close 
   const create = source.slice(source.indexOf("function createWindow"), source.indexOf("function shellWindowGone"));
   for (const [platform, quitting, hidden] of [["darwin", false, true], ["darwin", true, false], ["linux", false, false], ["win32", false, false]]) {
     class Window extends EventEmitter {
+      constructor(options) { super(); this.options = options; }
       hidden = false;
       webContents = Object.assign(new EventEmitter(), { setWindowOpenHandler() {} });
       hide() { this.hidden = true; }
     }
     const context = {
       process: { platform }, app: { isPackaged: true }, BrowserWindow: Window,
+      browserSmokeDisplayName: () => undefined,
       shutdownRunning: quitting, shutdownComplete: false,
       mainWindow: null, mainWindowClosing: false, appSurfaceReady: false,
       appIcon: null, __dirname: "/tmp", join: (...parts) => parts.join("/"),
@@ -42,6 +44,7 @@ test("Mac window close keeps the renderer; quit and other platforms still close 
     };
     const createWindow = runInNewContext(`${stripTypeScriptTypes(create)}; createWindow`, context);
     const window = createWindow();
+    assert.equal(window.options.show, true);
     const event = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
     window.emit("close", event);
     assert.equal(event.defaultPrevented, hidden, `${platform}, quitting=${quitting}`);
@@ -92,6 +95,7 @@ function startupContext(events, overrides = {}) {
     checkUpdatesFromMenu: null,
     mainWindow: null,
     process: { env: {} },
+    browserSmokeDisplayName: () => undefined,
     shellWindowGone: () => false,
     createWindow: () => { events.push("window"); return {}; },
     ipcGate: gate,
@@ -258,10 +262,9 @@ test("background plugin requests never activate the desktop window", async () =>
   }
 });
 
-test("startup window is visible immediately and failures remain visible", async () => {
+test("startup uses one surface navigation and failures remain visible", async () => {
   const source = await readFile(mainPath, "utf8");
 
-  assert.match(source, /show: true/);
   // One navigation at startup: the application surface itself, no intermediate startup page to race.
   const createWindow = source.slice(source.indexOf("function createWindow"), source.indexOf("function shellWindowGone"));
   assert.doesNotMatch(createWindow, /loadURL|loadFile/);

@@ -250,9 +250,12 @@ function createWindow(): BrowserWindow {
     throw new Error(`Expected one non-primary display named "${displayName}". Available displays: ${screen.getAllDisplays().map(item => item.label).join(", ")}.`);
   }
   const workArea = display?.workArea;
-  const width = workArea ? Math.min(1440, workArea.width) : 1440;
-  const height = workArea ? Math.min(900, workArea.height) : 900;
-  if (width < 920 || height < 620) throw new Error(`Display "${displayName}" needs a work area of at least 920 × 620.`);
+  const width = 1440;
+  const height = 900;
+  // Keep the standard window size so the smoke's zoom fixture fits without clipping.
+  if (workArea && (workArea.width < width || workArea.height < height)) {
+    throw new Error(`Display "${displayName}" needs a work area of at least ${width} × ${height}.`);
+  }
 
   const window = new BrowserWindow({
     icon: appIcon,

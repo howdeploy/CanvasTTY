@@ -8,6 +8,7 @@ import electronPath from "electron";
 
 const PROJECT_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const READY_MARKER = "CANVASTTY_BROWSER_SMOKE_READY";
+const FOCUS_MARKER = "CANVASTTY_BROWSER_SMOKE_FOCUS ";
 const TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_BYTES = 128 * 1024;
 
@@ -19,6 +20,7 @@ const smokeTempRoot = process.platform === "win32" ? tmpdir() : "/tmp";
 const userDataPath = await mkdtemp(join(smokeTempRoot, "ctb-"));
 let child;
 let output = "";
+let focusViolation = false;
 
 try {
   const electronArgs = [PROJECT_ROOT, `--user-data-dir=${userDataPath}`, "--disable-gpu"];
@@ -58,8 +60,15 @@ try {
         resolveReady();
       }
     };
-    child.stdout.on("data", consume);
-    child.stderr.on("data", consume);
+    for (const stream of [child.stdout, child.stderr]) {
+      let tail = "";
+      stream.on("data", (chunk) => {
+        const text = tail + chunk.toString("utf8");
+        focusViolation ||= text.includes(FOCUS_MARKER);
+        tail = text.slice(1 - FOCUS_MARKER.length);
+        consume(chunk);
+      });
+    }
     child.once("error", (error) => {
       fail(error);
     });
@@ -72,7 +81,7 @@ try {
   if (exit.code !== 0 || exit.signal !== null) {
     throw new Error(`Browser smoke exited unsuccessfully (code=${exit.code}, signal=${exit.signal}). Output:\n${output}`);
   }
-  if (process.env.CANVASTTY_TEST_DISPLAY && output.includes("CANVASTTY_BROWSER_SMOKE_FOCUS ")) {
+  if (process.env.CANVASTTY_TEST_DISPLAY && focusViolation) {
     throw new Error(`Browser smoke activated the app or focused a window. Output:\n${output}`);
   }
   process.stdout.write(output);

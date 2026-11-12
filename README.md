@@ -116,7 +116,7 @@ After building, run `npm run smoke:browser` for the standard browser smoke. To k
 CANVASTTY_TEST_DISPLAY="Virtual 16:9" npm run smoke:browser
 ```
 
-Keep your working display set as the primary display. The smoke opens its window without taking focus. If the name is missing from the display list, matches multiple displays, or identifies the primary display, the smoke exits before showing a window.
+Keep your working display set as the primary display. The virtual display needs a usable work area of at least 1440 × 900. The smoke opens its window without taking focus. If the name is missing from the display list, matches multiple displays, or identifies the primary display, the smoke exits before showing a window.
 
 ## Contributor acknowledgements
 

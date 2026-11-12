@@ -108,6 +108,16 @@ npm run typecheck
 npm run build
 ```
 
+### Browser smoke on macOS
+
+After building, run `npm run smoke:browser` for the standard browser smoke. To keep the smoke window off your working display, connect a virtual display in extended mode and pass its exact name:
+
+```sh
+CANVASTTY_TEST_DISPLAY="Virtual 16:9" npm run smoke:browser
+```
+
+Keep your working display set as the primary display. The smoke opens its window without taking focus. If the name is missing from the display list, matches multiple displays, or identifies the primary display, the smoke exits before showing a window.
+
 ## Contributor acknowledgements
 
 Thanks to [@kootik](https://github.com/kootik) for [PR #51](https://github.com/howdeploy/CanvasTTY/pull/51): integrating the open pull requests, resolving conflicts, addressing review findings, and improving agent orchestration. The original commits are preserved in the repository history; `.mailmap` associates their `s079891` author identity with kootik.

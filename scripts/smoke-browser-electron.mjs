@@ -72,6 +72,9 @@ try {
   if (exit.code !== 0 || exit.signal !== null) {
     throw new Error(`Browser smoke exited unsuccessfully (code=${exit.code}, signal=${exit.signal}). Output:\n${output}`);
   }
+  if (process.env.CANVASTTY_TEST_DISPLAY && output.includes("CANVASTTY_BROWSER_SMOKE_FOCUS ")) {
+    throw new Error(`Browser smoke activated the app or focused a window. Output:\n${output}`);
+  }
   process.stdout.write(output);
 } finally {
   if (child && child.exitCode === null && child.signalCode === null) {

@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute } from "node:path";
 import { EvenG2Controller } from "./services/companion/EvenG2Controller";
 import { join } from "node:path";
-import { app, BrowserWindow, dialog, Menu, net, Notification, protocol, safeStorage, session } from "electron";
+import { app, BrowserWindow, dialog, Menu, net, Notification, protocol, safeStorage, screen, session } from "electron";
 import {
   IPC,
   type LocaleId,
@@ -236,17 +236,37 @@ if (!hasSingleInstanceLock) app.quit();
  * could begin, and replacing a page that is still loading races its ERR_ABORTED
  * into the next load's promise; with one navigation there is nothing to race.)
  */
+function browserSmokeDisplayName(): string | undefined {
+  return process.env.CANVASTTY_BROWSER_SMOKE_URL ? process.env.CANVASTTY_TEST_DISPLAY : undefined;
+}
+
 function createWindow(): BrowserWindow {
   if (process.platform === "darwin" && !app.isPackaged) app.dock?.setIcon(appIcon);
   markMainBoot("windowCreateStart");
+  const displayName = browserSmokeDisplayName();
+  const matchingDisplays = displayName ? screen.getAllDisplays().filter(display => display.label === displayName) : [];
+  const display = matchingDisplays[0];
+  if (displayName && (matchingDisplays.length !== 1 || display.id === screen.getPrimaryDisplay().id)) {
+    throw new Error(`Expected one non-primary display named "${displayName}". Available displays: ${screen.getAllDisplays().map(item => item.label).join(", ")}.`);
+  }
+  const workArea = display?.workArea;
+  const width = workArea ? Math.min(1440, workArea.width) : 1440;
+  const height = workArea ? Math.min(900, workArea.height) : 900;
+  if (width < 920 || height < 620) throw new Error(`Display "${displayName}" needs a work area of at least 920 × 620.`);
+
   const window = new BrowserWindow({
     icon: appIcon,
-    width: 1440,
-    height: 900,
+    width,
+    height,
     minWidth: 920,
     minHeight: 620,
-    show: true,
     ...mainWindowChromeOptions(),
+    show: !workArea,
+    ...(workArea ? {
+      x: workArea.x + Math.floor((workArea.width - width) / 2),
+      y: workArea.y + Math.floor((workArea.height - height) / 2),
+      focusable: false
+    } : {}),
     backgroundColor: "#aaa7a2",
     webPreferences: {
       preload: join(__dirname, "../preload/index.cjs"),
@@ -255,6 +275,20 @@ function createWindow(): BrowserWindow {
       sandbox: true
     }
   });
+  if (display && workArea) {
+    const bounds = window.getBounds();
+    if (screen.getDisplayMatching(bounds).id !== display.id
+      || bounds.x < workArea.x || bounds.y < workArea.y
+      || bounds.x + bounds.width > workArea.x + workArea.width
+      || bounds.y + bounds.height > workArea.y + workArea.height) {
+      window.destroy();
+      throw new Error(`Could not place the browser smoke window inside "${display.label}".`);
+    }
+    app.once("did-become-active", () => console.log("CANVASTTY_BROWSER_SMOKE_FOCUS app"));
+    window.once("focus", () => console.log("CANVASTTY_BROWSER_SMOKE_FOCUS window"));
+    window.showInactive();
+    console.log("CANVASTTY_BROWSER_SMOKE_DISPLAY", JSON.stringify({ id: display.id, label: display.label, bounds, focused: window.isFocused() }));
+  }
   mainWindow = window;
   markMainBoot("windowCreated");
   observeMainWindowState?.(window);
@@ -1065,7 +1099,7 @@ async function runStartupSmokes(window: BrowserWindow): Promise<void> {
   if (browserSmokeUrl && browserService) {
     // The smoke runners are test code: they load only when a smoke run asks for them.
     const { runBrowserElectronSmoke } = await import("./services/browser/BrowserElectronSmoke");
-    await runBrowserElectronSmoke(browserService, browserSmokeUrl, app.getPath("userData"));
+    await runBrowserElectronSmoke(browserService, browserSmokeUrl, app.getPath("userData"), Boolean(browserSmokeDisplayName()));
     console.log("CANVASTTY_BROWSER_SMOKE_READY");
     app.quit();
   }
@@ -1172,7 +1206,8 @@ async function startApplication(): Promise<void> {
       return;
     }
     diagnostics.record("error", "startup", "failed", { error, marks: mainBootMarks() });
-    if (startupWindow) await showStartupFailure(startupWindow, error);
+    if (browserSmokeDisplayName()) console.error("CanvasTTY startup failed.", error);
+    else if (startupWindow) await showStartupFailure(startupWindow, error);
     else {
       const detail = error instanceof Error ? error.stack ?? error.message : String(error);
       console.error("CanvasTTY could not create its startup window.", error);

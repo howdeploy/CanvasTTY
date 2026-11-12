@@ -23,7 +23,8 @@ const SENTINEL = "canvastty-secret-must-not-leak";
 export async function runBrowserElectronSmoke(
   service: BrowserService,
   origin: string,
-  userDataPath: string
+  userDataPath: string,
+  useInactiveDisplay = false
 ): Promise<void> {
   const parsedOrigin = new URL(origin);
   if (parsedOrigin.protocol !== "http:" || parsedOrigin.hostname !== "127.0.0.1") {
@@ -64,7 +65,7 @@ export async function runBrowserElectronSmoke(
     if (!tabId) throw new Error("Browser smoke did not create a tab.");
     await execute("browser_list_tabs");
     await waitUntil(async () => service.getState().tabs.find((tab) => tab.id === tabId)?.status === "ready");
-    await assertFocusAwarePhysicalWheel(service, `${origin}/`);
+    await assertFocusAwarePhysicalWheel(service, `${origin}/`, useInactiveDisplay);
     await assertBrowserOriginPanCrossesBoundary(service, `${origin}/`);
     await assertOwnerWheelFreezesCrossingBrowser(service);
     await assertRendererPanCrossesBrowser(service, `${origin}/`);
@@ -371,7 +372,11 @@ async function assertBrowserRendererZoom(service: BrowserService, url: string): 
   }
 }
 
-async function assertFocusAwarePhysicalWheel(service: BrowserService, url: string): Promise<void> {
+async function assertFocusAwarePhysicalWheel(
+  service: BrowserService,
+  url: string,
+  useInactiveDisplay: boolean
+): Promise<void> {
   const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === url);
   const owner = BrowserWindow.getAllWindows().find((candidate) => candidate.getParentWindow() === null);
   if (!contents || !owner) throw new Error("Browser smoke could not resolve the wheel ownership WebContents.");
@@ -386,7 +391,17 @@ async function assertFocusAwarePhysicalWheel(service: BrowserService, url: strin
     service.setCanvasWheelCaptureMode("off");
     service.setInputFocused(true);
     service.setViewport({ x: 0, y: 0, width: 820, height: 620, surface: "native", canvasScale: 1 });
-    await preparePhysicalWheelSmoke(owner, contents);
+    if (useInactiveDisplay) {
+      await waitUntil(async () => {
+        const page = await browserSmokePageState(contents);
+        return owner.isVisible() && page.readyState === "complete" && page.visibilityState === "visible";
+      });
+      const page = await browserSmokePageState(contents);
+      if (owner.isFocused() || page.focused) throw new Error("Inactive display browser smoke gained focus.");
+      console.log("CANVASTTY_BROWSER_SMOKE_INACTIVE_READY", JSON.stringify(page));
+    } else {
+      await preparePhysicalWheelSmoke(owner, contents);
+    }
     await waitForWheelIdle();
     const pageScrollY = await sendWheelUntilPageScrolls(contents, { x: 700, y: 300 });
     if (pageScrollY === 400) throw new Error("Focused Browser plain wheel did not scroll the page.");

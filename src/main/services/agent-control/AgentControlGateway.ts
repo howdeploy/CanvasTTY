@@ -632,8 +632,14 @@ export class AgentControlGateway {
     }
     // Fail closed: an orchestrator's connection resolves only the Codex menus known not to be approvals. A menu it does
     // not recognise (an approval worded differently, a newer Codex, folder trust) is the person's.
-    if (agent && menuAction && capabilities.menus && !codexOrchestratorMenu(screen)) {
-      throw new ControlError("NEEDS_PERSON", UNKNOWN_MENU_REFUSAL);
+    if (agent && menuAction && capabilities.menus) {
+      const menu = orchestratorMenu(screen);
+      if (!menu) throw new ControlError("NEEDS_PERSON", UNKNOWN_MENU_REFUSAL);
+      // Trusting or reviewing hooks is the person's decision; the orchestrator may only continue without them.
+      const label = request.method === "choose" ? codexChoices(screen)?.options.find((option) => option.number === params.choice)?.label : undefined;
+      if (menu.choices && label !== undefined && !menu.choices.includes(label.trim())) {
+        throw new ControlError("NEEDS_PERSON", HOOK_TRUST_REFUSAL);
+      }
     }
     if (menuAction && !capabilities.menus) {
       throw new ControlError("NOT_SUPPORTED", `Menus are parsed for Codex only; inspect screen and ask the person to resolve the ${fresh.provider} prompt in its terminal card. Do not switch to desktop automation.`);
@@ -827,16 +833,52 @@ export const UNKNOWN_MENU_REFUSAL = "This worker shows a menu that is not one an
   + "or rate-limit notice, an update notice); it may be an approval or a trust decision, so only the person may answer it "
   + "and nothing was written. Do not retry: tell the person what it shows (screen shows it), then check status again.";
 
+/** What an orchestrator's connection gets for a hooks-review option that trusts or reviews the hooks. */
+export const HOOK_TRUST_REFUSAL = "Trusting or reviewing this worker's hooks is the person's decision, so nothing was written. "
+  + "An orchestrator may only choose \"Continue without hooks\" or dismiss the menu; otherwise tell the person what it shows "
+  + "(screen shows it), then check status again.";
+
 /**
- * The Codex menus an orchestrator's own connection may resolve: startup and notice menus that answer no request of the
- * agent's. Everything else on a Codex screen is the person's, whether or not codexApprovalPrompt recognises it.
+ * The Codex menus an orchestrator's connection may resolve, each by its title and its exact options. `choices` limits
+ * which options it may choose; dismiss is allowed on each.
+ */
+const ORCHESTRATOR_MENUS: ReadonlyArray<{ title: RegExp; options: readonly string[]; choices?: readonly string[] }> = [
+  { title: /^Hooks need review\b/, options: ["Review hooks", "Trust all and continue", "Continue without hooks"], choices: ["Continue without hooks"] },
+  { title: /^Approaching rate limits\b/, options: ["Switch model", "Keep current model", "Keep current model (never show again)"] },
+  { title: /^Update available\b/, options: ["Update now", "Skip", "Skip until next version"] }
+];
+const MENU_OPTION = /^\s*(?:›\s*)?\d+\.\s+(.+)$/;
+
+/**
+ * The menu an orchestrator's connection may resolve, or null. A worker can print any text, so a menu counts only when
+ * its title is one of the three lines right above its options and the options are exactly that menu's; the hooks
+ * reviewed notice only when it is the last thing on the screen, above its "Press esc to close".
+ */
+function orchestratorMenu(screen: string): { choices?: readonly string[] } | null {
+  if (codexApprovalPrompt(screen)) return null;
+  const lines = screen.split("\n").map((line) => line.trim());
+  const first = lines.findIndex((line) => MENU_OPTION.test(line));
+  if (first === -1) {
+    const shown = lines.filter(Boolean);
+    return shown.length >= 2 && /^Press esc to close\b/i.test(shown.at(-1)!) && shown.slice(-3, -1).some((line) => /^\d+ hooks? reviewed\b/.test(line)) ? {} : null;
+  }
+  let last = first;
+  while (last + 1 < lines.length && MENU_OPTION.test(lines[last + 1])) last++;
+  if (lines.slice(last + 1).some((line) => MENU_OPTION.test(line))) return null;
+  const labels = lines.slice(first, last + 1).map((line) => line.match(MENU_OPTION)![1].trim());
+  const above = lines.slice(Math.max(0, first - 3), first);
+  const menu = ORCHESTRATOR_MENUS.find((known) => above.some((line) => known.title.test(line))
+    && labels.length === known.options.length && labels.every((label, i) => label === known.options[i]));
+  return menu ? (menu.choices ? { choices: menu.choices } : {}) : null;
+}
+
+/**
+ * Whether an orchestrator's own connection may resolve the menu on this Codex screen: hooks review (only continuing
+ * without the hooks), the hooks reviewed notice, the model or rate-limit notice and the update notice. Everything else
+ * on a Codex screen is the person's, whether or not codexApprovalPrompt recognises it.
  */
 export function codexOrchestratorMenu(screen: string): boolean {
-  if (codexApprovalPrompt(screen)) return false;
-  return /^\s*Hooks need review\b/m.test(screen)
-    || /^\s*\d+ hooks? reviewed\b/m.test(screen)
-    || /^\s*Approaching rate limits\b/m.test(screen)
-    || /^\s*Update available\b/m.test(screen);
+  return orchestratorMenu(screen) !== null;
 }
 
 /**

@@ -1139,6 +1139,7 @@ function permissionKey(permission: PluginPermission): TranslationKey {
     "external:open": "permissionExternalOpen",
     "browser:open": "permissionBrowserOpen",
     "media:library": "permissionMediaLibrary",
+    "files:read": "permissionFilesRead",
     "playlists:read": "permissionPlaylistsRead",
     "playlists:write": "permissionPlaylistsWrite",
     "hermes:hud": "permissionHermesHud",

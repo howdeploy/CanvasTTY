@@ -4,8 +4,10 @@ import appLogo from "../../../../docs/assets/canvastty-logo-dark.svg?url";
 import { UiIcon } from "./UiIcon";
 import { t } from "../lib/i18n";
 
-const BUILD_CHANNEL = import.meta.env.DEV || import.meta.env.VITE_BUILD_CHANNEL === "DEV" ? "DEV" : "RELEASE";
-const BUILD_LABEL = `${BUILD_CHANNEL} v${appManifest.version}`;
+const IS_LOCAL_LAB = import.meta.env.VITE_BUILD_CHANNEL === "LOCAL";
+const APP_NAME = IS_LOCAL_LAB ? import.meta.env.VITE_APP_NAME || "CanvasTTY Live Home" : "CanvasTTY";
+const BUILD_CHANNEL = IS_LOCAL_LAB ? "LOCAL" : import.meta.env.DEV || import.meta.env.VITE_BUILD_CHANNEL === "DEV" ? "DEV" : "RELEASE";
+const BUILD_LABEL = `${BUILD_CHANNEL} v${import.meta.env.VITE_BUILD_VERSION || appManifest.version}`;
 
 interface TitleBarProps {
   locale: LocaleId;
@@ -37,7 +39,7 @@ export function TitleBar({ locale, windowState, onWindowStateChange }: TitleBarP
         <div className="titlebar__macos-controls-space" aria-hidden="true" />
         <div className="titlebar__brand">
           <img className="titlebar__logo" src={appLogo} alt="" aria-hidden="true" />
-          <strong>CanvasTTY</strong>
+          <strong>{APP_NAME}</strong>
           <span className={`titlebar__build titlebar__build--${BUILD_CHANNEL.toLowerCase()}`}>{BUILD_LABEL}</span>
           <span className="titlebar__subtitle">{t(locale, "appSubtitle")}</span>
         </div>
@@ -50,7 +52,7 @@ export function TitleBar({ locale, windowState, onWindowStateChange }: TitleBarP
     <header className="titlebar">
       <div className="titlebar__brand">
         <img className="titlebar__logo" src={appLogo} alt="" aria-hidden="true" />
-        <strong>CanvasTTY</strong>
+        <strong>{APP_NAME}</strong>
         <span className={`titlebar__build titlebar__build--${BUILD_CHANNEL.toLowerCase()}`}>{BUILD_LABEL}</span>
         <span className="titlebar__subtitle">{t(locale, "appSubtitle")}</span>
       </div>

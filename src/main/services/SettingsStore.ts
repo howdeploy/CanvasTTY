@@ -1,7 +1,9 @@
+import { normalizeHomeTime } from "../../shared/homeTime.ts";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { isWallpaperId } from "../../shared/wallpaper.ts";
 import { isHomeMediaPath } from "./homeMedia.ts";
 import { normalizeBackgroundOverrides, normalizeBackgroundPresets } from "../../shared/terminalBackgroundAppearance.ts";
 import { isTerminalBackgroundId } from "../../shared/terminalBackground.ts";
@@ -430,6 +432,8 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     uiScale: DEFAULT_UI_SCALE,
     canvasColor: "sage",
     canvasBackground: "none",
+    canvasBackgroundPaused: false,
+    canvasBackgroundFit: "contain",
     pattern: "dots",
     terminalBorderSkin: "classic",
     terminalBackground: "none",
@@ -648,7 +652,7 @@ export function normalizeSettings(
   const canvasBackgroundCandidate = source.canvasBackground === undefined
     ? source.terminalBorderSkin
     : source.canvasBackground;
-  const canvasBackground: CanvasBackgroundId = canvasBackgroundCandidate === "none"
+  const canvasBackground: CanvasBackgroundId = isWallpaperId(canvasBackgroundCandidate) || canvasBackgroundCandidate === "none"
     || (BUNDLED_CANVAS_BACKGROUND_IDS as readonly unknown[]).includes(canvasBackgroundCandidate)
     || (typeof canvasBackgroundCandidate === "string" && canvasBackgroundCandidate.startsWith("pixel:")
       && isTerminalBorderSkinId(canvasBackgroundCandidate))
@@ -695,6 +699,12 @@ export function normalizeSettings(
     uiScale: normalizeUiScale(source.uiScale, fallback.uiScale ?? DEFAULT_UI_SCALE),
     canvasColor,
     canvasBackground,
+    homeAvatarWallpaper: isWallpaperId(source.homeAvatarWallpaper) ? source.homeAvatarWallpaper : null,
+    homeClockWallpaper: isWallpaperId(source.homeClockWallpaper) ? source.homeClockWallpaper : null,
+    homeTime: normalizeHomeTime(source.homeTime),
+    homeClockFont: ["mono", "sans", "serif", "pixel"].includes(source.homeClockFont as string) ? source.homeClockFont as AppSettings["homeClockFont"] : "mono",
+    canvasBackgroundPaused: typeof source.canvasBackgroundPaused === "boolean" ? source.canvasBackgroundPaused : fallback.canvasBackgroundPaused ?? false,
+    canvasBackgroundFit: source.canvasBackgroundFit === "cover" || source.canvasBackgroundFit === "contain" ? source.canvasBackgroundFit : fallback.canvasBackgroundFit ?? "contain",
     pattern: PATTERNS.has(source.pattern as CanvasPatternId)
       ? source.pattern as CanvasPatternId
       : fallback.pattern,

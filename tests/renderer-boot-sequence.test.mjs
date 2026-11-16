@@ -62,7 +62,7 @@ test("afterNextPaint runs after the frame that shows the commit, and cancels cle
 
 test("App mounts the canvas only with the snapshot and the heavy surfaces only after the first stable frame", async () => {
   const source = await readFile(appPath, "utf8");
-  assert.match(source, /\{ready && <WorkspaceCanvas\s+surfacesMounted=\{surfacesMounted\}/, "no canvas under the loader");
+  assert.match(source, /\{ready && [^\n]*<WorkspaceCanvas\s+[^>]*surfacesMounted=\{surfacesMounted\}/, "no canvas under the loader");
   assert.match(source, /loadCriticalSnapshot\(window\.canvasTTY\)[\s\S]*?\.finally\(\(\) => active && setReady\(true\)\)/);
   const stable = source.slice(source.indexOf("return afterNextPaint(() => {"), source.indexOf("}, [ready]);"));
   assert.ok(stable.indexOf('markBootOnce("firstStableFrame")') < stable.indexOf("setSurfacesMounted(true)"));

@@ -60,12 +60,12 @@ test("rebinds window state after close and reopen without leaking listeners", ()
   newWindow.webContents = { sent: [], send(channel, state) { this.sent.push({ channel, state }); } };
 
   observe(oldWindow);
-  assert.equal(oldWindow.listenerCount(), 4);
+  assert.equal(oldWindow.listenerCount(), 8);
   observe(null);
   assert.equal(oldWindow.listenerCount(), 0);
   observe(newWindow);
   observe(newWindow);
-  assert.equal(newWindow.listenerCount(), 4);
+  assert.equal(newWindow.listenerCount(), 8);
 
   newWindow.maximized = true;
   newWindow.emit("maximize");
@@ -78,4 +78,20 @@ test("rebinds window state after close and reopen without leaking listeners", ()
     { channel: "window:state", state: { isMacOS: true, maximized: true, fullscreen: true } }
   ]);
   assert.equal(oldWindow.listenerCount(), 0);
+});
+
+test("native hidden and minimized windows publish visibility even without browser throttling", () => {
+  const window = windowStub();
+  let visible = true, minimized = false;
+  window.isVisible = () => visible;
+  window.isMinimized = () => minimized;
+  const states = [];
+  const stop = observeWindowState(window, state => states.push(state));
+  visible = false; window.emit("hide");
+  visible = true; window.emit("show");
+  minimized = true; window.emit("minimize");
+  minimized = false; window.emit("restore");
+  assert.deepEqual(states.map(state => state.visible), [false, true, false, true]);
+  stop();
+  assert.equal(window.listenerCount(), 0);
 });

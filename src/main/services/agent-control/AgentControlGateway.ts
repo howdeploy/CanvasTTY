@@ -20,6 +20,8 @@ import { WindowsPipeHostTransport, type AgentGatewaySocket } from "../agent-brow
 import { CONTROL_PROVIDERS, controlCapabilities, isControlProvider } from "./controlCapabilities.ts";
 import { isLaunchProfile, LAUNCH_PROFILES } from "../../../shared/autoMode.ts";
 import { LaunchRefusal } from "../launchRefusal.ts";
+import type { WallpaperRegistry } from "../WallpaperRegistry";
+import { MAX_WALLPAPER_PACKAGE_BYTES, isWallpaperId } from "../../../shared/wallpaper.ts";
 import { MAX_PIXEL_SKIN_ARCHIVE_BYTES, type PixelSkinPackRegistry } from "../PixelSkinPackRegistry.ts";
 import type { SettingsStore } from "../SettingsStore.ts";
 import { listProviderDirectory, type ProviderDirectory } from "../providerDirectory.ts";
@@ -96,7 +98,7 @@ interface ControlRequest {
   token: string;
   controller: string;
   method: "create" | "list" | "providers" | "status" | "screen" | "send" | "result" | "interrupt" | "choose" | "dismiss"
-    | "skin-list" | "skin-install" | "skin-select";
+    | "skin-list" | "skin-install" | "skin-select" | "wallpaper-list" | "wallpaper-install" | "wallpaper-select";
   params: Record<string, unknown>;
 }
 
@@ -124,6 +126,7 @@ export interface AgentControlGatewayOptions {
   userDataPath: string;
   terminals: TerminalPort;
   pixelSkinPacks?: PixelSkinPackRegistry;
+  wallpapers?: WallpaperRegistry;
   settings?: SettingsStore;
   onSettingsChanged?(settings: AppSettings): void;
   lifecycleEnabled(): boolean;
@@ -450,7 +453,7 @@ export class AgentControlGateway {
       let request: ControlRequest;
       try { request = this.parse(JSON.parse(line.toString("utf8"))); }
       catch { refuse(line); return; }
-      if (request.method === "skin-install") {
+      if (request.method === "skin-install" || request.method === "wallpaper-install") {
         clearTimeout(timer);
         timer = setTimeout(() => socket.destroy(), 120_000);
         timer.unref();
@@ -471,7 +474,7 @@ export class AgentControlGateway {
       || value.instanceId !== this.instanceId || typeof value.token !== "string" || !SECRET.test(value.token)
       || typeof value.controller !== "string" || !SECRET.test(value.controller)
       || !["create", "list", "providers", "status", "screen", "send", "result", "interrupt", "choose", "dismiss",
-        "skin-list", "skin-install", "skin-select"].includes(String(value.method))
+        "skin-list", "skin-install", "skin-select", "wallpaper-list", "wallpaper-install", "wallpaper-select"].includes(String(value.method))
       || !record(value.params)) throw new Error("Invalid envelope");
     let scope: ControlScope | null = tokenMatches(value.token, this.tokenHash) ? { kind: "person" } : null;
     if (!scope) {
@@ -486,7 +489,7 @@ export class AgentControlGateway {
   private async dispatch(request: ControlRequest): Promise<unknown> {
     // One orchestrator owns everything its connection creates, whatever client file its commands use.
     const owner = request.scope?.kind === "session" ? hash(`session:${request.scope.sessionId}`) : hash(request.controller);
-    const mutating = ["create", "send", "interrupt", "choose", "dismiss", "skin-install", "skin-select"].includes(request.method);
+    const mutating = ["create", "send", "interrupt", "choose", "dismiss", "skin-install", "skin-select", "wallpaper-install", "wallpaper-select"].includes(request.method);
     if (!mutating) return this.perform(owner, request);
     const key = `${owner}:${request.id}`;
     const digest = hash(JSON.stringify([request.method, Object.entries(request.params).sort(([a], [b]) => a.localeCompare(b))]));
@@ -528,6 +531,10 @@ export class AgentControlGateway {
       // An agent's connection changes nothing of CanvasTTY's own: settings, themes, protection are the person's.
       if (agent) throw new ControlError("NOT_ALLOWED", "An agent's control connection cannot change CanvasTTY's settings or themes; only the person can, in the app.");
       return this.performSkinOperation(request.method, params);
+    }
+    if (request.method === "wallpaper-list" || request.method === "wallpaper-install" || request.method === "wallpaper-select") {
+      if (agent) throw new ControlError("NOT_ALLOWED", "Only the person's control connection can change CanvasTTY appearance.");
+      return this.performWallpaperOperation(request.method, params);
     }
     if (request.method === "create" && agent) return this.createSubagent(owner, agent, params);
     if (request.method === "create") {
@@ -808,6 +815,34 @@ export class AgentControlGateway {
       ...(detail ? { terminalSkinDetail: detail } : {}) });
     this.options.onSettingsChanged?.(updated);
     return { activeId: updated.terminalBorderSkin, detail: updated.terminalSkinDetail };
+  }
+
+  private async performWallpaperOperation(method: "wallpaper-list" | "wallpaper-install" | "wallpaper-select", params: Record<string, unknown>): Promise<unknown> {
+    const library = this.options.wallpapers, settings = this.options.settings;
+    if (!library || !settings) throw new ControlError("NOT_SUPPORTED", "Wallpaper control is unavailable.");
+    if (method === "wallpaper-list") { fields(params, []); return { installed: library.list(), active: { canvas: settings.get().canvasBackground, avatar: settings.get().homeAvatarWallpaper, clock: settings.get().homeClockWallpaper } }; }
+    fields(params, method === "wallpaper-install" ? ["packagePath", "target"] : ["wallpaperId", "target"]);
+    if (params.target !== undefined && !["canvas", "avatar", "clock"].includes(params.target as string)) throw new ControlError("INVALID_PARAMS", "target must be canvas, avatar or clock.");
+    let wallpaper;
+    if (method === "wallpaper-install") {
+      const path = string(params.packagePath, 4096, "packagePath");
+      if (!isAbsolute(path)) throw new ControlError("INVALID_PARAMS", "packagePath must be absolute.");
+      const stat = await lstat(path).catch(() => null);
+      if (!stat?.isFile() || stat.size > MAX_WALLPAPER_PACKAGE_BYTES) throw new ControlError("INVALID_PARAMS", "Package must be a regular file up to 113 MiB.");
+      try { wallpaper = await library.importPackage(await readFile(path)); }
+      catch (e) { throw new ControlError("INVALID_PACK", e instanceof Error ? e.message : "Invalid wallpaper."); }
+    } else {
+      if (!params.target) throw new ControlError("INVALID_PARAMS", "Specify target.");
+      if (!isWallpaperId(params.wallpaperId)) throw new ControlError("INVALID_PARAMS", "Invalid wallpaper ID.");
+      wallpaper = library.list().find(item => item.id === params.wallpaperId);
+      if (!wallpaper) throw new ControlError("INVALID_PARAMS", "Wallpaper not found.");
+    }
+    if (params.target) {
+      const updated = await settings.update(params.target === "canvas" ? { canvasBackground: wallpaper.id, canvasBackgroundPaused: false }
+        : params.target === "avatar" ? { homeAvatarWallpaper: wallpaper.id } : { homeClockWallpaper: wallpaper.id, homeClockFont: wallpaper.recipe.clockFont });
+      this.options.onSettingsChanged?.(updated);
+    }
+    return { wallpaper, target: params.target ?? null };
   }
 
   private skinDetail(value: unknown): "minimal" | "detailed" | undefined {

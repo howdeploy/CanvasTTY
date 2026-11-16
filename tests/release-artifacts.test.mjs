@@ -1,29 +1,37 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, mkdir, copyFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import YAML from "yaml";
 import manifest from "../package.json" with { type: "json" };
 
 test("release gate requires the matching stable, hotfix or beta tag and complete update files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "canvastty-release-gate-"));
-  const version = manifest.version;
+  // A local alpha is intentionally not a public release channel. Exercise the
+  // release gate in a disposable repository with a publishable beta version.
+  const version = manifest.version.includes('-alpha.') ? '2.0.0-beta.1' : manifest.version;
   const files = [
     `CanvasTTY-${version}-mac-arm64.zip`, `CanvasTTY-${version}-mac-arm64.dmg`,
     `CanvasTTY-${version}-linux-x86_64.AppImage`, `CanvasTTY-${version}-linux-amd64.deb`,
     `CanvasTTY-${version}-windows-x64-setup.exe`, `CanvasTTY-${version}-windows-x64-portable.exe`
   ];
   try {
+    const fixture = join(directory, 'repo');
+    await mkdir(join(fixture, 'scripts'), { recursive: true });
+    await writeFile(join(fixture, 'package.json'), JSON.stringify({ type: 'module', version }));
+    await copyFile(new URL('../scripts/verify-release-artifacts.mjs', import.meta.url), join(fixture, 'scripts/verify-release-artifacts.mjs'));
+    await symlink(fileURLToPath(new URL('../node_modules', import.meta.url)), join(fixture, 'node_modules'), 'dir');
     for (const file of files) await writeFile(join(directory, file), "artifact");
     const sha512 = createHash("sha512").update("artifact").digest("base64");
     await writeFile(join(directory, "appcast.xml"), `<sparkle:version>${version}</sparkle:version><enclosure url="CanvasTTY-${version}-mac-arm64.zip" sparkle:edSignature="signed"/><!-- sparkle-signatures: signed -->`);
     await writeFile(join(directory, "latest.yml"), `version: ${version}\nfiles:\n  - url: ${files[4]}\n    sha512: ${sha512}\n    size: 8\n`);
     await writeFile(join(directory, "latest-linux.yml"), `version: ${version}\nfiles:\n  - url: ${files[2]}\n    sha512: ${sha512}\n    size: 8\n  - url: ${files[3]}\n    sha512: ${sha512}\n    size: 8\n`);
     const run = tag => spawnSync(process.execPath, ["scripts/verify-release-artifacts.mjs", tag, directory], {
-      cwd: process.cwd(), encoding: "utf8"
+      cwd: fixture, encoding: "utf8"
     });
     assert.equal(run(`v${version}`).status, 0);
     assert.notEqual(run(`v${version}-beta.1`).status, 0);
@@ -35,6 +43,13 @@ test("release gate requires the matching stable, hotfix or beta tag and complete
     await rm(join(directory, files[3]));
     assert.notEqual(run(`v${version}`).status, 0);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('the local alpha cannot pass the public release gate', () => {
+  if (!manifest.version.includes('-alpha.')) return;
+  const result = spawnSync(process.execPath, ['scripts/verify-release-artifacts.mjs', `v${manifest.version}`], { encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Release tag must equal package version .* and be stable, hotfix or beta/);
 });
 
 test("beta releases stay prereleases while stable and hotfix releases become latest", async () => {

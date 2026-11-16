@@ -3,9 +3,11 @@ import type { WindowState } from "../shared/contracts";
 export interface WindowStateSource {
   isMaximized(): boolean;
   isFullScreen(): boolean;
+  isVisible?(): boolean;
+  isMinimized?(): boolean;
 }
 
-export type WindowStateEvent = "maximize" | "unmaximize" | "enter-full-screen" | "leave-full-screen";
+export type WindowStateEvent = "maximize" | "unmaximize" | "enter-full-screen" | "leave-full-screen" | "show" | "hide" | "minimize" | "restore";
 
 export interface WindowStateObservable extends WindowStateSource {
   on(event: WindowStateEvent, listener: () => void): void;
@@ -13,13 +15,14 @@ export interface WindowStateObservable extends WindowStateSource {
 }
 
 export function readWindowState(
-  window: Pick<WindowStateSource, "isMaximized" | "isFullScreen"> | null,
+  window: WindowStateSource | null,
   platform: NodeJS.Platform = process.platform
 ): WindowState {
   return {
     isMacOS: platform === "darwin",
     maximized: window?.isMaximized() ?? false,
-    fullscreen: window?.isFullScreen() ?? false
+    fullscreen: window?.isFullScreen() ?? false,
+    ...(window?.isVisible ? { visible: window.isVisible() && !window.isMinimized?.() } : {})
   };
 }
 
@@ -29,7 +32,7 @@ export function observeWindowState(
   platform: NodeJS.Platform = process.platform
 ): () => void {
   const notify = (): void => publish(readWindowState(window, platform));
-  const events: WindowStateEvent[] = ["maximize", "unmaximize", "enter-full-screen", "leave-full-screen"];
+  const events: WindowStateEvent[] = ["maximize", "unmaximize", "enter-full-screen", "leave-full-screen", "show", "hide", "minimize", "restore"];
   for (const event of events) window.on(event, notify);
   return () => {
     for (const event of events) window.off(event, notify);

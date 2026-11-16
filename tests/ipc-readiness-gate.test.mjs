@@ -121,3 +121,14 @@ test("queued early sends are bounded per channel", () => {
   gate.on("terminal:bounds", (_event, value) => received.push(value));
   assert.deepEqual(received, [2, 3], "the oldest are dropped past the bound");
 });
+
+test('internal Canvas capability adapter preserves handler validation and does not register a generic IPC bridge', async()=>{
+  const ipc=fakeIpcMain(),gate=new IpcReadinessGate(ipc,{channels:['asset:read','asset:bounds']});
+  const owner={sender:'owned-canvas',senderFrame:'owned-frame'};const seen=[];
+  gate.handle('asset:read',(event,id)=>{assert.equal(event,owner);return {id};});
+  gate.on('asset:bounds',(event,id,bounds)=>{assert.equal(event,owner);seen.push({id,bounds});});
+  assert.deepEqual(await gate.invokeOwned('asset:read',owner,['shared-id']),{id:'shared-id'});
+  await gate.invokeOwned('asset:bounds',owner,['shared-id',{x:10}]);assert.equal(seen.length,1);
+  await assert.rejects(gate.invokeOwned('unregistered',owner,[]),/not ready/);
+  await assert.rejects(ipc.invoke('invokeOwned','asset:read','shared-id'),/No handler/);
+});

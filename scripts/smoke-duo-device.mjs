@@ -1,0 +1,25 @@
+// Two actual packaged desktop clients, isolated profiles. Never prints invitations.
+import {spawn} from 'node:child_process';
+import{mkdir,readFile,writeFile}from'node:fs/promises';
+import{resolve,join}from'node:path';
+import{prepareV2Profile}from'./prepare-v2-profile.mjs';
+const repo=resolve(import.meta.dirname,'..'), output=resolve(process.argv[2]);
+await mkdir(output,{recursive:true});
+await prepareV2Profile(join(output,'profile'));
+const binary=join(repo,'release/v2-home-alpha7/mac-arm64/CanvasTTY 2.0 Alpha.app/Contents/MacOS/CanvasTTY 2.0 Alpha');
+const env={...process.env};
+for(const key of Object.keys(env))if(/^CANVASTTY_(RUNTIME_|SHELL_|CAPTURE_|HOME_LAB_|CORE_FILES_LAB|DUO_LAB_|V2_LAB_)/.test(key))delete env[key];
+delete env.ELECTRON_RUN_AS_NODE;
+env.CANVASTTY_USER_DATA_DIR=join(output,'profile');env.CANVASTTY_DUO_LAB_OUTPUT=output;
+const config=JSON.parse(await readFile(join(output,'config.json'),'utf8'));
+if(config.publicOnly)env.CANVASTTY_DUO_LAB_PUBLIC_ONLY='1';
+const args=config.deepLink?[config.invite]:[];
+const child=spawn(binary,args,{env,stdio:['ignore','pipe','pipe']});
+await writeFile(join(output,'pid'),String(child.pid));
+let logs='';child.stdout.on('data',d=>logs+=d);child.stderr.on('data',d=>logs+=d);
+const timer=setTimeout(()=>child.kill('SIGKILL'),300000);
+const code=await new Promise((ok,fail)=>{child.once('exit',ok);child.once('error',fail)});clearTimeout(timer);
+await writeFile(join(output,'app.log'),logs);await writeFile(join(output,'exit.json'),JSON.stringify({code}));
+if(code!==0)throw Error('Duo device acceptance failed; see '+output);
+const report=JSON.parse(await readFile(join(output,'verification.json'),'utf8'));
+console.log(JSON.stringify({output,result:report.result,role:report.role,checks:report.checks}));

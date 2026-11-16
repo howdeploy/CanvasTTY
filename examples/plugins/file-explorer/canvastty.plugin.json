@@ -1,0 +1,27 @@
+{
+  "apiVersion": 2,
+  "id": "com.canvastty.file-explorer",
+  "name": "Canvas Files",
+  "version": "0.1.0",
+  "description": "A file explorer for the canvas with file dragging, image previews and a separate video/audio player. Requires the files:read host API.",
+  "author": "CanvasTTY contributors",
+  "permissions": ["storage", "files:read"],
+  "contributions": [
+    {
+      "id": "explorer",
+      "kind": "canvas-app",
+      "title": "Files",
+      "entry": "index.html",
+      "defaultSize": { "width": 1040, "height": 650 },
+      "minSize": { "width": 560, "height": 360 }
+    },
+    {
+      "id": "preview",
+      "kind": "window",
+      "title": "File preview",
+      "entry": "preview.html",
+      "defaultSize": { "width": 960, "height": 700 },
+      "minSize": { "width": 400, "height": 300 }
+    }
+  ]
+}

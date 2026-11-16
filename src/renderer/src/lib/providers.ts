@@ -68,5 +68,5 @@ export function setHomeLimitProviderEnabled(
 }
 
 export function homeLauncherColumnCount(providers: readonly AgentProviderId[]): number {
-  return providers.length + 2;
+  return providers.length + 3;
 }

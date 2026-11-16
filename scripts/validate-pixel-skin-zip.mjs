@@ -16,9 +16,16 @@ async function main() {
   const directory = await unzipper.Open.buffer(archive);
   const actual = directory.files.filter((entry) => entry.type === "File")
     .map((entry) => basename(entry.path.replace(/\\/g, "/"))).sort();
-  const expected = PIXEL_SKIN_SLOTS.map((slot) => `${slot}.png`).sort();
-  if (actual.length !== expected.length || actual.some((filename, index) => filename !== expected[index])) {
-    throw new Error(`Install ZIP must contain exactly: ${expected.join(", ")}`);
+  // layout.json is optional metadata; the registry validates its schema and uniqueness.
+  const roles = actual.filter(filename => filename !== "layout.json").map(filename => {
+    const match = /^(.*)\.(png|apng|gif|webp|mp4|webm)$/i.exec(filename);
+    if (!match || (match[1].toLowerCase() !== "background" && /^(mp4|webm)$/i.test(match[2]))) return null;
+    return match[1].toLowerCase();
+  });
+  const expected = [...PIXEL_SKIN_SLOTS].sort();
+  if (roles.length !== expected.length || roles.some(role => role === null)
+    || roles.sort().some((role, index) => role !== expected[index])) {
+    throw new Error(`Install ZIP must contain exactly one file per role: ${expected.join(", ")}. Frames: PNG/APNG/GIF/WebP; background: also MP4/WebM.`);
   }
 
   const profile = await mkdtemp(join(tmpdir(), "canvastty-skin-validate-"));
@@ -30,7 +37,7 @@ async function main() {
     if (manifest.width !== 1536 || manifest.height !== 1024) {
       throw new Error(`New theme frames must be 1536x1024; found ${manifest.width}x${manifest.height}.`);
     }
-    process.stdout.write("Valid CanvasTTY install ZIP: ten PNGs, 1536x1024 frames, importer accepted.\n");
+    process.stdout.write("Valid CanvasTTY install ZIP: nine PNG/APNG/GIF/WebP frames and one background, 1536x1024 frames, importer accepted.\n");
   } finally {
     await rm(profile, { recursive: true, force: true });
   }

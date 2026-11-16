@@ -53,7 +53,7 @@ test("drop handler consumes native file drops once and leaves other drag payload
   let focused = 0;
   let dropFailed = false;
   const file = { name: "video.mp4" };
-  const onDrop = runInNewContext(`(${handler}\n})`, {
+  const onDrop = runInNewContext(`const terminalRuntime=window.canvasTTY.terminal; (${handler}\n})`, {
     window: { canvasTTY: { terminal: { fileDropText: (files) => {
       assert.equal(files[0], file);
       if (dropFailed) throw new Error("unavailable path");
@@ -77,22 +77,49 @@ test("drop handler consumes native file drops once and leaves other drag payload
     preventDefault: () => prevented++,
     stopPropagation: () => stopped++
   };
-  onDrop(event);
+  await onDrop(event);
   assert.deepEqual(pasted, ["'/videos/my video.mp4' "]);
   assert.deepEqual(selected, ["drop-target"]);
   assert.equal(focused, 1);
   assert.deepEqual(errors, []);
   sessionExited.current = true;
-  onDrop(event);
+  await onDrop(event);
   assert.equal(pasted.length, 1);
   assert.equal(prevented, 2);
   assert.equal(stopped, 2);
-  onDrop({ ...event, dataTransfer: { types: ["text/plain"], files: [] } });
+  await onDrop({ ...event, dataTransfer: { types: ["text/plain"], files: [] } });
   assert.equal(prevented, 2);
   assert.equal(stopped, 2);
   sessionExited.current = false;
   dropFailed = true;
-  onDrop(event);
+  await onDrop(event);
   assert.deepEqual(errors, ["\r\n[CanvasTTY] Drop failed\r\n"]);
   assert.equal(pasted.length, 1, "a failed drop cannot paste partial paths");
+});
+
+test("plugin file drops resolve opaque handles and stop when the target exits during IPC", async () => {
+  const card = await readFile(new URL("../src/renderer/src/features/terminal/TerminalCard.tsx", import.meta.url), "utf8");
+  const handler = card.match(/onDrop=\{([\s\S]*?)\n      \}\}/)?.[1];
+  assert.ok(handler);
+  const pasted = [];
+  const sessionExited = { current: false };
+  let exitDuringRequest = false;
+  const onDrop = runInNewContext(`const terminalRuntime=window.canvasTTY.terminal; (${handler}\n})`, {
+    window: { canvasTTY: { plugins: { fileDropText: async (token) => {
+      assert.equal(token, "opaque-handle");
+      if (exitDuringRequest) sessionExited.current = true;
+      return "'/safe/file name.mp4' ";
+    } } } },
+    terminalRef: { current: { focus() {}, paste: (text) => pasted.push(text), write: (error) => assert.fail(error) } },
+    sessionExited, renaming: false, session: { id: "target" }, onSelect() {}, locale: "en", t: () => "Drop failed"
+  });
+  const event = {
+    dataTransfer: { types: ["application/x-canvastty-file"], getData: () => "opaque-handle", files: [] },
+    preventDefault() {}, stopPropagation() {}
+  };
+  await onDrop(event);
+  assert.deepEqual(pasted, ["'/safe/file name.mp4' "]);
+  exitDuringRequest = true;
+  await onDrop(event);
+  assert.equal(pasted.length, 1);
 });

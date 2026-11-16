@@ -262,6 +262,7 @@ test("an orchestrator's own control connection: never the app-wide one, subagent
   // Nothing of CanvasTTY's own: settings and themes are the person's.
   await assert.rejects(request("skin-select", { skinId: "matrix" }), (error) => error.code === "NOT_ALLOWED");
   await assert.rejects(request("skin-list"), (error) => error.code === "NOT_ALLOWED");
+  for (const method of ["wallpaper-list", "wallpaper-install", "wallpaper-select"]) await assert.rejects(request(method), error => error.code === "NOT_ALLOWED");
   assert.equal((await f.settings.load()).terminalBorderSkin, "classic");
   // The CLI without --profile asks for no profile on such a connection (the orchestrator's applies).
   const viaCli = await runCli(["create", "--connection", connectionPath, "--client-file", clientPath, "--provider", "opencode", "--cwd", f.inner]);

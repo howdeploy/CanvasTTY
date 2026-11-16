@@ -1,0 +1,11 @@
+:root { color-scheme: dark; --canvas-bg: #10171c; --text-primary: #d7eee5; --primary: #67e5bd; --surface: #18232a; --border: #39534d; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #10171c; color: #d7eee5; font: 15px system-ui; }
+main { padding: 26px; max-width: 900px; margin: auto; }
+h1 { margin: 0 0 28px; font-size: 25px; } h1 small { display: block; font-size: 15px; margin-top: 7px; color: #9eaea8; font-weight: 400; }
+h2 { font-size: 13px; font-weight: 500; margin: 0 0 12px; color: #b9d2c9; }
+section { display: flex; gap: 24px; margin-bottom: 24px; } article { width: 320px; }
+#mp4, #webm, #apng, #frame { width: 320px; height: 200px; position: relative; overflow: hidden; border-radius: 5px; }
+#frame { background: #0a1218; } .probe-text { position: absolute; inset: 30px 24px 26px; margin: 0; padding: 17px 8px; font: 12px/2 monospace; color: #e3f2ef; background: #0a1218; z-index: 2; }
+.pixel-pack-create { padding: 12px; border: 1px solid #4a7568; border-radius: 6px; background: #1c332c; color: #b5f7df; }
+p { color: #899e95; font-size: 12px; }

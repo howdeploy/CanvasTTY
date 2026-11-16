@@ -15,7 +15,7 @@ export interface CanvasTTYPluginHost {
   request(method: "canvas.open", params: { contributionId: string }): Promise<null>;
   request(method: "external.open", params: { url: string }): Promise<null>;
   request(method: "browser.open", params: { url: string }): Promise<null>;
-  request(method: "window.open", params: { contributionId: string }): Promise<null>;
+  request(method: "window.open", params: { contributionId: string; reuse?: boolean }): Promise<null>;
   request(method: "media.pickLibrary"): Promise<CanvasTTYPluginMediaLibrary | null>;
   request(method: "media.listLibraries"): Promise<CanvasTTYPluginMediaLibrary[]>;
   request(method: "media.scanLibrary", params: { libraryId: string }): Promise<CanvasTTYPluginMediaTrack[]>;
@@ -48,6 +48,16 @@ export interface CanvasTTYPluginHost {
   };
   canvas: {
     open(contributionId: string): Promise<void>;
+  };
+  /** Read-only access to explicitly picked folders. Requires files:read and the accompanying host update. */
+  files: {
+    pickFolder(): Promise<CanvasTTYPluginFileRoot | null>;
+    roots(): Promise<CanvasTTYPluginFileRoot[]>;
+    list(rootId: string, relativePath?: string, options?: { offset?: number; query?: string; showHidden?: boolean }): Promise<CanvasTTYPluginFileListing>;
+    stat(rootId: string, relativePath: string): Promise<CanvasTTYPluginFileEntry>;
+    readText(rootId: string, relativePath: string): Promise<{ content: string; truncated: boolean }>;
+    reveal(rootId: string, relativePath?: string): Promise<null>;
+    revoke(rootId: string): Promise<null>;
   };
   media: {
     pickLibrary(): Promise<CanvasTTYPluginMediaLibrary | null>;
@@ -100,7 +110,7 @@ export interface CanvasTTYPluginContext {
     id: string;
     name: string;
     version: string;
-    permissions: Array<"storage" | "secrets" | "sessions:read" | "limits:read" | "launcher:open" | "external:open" | "browser:open" | "media:library" | "playlists:read" | "playlists:write" | "hermes:hud" | "desktop:embed" | "network" | "launch:contribute" | "environment:provide" | "decision:provide" | "tools:agents" | "sessions:events" | "sessions:read-screen" | "sessions:launch" | "sessions:control" | "cards:decorate" | "browser:engine">;
+    permissions: Array<"storage" | "secrets" | "sessions:read" | "limits:read" | "launcher:open" | "external:open" | "browser:open" | "media:library" | "files:read" | "playlists:read" | "playlists:write" | "hermes:hud" | "desktop:embed" | "network" | "launch:contribute" | "environment:provide" | "decision:provide" | "tools:agents" | "sessions:events" | "sessions:read-screen" | "sessions:launch" | "sessions:control" | "cards:decorate" | "browser:engine">;
     modules: string[];
   };
   contribution: {
@@ -121,6 +131,24 @@ export interface CanvasTTYPluginSession {
   status: "idle" | "working" | "needs_approval" | "unavailable" | "done" | "failed";
   startedAt: number;
   exitCode: number | null;
+}
+
+export interface CanvasTTYPluginFileRoot { id: string; name: string }
+export interface CanvasTTYPluginFileEntry {
+  name: string;
+  relativePath: string;
+  kind: "directory" | "image" | "video" | "audio" | "text" | "file";
+  size: number;
+  modifiedAt: number;
+  mimeType: string;
+  streamUrl: string | null;
+  /** Set as application/x-canvastty-file in dragstart. Host terminals resolve and quote the path. */
+  dragToken: string;
+}
+export interface CanvasTTYPluginFileListing {
+  entries: CanvasTTYPluginFileEntry[];
+  total: number;
+  nextOffset: number | null;
 }
 
 export interface CanvasTTYPluginMediaLibrary {

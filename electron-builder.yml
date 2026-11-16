@@ -74,6 +74,11 @@ electronFuses:
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true
 extraResources:
+  - from: assets/live-terminal-presets
+    to: live-terminal-presets
+    filter:
+      - catalog.json
+      - volcanic-forge.zip
   - from: native/desktop-apps
     to: desktop-apps
     filter:

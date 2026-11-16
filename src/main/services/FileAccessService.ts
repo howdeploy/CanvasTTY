@@ -3,8 +3,12 @@ import { open, readdir, stat } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { TextDecoder } from "node:util";
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
+import { materialType } from "../../shared/materials.ts";
+import { streamFile, textResponse } from "./fileResponse.ts";
 import type {
   FileEntry,
+  FileLocation,
   FileReadResult,
   FileRootDescriptor,
   FileRootKind,
@@ -130,6 +134,46 @@ export class FileAccessService {
     return [...this.roots.values()].map((root) => this.describe(root));
   }
 
+  async locations(): Promise<FileLocation[]> {
+    const home = homedir();
+    const places: FileLocation[] = [
+      { label: "Home", path: home, kind: "home" },
+      { label: "Desktop", path: join(home, "Desktop"), kind: "desktop" },
+      { label: "Downloads", path: join(home, "Downloads"), kind: "downloads" }
+    ];
+    if (process.platform === "win32") {
+      for (const drive of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") places.push({ label: `${drive}:`, path: `${drive}:/`, kind: "disk" });
+    } else {
+      places.push({ label: process.platform === "darwin" ? "Macintosh HD" : "Filesystem", path: "/", kind: "disk" });
+      if (process.platform === "darwin") {
+        for (const name of await readdir("/Volumes").catch(() => [])) places.push({ label: name, path: join("/Volumes", name), kind: "disk" });
+      }
+    }
+    return (await Promise.all(places.map(async place => await stat(place.path).then(s => s.isDirectory() ? place : null, () => null))))
+      .filter((place): place is FileLocation => place !== null);
+  }
+
+  resolvePath(rootId: string, relativePath: string): Promise<string> {
+    return this.resolveForOperation(this.requireRoot(rootId), relativePath);
+  }
+
+  async protocolResponse(request: Request): Promise<Response> {
+    try {
+      if (request.method !== "GET" && request.method !== "HEAD") return textResponse("Method not allowed", 405);
+      const url = new URL(request.url);
+      const root = this.requireRoot(url.hostname);
+      const target = await this.resolveForOperation(root, decodeURIComponent(url.pathname.slice(1)));
+      const type = materialType(target);
+      if (type.kind !== "video" && type.kind !== "audio") return textResponse("Unsupported media", 415);
+      return await streamFile(request, target, type.mimeType, { "x-content-type-options": "nosniff" }, async handle => {
+        const actual = await descriptorRealPath(handle);
+        if (actual !== null && !isContainedPath(root.path, actual)) throw new Error("Outside root");
+        const [opened, current] = await Promise.all([handle.stat(), stat(target)]);
+        if (!isContainedPath(root.path, realpathSync(target)) || opened.ino !== current.ino || opened.dev !== current.dev) throw new Error("File changed");
+      });
+    } catch { return textResponse("Media unavailable", 404); }
+  }
+
   async list(rootId: string, relativePath: string): Promise<FileEntry[]> {
     const root = this.requireRoot(rootId);
     if (!root.available) throw new Error("The file root is unavailable.");
@@ -220,6 +264,12 @@ export class FileAccessService {
       }
 
       const size = metadata.size;
+
+      const type = materialType(target.real);
+      if (type.kind === "video" || type.kind === "audio") {
+        return { kind: "media", mediaType: type.mimeType, size,
+          url: `canvastty-preview://${rootId}/${encodeURIComponent(relativePath)}` };
+      }
 
       const mediaType = IMAGE_MIME[extname(target.real).toLowerCase()];
       if (mediaType) {

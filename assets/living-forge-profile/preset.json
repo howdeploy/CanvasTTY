@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "kind": "canvastty-appearance-preset",
+  "id": "volcanic-forge-pixel-v4",
+  "name": "Living Forge",
+  "version": "1.0.0-preview.5",
+  "requires": "CanvasTTY 2.0 Live Engine",
+  "terminals": {
+    "file": "Volcanic-Forge-terminals.zip",
+    "sha256": "256e17a5437add23057041b69457beb881ad247d2380e2562400ac68f088d051",
+    "id": "pixel:92020000-0000-4000-8000-000000000004"
+  },
+  "apertures": {
+    "minimal": {
+      "left": 10,
+      "right": 10,
+      "top": 20,
+      "bottom": 15.5
+    },
+    "detailed": {
+      "left": 10,
+      "right": 10,
+      "top": 20,
+      "bottom": 15.5
+    },
+    "master": {
+      "left": 10,
+      "right": 10,
+      "top": 20,
+      "bottom": 15.5
+    }
+  },
+  "wallpapers": {
+    "canvas": {
+      "file": "Volcanic-Forge-canvas.ctwallpaper",
+      "sha256": "88b5325cc84fe0a89a04cb4559e030aab69cad41a93cf8bb63d9bd86cbb30859"
+    },
+    "avatar": {
+      "file": "Volcanic-Forge-avatar.ctwallpaper",
+      "sha256": "e78699de01973317b44afd6fe4d5568d3dd4efd7050ebe0d82c2d2403f062f1e"
+    },
+    "clock": {
+      "file": "Volcanic-Forge-clock.ctwallpaper",
+      "sha256": "66117c001331996b9d523cd6db7ec90ab6ce9b927a12ab00e86c8f5f87e4dc73"
+    }
+  },
+  "settings": {
+    "palette": "night",
+    "appSkin": "midnight",
+    "canvasColor": "night",
+    "pattern": "none",
+    "canvasBackgroundFit": "cover",
+    "canvasBackgroundPaused": false,
+    "terminalBackground": "none",
+    "terminalSkinDetail": "detailed",
+    "homeClockFont": "pixel",
+    "homeAccentPreset": "custom",
+    "homeAccentColors": {
+      "clock": "#e7a95e",
+      "launcher": "#d9905c",
+      "browser": "#a79abb",
+      "settings": "#c49baf",
+      "media": "#d9ae78"
+    },
+    "homeTime": {
+      "clocks": [
+        {
+          "id": "local",
+          "label": "Кузница",
+          "timeZone": "local"
+        }
+      ],
+      "timers": [
+        {
+          "id": "forge-focus",
+          "label": "Работа у горна",
+          "durationMs": 1500000,
+          "remainingMs": 1500000,
+          "endsAt": null,
+          "status": "idle"
+        },
+        {
+          "id": "forge-break",
+          "label": "Перерыв",
+          "durationMs": 300000,
+          "remainingMs": 300000,
+          "endsAt": null,
+          "status": "idle"
+        }
+      ],
+      "hour12": false,
+      "showSeconds": false
+    }
+  }
+}

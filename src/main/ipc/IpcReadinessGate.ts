@@ -15,6 +15,8 @@ type SendListener = (event: IpcMainEvent, ...args: any[]) => void;
 export interface IpcRegistrar {
   handle(channel: string, listener: InvokeListener): void;
   on(channel: string, listener: SendListener): unknown;
+  /** Internal Canvas capability adapter; never exposed as an IPC channel. */
+  invokeOwned?(channel: string, event: IpcMainInvokeEvent, args: unknown[]): Promise<unknown>;
 }
 
 export interface IpcMainLike extends IpcRegistrar {
@@ -52,6 +54,7 @@ export class IpcReadinessGate implements IpcRegistrar {
   private readonly unclaimed: Set<string>;
   private failure: Error | null = null;
   private settled = false;
+  private readonly ownedHandlers = new Map<string, InvokeListener | SendListener>();
 
   constructor(ipc: IpcMainLike, options: IpcReadinessGateOptions) {
     this.ipc = ipc;
@@ -70,6 +73,7 @@ export class IpcReadinessGate implements IpcRegistrar {
 
   /** Registers the real invoke handler; calls already waiting on the channel run it now. */
   handle(channel: string, listener: InvokeListener): void {
+    this.ownedHandlers.set(channel, listener);
     const handler: InvokeListener = async (event, ...args) => {
       try { return await listener(event, ...args); }
       catch (error) { this.onInvokeError?.(channel, error); throw error; }
@@ -84,6 +88,7 @@ export class IpcReadinessGate implements IpcRegistrar {
 
   /** Registers the real listener and replays, in order, what was sent to the channel before. */
   on(channel: string, listener: SendListener): this {
+    this.ownedHandlers.set(channel, listener);
     this.unclaimed.delete(channel);
     const placeholder = this.sendPlaceholders.get(channel);
     if (placeholder) {
@@ -101,6 +106,12 @@ export class IpcReadinessGate implements IpcRegistrar {
       }
     }
     return this;
+  }
+
+  async invokeOwned(channel: string, event: IpcMainInvokeEvent, args: unknown[]): Promise<unknown> {
+    const listener=this.ownedHandlers.get(channel);
+    if (!listener) throw Error('Canvas resource is not ready.');
+    return listener(event as IpcMainInvokeEvent & IpcMainEvent,...args);
   }
 
   /** Startup failed: calls waiting now or later reject with this error, queued messages are dropped. */

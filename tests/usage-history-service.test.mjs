@@ -776,7 +776,7 @@ test("usage history is exposed only to the trusted main renderer and wired into 
   assert.match(contracts, /usageHistoryGet: "usage-history:get"/);
   assert.match(contracts, /usageHistory: \{\s*get\(\): Promise<UsageHistory>;\s*\}/);
   assert.match(contracts, /accountScope\?: string \| null;/);
-  assert.match(preload, /usageHistory: \{\s*get: \(\) => ipcRenderer\.invoke\(IPC\.usageHistoryGet\)\s*\}/);
+  assert.match(preload, /usageHistory: \{\s*get: \(\) => invoke\(IPC\.usageHistoryGet\)\s*\}/);
   assert.match(ipc, /ipcMain\.handle\(IPC\.usageHistoryGet, \(event\) => \{\s*assertMainRenderer\(event, getMainWindow\);\s*return usageHistory\.get\(\);/);
   assert.match(ipc, /method === "limits\.get"[\s\S]{0,200}withoutAccountScope\(await limits\.get\(\)\)/);
 

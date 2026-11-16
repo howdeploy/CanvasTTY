@@ -1,5 +1,5 @@
 import type { SettingsDestination } from "../settings/settingsNavigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentProviderId,
   AppSettings,
@@ -22,14 +22,15 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { UiIcon } from "../../components/UiIcon";
 import { t } from "../../lib/i18n";
 import {
-  homeLauncherColumnCount,
   PROVIDERS,
-  resolveHomeLimitProviders,
-  resolveHomeLauncherProviders
+  resolveHomeLimitProviders
 } from "../../lib/providers";
 import { sessionStatusIcon, sessionStatusLabel } from "../../lib/sessionStatus";
 import { sessionStatusTone } from "../../lib/sessionStatusTone";
 import { scheduleMinuteTicks } from "./homeClockSchedule";
+const HomeLauncherDock = lazy(() => import("./HomeLauncherDock"));
+const HomeWidgetControls = lazy(() => import("./HomeWidgetControls"));
+const ClockWidget = lazy(() => import("./ClockWidget"));
 import { HomeMediaWidget } from "./HomeMediaWidget";
 import { SessionFailureDetails, sessionFailureDetails } from "./SessionFailureDetails";
 import { PluginFrame } from "../plugins/PluginFrame";
@@ -66,9 +67,12 @@ interface HomeZoneProps {
   onOpenAgent(provider: AgentProviderId): void;
   onOpenTerminal(): void;
   onOpenBrowser(): void;
+  onOpenExplorer(): void;
+  onEditHome(): void;
   onFocusSession(session: SessionSnapshot): void;
   onRequestMedia(): Promise<void>;
   onRemoveMedia(): Promise<void>;
+  onSettingsChange(patch: Partial<AppSettings>): Promise<void>;
   onLayoutChange(layout: HomeWidgetPlacement[]): void;
   onGridSizeChange(gridSize: HomeGridSize): void;
   onPluginError(message: string): void;
@@ -95,7 +99,6 @@ interface GridPointerState {
   scale: { x: number; y: number };
 }
 
-const HOME_RESIZE_DIRECTIONS: HomeResizeDirection[] = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
 
 export function HomeZone({
   settings,
@@ -109,8 +112,11 @@ export function HomeZone({
   onOpenAgent,
   onOpenTerminal,
   onOpenBrowser,
+  onOpenExplorer,
+  onEditHome,
   onFocusSession,
   onRequestMedia,
+  onSettingsChange,
   onRemoveMedia,
   onLayoutChange,
   onGridSizeChange,
@@ -122,7 +128,6 @@ export function HomeZone({
   onPluginCanvasWheel
 }: HomeZoneProps): React.JSX.Element {
   const locale = settings.locale;
-  const launcherProviders = resolveHomeLauncherProviders(settings);
   const limitProviders = resolveHomeLimitProviders(settings);
   const [now, setNow] = useState(() => new Date());
   const home = useMemo(
@@ -330,11 +335,12 @@ export function HomeZone({
         </section>
       );
     }
-    if (widgetId === "core.clock") return <ClockWidget locale={locale} now={now} />;
+    if (widgetId === "core.clock") return <Suspense fallback={null}><ClockWidget locale={locale} now={now} settings={settings} onChange={onSettingsChange} /></Suspense>;
     if (widgetId === "core.media") {
       return (
         <HomeMediaWidget
           locale={locale}
+          wallpaperId={settings.homeAvatarWallpaper}
           dataUrl={mediaData}
           fit={settings.mediaFit}
           onRequestMedia={onRequestMedia}
@@ -342,32 +348,8 @@ export function HomeZone({
         />
       );
     }
-    if (widgetId === "core.launcher") {
-      return (
-        <section
-          className="tile launcher-dock"
-          style={{ "--launcher-columns": homeLauncherColumnCount(launcherProviders) } as React.CSSProperties}
-        >
-          <button className="launcher-button launcher-button--terminal" type="button" onClick={() => onOpenTerminal()} title={t(locale, "terminal")}>
-            <ProviderIcon provider="terminal" size="large" />
-          </button>
-          {launcherProviders.map((provider) => (
-            <button className="launcher-button" type="button" key={provider} onClick={() => onOpenAgent(provider)} title={PROVIDERS[provider].label}>
-              <ProviderIcon provider={provider} size="large" />
-            </button>
-          ))}
-          <button
-            className="launcher-button launcher-button--browser"
-            type="button"
-            onClick={onOpenBrowser}
-            title={t(locale, "browser")}
-            aria-label={t(locale, "browser")}
-          >
-            <UiIcon name="browser" size="3.23em" />
-          </button>
-        </section>
-      );
-    }
+    if (widgetId === "core.launcher") return <Suspense fallback={<section className="tile launcher-dock" />}><HomeLauncherDock settings={settings}
+      onOpenTerminal={onOpenTerminal} onOpenAgent={onOpenAgent} onOpenBrowser={onOpenBrowser} onOpenExplorer={onOpenExplorer} /></Suspense>;
     if (widgetId === "core.settings") {
       return (
         <button className="tile settings-button" type="button" onClick={() => onOpenSettings()} aria-label={t(locale, "settings")}>
@@ -420,6 +402,9 @@ export function HomeZone({
         gridTemplateRows: `repeat(${draftGridSize.rows}, ${HOME_GRID_CELL_HEIGHT}px)`
       }}
     >
+      {!editing && <button type="button" className="home-customize" onClick={onEditHome}>
+        <UiIcon name="sliders-horizontal" size={18} />{locale === "ru" ? "Настроить Home" : "Customize Home"}
+      </button>}
       {editing && (
         <>
           <span className="home-zone__boundary-label">
@@ -456,30 +441,10 @@ export function HomeZone({
             }}
           >
             {content}
-            {editing && (
-              <>
-                <button
-                  className="home-widget-slot__move"
-                  type="button"
-                  onPointerDown={(event) => startLayoutPointer(event, placement, "move")}
-                  onPointerMove={moveLayoutPointer}
-                  onPointerUp={endLayoutPointer}
-                  onPointerCancel={endLayoutPointer}
-                >{placement.widgetId}</button>
-                {HOME_RESIZE_DIRECTIONS.map((direction) => (
-                  <button
-                    className={`home-widget-slot__resize home-widget-slot__resize--${direction}`}
-                    type="button"
-                    key={direction}
-                    aria-label={`${t(locale, "resizeHomeWidget")}: ${placement.widgetId}`}
-                    onPointerDown={(event) => startLayoutPointer(event, placement, "resize", direction)}
-                    onPointerMove={moveLayoutPointer}
-                    onPointerUp={endLayoutPointer}
-                    onPointerCancel={endLayoutPointer}
-                  />
-                ))}
-              </>
-            )}
+            {editing && <Suspense fallback={null}><HomeWidgetControls placement={placement} layout={draftLayout} grid={draftGridSize} locale={locale}
+              onLayout={updated => { layoutRef.current = updated; setDraftLayout(updated); onLayoutChange(updated); }}
+              onStart={startLayoutPointer} onMove={moveLayoutPointer} onEnd={endLayoutPointer} /></Suspense>}
+
           </div>
         );
       })}
@@ -498,18 +463,6 @@ function isFocusableHomeWidget(widgetId: string, plugins: readonly InstalledPlug
     )));
 }
 
-function ClockWidget({ locale, now }: { locale: LocaleId; now: Date }): React.JSX.Element {
-  const formatLocale = locale === "ru" ? "ru-RU" : "en-GB";
-  const time = now.toLocaleTimeString(formatLocale, { hour: "2-digit", minute: "2-digit" });
-  const date = now.toLocaleDateString(formatLocale, { weekday: "short", day: "numeric", month: "long", year: "numeric" });
-
-  return (
-    <section className="tile clock-tile">
-      <time className="clock-tile__time" dateTime={now.toISOString()}>{time}</time>
-      <span className="clock-tile__date">{date}</span>
-    </section>
-  );
-}
 
 function LimitRow({ row, locale, now, onOpenSettings }: { row: HomeLimitRow; locale: LocaleId; now: number; onOpenSettings(target?: SettingsDestination): void }): React.JSX.Element {
   const providerLabel = PROVIDERS[row.provider].limitsLabel ?? PROVIDERS[row.provider].label;

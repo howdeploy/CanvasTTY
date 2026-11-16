@@ -33,7 +33,7 @@ test("Mac window close keeps the renderer; quit and other platforms still close 
       hide() { this.hidden = true; }
     }
     const context = {
-      process: { platform }, app: { isPackaged: true }, BrowserWindow: Window,
+      process: { platform,env:{} }, app: { isPackaged: true, setAsDefaultProtocolClient() {} }, BrowserWindow: Window,
       shutdownRunning: quitting, shutdownComplete: false,
       mainWindow: null, mainWindowClosing: false, appSurfaceReady: false,
       appIcon: null, __dirname: "/tmp", join: (...parts) => parts.join("/"),

@@ -300,9 +300,10 @@ test("renders in English when the app locale is English", () => {
 test("App mounts the trigger beside the title bar and portals the overlay outside the canvas", async () => {
   const app = (await source("src/renderer/src/App.tsx")).replaceAll("\r\n", "\n");
   assert.match(app, /import \{ UsageHistoryPanel \} from "\.\/features\/usage\/UsageHistoryPanel";/);
-  assert.match(app, /<div ref=\{setOverlayHost\} className=\{rootClasses\}/);
+  assert.match(app, /<div ref=\{setOverlayHost\} className=\{(?:rootClasses|`\$\{rootClasses\})/);
   assert.match(app, /<TitleBar[^\n]*\/>\n\s*<UsageHistoryPanel\n\s*locale=\{settings\.locale\}\n\s*open=\{usageHistoryOpen\}\n\s*container=\{overlayHost\}/);
-  assert.match(app, /browserViewVisible=\{!settingsOpen && !usageHistoryOpen && /);
+  const browserVisibility = app.match(/browserViewVisible=\{([^\n]+)\}/)?.[1] ?? "";
+  assert.match(browserVisibility, /!settingsOpen && !usageHistoryOpen && /);
   assert.match(app, /if \(usageHistoryOpen\) return;/);
   assert.match(app, /if \(shortcutReferenceOpen \|\| usageHistoryOpen \|\| handoffRemarkIds !== null\) return;/);
   const workspaceIndex = app.indexOf("<WorkspaceCanvas");

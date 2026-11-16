@@ -1286,7 +1286,7 @@ test("keeps a valid custom Home grid including plugin widgets", () => {
 
 test("drops overlapping Home placements and always preserves a Settings entry point", () => {
   const layout = normalizeHomeLayout([
-    { widgetId: "core.clock", column: 0, row: 0, columnSpan: 12, rowSpan: 8 },
+    { widgetId: "core.clock", column: 0, row: 0, columnSpan: 12, rowSpan: 10 },
     { widgetId: "core.media", column: 0, row: 0, columnSpan: 2, rowSpan: 2 }
   ]);
 
@@ -1309,4 +1309,17 @@ test("a provider recheck during a settings update does not write the settings wi
   assert.equal(disk.palette, "night", "the file keeps the update");
   assert.equal(disk.homeLauncherProviders.includes("grok"), false);
   assert.deepEqual(disk.homeLauncherProviders, memory.homeLauncherProviders);
+});
+
+test("live wallpaper fit and pause settings validate and survive profile reload", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "canvastty-live-settings-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = new SettingsStore(dir, "ru");
+  await store.load();
+  await store.update({ canvasBackgroundPaused: true, canvasBackgroundFit: "cover" });
+  const settings = await new SettingsStore(dir, "ru").load();
+  assert.equal(settings.canvasBackgroundPaused, true);
+  assert.equal(settings.canvasBackgroundFit, "cover");
+  assert.equal(normalizeSettings({ canvasBackgroundFit: "invalid" }, settings).canvasBackgroundFit, "cover");
+  assert.equal(normalizeSettings({ canvasBackgroundPaused: "true" }, settings).canvasBackgroundPaused, true);
 });

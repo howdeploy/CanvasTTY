@@ -50,7 +50,7 @@ test("system-browser URL bridge is trusted-renderer-only and HTTP(S)-only", asyn
   ]);
 
   assert.match(contracts, /externalOpenUrl: "external:open-url"/);
-  assert.match(preload, /openUrl: \(url: string\) => ipcRenderer\.invoke\(IPC\.externalOpenUrl, url\)/);
+  assert.match(preload, /openUrl: \(url: string\) => invoke\(IPC\.externalOpenUrl, url\)/);
   const handler = ipc.slice(ipc.indexOf("IPC.externalOpenUrl"), ipc.indexOf("IPC.externalOpenUrl") + 260);
   assert.match(handler, /assertMainRenderer\(event, getMainWindow\)/);
   assert.match(handler, /normalizeExternalUrl\(value\)/);

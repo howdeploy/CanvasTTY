@@ -139,6 +139,7 @@ const PLUGIN_PERMISSIONS = new Set<PluginPermission>([
   "external:open",
   "browser:open",
   "media:library",
+  "files:read",
   "playlists:read",
   "playlists:write",
   "hermes:hud",
@@ -1321,7 +1322,8 @@ export class PluginManager {
         headers: resourceHeaders(
           mimeType(path),
           plugin.manifest.permissions.includes("network"),
-          plugin.manifest.permissions.includes("media:library")
+          plugin.manifest.permissions.includes("media:library"),
+          plugin.manifest.permissions.includes("files:read")
         )
       });
     } catch {
@@ -3109,13 +3111,15 @@ function decodeAssetPath(pathname: string): string {
   }
 }
 
-function resourceHeaders(mime: string, network: boolean, mediaLibrary: boolean): Headers {
+function resourceHeaders(mime: string, network: boolean, mediaLibrary: boolean, files = false): Headers {
   const connectSources = [
     ...(mediaLibrary ? ["canvastty-media:"] : []),
+    ...(files ? ["canvastty-files:"] : []),
     ...(network ? ["https:", "http://127.0.0.1:*", "http://localhost:*"] : [])
   ].join(" ") || "'none'";
   const remoteMedia = network ? " https:" : "";
-  const localMedia = mediaLibrary ? " canvastty-media:" : "";
+  const localFiles = files ? " canvastty-files:" : "";
+  const localMedia = (mediaLibrary ? " canvastty-media:" : "") + localFiles;
   return new Headers({
     "content-type": mime,
     "cache-control": "no-store",
@@ -3125,7 +3129,7 @@ function resourceHeaders(mime: string, network: boolean, mediaLibrary: boolean):
       "default-src 'none'",
       "script-src 'self' canvastty-plugin://host",
       "style-src 'self' 'unsafe-inline'",
-      `img-src 'self' data: blob:${remoteMedia}`,
+      `img-src 'self' data: blob:${remoteMedia}${localFiles}`,
       `media-src 'self' data: blob:${localMedia}${remoteMedia}`,
       "font-src 'self' data:",
       `connect-src ${connectSources}`,
@@ -3439,6 +3443,15 @@ const PLUGIN_SDK_SOURCE = `(() => {
     }),
     canvas: Object.freeze({
       open: (contributionId) => request("canvas.open", { contributionId })
+    }),
+    files: Object.freeze({
+      pickFolder: () => request("files.pickFolder"),
+      roots: () => request("files.roots"),
+      list: (rootId, relativePath = "", options = {}) => request("files.list", { ...options, rootId, relativePath }),
+      stat: (rootId, relativePath) => request("files.stat", { rootId, relativePath }),
+      readText: (rootId, relativePath) => request("files.readText", { rootId, relativePath }),
+      reveal: (rootId, relativePath = "") => request("files.reveal", { rootId, relativePath }),
+      revoke: (rootId) => request("files.revoke", { rootId })
     }),
     media: Object.freeze({
       pickLibrary: () => request("media.pickLibrary"),

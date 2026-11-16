@@ -10,9 +10,9 @@ test("pixel frames normalize both smaller and larger cards to one 3:2 size", () 
   ];
   const changed = expandedPixelSkinCardBounds(cards);
   assert.deepEqual(changed.map(({ id }) => id), ["small", "large"]);
-  assert.ok(changed.every(({ bounds }) => bounds.size.width === 1200 && bounds.size.height === 800));
-  assert.ok(changed[0].bounds.position.x >= 100 + 1200 + 40);
-  assert.ok(changed[1].bounds.position.x >= changed[0].bounds.position.x + 1200 + 40);
+  assert.ok(changed.every(({ bounds }) => bounds.size.width === 960 && bounds.size.height === 640));
+  assert.ok(changed[0].bounds.position.x >= 100 + 960 + 40);
+  assert.ok(changed[1].bounds.position.x >= changed[0].bounds.position.x + 960 + 40);
   assert.deepEqual(expandedPixelSkinCardBounds([
     cards[0],
     ...changed.map(({ id, bounds }) => ({ id, ...bounds }))

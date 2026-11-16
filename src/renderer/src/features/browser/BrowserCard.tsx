@@ -1,3 +1,5 @@
+import {useDuoWorkspace} from "../duo/duoWorkspaceRuntime";
+import {DuoRemoteBrowser} from "../duo/DuoRemoteBrowser";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { summaryScaleForZoom, useCameraSelector, type CameraStore } from "../workspace/cameraStore";
 import type {
@@ -86,6 +88,8 @@ export function BrowserCard({
   onError,
   groupSelected = false
 }: BrowserCardProps): React.JSX.Element {
+  const duo=useDuoWorkspace();
+  const remote=Boolean(duo.reply?.state.role==="guest"&&duo.reply.state.documentSync);
   const dragState = useRef<DragState | null>(null);
   const resizeState = useRef<ResizeState | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
@@ -537,7 +541,8 @@ export function BrowserCard({
         className="browser-card__viewport"
         data-browser-canvas-wheel-owner={freezeFrameVisible ? "canvas" : undefined}
       >
-        {freezeFrameDataUrl && (
+        {remote && activeTab && <DuoRemoteBrowser tabId={activeTab.id} visible={visible && !summaryMode} />}
+        {!remote && freezeFrameDataUrl && (
           <img
             className="browser-card__freeze-frame"
             src={freezeFrameDataUrl}
@@ -546,7 +551,7 @@ export function BrowserCard({
             draggable={false}
           />
         )}
-        {!freezeFrameDataUrl && sleepPreview && (
+        {!remote && !freezeFrameDataUrl && sleepPreview && (
           <img
             className="browser-card__freeze-frame browser-card__sleep-preview"
             src={sleepPreview}

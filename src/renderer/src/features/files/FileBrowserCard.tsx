@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import type {
   FileEntry,
+  FileLocation,
   FileRootDescriptor,
   LocaleId,
   Point,
@@ -73,6 +74,8 @@ export interface FileBrowserCardProps {
   onRegisterSession(sessionId: string): void;
   onOpenDirectory(relativePath: string): void;
   onOpenFile(relativePath: string): void;
+  onNavigateFolder?(path: string): void;
+  onPlaceFile?(relativePath: string): void;
   onQuickOpen(query: string): void;
   onChangeBounds(bounds: SessionBounds): void;
   onClose(): void;
@@ -121,6 +124,8 @@ export function FileBrowserCard({
   onRegisterSession,
   onOpenDirectory,
   onOpenFile,
+  onNavigateFolder,
+  onPlaceFile,
   onQuickOpen,
   onChangeBounds,
   onClose,
@@ -130,6 +135,29 @@ export function FileBrowserCard({
   const dragState = useRef<DragState | null>(null);
   const resizeState = useRef<ResizeState | null>(null);
   const quickOpenInput = useRef<HTMLInputElement>(null);
+  const [locations, setLocations] = useState<FileLocation[]>([]);
+  const [currentPath, setCurrentPath] = useState(root?.folderPath ?? "");
+  const [pathDraft, setPathDraft] = useState(root?.folderPath ?? "");
+  const [fileMenu, setFileMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const [mediaError, setMediaError] = useState(false);
+  const ru = locale === "ru";
+  useEffect(() => { let active = true; void window.canvasTTY.files.locations?.().then(items => { if (active) setLocations(items); }).catch(() => undefined); return () => { active = false; }; }, []);
+  useEffect(() => {
+    let active = true;
+    const path = root?.folderPath ?? "";
+    setCurrentPath(path); setPathDraft(path); setFileMenu(null);
+    if (root && !path) void window.canvasTTY.files.resolvePath(root.rootId, "").then(value => {
+      if (active) { setCurrentPath(value); setPathDraft(value); }
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [root?.rootId, root?.folderPath]);
+  useEffect(() => {
+    if (!fileMenu) return;
+    const dismiss = (event: PointerEvent): void => { if (!(event.target instanceof Element) || !event.target.closest('.file-browser-card__context')) setFileMenu(null); };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [fileMenu]);
+  useEffect(() => setMediaError(false), [activeFile, root?.rootId]);
   const initialBounds = constrainFileBrowserResize({ position: bounds.position, size: bounds.size }, "se");
   const [position, setPosition] = useState(initialBounds.position);
   const [size, setSize] = useState(initialBounds.size);
@@ -305,6 +333,7 @@ export function FileBrowserCard({
           </span>
         </span>
         <div className="file-browser-card__actions">
+          {activeFile && onPlaceFile && <button type="button" className="file-browser-card__place" onClick={() => onPlaceFile(activeFile)}>{ru ? "На холст" : "Open on canvas"}</button>}
           <button
             className="file-browser-card__choose"
             type="button"
@@ -328,6 +357,21 @@ export function FileBrowserCard({
 
       <div className="file-browser-card__body">
         <aside className="file-browser-card__tree">
+          <nav className="file-browser-card__places" aria-label={ru ? "Папки и диски" : "Places and drives"}>
+            {locations.map(place => <button type="button" key={place.path} title={place.path} aria-current={currentPath === place.path ? "location" : undefined} onClick={() => onNavigateFolder?.(place.path)}>
+              <UiIcon name="folder" size={14} />{ru ? ({ home: "Домой", desktop: "Рабочий стол", downloads: "Загрузки", disk: place.label })[place.kind] : place.label}
+            </button>)}
+          </nav>
+          {sessionOptions.length > 0 && <div className="file-browser-card__session-options">{sessionOptions.map(option => <button type="button" key={option.sessionId} title={option.label} onClick={() => onRegisterSession(option.sessionId)}>{option.label}</button>)}</div>}
+          <form className="file-browser-card__path" onSubmit={event => { event.preventDefault(); if (pathDraft.trim()) onNavigateFolder?.(pathDraft.trim()); }}>
+            <button type="button" aria-label={ru ? "На уровень выше" : "Parent folder"} disabled={!currentPath} onClick={() => {
+              const path = currentPath.replace(/[\\/]+$/, "");
+              const parent = path.slice(0, Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")));
+              onNavigateFolder?.(parent.match(/^[a-z]:$/i) ? parent + "/" : parent || "/");
+            }}>↑</button>
+            <input aria-label={ru ? "Путь к папке" : "Folder path"} value={pathDraft} onChange={event => setPathDraft(event.target.value)} placeholder={ru ? "Путь к папке…" : "Folder path…"} />
+            <button type="submit" aria-label={ru ? "Перейти" : "Go"}>↵</button>
+          </form>
           <div className="file-browser-card__tree-toolbar">
             <span className="file-browser-card__tree-search">
               <UiIcon name="search" size={14} />
@@ -359,6 +403,7 @@ export function FileBrowserCard({
                     onOpenFile(relativePath);
                     onQuickOpen("");
                   }}
+
                 >
                   {relativePath}
                 </button>
@@ -388,6 +433,13 @@ export function FileBrowserCard({
                     if (row.isDirectory) onOpenDirectory(row.entry.relativePath);
                     else onOpenFile(row.entry.relativePath);
                   }}
+                  onDoubleClick={() => { if (!row.isDirectory) onPlaceFile?.(row.entry.relativePath); }}
+                  onContextMenu={event => {
+                    if (row.isDirectory || !onPlaceFile) return;
+                    event.preventDefault(); event.stopPropagation();
+                    const rect = event.currentTarget.closest("article")!.getBoundingClientRect();
+                    setFileMenu({ path: row.entry.relativePath, x: Math.max(0, Math.min(size.width - 220, (event.clientX - rect.left) / zoom)), y: Math.max(0, Math.min(size.height - 80, (event.clientY - rect.top) / zoom)) });
+                  }}
                 >
                   <span className="file-browser-card__tree-caret" aria-hidden="true">
                     {row.isDirectory && <UiIcon name="chevron" size={13} />}
@@ -404,6 +456,11 @@ export function FileBrowserCard({
           {renderViewer()}
         </section>
       </div>
+
+      {fileMenu && <div className="file-browser-card__context" role="menu" style={{ left: fileMenu.x, top: fileMenu.y }} onKeyDown={event => { if (event.key === "Escape") setFileMenu(null); }}>
+        <button type="button" role="menuitem" autoFocus onClick={() => { onPlaceFile?.(fileMenu.path); setFileMenu(null); }}>{ru ? "Открыть на холсте" : "Open on canvas"}</button>
+        <button type="button" role="menuitem" onClick={() => setFileMenu(null)}>{ru ? "Отмена" : "Cancel"}</button>
+      </div>}
 
       <button
         className="file-browser-card__summary"
@@ -484,6 +541,14 @@ export function FileBrowserCard({
       return <ViewerState icon="working" title={t(locale, "filesLoading")} />;
     }
     switch (viewer.kind) {
+      case "media": return <div className="file-browser-card__media" data-file-action="true">
+        {mediaError ? <p role="alert">{ru ? "Не удалось воспроизвести файл. Проверьте доступ к файлу. Поддерживаются H.264 MP4, WebM и MP3." : "Cannot play this file. Check file access and codec support (H.264 MP4, WebM, MP3)."}</p>
+          : viewer.mediaType.startsWith("video/")
+            ? <video key={viewer.url} src={viewer.url} controls playsInline preload="metadata" onError={() => setMediaError(true)} />
+            : <audio key={viewer.url} src={viewer.url} controls preload="metadata" onError={() => setMediaError(true)} />}
+        <small>{viewer.mediaType} · {viewer.sizeLabel}</small>
+        {onPlaceFile && <button type="button" onClick={() => onPlaceFile(activeFile!)}>{ru ? "Открыть на холсте" : "Open on canvas"}</button>}
+      </div>;
       case "text":
         return (
           <>

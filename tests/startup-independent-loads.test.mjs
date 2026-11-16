@@ -1,5 +1,5 @@
 /**
- * initializeServices() (src/main/index.ts) starts four persistence loads that read no state from
+ * initializeServices() (src/main/index.ts) starts five persistence loads that read no state from
  * one another: SettingsStore, SkinRegistry, PixelSkinPackRegistry and PluginManager, each rooted
  * in its own subfolder of userDataPath. Awaiting them one after another only adds their latencies
  * together before the renderer's application surface can load; they belong in one Promise.all.
@@ -38,13 +38,15 @@ async function persistenceStartup() {
     recoverKimiConfigurationOnStartup() {},
     HermesHudService: class {},
     hermesHudService: null,
-    app: { getPath: () => "/fixture/user-data", getLocale: () => "en" },
+    app: { getPath: () => "/fixture/user-data", getAppPath:()=>"/fixture/app", getLocale: () => "en" },
     process: { platform: "linux" },
+    join:(...parts)=>parts.join("/"),
     editMenuLocale: null,
     pluginManager: null,
     SettingsStore: store("settings", "load"),
     SkinRegistry: store("borders", "initialize"),
     PixelSkinPackRegistry: store("pixel", "initialize"),
+    WallpaperRegistry: store("wallpapers", "initialize"),
     PluginManager: store("plugins", "load")
   };
   const initialize = runInNewContext(`${stripTypeScriptTypes(`${source.slice(start, end)}\n}`)}; initializeServices`, context);
@@ -55,10 +57,11 @@ test("initializeServices starts every independent load before waiting and propag
   const startup = await persistenceStartup();
   let finished = false;
   const running = startup.initialize({}).then(() => { finished = true; });
-  assert.deepEqual(startup.started.toSorted(), ["borders", "pixel", "plugins", "settings"]);
+  assert.deepEqual(startup.started.toSorted(), ["borders", "pixel", "plugins", "settings", "wallpapers"]);
   startup.loads.settings.resolve();
   startup.loads.borders.resolve();
   startup.loads.pixel.resolve();
+  startup.loads.wallpapers.resolve();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(finished, false, "initialization must wait for the last store");
   startup.loads.plugins.resolve();
@@ -68,8 +71,8 @@ test("initializeServices starts every independent load before waiting and propag
   const failed = await persistenceStartup();
   const failure = new Error("plugin state could not be read");
   const rejected = assert.rejects(failed.initialize({}), (error) => error === failure);
-  assert.deepEqual(failed.started.toSorted(), ["borders", "pixel", "plugins", "settings"]);
+  assert.deepEqual(failed.started.toSorted(), ["borders", "pixel", "plugins", "settings", "wallpapers"]);
   failed.loads.plugins.reject(failure);
-  for (const name of ["settings", "borders", "pixel"]) failed.loads[name].resolve();
+  for (const name of ["settings", "borders", "pixel", "wallpapers"]) failed.loads[name].resolve();
   await rejected;
 });

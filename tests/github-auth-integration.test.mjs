@@ -45,7 +45,7 @@ test("a pending GitHub sign-in can be cancelled through the trusted renderer onl
   const handler = ipc.slice(start, ipc.indexOf("ipcMain.", start + 1));
   assert.match(handler, /assertMainRenderer\(event, getMainWindow\)/);
   assert.match(handler, /githubAuth\.cancelDeviceFlow\(\)/);
-  assert.match(preload, /cancel: \(\) => ipcRenderer\.invoke\(IPC\.githubAuthCancel\)/);
+  assert.match(preload, /cancel: \(\) => invoke\(IPC\.githubAuthCancel\)/);
   assert.match(settings, /window\.canvasTTY\.githubAuth\.cancel\(\)/);
   assert.match(settings, /githubSigninText\(locale, "cancel"\)/);
 });

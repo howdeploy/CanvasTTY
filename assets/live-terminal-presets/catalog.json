@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "presets": [
+    {
+      "id": "pixel:92020000-0000-4000-8000-000000000004",
+      "name": "Living Forge",
+      "archive": "volcanic-forge.zip",
+      "apertures": {
+        "minimal": {
+          "left": 10,
+          "right": 10,
+          "top": 20,
+          "bottom": 15.5
+        },
+        "detailed": {
+          "left": 10,
+          "right": 10,
+          "top": 20,
+          "bottom": 15.5
+        },
+        "master": {
+          "left": 10,
+          "right": 10,
+          "top": 20,
+          "bottom": 15.5
+        }
+      }
+    }
+  ],
+  "retiredIds": [
+    "pixel:92020000-0000-4000-8000-000000000001",
+    "pixel:92020000-0000-4000-8000-000000000002",
+    "pixel:92020000-0000-4000-8000-000000000003"
+  ]
+}

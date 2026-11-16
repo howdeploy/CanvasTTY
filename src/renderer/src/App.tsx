@@ -70,7 +70,7 @@ import {
   type FileCardRuntimeState
 } from "./features/files/fileCardRuntime";
 import { fileCardToRootReference, isFileRootUsable } from "./features/files/fileCardRestore";
-import { matchQuickOpen, toggleExpandedFolder } from "./features/files/fileTree";
+import { matchQuickOpen } from "./features/files/fileTree";
 import type { FileSessionOption } from "./features/files/FileBrowserCard";
 import { GitRiskNotice } from "./features/terminal/GitRiskNotice";
 import { UsageHistoryPanel } from "./features/usage/UsageHistoryPanel";
@@ -113,6 +113,11 @@ import {
 } from "./features/materials/materialCardModel";
 import { remarkNeedsWork } from "./features/materials/materialRemarksModel";
 
+import { duoWorkspace, duoTerminalTransport, duoSession, useDuoWorkspace } from "./features/duo/duoWorkspaceRuntime";
+
+const DuoCanvasSurface = lazy(() => import("./features/duo/DuoCanvasSurface"));
+const CanvasDuo = lazy(() => import("./features/duo/CanvasDuo"));
+
 interface HomeEditDraft {
   homeGridSize: HomeGridSize;
   homeLayout: HomeWidgetPlacement[];
@@ -154,6 +159,8 @@ const FALLBACK_SETTINGS: AppSettings = {
   uiScale: DEFAULT_UI_SCALE,
   canvasColor: "sage",
   canvasBackground: "none",
+    canvasBackgroundPaused: false,
+    canvasBackgroundFit: "contain",
   pattern: "dots",
   terminalBorderSkin: "classic",
   terminalBackground: "none",
@@ -200,7 +207,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   canvasControlsPlacement: "bottom-left",
   keyboardPreset: window.canvasTTY.window.isMacOS ? "macos" : window.canvasTTY.window.platform === "win32" ? "windows" : "linux",
   shortcuts: keyboardPresetShortcuts(window.canvasTTY.window.isMacOS ? "macos" : window.canvasTTY.window.platform === "win32" ? "windows" : "linux"),
-  mediaPath: null,
+  homeAvatarWallpaper: null, mediaPath: null,
   mediaFit: "cover",
   lastDirectory: "/",
   acknowledgedDangerousProfiles: [],
@@ -335,8 +342,18 @@ function contrastRatio(left: number, right: number): number {
 }
 
 export function App(): React.JSX.Element {
+  const [duoOpen, setDuoOpen] = useState(false);
   const [settings, setSettings] = useState(FALLBACK_SETTINGS);
-  const [sessions, setSessions] = useState<SessionSnapshot[]>([]);
+  const [localSessions, setSessions] = useState<SessionSnapshot[]>([]);
+  const duoView = useDuoWorkspace();
+  const duoFullCanvas = Boolean(duoView.reply?.state.fullCanvas);
+  const duoDocument = Boolean(duoView.reply?.state.documentSync);
+  const duoActive = Boolean(duoView.reply && duoView.reply.state.role !== "idle" && (!duoFullCanvas || duoDocument));
+  const duoRestricted = duoActive && !duoDocument;
+  const duoGuest = duoView.reply?.state.role === "guest";
+  const [terminalApi] = useState(() => duoTerminalTransport(window.canvasTTY.terminal));
+  const sessions = useMemo(() => !duoActive || (duoDocument && !duoGuest) ? localSessions : (duoView.reply?.snapshot?.cards ?? []).map(card =>
+    (!duoGuest && localSessions.find(s => s.id === card.id)) || duoSession(card)), [duoActive, duoDocument, duoGuest, duoView.reply, localSessions]);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const pendingSessionPlacements = useRef<SessionBounds[]>([]);
@@ -347,6 +364,7 @@ export function App(): React.JSX.Element {
   const [mediaData, setMediaData] = useState<string | null>(null);
   const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
   const [mascotProjects, setMascotProjects] = useState<MascotProjectSummary[]>([]);
+  useEffect(() => { let active=true; void window.canvasTTY.plugins.list().then(items=>{if(active)setPlugins(items);}).catch(()=>undefined); return()=>{active=false;}; }, [duoDocument, duoView.reply?.snapshot?.document?.plugins]);
 
   useEffect(() => {
     let active = true;
@@ -365,6 +383,18 @@ export function App(): React.JSX.Element {
   const [cameraStore] = useState(() => createCameraStore(homeCamera(DEFAULT_HOME_GRID_SIZE)));
   const setCamera = cameraStore.set;
   const isHomeCamera = useRef(true);
+  const focusedDuoWorkspace = useRef("");
+  useEffect(() => {
+    if (!duoActive || duoDocument) { focusedDuoWorkspace.current = ""; return; }
+    const id = duoView.reply?.state.workspaceId;
+    const first = sessions[0];
+    if (id && first && focusedDuoWorkspace.current !== id) {
+      focusedDuoWorkspace.current = id;
+      isHomeCamera.current = false;
+      setActiveSessionId(first.id);
+      setCamera(focusCamera(first.position, first.size));
+    }
+  }, [duoActive, duoDocument, duoView.reply?.state.workspaceId, sessions, setCamera]);
   const browserCanvasRef = useRef<BrowserCanvasState | null>(null);
   const mediaReadGenerationRef = useRef(0);
   const providedMediaRef = useRef<{ path: string } | null>(null);
@@ -385,6 +415,8 @@ export function App(): React.JSX.Element {
   /** Monotonic per-card read sequence, so a slow earlier read cannot overwrite a newer one. */
   const fileReadSequence = useRef<Record<string, number>>({});
   const fileRootRequests = useRef<Record<string, symbol>>({});
+  const fileRuntimeSpecs = useRef(new Map<string,string>());
+  const fileRuntimeWorkspace = useRef('');
   const [launchProvider, setLaunchProvider] = useState<ProviderId | null>(null);
   const [launchPosition, setLaunchPosition] = useState<Point | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -719,6 +751,13 @@ export function App(): React.JSX.Element {
     initial?: { initialPrompt: string; initialImagePath: string }
   ): Promise<SessionSnapshot> => {
     const currentSettings = settingsRef.current;
+    if ((!duoWorkspace.get().reply?.state.fullCanvas || (duoWorkspace.get().reply?.state.documentSync && duoWorkspace.get().reply?.state.role === "guest")) && duoWorkspace.get().reply?.state.role && duoWorkspace.get().reply?.state.role !== "idle") {
+      const existing=duoWorkspace.get().reply?.snapshot?.cards ?? [];
+      const position=requestedCenter ?? {x: existing.length ? Math.max(...existing.map(c=>c.position.x+c.size.width))+40 : 80,y:80};
+      const shared=await terminalApi.create({provider,profile,cwd,position});
+      setActiveSessionId(shared.id);isHomeCamera.current=false;setCamera(focusCamera(shared.position,shared.size));
+      return shared;
+    }
     const pixelSkin = isPixelSkinThemeId(currentSettings.terminalBorderSkin)
       || isPixelSkinPackId(currentSettings.terminalBorderSkin);
     const cardSize = pixelSkin ? PIXEL_SKIN_CARD_SIZE : DEFAULT_SESSION_SIZE;
@@ -743,13 +782,13 @@ export function App(): React.JSX.Element {
       : { position, size: cardSize };
     if (reservation) pendingSessionPlacements.current.push(reservation);
     try {
-      const session = await window.canvasTTY.terminal.create({
+      const session = await terminalApi.create({
         provider, profile, cwd, position, role, ...(launchOptions ? { launchOptions } : {}),
         ...(environment ? { environment } : {}),
         ...(initial ?? {})
       });
       const sizedSession = pixelSkin ? { ...session, size: { ...cardSize } } : session;
-      if (pixelSkin) window.canvasTTY.terminal.setBounds(session.id, { position, size: sizedSession.size });
+      if (pixelSkin) terminalApi.setBounds(session.id, { position, size: sizedSession.size });
       sessionsRef.current = upsertSnapshot(sessionsRef.current, sizedSession);
       setSessions((current) => upsertSnapshot(current, sizedSession));
       setActiveSessionId(session.id);
@@ -765,6 +804,10 @@ export function App(): React.JSX.Element {
   }, [saveSettings]);
 
   const openTerminal = useCallback(async (position?: Point): Promise<void> => {
+    if((!duoWorkspace.get().reply?.state.fullCanvas || (duoWorkspace.get().reply?.state.documentSync && duoWorkspace.get().reply?.state.role === "guest")) && duoWorkspace.get().reply?.state.role && duoWorkspace.get().reply?.state.role !== "idle") {
+      try{await createSession("terminal","normal",settingsRef.current.lastDirectory,position);}catch(error){showToast(String(error));}
+      return;
+    }
     // With a trusted plugin environment for terminals, ask where it runs; otherwise open at once as always.
     const installed = await window.canvasTTY.plugins.list().catch(() => plugins);
     if (environmentOptions(installed, "terminal").length > 0) {
@@ -810,7 +853,7 @@ export function App(): React.JSX.Element {
 
   const restartSession = useCallback(async (id: string, resume = false): Promise<void> => {
     try {
-      await window.canvasTTY.terminal.restart(id, { resume });
+      await terminalApi.restart(id, { resume });
       showToast(t(settings.locale, "sessionRestarted"));
     } catch (error) {
       showToast(error instanceof Error ? error.message : t(settings.locale, "restartFailed"));
@@ -828,6 +871,17 @@ export function App(): React.JSX.Element {
     try {
       const selection = await window.canvasTTY.dialog.pickMedia();
       if (!selection) return;
+      if (/^data:image\/(?:gif|png|webp);base64,/i.test(selection.dataUrl)) {
+        const { installAvatarSelection } = await import("./features/home/avatarMedia");
+        const saved = await installAvatarSelection(selection);
+        try {
+          const updated = await window.canvasTTY.settings.update({ homeAvatarWallpaper: saved.id, mediaPath: null });
+          mediaReadGenerationRef.current += 1;
+          providedMediaRef.current = null;
+          setSettings(updated); setMediaData(null);
+        } catch (error) { await window.canvasTTY.wallpapers.remove(saved.id); throw error; }
+        return;
+      }
 
       if (settingsRef.current.mediaPath === selection.path) {
         // A same-path deferred read may already be pending; its result must not replace this data URL.
@@ -836,7 +890,7 @@ export function App(): React.JSX.Element {
         // Settings can notify before update() resolves, so suppress the path effect synchronously.
         providedMediaRef.current = { path: selection.path };
       }
-      const updated = await window.canvasTTY.settings.update({ mediaPath: selection.path });
+      const updated = await window.canvasTTY.settings.update({ homeAvatarWallpaper: null, mediaPath: selection.path });
       setSettings(updated);
       setMediaData(selection.dataUrl);
     } catch {
@@ -847,7 +901,7 @@ export function App(): React.JSX.Element {
 
   const removeMedia = useCallback(async (): Promise<void> => {
     try {
-      const updated = await window.canvasTTY.settings.update({ mediaPath: null });
+      const updated = await window.canvasTTY.settings.update({ homeAvatarWallpaper: null, mediaPath: null });
       mediaReadGenerationRef.current += 1;
       setSettings(updated);
       setMediaData(null);
@@ -860,7 +914,7 @@ export function App(): React.JSX.Element {
     setSessions((current) => current.map((session) => session.id === id
       ? { ...session, position: bounds.position, size: bounds.size }
       : session));
-    window.canvasTTY.terminal.setBounds(id, bounds);
+    terminalApi.setBounds(id, bounds);
   }, []);
 
   const toggleSessionFullscreen = useCallback((id: string): void => {
@@ -974,7 +1028,7 @@ export function App(): React.JSX.Element {
         const movedSessions = sessions.map((session) => {
           if (!boundsInsideRegion(session, previous)) return session;
           const moved = translateBounds(session, delta);
-          window.canvasTTY.terminal.setBounds(session.id, moved);
+          terminalApi.setBounds(session.id, moved);
           return { ...session, ...moved };
         });
         const pluginCanvas = settingsRef.current.pluginCanvas.map((instance) => {
@@ -1142,6 +1196,9 @@ export function App(): React.JSX.Element {
   }, []);
 
   const writeFileCards = useCallback((fileCards: FileCard[]): void => {
+    // Local navigation already owns its asynchronous read. Remote changes are
+    // detected separately and must register a root on this participant too.
+    for(const card of fileCards)fileRuntimeSpecs.current.set(card.id,JSON.stringify([card.root,card.folderPath,card.activeFile,card.expandedFolders]));
     settingsRef.current = { ...settingsRef.current, fileCards };
     setSettings((current) => ({ ...current, fileCards }));
     void saveSettings({ fileCards });
@@ -1253,26 +1310,51 @@ export function App(): React.JSX.Element {
     })();
   }, [loadFileRoot, releaseFileCardRoot, updateFileCard, updateFileCardRuntime]);
 
-  const openFileDirectory = useCallback((id: string, relativePath: string): void => {
-    const card = settingsRef.current.fileCards.find((candidate) => candidate.id === id);
-    const runtime = fileCardRuntimeRef.current[id];
-    const root = runtime?.root ?? null;
-    if (!card || !root || runtime?.rootUnavailable) return;
-    const wasExpanded = card.expandedFolders.includes(relativePath);
-    updateFileCard(id, { expandedFolders: toggleExpandedFolder(card.expandedFolders, relativePath) });
-    if (wasExpanded || runtime.childrenByDirectory[relativePath] !== undefined) return;
+  const navigateFileFolder = useCallback((id: string, path: string): void => {
+    const request = Symbol();
+    fileRootRequests.current[id] = request;
     updateFileCardRuntime(id, () => ({ loading: true, error: null }));
-    void window.canvasTTY.files.list(root.rootId, relativePath).then(
-      (entries) => updateFileCardRuntime(id, (state) => ({
-        loading: false,
-        childrenByDirectory: { ...state.childrenByDirectory, [relativePath]: entries }
-      })),
-      (error: unknown) => updateFileCardRuntime(id, () => ({
-        loading: false,
-        error: fileErrorMessage(error)
-      }))
-    );
-  }, [updateFileCard, updateFileCardRuntime]);
+    void (async () => {
+      try {
+        const descriptor = await window.canvasTTY.files.registerRoot({ rootType: "folder", folderPath: path });
+        if (fileRootRequests.current[id] !== request || !settingsRef.current.fileCards.some(card => card.id === id)) {
+          if (descriptor) void window.canvasTTY.files.closeRoot(descriptor.rootId);
+          return;
+        }
+        if (!descriptor) throw new Error(settingsRef.current.locale === "ru" ? "Не удалось открыть папку. Проверьте путь и доступ." : "Cannot open folder. Check path and permissions.");
+        releaseFileCardRoot(id);
+        fileReadSequence.current[id] = (fileReadSequence.current[id] ?? 0) + 1;
+        fileSearchSequence.current[id] = (fileSearchSequence.current[id] ?? 0) + 1;
+        updateFileCard(id, { root: { rootType: "folder" }, label: descriptor.label, folderPath: descriptor.folderPath ?? path, activeFile: null, expandedFolders: [] });
+        await loadFileRoot(id, descriptor, request);
+      } catch (error) {
+        if (fileRootRequests.current[id] === request) updateFileCardRuntime(id, () => ({ loading: false, error: fileErrorMessage(error) }));
+      }
+    })();
+  }, [loadFileRoot, releaseFileCardRoot, updateFileCard, updateFileCardRuntime]);
+
+  const openFileDirectory = useCallback((id: string, relativePath: string): void => {
+    const root = fileCardRuntimeRef.current[id]?.root;
+    if (!root) return;
+    void window.canvasTTY.files.resolvePath(root.rootId, relativePath).then(path => {
+      if (fileCardRuntimeRef.current[id]?.root?.rootId === root.rootId) navigateFileFolder(id, path);
+    }).catch(error => updateFileCardRuntime(id, () => ({ error: fileErrorMessage(error) })));
+  }, [navigateFileFolder, updateFileCardRuntime]);
+
+  const placeFileOnCanvas = useCallback((id: string, relativePath: string): void => {
+    const root = fileCardRuntimeRef.current[id]?.root;
+    const card = settingsRef.current.fileCards.find(card => card.id === id);
+    if (!root || !card) return;
+    void (async () => {
+      const path = await window.canvasTTY.files.resolvePath(root.rootId, relativePath);
+      const point = { x: card.position.x + card.size.width + 32, y: card.position.y + 120 };
+      const result = await window.canvasTTY.materials.addPaths([path], point);
+      if (result.rejected.length) throw new Error(settingsRef.current.locale === "ru" ? "Не удалось открыть файл на холсте." : "Could not open file on canvas.");
+      const snapshot = await window.canvasTTY.materials.snapshot();
+      const material = snapshot.materials.find(item => item.id === (result.added[0] ?? result.existing[0]));
+      if (material) { isHomeCamera.current = false; setCamera(focusCamera(material.position, material.size, FILE_CARD_FOCUS_ZOOM)); }
+    })().catch(error => showToast(fileErrorMessage(error)));
+  }, [showToast]);
 
   const openFile = useCallback((id: string, relativePath: string): void => {
     const runtime = fileCardRuntimeRef.current[id];
@@ -1430,12 +1512,21 @@ export function App(): React.JSX.Element {
     }
   }, [updateFileCardRuntime]);
 
-  const fileCardsRestored = useRef(false);
   useEffect(() => {
-    if (!ready || fileCardsRestored.current) return;
-    fileCardsRestored.current = true;
-    for (const card of settingsRef.current.fileCards) void restoreFileCard(card);
-  }, [ready, restoreFileCard]);
+    if (!ready) return;
+    const workspace=duoGuest&&duoDocument?duoView.reply?.state.workspaceId??'':'local';
+    if(fileRuntimeWorkspace.current!==workspace){fileRuntimeWorkspace.current=workspace;fileRuntimeSpecs.current.clear();}
+    const ids=new Set(settings.fileCards.map(card=>card.id));
+    for(const id of fileRuntimeSpecs.current.keys())if(!ids.has(id)){
+      fileRuntimeSpecs.current.delete(id);delete fileRootRequests.current[id];releaseFileCardRoot(id);
+      setFileCardRuntime(current=>{const next={...current};delete next[id];return next;});
+    }
+    for(const card of settings.fileCards){
+      const spec=JSON.stringify([card.root,card.folderPath,card.activeFile,card.expandedFolders]);
+      if(fileRuntimeSpecs.current.get(card.id)===spec)continue;
+      fileRuntimeSpecs.current.set(card.id,spec);releaseFileCardRoot(card.id);void restoreFileCard(card);
+    }
+  }, [ready,settings.fileCards,duoGuest,duoDocument,duoView.reply?.state.workspaceId,releaseFileCardRoot,restoreFileCard]);
 
   const changeFileCardBounds = useCallback((id: string, bounds: SessionBounds): void => {
     updateFileCard(id, { position: bounds.position, size: bounds.size });
@@ -1484,11 +1575,15 @@ export function App(): React.JSX.Element {
     };
     writeFileCards([...settingsRef.current.fileCards, card]);
     setFileCardRuntime((current) => ({ ...current, [id]: EMPTY_FILE_CARD_RUNTIME }));
+    void window.canvasTTY.files.locations().then(locations => {
+      const home = locations.find(place => place.kind === "home") ?? locations[0];
+      if (home && settingsRef.current.fileCards.some(card => card.id === id) && !fileRootRequests.current[id]) navigateFileFolder(id, home.path);
+    }).catch(error => updateFileCardRuntime(id, () => ({ error: fileErrorMessage(error) })));
     setActiveSessionId(null);
     setBrowserSelected(false);
     isHomeCamera.current = false;
     setCamera(focusCamera(card.position, card.size, FILE_CARD_FOCUS_ZOOM));
-  }, [settings.homeGridSize, writeFileCards]);
+  }, [settings.homeGridSize, writeFileCards, navigateFileFolder, updateFileCardRuntime]);
 
   const disposePluginCanvas = useCallback((id: string): void => {
     void saveSettings({ pluginCanvas: settingsRef.current.pluginCanvas.filter((instance) => instance.id !== id) });
@@ -1618,7 +1713,8 @@ export function App(): React.JSX.Element {
   }, [settings.browserCanvas]);
 
   const disposeSession = useCallback((id: string, keepEnvironmentData?: boolean): void => {
-    void window.canvasTTY.terminal.dispose(id, keepEnvironmentData === undefined ? undefined : { keepEnvironmentData });
+    void terminalApi.dispose(id, keepEnvironmentData === undefined ? undefined : { keepEnvironmentData }).catch(error => showToast(String(error)));
+    if (duoWorkspace.get().reply?.state.role === "guest") return;
     setSessions((current) => current.filter((session) => session.id !== id));
     setSettings((current) => {
       if (!current.terminalBackgroundOverrides[id]) return current;
@@ -1645,7 +1741,7 @@ export function App(): React.JSX.Element {
     if ("error" in result) throw new Error(result.error.message);
     const { session, reused: alreadyOpen } = result;
     const sized = pixelSkin && !alreadyOpen ? { ...session, size: { ...size } } : session;
-    if (pixelSkin && !alreadyOpen) window.canvasTTY.terminal.setBounds(session.id, { position: session.position, size });
+    if (pixelSkin && !alreadyOpen) terminalApi.setBounds(session.id, { position: session.position, size });
     sessionsRef.current = upsertSnapshot(sessionsRef.current, sized);
     setSessions((sessions) => upsertSnapshot(sessions, sized));
     if (!alreadyOpen && session.status === "failed") throw new Error(session.failureDetails || "The conversation could not be resumed. Check the terminal card.");
@@ -1654,7 +1750,8 @@ export function App(): React.JSX.Element {
 
   const renameSession = useCallback(async (id: string, title: string): Promise<void> => {
     try {
-      const metadata = await window.canvasTTY.terminal.rename(id, title);
+      const metadata = await terminalApi.rename(id, title);
+      if (duoWorkspace.get().reply?.state.role === "guest") return;
       setSessions((current) => upsertSession(current, metadata));
     } catch {
       showToast(t(settings.locale, "renameFailed"));
@@ -1942,6 +2039,12 @@ export function App(): React.JSX.Element {
     })().catch((error) => showToast(error instanceof Error ? error.message : t(settings.locale, "pluginActionFailed")));
   }), [openPluginCanvasContribution, plugins, settings.locale, showToast]);
 
+  const openHomeExplorer = useCallback((): void => {
+    const existing = settingsRef.current.fileCards[0];
+    if (existing) focusFileCard(existing.id);
+    else openFilesCard();
+  }, [focusFileCard, openFilesCard]);
+
   const startHomeEditor = useCallback((): void => {
     setSettingsOpen(false);
     setHomeEditDraft({
@@ -1999,6 +2102,7 @@ export function App(): React.JSX.Element {
       if (handleMacNativeSelectAll(event, window.canvasTTY.window.isMacOS)) return;
       if (handoffRemarkIds !== null) return;
       if (usageHistoryOpen) return;
+      if (duoOpen) return;
       if (isShortcutCaptureTarget(event.target) || isRenameInputTarget(event.target)) return;
       if (matchesShortcut(event, settings.shortcuts.momEntered)) {
         event.preventDefault();
@@ -2050,6 +2154,7 @@ export function App(): React.JSX.Element {
 
     const handlePointerShortcut = (event: PointerEvent): void => {
       if (shortcutReferenceOpen || usageHistoryOpen || handoffRemarkIds !== null) return;
+      if (duoOpen) return;
       if (isShortcutCaptureTarget(event.target) || isRenameInputTarget(event.target)) return;
       const action = matchesPointerShortcut(event, settings.shortcuts.home)
         ? "home"
@@ -2064,23 +2169,40 @@ export function App(): React.JSX.Element {
       performShortcut(action);
     };
 
-    window.addEventListener("keydown", handleShortcut, true);
+    const routedShortcut = (event:KeyboardEvent):void => {
+      if(duoWorkspace.get().reply?.state.role==='guest'&&duoWorkspace.get().reply?.state.fullCanvas&&event.target instanceof Element&&event.target.closest('.duo-surface'))return;
+      handleShortcut(event);
+    };
+    window.addEventListener("keydown", routedShortcut, true);
     window.addEventListener("pointerdown", handlePointerShortcut, true);
     const stopTerminalFocus = window.canvasTTY.window.isMacOS
       ? trackTerminalEditFocus(document, (focused) => window.canvasTTY.canvasNavigation.setTerminalEditFocus(focused))
       : () => undefined;
     return () => {
-      window.removeEventListener("keydown", handleShortcut, true);
+      window.removeEventListener("keydown", routedShortcut, true);
       window.removeEventListener("pointerdown", handlePointerShortcut, true);
       stopTerminalFocus();
     };
-  }, [activeSessionId, fullscreenSessionId, goHome, handoffRemarkIds, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, shortcutReferenceOpen, showToast, usageHistoryOpen, toggleSessionFullscreen, toggleBackgrounds, toggleDesign]);
+  }, [duoOpen, activeSessionId, fullscreenSessionId, goHome, handoffRemarkIds, homeEditDraft, launchProvider, pendingTerminalUrl, settings.locale, settings.shortcuts, settingsOpen, shortcutReferenceOpen, showToast, usageHistoryOpen, toggleSessionFullscreen, toggleBackgrounds, toggleDesign]);
 
   const displaySettings = useMemo(
     () => resolveDisplaySettings(settings, backgroundsSuspended, designDisabled),
     [settings, backgroundsSuspended, designDisabled]
   );
   const appearance = resolveAppearanceSettings(displaySettings);
+  useEffect(()=>{
+    const action=(event:Event):void=>{
+      const state=duoWorkspace.get().reply?.state;if(state?.role!=='host'||!state.fullCanvas||state.documentSync)return;
+      const name=(event as CustomEvent).detail;
+      if(name==='terminal'){void openTerminal();return;}
+      if(name==='home'){goHome();return;}
+      if(name==='note'){
+        const camera=cameraStore.get(),size=canvasViewportSize();
+        createStickyNote({id:crypto.randomUUID(),text:'',position:{x:(size.width/2-camera.x)/camera.zoom-150,y:(size.height/2-camera.y)/camera.zoom-110},size:{width:300,height:220}});
+      }
+    };
+    window.addEventListener('canvas-duo-action',action);return()=>window.removeEventListener('canvas-duo-action',action);
+  },[openTerminal,goHome,createStickyNote,cameraStore]);
   const rootClasses = useMemo(
     () => [
       "app",
@@ -2114,7 +2236,7 @@ export function App(): React.JSX.Element {
   }, [agentAvailability, homeEditDraft, settings, displaySettings]);
 
   return (
-    <div ref={setOverlayHost} className={rootClasses} style={rootStyle} data-app-skin={displaySettings.appSkin}>
+    <div ref={setOverlayHost} className={`${rootClasses}${duoFullCanvas?" app--duo-full":""}`} style={rootStyle} data-app-skin={displaySettings.appSkin}>
       <TerminalBorderSkinStyleHost skinId={displaySettings.terminalBorderSkin} />
       <TitleBar locale={settings.locale} windowState={windowState} onWindowStateChange={setWindowState} />
       <UsageHistoryPanel
@@ -2123,11 +2245,17 @@ export function App(): React.JSX.Element {
         container={overlayHost}
         onOpenChange={changeUsageHistoryOpen}
       />
+      {ready && <Suspense fallback={null}><CanvasDuo locale={settings.locale} onVisibilityChange={setDuoOpen} onCreateShared={() => void openTerminal()} onGoHome={goHome} onCreateNote={() => { const c=cameraStore.get(); const size={width:window.innerWidth,height:window.innerHeight}; createStickyNote({id:crypto.randomUUID(),text:"",position:{x:(size.width/2-c.x)/c.zoom-150,y:(size.height/2-c.y)/c.zoom-110},size:{width:300,height:220}}); }} /></Suspense>}
       <main className="app__content">
         {!ready && <div className="loading-screen"><span>{t(settings.locale, "loading")}</span></div>}
-        {ready && <WorkspaceCanvas
+        {ready && duoFullCanvas && duoGuest && !duoDocument && <Suspense fallback={null}><DuoCanvasSurface /></Suspense>}
+        {ready && !(duoFullCanvas && duoGuest && !duoDocument) && <WorkspaceCanvas
+          key={duoActive ? `duo-${duoView.reply?.state.workspaceId}` : "local-workspace"}
+          sharedWorkspace={duoActive}
+          sharedDocument={duoDocument}
+          terminalRuntime={terminalApi}
           surfacesMounted={surfacesMounted}
-          settings={workspaceSettings}
+          settings={duoRestricted ? { ...workspaceSettings, browserCanvas:null, pluginCanvas:[], fileCards:[], stickyNotes:[], canvasRegions:[], homeLauncherProviders:[], canvasLauncherItems:["terminal"], radialLauncherItems:["terminal","settings"] } : workspaceSettings}
           backgroundsSuspended={backgroundsSuspended || designDisabled}
           mediaData={mediaData}
           sessions={sessions}
@@ -2135,7 +2263,7 @@ export function App(): React.JSX.Element {
           limitsLoadState={limitsLoadState}
           plugins={plugins}
           browser={browser}
-          browserViewVisible={!settingsOpen && !usageHistoryOpen && !shortcutReferenceOpen && launchProvider === null && pendingTerminalUrl === null && handoffRemarkIds === null}
+          browserViewVisible={!(duoFullCanvas && duoGuest && !duoDocument) && !duoRestricted && !settingsOpen && !usageHistoryOpen && !duoOpen && !shortcutReferenceOpen && launchProvider === null && pendingTerminalUrl === null && handoffRemarkIds === null}
           homeEditing={homeEditDraft !== null}
           camera={cameraStore}
           onCameraChange={changeCamera}
@@ -2145,9 +2273,13 @@ export function App(): React.JSX.Element {
           onOpenAgent={openAgent}
           onOpenTerminal={(position) => void openTerminal(position)}
           onOpenBrowser={openBrowserFromUi}
+          onOpenExplorer={openHomeExplorer}
+          onEditHome={startHomeEditor}
+          onCancelHomeEdit={() => { setHomeEditDraft(null); isHomeCamera.current = true; setCamera(homeCamera(settings.homeGridSize)); }}
           onOpenTerminalUrl={(url) => void openTerminalUrl(url)}
           onRequestMedia={requestMedia}
           onRemoveMedia={removeMedia}
+          onHomeSettingsChange={persistSettings}
           onHomeLayoutChange={changeHomeLayout}
           onHomeGridSizeChange={changeHomeGridSize}
           onFinishHomeEdit={() => void finishHomeEditor()}
@@ -2200,6 +2332,8 @@ export function App(): React.JSX.Element {
           onChooseFileFolder={chooseFileFolder}
           onRegisterFileSession={registerFileSession}
           onOpenFileDirectory={openFileDirectory}
+          onNavigateFileFolder={navigateFileFolder}
+          onPlaceFile={placeFileOnCanvas}
           onOpenFile={openFile}
           onFileQuickOpen={quickOpenFiles}
           onOpenLink={(href) => {
@@ -2207,7 +2341,7 @@ export function App(): React.JSX.Element {
               showToast(error instanceof Error ? error.message : t(settings.locale, "browserActionFailed"));
             });
           }}
-          materials={materials.materials}
+          materials={duoRestricted ? [] : materials.materials}
           onAddMaterialFiles={addMaterialFiles}
           onPickMaterials={pickMaterials}
           onPasteMaterials={pasteMaterials}
@@ -2215,8 +2349,8 @@ export function App(): React.JSX.Element {
           onMaterialBoundsChangeBatch={materials.setBoundsBatch}
           onRemoveMaterial={removeMaterial}
           onMaterialCommand={runMaterialCommand}
-          remarks={materials.remarks}
-          handoffs={materials.snapshot.handoffs}
+          remarks={duoRestricted ? [] : materials.remarks}
+          handoffs={duoRestricted ? [] : materials.snapshot.handoffs}
           onAddRemark={addRemark}
           onRemarkAction={remarkAction}
           onSendMaterialRemarks={sendMaterialRemarks}
@@ -2362,7 +2496,7 @@ function homeCamera(homeGridSize: HomeGridSize): CameraState {
   return {
     zoom,
     x: Math.round((viewportWidth - homeSize.width * zoom) / 2),
-    y: Math.round((viewportHeight - homeSize.height * zoom) / 2)
+    y: Math.max(Math.ceil(43 * zoom + 8), Math.round((viewportHeight - homeSize.height * zoom) / 2))
   };
 }
 

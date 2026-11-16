@@ -13,7 +13,7 @@ import {
 } from "../src/renderer/src/lib/providers.ts";
 
 test("HOME terminal clicks do not pass mouse events as canvas positions", async () => {
-  const source = await readFile(new URL("../src/renderer/src/features/home/HomeZone.tsx", import.meta.url), "utf8");
+  const source = await readFile(new URL("../src/renderer/src/features/home/HomeLauncherDock.tsx", import.meta.url), "utf8");
   const handler = source.match(/<button\b[^>]*className="launcher-button launcher-button--terminal"[^>]*onClick=\{([^}]+)\}/)?.[1];
   assert.ok(handler, "HOME terminal button has a click handler");
   const calls = [];
@@ -31,9 +31,9 @@ test("stale settings keep every current agent visible in the HOME launcher", () 
 });
 
 test("the HOME launcher column count follows the buttons that are actually visible", () => {
-  assert.equal(homeLauncherColumnCount([]), 2);
-  assert.equal(homeLauncherColumnCount(["claude", "qwen", "kimi", "grok"]), 6);
-  assert.equal(homeLauncherColumnCount(AGENT_PROVIDERS), AGENT_PROVIDERS.length + 2);
+  assert.equal(homeLauncherColumnCount([]), 3);
+  assert.equal(homeLauncherColumnCount(["claude", "qwen", "kimi", "grok"]), 7);
+  assert.equal(homeLauncherColumnCount(AGENT_PROVIDERS), AGENT_PROVIDERS.length + 3);
 });
 
 test("the HOME launcher follows the persisted provider subset in canonical order", () => {

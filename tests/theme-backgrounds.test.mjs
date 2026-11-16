@@ -73,8 +73,8 @@ test("verify WorkspaceCanvas.tsx source-level wiring and background theme scopin
   // Check data-theme-background attribute is attached to workspace element
   assert.match(
     tsx,
-    /data-theme-background=\{themeBackground \?\? \(packBackground \? "custom" : undefined\)\}/,
-    "WorkspaceCanvas.tsx should attach bundled or imported theme background"
+    /data-theme-background=\{themeBackground \?\? \(packBackground \|\| isWallpaperId\(settings\.canvasBackground\) \? "custom" : undefined\)\}/,
+    "WorkspaceCanvas.tsx should scope bundled, skin-pack and standalone wallpaper backgrounds"
   );
 
   // Background rendering must use its own persisted selection.

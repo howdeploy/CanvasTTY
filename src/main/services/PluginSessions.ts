@@ -83,6 +83,8 @@ interface Subscriber {
 const MAX_OWNED_PER_PLUGIN = 16;
 const MAX_SEND_CHARS = 16_000;
 const MAX_SCREEN_CHARS = 4_000;
+/** `deliverPrompt` waits for these providers' empty composer; see `TerminalManager.deliverPrompt`. */
+const COMPOSER_CHECKED_PROVIDERS = new Set(["codex", "claude", "kimi"]);
 
 /**
  * Session events and plugin-owned session control (EP-4). A service subscribes to card events (metadata only;
@@ -90,7 +92,8 @@ const MAX_SCREEN_CHARS = 4_000;
  * pipeline (launch options and environments included), and send text to and stop only the cards it started:
  * the same ownership rule as the agent-control gateway. Ownership lives on the card's saved record, so a restored
  * card stays under the plugin that started it. With `sessions:control-any` a service may also send text to the
- * agent cards the person opened (never a plain terminal, never another plugin's card, and never stop them).
+ * Codex, Claude and Kimi cards the person opened (never a plain terminal, another plugin's card, a subagent or
+ * another provider, and never stop them).
  */
 export class PluginSessions {
   private readonly deps: PluginSessionsDependencies;
@@ -120,6 +123,13 @@ export class PluginSessions {
       case "sessions.list":
         need("sessions:events");
         return { sessions: this.summaries(pluginId, values.ownedOnly === true) };
+      case "sessions.screen": {
+        // The same redacted tail events carry, on demand: an agent that never ends its turn sends no status event.
+        need("sessions:read-screen");
+        const sessionId = typeof values.sessionId === "string" ? values.sessionId : "";
+        if (!this.summary(sessionId)) throw new Error("No such session.");
+        return { sessionId, screen: this.screen(sessionId) };
+      }
       case "sessions.create":
         need("sessions:launch");
         return this.create(pluginId, values);
@@ -281,12 +291,14 @@ export class PluginSessions {
   }
 
   /**
-   * An agent card no plugin started; plain terminals and other plugins' cards stay reachable only by their owner
-   * (a plugin's own cards go through `requireOwned`).
+   * An agent card the person opened; plain terminals, other plugins' cards and subagents (an orchestrator's chain,
+   * which no plugin owns either) stay reachable only by their owner (a plugin's own cards go through `requireOwned`).
+   * Only providers whose empty composer delivery verifies: elsewhere the person's draft would be submitted with the text.
    */
   private isPersonAgentCard(sessionId: unknown): sessionId is string {
     const context = typeof sessionId === "string" ? this.deps.terminals.pluginContext(sessionId) : null;
-    return Boolean(context && context.owner === null && context.metadata.provider !== "terminal");
+    return Boolean(context && context.owner === null && COMPOSER_CHECKED_PROVIDERS.has(context.metadata.provider)
+      && context.metadata.role !== "subagent");
   }
 
   /** A foreign or unknown id gets the same answer, so a plugin cannot probe other cards. */

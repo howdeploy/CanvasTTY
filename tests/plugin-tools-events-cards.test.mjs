@@ -301,6 +301,10 @@ test("session events carry card metadata, never screen text without sessions:rea
   terminals.applyProviderSignal?.(card.id, { kind: "lifecycle", state: "working" });
   calls[0].exit(3);
   await flush();
+  const asked = sessions.handle("p2", "svc", "sessions.screen", { sessionId: card.id }, ["sessions:read-screen"]);
+  assert.equal(asked.sessionId, card.id);
+  assert.match(asked.screen, /^compiling with \S+\n$/u);
+  assert.ok(!asked.screen.includes(SECRET), "on-demand screen text is redacted");
   terminals.dispose(card.id);
   await flush();
   const forPlugin = (pluginId) => notices.filter((notice) => notice.pluginId === pluginId).map((notice) => notice.params);
@@ -316,6 +320,9 @@ test("session events carry card metadata, never screen text without sessions:rea
   assert.match(screened.screen, /^compiling with \S+\n$/u);
   assert.ok(!screened.screen.includes(SECRET), "screen text is redacted");
   assert.ok(!screened.screen.includes("\u001b"), "screen text is plain");
+  // The same tail on demand, only with the permission and for a card that exists.
+  assert.throws(() => sessions.handle("p1", "svc", "sessions.screen", { sessionId: card.id }, ["sessions:events"]), /sessions:read-screen/u);
+  assert.throws(() => sessions.handle("p2", "svc", "sessions.screen", { sessionId: "missing" }, ["sessions:read-screen"]), /No such session/u);
   // A stopped service subscribes again when it starts.
   sessions.serviceStopped("p1", "svc");
   terminals.create({ provider: "terminal", cwd, profile: "normal", position: at });
@@ -379,16 +386,23 @@ test("sessions:control-any types into any agent card but never a plain terminal"
   const shell = terminals.create({ provider: "terminal", cwd, profile: "normal", position: at });
   const foreign = terminals.create({ provider: "codex", cwd, profile: "normal", position: at, title: "Another plugin's agent" });
   terminals.setPluginOwner(foreign.id, "p2");
+  const orchestrator = terminals.create({ provider: "claude", cwd, profile: "normal", position: at, role: "orchestrator" });
+  const subagent = terminals.create({ provider: "claude", cwd, profile: "normal", position: at, role: "subagent", parentSessionId: orchestrator.id });
+  // No composer check for this provider: the person's draft there would be submitted with the plugin's text.
+  const unguarded = terminals.create({ provider: "qwen", cwd, profile: "normal", position: at, title: "Person's qwen" });
   terminals.applyProviderSignal(agent.id, { kind: "lifecycle", state: "idle" });
   await flush();
   const control = ["sessions:control"];
   const any = ["sessions:control", "sessions:control-any"];
   // Without the permission a person's card stays out of reach.
   assert.throws(() => sessions.handle("p1", "svc", "sessions.send", { sessionId: agent.id, text: "continue" }, control), /No session this plugin started/u);
-  // control-any needs control itself, and never reaches plain terminals, other plugins' cards, unknown ids or stop.
+  // control-any needs control itself, and never reaches plain terminals, other plugins' cards, an orchestrator's
+  // subagents, cards without a composer check, unknown ids or stop.
   assert.throws(() => sessions.handle("p1", "svc", "sessions.send", { sessionId: agent.id, text: "x" }, ["sessions:control-any"]), /sessions:control/u);
-  for (const id of [shell.id, foreign.id, "missing"]) {
+  terminals.inputChecked(unguarded.id, "half-typed");
+  for (const id of [shell.id, foreign.id, subagent.id, unguarded.id, "missing"]) {
     assert.throws(() => sessions.handle("p1", "svc", "sessions.send", { sessionId: id, text: "rm -rf ." }, any), /No session this plugin started/u);
+    assert.throws(() => sessions.handle("p1", "svc", "sessions.dismiss", { sessionId: id }, any), /No session this plugin started/u);
   }
   assert.throws(() => sessions.handle("p1", "svc", "sessions.stop", { sessionId: agent.id }, any), /No session this plugin started/u);
   calls[0].print("\x1b[2J\x1b[H❯ ");
@@ -401,6 +415,8 @@ test("sessions:control-any types into any agent card but never a plain terminal"
   assert.equal((await pending).sent, true);
   assert.deepEqual(calls[1].writes, [], "the plain terminal got nothing");
   assert.deepEqual(calls[2].writes, [], "another plugin's card got nothing");
+  assert.deepEqual(calls[4].writes, [], "the subagent got nothing");
+  assert.deepEqual(calls[5].writes, ["half-typed"], "the person's qwen draft got nothing added");
 });
 
 test("sessions.dismiss presses Esc only for an idle agent menu, like agent-control dismiss", async (t) => {
@@ -432,6 +448,21 @@ test("sessions.dismiss presses Esc only for an idle agent menu, like agent-contr
   calls[0].print(`\x1b[2J\x1b[HPress Esc to cancel the build\r\n${Array.from({ length: 10 }, (_, line) => `output ${line}`).join("\r\n")}`);
   assert.equal((await sessions.handle("p1", "svc", "sessions.dismiss", { sessionId: agent.id }, any)).dismissed, false);
   assert.deepEqual(calls[0].writes, ["draft", "\x1b"]);
+  // A prompt delivery that starts while the screen is inspected keeps its paste and submit together: no Esc between.
+  calls[0].print(menu);
+  const delivery = new AbortController();
+  const dismissing = terminals.dismissIdleMenu(agent.id);
+  const prompt = terminals.deliverPrompt(agent.id, "continue", true, delivery.signal);
+  assert.match((await dismissing).reason, /changed/u);
+  delivery.abort();
+  await prompt;
+  assert.ok(!calls[0].writes.slice(2).includes("\x1b"), "no Esc was written during the delivery");
+  // A process in the plugin's own terminal has no composer check: its "Press Esc to interrupt" is not a menu.
+  const shell = terminals.create({ provider: "terminal", cwd, profile: "normal", position: at });
+  terminals.setPluginOwner(shell.id, "p1");
+  calls[1].print("\x1b[2J\x1b[Hbuilding\r\nPress Esc to interrupt");
+  assert.match((await sessions.handle("p1", "svc", "sessions.dismiss", { sessionId: shell.id }, any)).reason, /not recognized/u);
+  assert.deepEqual(calls[1].writes, []);
 });
 
 test("a plugin keeps control of the cards it started after a restore; the owner is saved on the record", async (t) => {

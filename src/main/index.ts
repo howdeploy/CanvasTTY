@@ -415,7 +415,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       },
       sessions: (pluginId, serviceId, method, params, permissions) => pluginSessions?.handle(pluginId, serviceId, method, params, permissions),
       limits: async () => {
-        if (!limitsService) throw new Error("Limits are not ready yet.");
+        // A service may ask while startup still runs; it gets the same answer a surface gets before its first snapshot.
+        if (!limitsService) return { state: "loading", snapshot: null };
         return { state: "ready", snapshot: withoutAccountScope(await limitsService.get()) };
       },
       setBadge: (pluginId, params) => {

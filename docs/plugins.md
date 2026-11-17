@@ -156,10 +156,10 @@ A service may call back this host API (the base that later extension points add 
 | `event` `{ event, data }` | notification | none | Delivered to this plugin's live surfaces through `host.service.onEvent` |
 | `redaction.register` `{ values }` | request | none | Up to 32 strings (4096 characters each, 8 or more to count) that CanvasTTY masks in every text one agent reads from another; kept in memory only |
 | `secrets.get` `{ key }` | request | `secrets` permission | The plugin's own secret (the same store as `host.secrets`), or `null`. The value is then masked like `redaction.register` values. For keys a service needs itself (an API key for a model it calls); never send one back to a surface |
-| `limits.get` | request | `limits:read` | `{ state: "ready", snapshot }`: the same account-free `LimitsSnapshot` web surfaces get (per provider windows with `usedPercent` and `resetsAt`) |
+| `limits.get` | request | `limits:read` | `{ state: "ready", snapshot }` (or `{ state: "loading", snapshot: null }` before the first one): the same account-free `LimitsSnapshot` web surfaces get (per provider windows with `usedPercent` and `resetsAt`) |
 | `sessions.subscribe` / `sessions.list` / `sessions.unsubscribe` | request | `sessions:events` | Card events and the open cards (see [Session events](#session-events-and-plugin-owned-cards-sessions)) |
 | `sessions.create` | request | `sessions:launch` | Starts a card the plugin owns |
-| `sessions.send` / `sessions.dismiss` / `sessions.stop` | request | `sessions:control` | Only for cards the plugin started; `sessions:control-any` adds send and dismiss for agent cards the person opened |
+| `sessions.send` / `sessions.dismiss` / `sessions.stop` | request | `sessions:control` | Only for cards the plugin started; `sessions:control-any` adds send and dismiss for Codex, Claude and Kimi cards the person opened (not subagents) |
 | `cards.setBadge` `{ sessionId, badge }` | request | `cards:decorate` | A short plain-text badge on any card (see [Card badges and actions](#card-badges-and-actions-cardsdecorate)) |
 
 The host binds every call to the service's own plugin; a service cannot name another plugin or read another plugin's secrets, and reaches sessions only through the `sessions:*` permissions below. The example [`service-echo`](../examples/plugins/service-echo) saves a token from its page with `host.secrets.set` and its service reads it with `secrets.get`, answering only whether one is set.
@@ -356,15 +356,15 @@ interface PluginSessionEvent {
 }
 ```
 
-Events carry metadata only. With `sessions:read-screen` (the consent text says this is private data), `status` and `exited` events add the last 4000 characters of the card's output as plain text, masked by the redaction registry. `sessions.list` returns the same summaries on demand.
+Events carry metadata only. With `sessions:read-screen` (the consent text says this is private data), `status` and `exited` events add the last 4000 characters of the card's output as plain text, masked by the redaction registry. `sessions.list` returns the same summaries on demand, and `sessions.screen` `{ sessionId }` returns `{ sessionId, screen }` with that text for one card, for an agent that ends a turn without a status change (Codex at a usage limit stays `working`).
 
 Control follows the agent-control gateway's model: the service is one controller and owns only what it created. Ownership is saved with the card's session record, so a restored card still belongs to the plugin that started it.
 
 | Request | Gate | Effect |
 |:--|:--|:--|
 | `sessions.create` `{ provider, cwd, profile?, title?, launchOptions?, environment? }` | `sessions:launch` | Starts an `agent` card through the normal launch pipeline (launch options and environments included; a refusal shows on the card). The card is visible and never takes focus. At most 16 per plugin. Answer `{ sessionId }` |
-| `sessions.send` `{ sessionId, text, submit? }` | `sessions:control` | Types the text (Enter unless `submit: false`) into a card this plugin started, or with `sessions:control-any` into an agent card the person opened. Delivery is the same staged path: it waits for an empty composer and refuses while the card needs approval. A card whose launch its plugins still prepare gets it once that launch started; `sent` is false when the launch did not start (the text is dropped) |
-| `sessions.dismiss` `{ sessionId }` | `sessions:control` | Presses Esc in a card it may send to, only when the card is idle, the person has not typed into it since its last turn, and a dismissible menu's hint is in its last lines (such as Claude's usage-limit options); `dismissed` is false otherwise and nothing is written |
+| `sessions.send` `{ sessionId, text, submit? }` | `sessions:control` | Types the text (Enter unless `submit: false`) into a card this plugin started, or with `sessions:control-any` into a Codex, Claude or Kimi card the person opened. Delivery is the same staged path: in Codex, Claude and Kimi cards it waits for an empty composer, and it refuses while the card needs approval. Other providers have no composer check, so `sessions:control-any` does not reach them: the person's draft would be submitted with the text. A card whose launch its plugins still prepare gets it once that launch started; `sent` is false when the launch did not start (the text is dropped) |
+| `sessions.dismiss` `{ sessionId }` | `sessions:control` | Presses Esc in a card it may send to, only when the card is idle, the person has not typed into it since its last turn, and a dismissible menu's hint is in its last lines (such as Claude's usage-limit options; Claude, Codex and Kimi cards only); `dismissed` is false otherwise and nothing is written |
 | `sessions.stop` `{ sessionId }` | `sessions:control` | Closes a card this plugin started; its environment data is kept |
 
 A foreign or unknown id gets the same error, so a plugin cannot probe other cards. There is no delete and no screen-reading control call.
@@ -425,10 +425,10 @@ host.onStorageChange(listener) notifies every live contribution of the same plug
 | `decision:provide` | A service's `decide` and `canvastty.decide` | Sees agents' commands and file writes (with their input) before they run and can block them or ask the person; allowing needs a second confirmation |
 | `tools:agents` | A service's `tools` and `canvastty.tools.call` | Offers tools to agents of the listed roles; receives their arguments and the calling card's summary |
 | `sessions:events` | `sessions.subscribe`, `sessions.list` | Card metadata: provider, role, parent, title, status, folders, environment ref; no screen text |
-| `sessions:read-screen` | `screen` in status and exit events | The end of every card's output (masked): private data |
+| `sessions:read-screen` | `screen` in status and exit events, `sessions.screen` | The end of every card's output (masked): private data |
 | `sessions:launch` | `sessions.create` | Starts visible agent cards through the normal launch |
 | `sessions:control` | `sessions.send`, `sessions.dismiss`, `sessions.stop` | Types into and closes only the cards the plugin started |
-| `sessions:control-any` | `sessions.send`, `sessions.dismiss` (with `sessions:control`) | Also types into agent cards the person opened; never plain terminals, other plugins' cards or `sessions.stop` |
+| `sessions:control-any` | `sessions.send`, `sessions.dismiss` (with `sessions:control`) | Also types into Codex, Claude and Kimi cards the person opened; never plain terminals, other providers, other plugins' cards, subagents or `sessions.stop`. Those agents run commands with the person's permissions, so the consent treats it as running any command |
 | `cards:decorate` | `cards.setBadge`, a service's `cardActions`, `canvastty.cards.invoke` | Plain-text badges on cards and actions in their menu |
 | `browser:engine` | A service's `browserEngine` and `canvastty.browserEngine.*` | Receives the URLs of agents' background tabs and serves them from its own engine; no cookies, profile or credentials |
 | `limits:read` | `limits.get` (surfaces and services) | The same sanitized `LimitsSnapshot` used by HOME |

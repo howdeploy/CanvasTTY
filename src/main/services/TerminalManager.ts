@@ -1018,12 +1018,16 @@ export class TerminalManager {
     const typed = (): boolean => (session.manualInputRevision ?? 0) !== (session.cleanInputRevision ?? 0);
     if (typed()) return { dismissed: false, reason: "The person typed into the card; nothing was written." };
     const provider = session.metadata.provider;
+    // Without a composer check an "Esc to interrupt" footer of a running process would read as a menu.
+    if (provider !== "claude" && provider !== "kimi" && provider !== "codex") {
+      return { dismissed: false, reason: `Menus are not recognized in ${provider} cards; nothing was written.` };
+    }
     const screen = new SessionScreen({ geometry: (target) => this.geometry(target), readBuffer: (target) => this.readBuffer(target) }, id);
     try {
       const state = await screen.inspect((terminal) => ({
         ready: provider === "claude" ? claudeTerminalComposerReady(terminal, this.claudeUnstyledComposerAllowed(id))
           : provider === "kimi" ? kimiComposerReady(terminal)
-            : provider === "codex" ? codexTerminalComposerReady(terminal, this.codexUnstyledComposerAllowed(id)) : false,
+            : codexTerminalComposerReady(terminal, this.codexUnstyledComposerAllowed(id)),
         text: terminalScreenText(terminal)
       }));
       const footer = state?.text.split("\n").filter((line) => line.trim()).slice(-DISMISS_HINT_LINES).join("\n") ?? "";
@@ -1033,7 +1037,8 @@ export class TerminalManager {
     } finally {
       screen.dispose();
     }
-    if (this.sessions.get(id) !== session || busy() || typed()) {
+    // A prompt delivery may have started during the inspection: Esc between its paste and submit would break it.
+    if (this.sessions.get(id) !== session || busy() || session.inputQueue || typed()) {
       return { dismissed: false, reason: "The card changed; nothing was written." };
     }
     return this.inputChecked(id, "\x1b", "automation") ? { dismissed: true } : { dismissed: false, reason: "The terminal no longer accepts input." };

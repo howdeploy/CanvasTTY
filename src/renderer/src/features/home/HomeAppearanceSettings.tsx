@@ -18,12 +18,12 @@ const CORE_WIDGETS: Array<{
 }> = [
   { widgetId: "core.limits", label: "modelLimits", size: { columns: 7, rows: 3 } },
   { widgetId: "core.sessions", label: "activeSessions", size: { columns: 5, rows: 3 } },
-  { widgetId: "core.clock", label: "clock", size: { columns: 9, rows: 3 } },
+  { widgetId: "core.clock", label: "clock", size: { columns: 8, rows: 5 } },
   {
     widgetId: "core.media",
     label: "personalMedia",
     description: "personalMediaDescription",
-    size: { columns: 3, rows: 3 }
+    size: { columns: 4, rows: 5 }
   },
   { widgetId: "core.launcher", label: "launcher", size: { columns: 10, rows: 2 } },
   { widgetId: "core.settings", label: "settings", size: { columns: 2, rows: 2 }, required: true }

@@ -1,3 +1,5 @@
+import { acceptDuoInvitation } from "./services/DuoInvitation";
+import { WallpaperRegistry } from "./services/WallpaperRegistry";
 import "./stdio";
 import appIcon from "../../build/icon.png?asset";
 import appManifest from "../../package.json";
@@ -15,8 +17,10 @@ import {
 } from "../shared/contracts";
 import { registerCriticalIpc, registerIpc } from "./ipc/registerIpc";
 import { IpcReadinessGate, type IpcRegistrar } from "./ipc/IpcReadinessGate";
+import { proxyDuoAsset, notifyDuoStorage } from './services/DuoDocumentService';
 import { registerUpdateIpc } from "./ipc/updateIpc";
 import { registerDiagnosticIpc } from "./ipc/diagnosticIpc";
+import { duoFailureCode } from "./services/DuoDiagnostics";
 import { DiagnosticLog } from "./services/DiagnosticLog";
 import { UpdateController, type UpdateAdapter } from "./services/updates/UpdateController";
 import { ManualReleaseAdapter } from "./services/updates/ManualReleaseAdapter";
@@ -53,6 +57,7 @@ import { PluginAgentTools } from "./services/PluginAgentTools";
 import { PluginSessions } from "./services/PluginSessions";
 import { PluginCards } from "./services/PluginCards";
 import { GithubAuthService } from "./services/GithubAuthService";
+import { PluginFileService } from "./services/PluginFileService";
 import { PluginMediaService } from "./services/PluginMediaService";
 import { MaterialService } from "./services/materials/MaterialService";
 import { HandoffService } from "./services/materials/HandoffService";
@@ -107,6 +112,17 @@ import { connectedLaunchEnvironment } from "../agent-runtime/launch-environment.
 Object.assign(process.env, connectedLaunchEnvironment(process.env));
 configureCanvasLinkStartup(app);
 
+// The separate local build keeps even a direct Finder launch on the same disk.
+const isLocalHomeLab = app.isPackaged && ["CanvasTTY Live Home Lab", "canvastty-live-home-lab"].includes(app.getName());
+const isLocalV2Lab = app.isPackaged && ["CanvasTTY 2.0 Alpha", "canvastty-v2-alpha"].includes(app.getName());
+const isLocalLab = isLocalHomeLab || isLocalV2Lab;
+if (isLocalLab && process.platform === "darwin" && !process.env.CANVASTTY_USER_DATA_DIR) {
+  const appBundle = dirname(dirname(dirname(process.execPath)));
+  // Outside electron-builder's mac-arm64 output: rebuilding must preserve media/timers.
+  process.env.CANVASTTY_USER_DATA_DIR = isLocalV2Lab
+    ? join(appBundle, "..", "..", "..", "..", "..", "profile-alpha7")
+    : join(dirname(dirname(appBundle)), "Profile");
+}
 if (process.env.CANVASTTY_USER_DATA_DIR) {
   if (!isAbsolute(process.env.CANVASTTY_USER_DATA_DIR)) throw new Error("CANVASTTY_USER_DATA_DIR must be absolute");
   app.setPath("userData", process.env.CANVASTTY_USER_DATA_DIR);
@@ -124,6 +140,7 @@ process.on("warning", warning => diagnostics.record("warn", "main", "process.war
 let diagnosticContext: () => unknown = () => ({ servicesReady: false });
 
 protocol.registerSchemesAsPrivileged([
+  { scheme: "canvastty-preview", privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } },
   {
     scheme: "canvastty-plugin",
     privileges: {
@@ -133,6 +150,10 @@ protocol.registerSchemesAsPrivileged([
       corsEnabled: true,
       stream: true
     }
+  },
+  {
+    scheme: "canvastty-files",
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true }
   },
   {
     scheme: "canvastty-media",
@@ -157,6 +178,18 @@ protocol.registerSchemesAsPrivileged([
 /** A contributed browser engine may have to start its process before it can open a tab. */
 const BROWSER_ENGINE_OPEN_TIMEOUT_MS = 20_000;
 let mainWindow: BrowserWindow | null = null;
+function receiveDuoLink(raw: unknown): void {
+  if (!acceptDuoInvitation(raw)) return;
+  const window=mainWindow;
+  if (window && !window.isDestroyed()) {
+    window.webContents.send(IPC.duoInvitation);
+    if(window.isMinimized())window.restore(); window.show(); window.focus();
+  }
+}
+app.on('open-url',(event,url)=>{event.preventDefault();receiveDuoLink(url);});
+for(const arg of process.argv)if(arg.startsWith('canvasduo://'))receiveDuoLink(arg);
+
+let filePreviewService: FileAccessService | null = null;
 let evenG2: EvenG2Controller | null = null;
 const browserRequests = new Map<string, { resolve():void; reject(error:Error):void; timer:ReturnType<typeof setTimeout> }>();
 ipcMain.on(IPC.evenG2BrowserResponse, (event, response: {requestId?:unknown;ok?:unknown}) => {
@@ -187,6 +220,7 @@ let pluginServices: PluginServiceSupervisor | null = null;
 let pluginSessions: PluginSessions | null = null;
 let pluginCards: PluginCards | null = null;
 let githubAuth: GithubAuthService | null = null;
+let pluginFileService: PluginFileService | null = null;
 let pluginMediaService: PluginMediaService | null = null;
 let materialService: MaterialService | null = null;
 let handoffService: HandoffService | null = null;
@@ -205,6 +239,7 @@ let agentRuntimeBridge: AgentRuntimeBridge | null = null;
 let agentRuntimeHelper: RuntimeHookHelperLaunch | null = null;
 let providerClis: ProviderCliRegistry | null = null;
 const pluginWindows = new Map<BrowserWindow, string>();
+const pluginWindowContributions = new WeakMap<BrowserWindow, string>();
 let servicesReady = false;
 let appSurfaceReady = false;
 let pendingMenuUpdateCheck = false;
@@ -256,6 +291,7 @@ function createWindow(): BrowserWindow {
     }
   });
   mainWindow = window;
+  if (app.isPackaged && !process.env.CANVASTTY_DUO_LAB_OUTPUT) app.setAsDefaultProtocolClient("canvasduo");
   markMainBoot("windowCreated");
   observeMainWindowState?.(window);
   appSurfaceReady = false;
@@ -362,23 +398,28 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   const settings = new SettingsStore(userDataPath, app.getLocale(), process.platform, providerCliAvailability(providerClis));
   editMenuLocale = () => settings.get().locale;
   const terminalBorderSkins = new SkinRegistry(userDataPath);
-  const pixelSkinPacks = new PixelSkinPackRegistry(userDataPath);
+  const pixelSkinPacks = new PixelSkinPackRegistry(userDataPath, app.isPackaged
+    ? join(process.resourcesPath, "live-terminal-presets")
+    : join(app.getAppPath(), "assets", "live-terminal-presets"));
+  const wallpapers = new WallpaperRegistry(userDataPath);
   pluginManager = new PluginManager(userDataPath);
-  // None of these four reads the others' state; awaiting them one after another only adds their
+  // None of these five reads the others' state; awaiting them one after another only adds their
   // latencies together before the app surface can load. They are independent, so they overlap.
   await Promise.all([
     settings.load(),
     terminalBorderSkins.initialize(),
     pixelSkinPacks.initialize(),
+    wallpapers.initialize(),
     pluginManager.load()
   ]);
   // The renderer is already loading: what its first frame reads (settings, appearance, CLI availability, installed
   // plugins, window chrome) answers from here on; every other call waits in the gate for its own service group.
-  protocol.handle("canvastty-plugin", (request) => pluginManager!.protocolResponse(request.url));
+  protocol.handle("canvastty-plugin", (request) => proxyDuoAsset(request,()=>pluginManager!.protocolResponse(request.url)));
   observeMainWindowState = registerCriticalIpc(ipc, {
     settings,
     terminalBorderSkins,
     pixelSkinPacks,
+    wallpapers,
     providerClis,
     plugins: pluginManager,
     getMainWindow: () => mainWindow
@@ -503,6 +544,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   githubAuth = new GithubAuthService(app.getPath("userData"), undefined, {
     fetcher: (input, init) => net.fetch(input, init)
   });
+  pluginFileService = new PluginFileService(app.getPath("userData"),
+    (pluginId, permission) => pluginManager!.assertPermission(pluginId, permission));
   pluginMediaService = new PluginMediaService(
     app.getPath("userData"),
     (pluginId, permission) => pluginManager!.assertPermission(pluginId, permission)
@@ -512,7 +555,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     encrypt: (value) => safeStorage.encryptString(value),
     decrypt: (value) => safeStorage.decryptString(value)
   }, (values) => redaction.add("vault", values));
-  const storesLoaded = Promise.all([githubAuth.load(), pluginMediaService.load(), providerSecretsService.load()]);
+  const storesLoaded = Promise.all([githubAuth.load(), pluginMediaService.load(), pluginFileService.load(), providerSecretsService.load()]);
   // Awaited below; a failure meanwhile must not surface as an unhandled rejection first.
   browserReady.catch(() => undefined);
   storesLoaded.catch(() => undefined);
@@ -783,7 +826,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
         ? join(process.resourcesPath, "agent-browser", WINDOWS_PIPE_HOST_FILENAME)
         : join(app.getAppPath(), "build", "windows-agent-pipe-host", WINDOWS_PIPE_HOST_FILENAME)
       : undefined;
-    const gateway = new AgentControlGateway({ userDataPath, terminals: terminalManager, pixelSkinPacks, settings,
+    const gateway = new AgentControlGateway({ userDataPath, terminals: terminalManager, pixelSkinPacks, wallpapers, settings,
       lifecycleEnabled: () => Boolean(runtimeGateway) && settings.get().agentLifecycleHooksEnabled,
       onSettingsChanged: (updated) => {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.settingsChanged, updated);
@@ -850,7 +893,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   );
   await mascotManager.initialize();
   pluginManager.registerTokenProvider(() => githubAuth!.getToken());
-  protocol.handle("canvastty-media", (request) => pluginMediaService!.protocolResponse(request));
+  protocol.handle("canvastty-files", (request) => proxyDuoAsset(request,()=>pluginFileService!.protocolResponse(request)));
+  protocol.handle("canvastty-media", (request) => proxyDuoAsset(request,()=>pluginMediaService!.protocolResponse(request)));
   // Session roots resolve the live local shell's cwd in the main process;
   // launch metadata stays unchanged and the renderer never supplies a path.
   // Folder roots come from the native dialog or a persisted folderPath on restore.
@@ -858,6 +902,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     resolveSessionCwd: (sessionId) =>
       terminalManager?.getWorkingDirectory(sessionId)
   });
+  filePreviewService = fileAccessService;
   materialService = new MaterialService({
     userDataPath: app.getPath("userData"),
     persist: () => settings.get().persistMaterials,
@@ -883,6 +928,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     getMainWindow: () => mainWindow
   });
   registerIpc(ipc, {
+    duoDiagnostic:event=>diagnostics.record(event.code ? "warn":"info","duo",event.stage,event),
+    materials:materialService,
     mascots: mascotManager,
     settings,
     recheckProviderClis: async () => {
@@ -902,6 +949,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     pluginServices,
     pluginCards,
     pluginMedia: pluginMediaService,
+    pluginFiles: pluginFileService!,
     pluginSecrets: pluginSecretsService,
     providerSecrets: providerSecretsService!,
     browser: browserService,
@@ -970,7 +1018,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
   };
   ipc.handle(IPC.evenG2State, event => { assertCompanionSender(event); return evenG2!.state(); });
   ipc.handle(IPC.evenG2Command, async (event, command) => { assertCompanionSender(event); return evenG2!.command(command); });
-  const manuallyInstalled = !app.isPackaged || (process.platform === "win32" && Boolean(process.env.PORTABLE_EXECUTABLE_FILE));
+  const manuallyInstalled = isLocalLab || !app.isPackaged || (process.platform === "win32" && Boolean(process.env.PORTABLE_EXECUTABLE_FILE));
   let updateAdapter: UpdateAdapter;
   if (manuallyInstalled || (process.platform === "darwin" && process.arch !== "arm64")) {
     updateAdapter = new ManualReleaseAdapter();
@@ -1015,7 +1063,7 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
       installedLocale = locale;
     };
   }
-  if (app.isPackaged) {
+  if (app.isPackaged && !isLocalLab) {
     updateTimer = setTimeout(() => {
       if (update.status().type !== "idle") return;
       void update.check().catch(error => console.warn("Automatic update check failed:", error));
@@ -1059,6 +1107,17 @@ async function loadApplicationSurface(window: BrowserWindow): Promise<void> {
 
 /** Test-only startup hooks (smoke runs behind env flags), once the surface and the services are up. */
 async function runStartupSmokes(window: BrowserWindow): Promise<void> {
+  if ((isLocalLab || !app.isPackaged) && process.env.CANVASTTY_DUO_LAB_OUTPUT) {
+    const { runDuoLabSmoke } = await import("./services/DuoLabSmoke");
+    await runDuoLabSmoke(window, process.env.CANVASTTY_DUO_LAB_OUTPUT,async paths=>ipcReadinessGate().invokeOwned(IPC.duoUploadFiles,{sender:window.webContents,senderFrame:window.webContents.mainFrame} as Electron.IpcMainInvokeEvent,[paths]) as Promise<string>);
+    return;
+  }
+  if ((isLocalLab || !app.isPackaged) && process.env.CANVASTTY_HOME_LAB_SMOKE_OUTPUT) {
+    const { runHomeLabSmoke } = await import("./services/HomeLabSmoke");
+    try { await runHomeLabSmoke(window, process.env.CANVASTTY_HOME_LAB_SMOKE_OUTPUT); }
+    catch (error) { console.error("CANVASTTY_HOME_LAB_FAILED", error); app.exit(1); }
+    return;
+  }
   if (process.env.CANVASTTY_SMOKE_TEST === "1") {
     await window.webContents.executeJavaScript(
       "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
@@ -1113,7 +1172,7 @@ function ipcReadinessGate(): IpcReadinessGate {
   if (ipcGate) return ipcGate;
   const ungated = new Set<string>([IPC.evenG2BrowserResponse, IPC.browserPageWheelDecision, IPC.browserPageWheel]);
   ipcGate = new IpcReadinessGate(ipcMain, {
-    onInvokeError: (channel, error) => diagnostics.record("error", "ipc", "invoke.failed", { channel, error }),
+    onInvokeError: (channel, error) => diagnostics.record("error", "ipc", "invoke.failed", channel===IPC.duoCommand ? {channel,code:duoFailureCode(error)} : { channel, error }),
     channels: Object.values(IPC).filter((channel) => !ungated.has(channel)),
     // The renderer's synchronous sends block it until they are answered: before the
     // browser service is up there is no browser to route a wheel or focus change to.
@@ -1260,8 +1319,12 @@ if (hasSingleInstanceLock) {
   void app.whenReady()
     .then(() => {
       markMainBoot("appReady");
-      protocol.handle(MATERIAL_SCHEME, (request) => materialService?.protocolResponse(request)
-        ?? Promise.resolve(textResponse("Materials are starting.", 503)));
+      // Register before creating/loading any renderer: its URLLoaderFactory snapshots
+      // custom handlers. Registering after service startup yields UNKNOWN_URL_SCHEME.
+      protocol.handle("canvastty-preview", request => proxyDuoAsset(request,()=>filePreviewService?.protocolResponse(request)
+        ?? Promise.resolve(textResponse("Files are starting.", 503))));
+      protocol.handle(MATERIAL_SCHEME, (request) => proxyDuoAsset(request,()=>materialService?.protocolResponse(request)
+        ?? Promise.resolve(textResponse("Materials are starting.", 503))));
       return startApplication();
     })
     .catch((error) => {
@@ -1283,7 +1346,8 @@ if (hasSingleInstanceLock) {
   // The rejected second launch exits silently (the lock is never released), so
   // raising the running window has to happen here — otherwise the user clicks
   // the app again and nothing at all appears to happen.
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    for(const arg of argv)if(arg.startsWith("canvasduo://"))receiveDuoLink(arg);
     const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
     if (!window) {
       // No shell window to raise: still starting (it shows its window anyway) or
@@ -1368,11 +1432,19 @@ async function shutdownServices(): Promise<void> {
   await finish("diagnostics", () => diagnostics.flush());
 }
 
-async function openPluginWindow(pluginId: string, contributionId: string): Promise<void> {
+async function openPluginWindow(pluginId: string, contributionId: string, reuse = false): Promise<void> {
   if (!pluginManager) throw new Error("Plugin manager is not ready.");
   const contribution = pluginManager.contribution(pluginId, contributionId);
   if (contribution.kind !== "window") throw new Error("Plugin contribution is not a separate window.");
 
+  if (reuse) {
+    for (const [existing, owner] of pluginWindows) {
+      if (owner === pluginId && pluginWindowContributions.get(existing) === contributionId && !existing.isDestroyed()) {
+        if (existing.isMinimized()) existing.restore();
+        existing.show(); existing.focus(); return;
+      }
+    }
+  }
   const window = new BrowserWindow({
     width: contribution.defaultSize.width,
     icon: appIcon,
@@ -1393,6 +1465,7 @@ async function openPluginWindow(pluginId: string, contributionId: string): Promi
     }
   });
   pluginWindows.set(window, pluginId);
+  pluginWindowContributions.set(window, contributionId);
   attachEditContextMenu(window.webContents, () => editMenuLocale(),
     (template, contents) => Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(contents) ?? undefined }));
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -1422,6 +1495,7 @@ function requestPluginCanvas(request: PluginCanvasRequest): void {
 }
 
 function broadcastPluginStorageChange(pluginId: string, key: string, value: unknown): void {
+  notifyDuoStorage(pluginId,key,value);
   const change = { pluginId, key, value };
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IPC.pluginsStorageChanged, change);

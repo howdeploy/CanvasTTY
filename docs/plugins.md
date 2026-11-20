@@ -13,7 +13,7 @@ Installing a plugin is equivalent to allowing third-party browser code to run lo
 - A plugin frame has an opaque sandbox origin, no access to the parent DOM, no `window.canvasTTY`, and no Node.js API.
 - The separate-window preload exposes no Node primitives. It forwards the same SDK messages through an identity-checked IPC handler.
 - Every privileged SDK method is gated by a manifest permission. Permissions are shown before the user confirms installation.
-- Sandboxed web contributions never receive provider credentials, PTY buffers, working directories, raw provider responses, or filesystem access.
+- Sandboxed web contributions never receive provider credentials, PTY buffers, working directories, raw provider responses, or unrestricted filesystem access. A `files:read` grant exposes only files inside folders selected for that plugin.
 - Disabling or uninstalling a plugin immediately stops serving its assets and closes its separate windows.
 - Declared services follow the same rule as hooks, per plugin: install never starts them, and update, module changes, disabling, or a changed entry file revokes the confirmation. Services run out of process; no plugin code runs in the CanvasTTY main process.
 - Declared agent hooks are never enabled by install, update, or module changes. Enabling one is equivalent to running that repository's JavaScript as a native application with the current user's OS privileges, access to the provider event payload, and potential access to user-readable configuration or credentials. Updating the plugin, replacing modules, or disabling the plugin revokes every enabled hook so changed code must be trusted again.
@@ -435,6 +435,7 @@ host.onStorageChange(listener) notifies every live contribution of the same plug
 | `launcher:open` | `launcher.open` | Opens the built-in provider Focus Card or terminal action; it does not bypass user launch choices |
 | `external:open` | `external.open` | Opens only an explicit HTTP(S) URL through the OS |
 | `browser:open` | `browser.open` | Opens only an explicit HTTP(S) URL in CanvasTTY's embedded Browser card and its shared browser session, including localhost |
+| `files:read` | `files.*` | Read-only browsing, text previews and media streams within folders explicitly chosen for that plugin; opaque drag handles for host terminals |
 | `media:library` | `media.*` | User-selected music folders only; absolute paths are never exposed and audio is served through seekable `canvastty-media://` streams |
 | `playlists:read` | `playlists.list`, `playlists.read` | Reads `.m3u`, `.m3u8`, and `.pls` in a granted music folder plus `.json` under its `Playlists/` directory, up to 4 MB each |
 | `playlists:write` | `playlists.write` | Atomically writes a named playlist into the granted folder's `Playlists/` directory, up to 4 MB |
@@ -555,3 +556,49 @@ Browsing and searching the showcase work without an account through GitHub's pub
 - Test canvas apps in semantic summary mode below `0.5×`.
 - Test the same SDK calls in both embedded and separate-window contributions.
 - Run CanvasTTY's `npm test`, `npm run typecheck`, and `npm run build` when contributing an example or host change.
+
+
+## File explorer and previews
+
+The `examples/plugins/file-explorer` package demonstrates `files:read`. It contributes a canvas
+explorer and a reusable separate preview window, without a native service or network permission.
+This API requires the accompanying host changes; older releases reject the new permission.
+
+```js
+const root = await host.files.pickFolder(); // Native folder picker; null on cancel.
+if (root) {
+  const page = await host.files.list(root.id, "", { showHidden: false, query: "", offset: 0 });
+  // Each page contains at most 200 entries, directories first. nextOffset is null on the last page.
+  // query filters names in the current directory, not the entire recursive tree.
+  const file = page.entries.find((entry) => entry.kind !== "directory");
+  // Assign file.streamUrl to <img>, <video> or <audio>. GET/HEAD and byte ranges are supported.
+  // In the file row's synchronous dragstart handler:
+  // event.dataTransfer.setData("application/x-canvastty-file", file.dragToken);
+}
+```
+
+`files.roots()` restores the plugin's folder grants after restart; `files.revoke(rootId)` removes
+one grant. `files.stat(rootId, relativePath)` refreshes metadata and the drag handle.
+`files.readText(rootId, relativePath)` reads at most 256 KiB, reports `truncated`, and refuses NUL
+bytes; render its content as text, never HTML. `files.reveal` shows an item in Finder, Windows
+Explorer or the Linux file manager. It does not execute the item. Symlinks are omitted from directory
+listings; paths resolving outside a granted root are rejected. Revocation, disabling and uninstalling
+prevent new reads and stream requests. Bytes already read or buffered cannot be withdrawn.
+
+Absolute paths are resolved only by the host when a person drops a valid file handle into a terminal.
+Drag handles expire after 30 minutes (refresh the directory to renew them), and resolving them
+rechecks the plugin permission, root grant and path containment. A drop uses the existing terminal
+paste mechanism and adds no newline; it does not submit a command. Path quoting follows the host
+default shell convention (POSIX on macOS/Linux, PowerShell on Windows); nested shells and cmd.exe
+may need manual quoting. This is an internal canvas drag format, not a native OS drag-out promise.
+
+The file stream scheme allows common image, audio and video MIME types, never arbitrary HTML or
+scripts. Browser codec support still applies: file extensions alone do not guarantee playback.
+For uncommon formats (including Guitar Pro files), the explorer offers the system-file-manager action.
+PDF and office-document rendering, filesystem mutations, archive extraction and transcoding are outside
+this version. The generic plugin SDK remains sandboxed and has no Node or parent DOM access.
+
+`window.open` accepts optional `reuse: true`; it focuses an existing window for the same plugin and
+contribution, restoring it if minimized. Omitting it preserves the existing new-window behavior.
+The explorer stores its preview selection in plugin storage so that the reusable window can read
+and update it through the existing storage-change event bridge.

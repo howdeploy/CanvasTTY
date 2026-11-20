@@ -24,6 +24,7 @@ function terminalKeyHandler(body, scope) {
     terminal: { hasSelection: () => false },
     ...scope
   };
+  values.terminalRuntime=scope.terminalRuntime ?? scope.window?.canvasTTY.terminal;
   return new Function(...Object.keys(values), `return (event) => {${body}}`)(...Object.values(values));
 }
 
@@ -333,7 +334,7 @@ test("terminal copy shortcuts write the xterm selection without reaching the PTY
 test("Command copy reaches a CLI-owned selection without sending Control-C", async () => {
   const source = await readFile(terminalCardPath, "utf8");
   assert.match(source, /shouldCopyTerminalSelection\(event, terminal\.hasSelection\(\) \|\| session\.provider === "codex", shortcutsRef\.current\)/);
-  assert.match(source, /if \(terminal\.hasSelection\(\)\)[\s\S]*?writeText\(terminal\.getSelection\(\)\)[\s\S]*?else if \(session\.provider === "codex"\) window\.canvasTTY\.terminal\.input\(session\.id,[\s\S]*?"\\u0003" : "\\u001b\[99;9u"\)/);
+  assert.match(source, /if \(terminal\.hasSelection\(\)\)[\s\S]*?writeText\(terminal\.getSelection\(\)\)[\s\S]*?else if \(session\.provider === "codex"\) terminalRuntime\.input\(session\.id,[\s\S]*?"\\u0003" : "\\u001b\[99;9u"\)/);
 });
 
 test("terminal paste reads the trusted clipboard bridge and uses xterm paste semantics", async () => {
@@ -342,7 +343,7 @@ test("terminal paste reads the trusted clipboard bridge and uses xterm paste sem
   assert.match(source, /window\.canvasTTY\.clipboard\.readText\(\)/);
   assert.match(source, /terminal\.paste\(text\)/);
   assert.match(source, /window\.canvasTTY\.clipboard\.hasImage\(\)/);
-  assert.match(source, /window\.canvasTTY\.terminal\.input\(session\.id, "\\u0016"\)/);
+  assert.match(source, /terminalRuntime\.input\(session\.id, "\\u0016"\)/);
 });
 
 test("terminal mouse coordinates are adapted for a transformed canvas", async () => {

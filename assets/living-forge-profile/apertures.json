@@ -1,0 +1,20 @@
+{
+  "minimal": {
+    "left": 10,
+    "right": 10,
+    "top": 20,
+    "bottom": 15.5
+  },
+  "detailed": {
+    "left": 10,
+    "right": 10,
+    "top": 20,
+    "bottom": 15.5
+  },
+  "master": {
+    "left": 10,
+    "right": 10,
+    "top": 20,
+    "bottom": 15.5
+  }
+}

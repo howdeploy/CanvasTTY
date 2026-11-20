@@ -71,6 +71,20 @@ test("pixel controls fit the artwork plaques at every detail level", () => {
   assert.deepEqual(pixelSkinArtworkBounds("pixel:custom", "master"), { x: 0, y: 0, width: 1, height: 1 });
 });
 
+test("imported control plaques fit every action even at minimum card width", () => {
+  const plaque = { left: 72, top: 10.5, width: 21.6, height: 6 };
+  for (const [width, height] of [[320, 240], [768, 512], [960, 640], [1200, 800]]) {
+    for (const count of [2, 3, 4, 5, 6]) {
+      const layout = pixelSkinControlLayout("pixel:custom", "detailed", width, height, plaque, count);
+      assert.equal(layout.left, width * .72);
+      assert.equal(layout.top, height * .105);
+      assert.ok(layout.buttonSize > 0);
+      assert.ok(layout.buttonSize * count + 4 * (count - 1) + 8 <= layout.width + 1e-8);
+      assert.ok(layout.top + layout.height < height * .2);
+    }
+  }
+});
+
 test("nine-slice keeps corner proportions and fills each resized rail", () => {
   const operations = layoutNineSliceFrame(1536, 1024, 600, 320, 220, 220);
   assert.equal(operations.length, 8);

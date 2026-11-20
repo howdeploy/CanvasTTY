@@ -1,7 +1,10 @@
+import { normalizeHomeTime } from "../../shared/homeTime.ts";
+import { normalizeDuoCursorDesign, normalizeDuoCursorNickname } from "../../shared/canvasDuo.ts";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { isWallpaperId } from "../../shared/wallpaper.ts";
 import { isHomeMediaPath } from "./homeMedia.ts";
 import { normalizeBackgroundOverrides, normalizeBackgroundPresets } from "../../shared/terminalBackgroundAppearance.ts";
 import { isTerminalBackgroundId } from "../../shared/terminalBackground.ts";
@@ -127,6 +130,7 @@ export class SettingsStore {
   private hasPersistedLegacyWheelCapture = false;
   private writeQueue = Promise.resolve();
   private persistenceError: Error | null = null;
+  private newProfile = false;
   private availableProviders: ReadonlySet<AgentProviderId>;
 
   constructor(userDataPath: string, systemLocale: string, platform: string = process.platform, availability?: AgentCliAvailability) {
@@ -281,6 +285,7 @@ export class SettingsStore {
       if (isMissingFile(error)) {
         this.persistenceError = null;
         await this.queuePersist();
+        this.newProfile = true;
       } else if (!sourceRead) {
         // Defaults may be used in memory, but never replace a source we could not read.
         // A malformed file can be replaced only after its exact contents are kept aside.
@@ -307,6 +312,10 @@ export class SettingsStore {
     return structuredClone(this.value);
   }
 
+  get isNewProfile(): boolean {
+    return this.newProfile;
+  }
+
   async setAvailableProviders(availability: AgentCliAvailability): Promise<AppSettings> {
     this.availableProviders = new Set(AGENT_PROVIDERS.filter((provider) => availability[provider]));
     // Filter in queue order: a snapshot taken while an update() is still
@@ -325,7 +334,17 @@ export class SettingsStore {
 
   async update(patch: Partial<AppSettings>): Promise<AppSettings> {
     const updatePatch = structuredClone(patch);
+    return this.enqueueUpdate(() => updatePatch);
+  }
+
+  /** Derive a patch from the state at the head of the persistence queue. */
+  async updateLatest(derive: (latest: AppSettings) => Partial<AppSettings>): Promise<AppSettings> {
+    return this.enqueueUpdate(() => derive(this.get()));
+  }
+
+  private async enqueueUpdate(derive: () => Partial<AppSettings>): Promise<AppSettings> {
     const write = this.writeQueue.catch(() => undefined).then(async () => {
+      const updatePatch = derive();
       const nextHasPersistedLegacyWheelCapture = this.hasPersistedLegacyWheelCapture
         || updatePatch.canvasWheelCaptureMode !== undefined;
       const nextPatch = updatePatch.canvasWheelCaptureMode === "key"
@@ -430,6 +449,8 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     uiScale: DEFAULT_UI_SCALE,
     canvasColor: "sage",
     canvasBackground: "none",
+    canvasBackgroundPaused: false,
+    canvasBackgroundFit: "contain",
     pattern: "dots",
     terminalBorderSkin: "classic",
     terminalBackground: "none",
@@ -483,6 +504,7 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     apiProfiles: [],
     homeGridSize: { ...DEFAULT_HOME_GRID_SIZE },
     homeLayout: structuredClone(DEFAULT_HOME_LAYOUT),
+    homeClockDesign: "classic",
     canvasRegions: [],
     stickyNotes: [],
     pluginCanvas: [],
@@ -648,7 +670,7 @@ export function normalizeSettings(
   const canvasBackgroundCandidate = source.canvasBackground === undefined
     ? source.terminalBorderSkin
     : source.canvasBackground;
-  const canvasBackground: CanvasBackgroundId = canvasBackgroundCandidate === "none"
+  const canvasBackground: CanvasBackgroundId = isWallpaperId(canvasBackgroundCandidate) || canvasBackgroundCandidate === "none"
     || (BUNDLED_CANVAS_BACKGROUND_IDS as readonly unknown[]).includes(canvasBackgroundCandidate)
     || (typeof canvasBackgroundCandidate === "string" && canvasBackgroundCandidate.startsWith("pixel:")
       && isTerminalBorderSkinId(canvasBackgroundCandidate))
@@ -695,6 +717,15 @@ export function normalizeSettings(
     uiScale: normalizeUiScale(source.uiScale, fallback.uiScale ?? DEFAULT_UI_SCALE),
     canvasColor,
     canvasBackground,
+    homeAvatarWallpaper: isWallpaperId(source.homeAvatarWallpaper) ? source.homeAvatarWallpaper : null,
+    homeClockWallpaper: isWallpaperId(source.homeClockWallpaper) ? source.homeClockWallpaper : null,
+    homeTime: normalizeHomeTime(source.homeTime),
+    homeClockDesign: source.homeClockDesign === "new" ? "new" : "classic",
+    duoCursorDesign: normalizeDuoCursorDesign(source.duoCursorDesign),
+    duoCursorNickname: normalizeDuoCursorNickname(source.duoCursorNickname),
+    homeClockFont: ["mono", "sans", "serif", "pixel"].includes(source.homeClockFont as string) ? source.homeClockFont as AppSettings["homeClockFont"] : "mono",
+    canvasBackgroundPaused: typeof source.canvasBackgroundPaused === "boolean" ? source.canvasBackgroundPaused : fallback.canvasBackgroundPaused ?? false,
+    canvasBackgroundFit: source.canvasBackgroundFit === "cover" || source.canvasBackgroundFit === "contain" ? source.canvasBackgroundFit : fallback.canvasBackgroundFit ?? "contain",
     pattern: PATTERNS.has(source.pattern as CanvasPatternId)
       ? source.pattern as CanvasPatternId
       : fallback.pattern,

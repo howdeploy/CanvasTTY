@@ -1,0 +1,4 @@
+# Only needed for image generation, decoding and animation. Byte-only packaging is stdlib.
+Pillow==13.0.0
+# Optional: animate_emissive.py (heat flow, sparks and exact technical aperture).
+numpy==2.5.5

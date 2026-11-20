@@ -479,6 +479,23 @@ export class TerminalManager {
     this.sessionRestoreMode = mode;
   }
 
+  captureWorkspaceSessions(): PersistedTerminalSession[] {
+    return [...this.sessions.values()].map(session => persistedTerminalSession(session.metadata, session.threadId, session.extras));
+  }
+
+  async restoreWorkspaceSessions(records: PersistedTerminalSession[], mode: "reopen" | "continue") {
+    const existing = new Set(this.sessions.keys());
+    // Do not resume environments, spawn duplicate processes or change a live card.
+    const missing = records.filter(record => !existing.has(record.id));
+    await this.restoreSessionRecords(missing.map(record => ({ ...record, restore: true })), mode);
+    return records.map(record => {
+      const session = this.sessions.get(record.id);
+      return { id: record.id, title: record.title,
+        state: existing.has(record.id) ? "existing" as const : session && session.metadata.exitCode === null ? "opened" as const : "stopped" as const,
+        ...(session?.metadata.failureDetails ? { detail: session.metadata.failureDetails } : {}) };
+    });
+  }
+
   async restorePersistedSessions(): Promise<void> {
     const store = this.sessionStore;
     if (!store) return;

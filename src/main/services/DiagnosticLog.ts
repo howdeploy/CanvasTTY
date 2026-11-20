@@ -40,6 +40,7 @@ export class DiagnosticLog {
 
   private redact(text: string): string {
     return this.additionalRedaction(this.secrets.redact(text))
+      .replace(/canvasduo:\/\/[A-Za-z0-9_-]+/gi, "<duo-invitation>")
       .replaceAll(this.directory, "<logs>").replaceAll(homedir(), "<home>");
   }
 
@@ -54,7 +55,7 @@ export class DiagnosticLog {
     if (value === null || typeof value === "number" || typeof value === "boolean") return value;
     if (Array.isArray(value)) return value.slice(0, 40).map(item => this.sanitize(item, depth + 1, budget));
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).slice(0, 40).map(([key, item]) => [
-      this.redact(key).slice(0, 256), /api[_-]?key|token|secret|password|authorization|cookie|^env$|prompt|messages|^args$|stdout|stderr|buffer/i.test(key)
+      this.redact(key).slice(0, 256), /api[_-]?key|token|secret|password|authorization|cookie|^key$|^hostKey$|^guestSeed$|^invites?$|^invitation$|^env$|prompt|messages|^args$|stdout|stderr|buffer/i.test(key)
         ? "<redacted>" : this.sanitize(item, depth + 1, budget)
     ]));
     return null;

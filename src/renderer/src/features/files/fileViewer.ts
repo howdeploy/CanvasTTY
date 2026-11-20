@@ -15,6 +15,7 @@ export type FileRenderKind =
   | "code"
   | "plain"
   | "image"
+  | "media"
   | "unsupported"
   | "too-large";
 
@@ -57,6 +58,7 @@ export interface FileTooLargeViewerModel {
 export type FileViewerModel =
   | FileTextViewerModel
   | FileImageViewerModel
+  | { kind: "media"; renderKind: "media"; mediaType: string; url: string; size: number; sizeLabel: string }
   | FileUnsupportedViewerModel
   | FileTooLargeViewerModel;
 
@@ -103,6 +105,7 @@ export function resolveActiveFileRead(
 
 export function classifyFileRead(result: FileReadResult, relativePath = ""): FileViewerModel {
   switch (result.kind) {
+    case "media": return { ...result, renderKind: "media", sizeLabel: formatFileSize(result.size) };
     case "text": {
       const sizeLabel = formatFileSize(result.size);
       const base = {

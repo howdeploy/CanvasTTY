@@ -1,0 +1,9 @@
+.wallpaper-workshop { display: grid; gap: 12px; width: 100%; }
+.wallpaper-workshop fieldset { display: grid; gap: 12px; border: 0; padding: 0; min-width: 0; }
+.wallpaper-workshop label { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.wallpaper-workshop input:not([type=checkbox]), .wallpaper-workshop select { max-width: 100%; min-width: 0; }
+.wallpaper-workshop__preview { position: relative; width: 100%; max-height: 300px; overflow: hidden; background: #101522; border-radius: 12px; }
+.wallpaper-workshop__preview--avatar { max-width: 220px; }
+.wallpaper-workshop__preview > .wallpaper-view { position: absolute; inset: 0; }
+.wallpaper-workshop__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.wallpaper-clock-preview { position: absolute; inset: 0; display: grid; place-items: center; color: white; font-size: clamp(32px, 7vw, 90px); font-weight: 800; pointer-events: none; }

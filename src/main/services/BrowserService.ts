@@ -1,3 +1,5 @@
+import { duoJpeg } from "./DuoCanvasSurface";
+import { validSurfaceInputs,duoKeyCode,type DuoSurfaceInput } from '../../shared/duoSurface';
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
@@ -192,7 +194,12 @@ export class BrowserService {
   private readonly observedOwners = new WeakSet<BrowserWindow>();
   private browserSession: Session | null = null;
   private browserPagePreloadId: string | null = null;
-  private activeTabId: string | null = null;
+  private currentTabId: string | null = null;
+  private get activeTabId(): string | null { return this.currentTabId; }
+  private set activeTabId(id: string | null) {
+    if (id !== this.currentTabId) this.releaseDuoDocumentInput();
+    this.currentTabId = id;
+  }
   private viewport: BrowserViewportBounds = {
     x: 0,
     y: 0,
@@ -381,6 +388,7 @@ export class BrowserService {
     this.cancelNativeHistoryGesture();
     this.invalidateCanvasSequence(false);
     this.canvasGestures.setInputFocused(false);
+    this.releaseDuoDocumentInput();
     this.visible = false;
     this.hideClipView();
     this.destroyPresenceWindow();
@@ -394,6 +402,94 @@ export class BrowserService {
     const active = this.tabs.get(this.activeTabId);
     if (!active || active.view.webContents.isDestroyed()) return;
     active.view.webContents.focus();
+  }
+
+  private duoDocumentInput: {
+    page: WebContents;
+    keys: Set<string>;
+    buttons: Set<'left' | 'middle' | 'right'>;
+    x: number;
+    y: number;
+  } | undefined;
+
+  private releaseDuoDocumentInput(): void {
+    const input = this.duoDocumentInput;
+    this.duoDocumentInput = undefined;
+    if (!input || input.page.isDestroyed()) return;
+    for (const keyCode of input.keys) input.page.sendInputEvent({ type: 'keyUp', keyCode });
+    for (const button of input.buttons) {
+      input.page.sendInputEvent({ type: 'mouseUp', x: input.x, y: input.y, button });
+    }
+  }
+
+  async duoDocumentResource(channel:string,args:unknown[],authorized:()=>boolean=()=>true):Promise<unknown>{
+    if (channel === 'browser-release') {
+      this.releaseDuoDocumentInput();
+      return null;
+    }
+    const active=this.activeTabId?this.tabs.get(this.activeTabId):undefined;
+    if(!active||active.view.webContents.isDestroyed())throw Error('Shared browser is not open.');
+    const page=active.view.webContents;
+    if(channel==='browser-frame'){
+      let image=await page.capturePage(undefined,{stayAwake:true,stayHidden:true});
+      if(image.isEmpty())throw Error('Shared browser has no frame yet.');
+      if(image.getSize().width>1000)image=image.resize({width:1000,quality:'good'});
+      return {tabId:active.id,image:duoJpeg(image)};
+    }
+    if(channel!=='browser-input'||args[0]!==active.id||!validSurfaceInputs(args[1]))throw Error('Invalid shared browser input.');
+    const bounds=active.view.getBounds();
+    for(const event of args[1] as DuoSurfaceInput[]){
+      if(!authorized())throw Error('Shared browser control was revoked.');
+      if (this.activeTabId !== active.id || this.tabs.get(active.id)?.view.webContents !== page || page.isDestroyed()) {
+        throw Error('Shared browser tab changed.');
+      }
+      if (event.type === 'release') { this.releaseDuoDocumentInput(); continue; }
+      if (this.duoDocumentInput && this.duoDocumentInput.page !== page) this.releaseDuoDocumentInput();
+      const input = this.duoDocumentInput ??= { page, keys: new Set(), buttons: new Set(), x: 0, y: 0 };
+      const modifiers=[...(('modifiers' in event?event.modifiers:[])??[])] as NonNullable<Electron.MouseInputEvent['modifiers']>;
+      if('buttons' in event){if(event.buttons!&1)modifiers.push('leftbuttondown');if(event.buttons!&2)modifiers.push('rightbuttondown');if(event.buttons!&4)modifiers.push('middlebuttondown');}
+      if(event.type==='text'){await page.insertText(event.text);continue;}
+      if(event.type==='keyDown'||event.type==='keyUp'){
+        const key=duoKeyCode(event.key)!;
+        if(event.type==='keyDown')input.keys.add(key);else input.keys.delete(key);
+        page.sendInputEvent({type:event.type,keyCode:key,modifiers});
+        if(event.type==='keyDown'&&key==='Return')page.sendInputEvent({type:'char',keyCode:'\r',modifiers});
+        continue;
+      }
+      if(!('x' in event))continue;
+      const point={x:Math.round(event.x*Math.max(1,bounds.width-1)),y:Math.round(event.y*Math.max(1,bounds.height-1)),modifiers};
+      input.x = point.x; input.y = point.y;
+      if(event.type==='mouseWheel')page.sendInputEvent({type:'mouseWheel',...point,deltaX:event.deltaX,deltaY:event.deltaY,canScroll:true});
+      else{
+        const button = event.button ?? input.buttons.values().next().value ?? 'left';
+        if (event.type === 'mouseDown') { page.focus(); input.buttons.add(button); page.sendInputEvent({ type: 'mouseMove', ...point }); }
+        page.sendInputEvent({ type: event.type, ...point, button, clickCount: event.clickCount ?? 1 });
+        if (event.type === 'mouseUp') input.buttons.delete(button);
+      }
+    }
+    return null;
+  }
+
+  /** The live native browser is part of Duo, including logged-in page state; cookies never leave this process. */
+  async duoCapture(viewport: import("../../shared/duoSurface").DuoSurfaceRect): Promise<import("../../shared/duoSurface").DuoSurfaceLayer[]> {
+    const active=this.activeTabId?this.tabs.get(this.activeTabId):undefined;
+    if(!active?.visible||active.view.webContents.isDestroyed())return [];
+    const clip=this.clipView.getBounds(),bounds=active.view.getBounds();
+    const x=Math.max(clip.x,viewport.x),y=Math.max(clip.y,viewport.y);
+    const width=Math.min(clip.x+clip.width,viewport.x+viewport.width)-x;
+    const height=Math.min(clip.y+clip.height,viewport.y+viewport.height)-y;
+    if(width<=0||height<=0)return [];
+    let image=await active.view.webContents.capturePage({x:x-clip.x-bounds.x,y:y-clip.y-bounds.y,width,height},{stayAwake:true,stayHidden:true});
+    if(image.isEmpty())return [];
+    if(image.getSize().width>1280)image=image.resize({width:1280,quality:'good'});
+    return [{x:(x-viewport.x)/viewport.width,y:(y-viewport.y)/viewport.height,width:width/viewport.width,height:height/viewport.height,image:duoJpeg(image)}];
+  }
+  duoInputTarget(x:number,y:number):{contents:WebContents;offsetX:number;offsetY:number}|null {
+    const active=this.activeTabId?this.tabs.get(this.activeTabId):undefined;
+    if(!active?.visible||active.view.webContents.isDestroyed())return null;
+    const clip=this.clipView.getBounds(),bounds=active.view.getBounds();
+    if(x<clip.x||y<clip.y||x>=clip.x+clip.width||y>=clip.y+clip.height)return null;
+    return {contents:active.view.webContents,offsetX:clip.x+bounds.x,offsetY:clip.y+bounds.y};
   }
 
   setInputFocused(focused: boolean): void {
@@ -1340,6 +1436,7 @@ export class BrowserService {
   }
 
   private destroyTab(tab: BrowserTab): void {
+    if (this.duoDocumentInput?.page === tab.view.webContents) this.releaseDuoDocumentInput();
     this.lifecycle.untrack(tab.id);
     this.lentTabs.delete(tab.id);
     this.wakingTabs.delete(tab.id);

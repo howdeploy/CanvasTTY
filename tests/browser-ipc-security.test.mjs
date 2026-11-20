@@ -2,9 +2,17 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import * as fileSystem from "node:fs/promises";
 import * as url from "node:url";
+import * as paths from "node:path";
+import * as crypto from "node:crypto";
+import * as duoDocument from "../src/shared/duoDocument.ts";
+import * as duoFiles from "../src/main/services/DuoFileTransferService.ts";
 import { runInNewContext } from "node:vm";
 import { transformSync } from "esbuild";
 import test from "node:test";
+import * as workspacePresetLayout from "../src/main/services/workspacePresetLayout.ts";
+import { WorkspacePresetStore } from "../src/main/services/WorkspacePresetStore.ts";
+import { CanvasDuoService } from "../src/main/services/CanvasDuoService.ts";
+import { tmpdir } from "node:os";
 import * as contracts from "../src/shared/contracts.ts";
 import { PluginBrowserOpenBroker } from "../src/main/ipc/PluginBrowserOpenBroker.ts";
 
@@ -29,7 +37,16 @@ async function ipcModules({ platform = process.platform, shell = {}, terminalFil
   ];
   const imports = Object.fromEntries(unusedImports.map((name) => [name, {}]));
   Object.assign(imports, {
-    electron: { shell }, "node:fs/promises": fileSystem, "node:url": url,
+    "../services/DuoInvitation": {takeDuoInvitation:()=>undefined},
+    "../services/DuoCanvasSurface": {DuoCanvasSurface:class{release(){}}},
+    "../services/DuoDocumentService": {DuoDocumentService:class{clear(){}},setDuoAssetProxy(){},setDuoStorageReceiver(){}},
+    "../services/DuoFileTransferService":duoFiles,
+    "../../shared/duoDocument":duoDocument,
+    "node:path":paths,"node:crypto":crypto,
+    electron: { shell, app: { getPath: () => tmpdir(), getVersion:()=>"1.8.7", once() {} } },
+    "../services/workspacePresetLayout": workspacePresetLayout,
+    "../services/WorkspacePresetStore": { WorkspacePresetStore },
+    "../services/CanvasDuoService": { CanvasDuoService }, "node:fs/promises": fileSystem, "node:url": url,
     "../services/terminalFileEditor": terminalFileEditor,
     "../../shared/contracts": contracts, "../../shared/contracts.ts": contracts,
     "./PluginBrowserOpenBroker": { PluginBrowserOpenBroker },
@@ -40,7 +57,7 @@ async function ipcModules({ platform = process.platform, shell = {}, terminalFil
     const { code } = transformSync(await readFile(path, "utf8"), { loader: "ts", format: "cjs", target: "es2022" });
     const module = { exports: {} };
     runInNewContext(code, {
-      module, exports: module.exports, Error, URL, Buffer, process: { platform }, console, setTimeout, clearTimeout,
+      module, exports: module.exports, Error, URL, Buffer, process: { platform,arch:"x64",env:{} }, console, setTimeout, clearTimeout,
       require(name) {
         assert.ok(Object.hasOwn(imports, name), `unexpected IPC module import: ${name}`);
         return imports[name];
@@ -89,6 +106,12 @@ test("privileged browser IPC validates the trusted main renderer", async () => {
 test("channels that change settings, plugins, secrets or terminals accept only the main renderer", async () => {
   const source = await readFile(ipcPath, "utf8");
   for (const channel of [
+    "duoCommand",
+    "duoDiagnostics",
+    "workspacePresetsList",
+    "workspacePresetsSave",
+    "workspacePresetsRestore",
+    "workspacePresetsRemove",
     "settingsUpdate",
     "mediaRead",
     "pluginsPreviewInstall",
@@ -186,6 +209,12 @@ test("registered privileged handlers refuse foreign frames before side effects",
     getMainWindow: () => window, materials: { addPaths: record("addPaths") }
   });
   const { IPC } = contracts;
+  const diagnosticHandler=handlers.get(contracts.IPC.duoDiagnostics);
+  for(const denied of [{...event,sender:{}},{...event,senderFrame:{}}])assert.throws(()=>diagnosticHandler(denied),/trusted CanvasTTY renderer/);
+  const diagnosticReport=diagnosticHandler(event);
+  assert.equal(diagnosticReport.formatVersion,1);
+  assert.equal(diagnosticReport.context.appVersion,'1.8.7');
+  assert.equal(diagnosticReport.events.length,0);
   const point = { x: 1, y: 2 };
   for (const [channel, name, args, fireAndForget] of [
     [IPC.browserNavigate, "navigate", ["tab", "https://example.test/"], false],

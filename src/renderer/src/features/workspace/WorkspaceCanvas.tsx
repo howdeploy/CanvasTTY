@@ -1,4 +1,8 @@
+import { DuoCanvasCursors } from "../duo/DuoCanvasCursors";
 import type { SettingsDestination } from "../settings/settingsNavigation";
+import { WallpaperView } from "../skins/WallpaperView";
+import { isWallpaperId } from "../../../../shared/wallpaper";
+import { SkinMediaView } from "../skins/SkinMediaView";
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { MutableRefObject } from "react";
@@ -194,6 +198,9 @@ type RegionMovePreview = {
 };
 
 interface WorkspaceCanvasProps {
+  sharedWorkspace?: boolean;
+  sharedDocument?: boolean;
+  terminalRuntime?: import("../../../../shared/contracts").CanvasTTYApi["terminal"];
   settings: AppSettings;
   backgroundsSuspended?: boolean;
   /**
@@ -219,6 +226,8 @@ interface WorkspaceCanvasProps {
   onOpenAgent(provider: AgentProviderId, position?: Point): void;
   onOpenTerminal(position?: Point): void;
   onOpenBrowser(position?: Point): void;
+  onOpenExplorer(): void;
+  onCancelHomeEdit(): void;
   onOpenTerminalUrl(url: string): void;
   onFocusSession(session: SessionSnapshot): void;
   onResumeHistory(item: AgentChatHistoryItem, position: Point): Promise<SessionSnapshot>;
@@ -234,6 +243,7 @@ interface WorkspaceCanvasProps {
   onRenameEnd(): void;
   onRequestMedia(): Promise<void>;
   onRemoveMedia(): Promise<void>;
+  onHomeSettingsChange(patch: Partial<AppSettings>): Promise<void>;
   onHomeLayoutChange(layout: HomeWidgetPlacement[]): void;
   onHomeGridSizeChange(gridSize: HomeGridSize): void;
   onFinishHomeEdit(): void;
@@ -265,6 +275,8 @@ interface WorkspaceCanvasProps {
   onChooseFileFolder(id: string): void;
   onRegisterFileSession(id: string, sessionId: string): void;
   onOpenFileDirectory(id: string, relativePath: string): void;
+  onNavigateFileFolder(id: string, path: string): void;
+  onPlaceFile(id: string, relativePath: string): void;
   onOpenFile(id: string, relativePath: string): void;
   onFileQuickOpen(id: string, query: string): void;
   onOpenLink(href: string): void;
@@ -293,10 +305,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const {
     settings, backgroundsSuspended = false, mediaData, sessions, limits, limitsLoadState, plugins, browser,
     browserViewVisible, homeEditing, camera, onCameraChange, onGoHome,
-    onOpenSettings, onOpenAgent, onOpenTerminal, onOpenBrowser, onOpenTerminalUrl, onFocusSession,
+    onOpenSettings, onOpenAgent, onOpenTerminal, onOpenBrowser, onOpenExplorer, onCancelHomeEdit, onOpenTerminalUrl, onFocusSession,
     activeSessionId, browserSelected, renamingSessionId, fullscreenSessionId, onToggleFullscreen, onSelectSession,
     onSelectBrowser, onClearCanvasSelection, onRenameSession, onRenameEnd,
-    onRequestMedia, onRemoveMedia, onHomeLayoutChange, onHomeGridSizeChange,
+    onRequestMedia, onRemoveMedia, onHomeSettingsChange, onHomeLayoutChange, onHomeGridSizeChange,
     onFinishHomeEdit, onResetHomeLayout, onPluginError, onPluginCanvasBoundsChange,
     onDisposePluginCanvas, onFocusPluginCanvas, onSessionBoundsChange,
     onRestartSession, onDisposeSession, onBrowserBoundsChange, onFocusBrowser,
@@ -305,7 +317,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
     onStickyNoteBoundsChange, onStickyNoteTextChange, onDeleteStickyNote,
     fileCardState, fileSessionOptions, onOpenFiles, onFocusFileCard, onFileCardBoundsChange,
     onCloseFileCard, onChooseFileFolder, onRegisterFileSession, onOpenFileDirectory, onOpenFile,
-    onFileQuickOpen, onOpenLink,
+    onFileQuickOpen, onOpenLink, onNavigateFileFolder, onPlaceFile,
     materials, onAddMaterialFiles, onPickMaterials, onPasteMaterials, onMaterialBoundsChange,
     onMaterialBoundsChangeBatch, onRemoveMaterial, onMaterialCommand, remarks, handoffs, onAddRemark, onRemarkAction,
     onSendMaterialRemarks, onSendAllRemarks, surfacesMounted = true
@@ -1094,9 +1106,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
 
   const themeBackground = (BUNDLED_CANVAS_BACKGROUND_IDS as readonly string[]).includes(settings.canvasBackground)
     ? settings.canvasBackground : undefined;
-  const packBackground = usePixelSkinPackAssets(
+  const backgroundPack = usePixelSkinPackAssets(
     isPixelSkinPackId(settings.canvasBackground) ? settings.canvasBackground : null
-  )?.background;
+  );
+  const packBackground = backgroundPack?.background;
+  const backgroundMedia = backgroundPack?.media.background;
 
   const getTerminalBackground = (sessionId: string) => {
     const o = settings.terminalBackgroundOverrides[sessionId];
@@ -1122,6 +1136,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const renderTerminalCard = (session: SessionSnapshot, fullscreen: boolean): React.JSX.Element => (
     <TerminalCard
       key={session.id}
+      terminalRuntime={props.terminalRuntime}
       session={withGroupNudge(terminalLayerId(session.id), session)}
       claudeCodeMcpEnabled={settings.claudeCodeMcpEnabled}
       grokAcpEnabled={settings.grokAcpEnabled}
@@ -1159,8 +1174,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   return (
     <div
       ref={viewport}
-      data-theme-background={themeBackground ?? (packBackground ? "custom" : undefined)}
-      style={packBackground ? { backgroundImage: `url("${packBackground}")` } : undefined}
+      data-theme-background={themeBackground ?? (packBackground || isWallpaperId(settings.canvasBackground) ? "custom" : undefined)}
+      style={themeBackground || packBackground ? { backgroundImage: packBackground && !backgroundMedia?.animated ? `url("${packBackground}")` : undefined, backgroundSize: settings.canvasBackgroundFit ?? "contain" } : undefined}
       className={`workspace pattern-${settings.pattern} ${pointerNavigation.panning ? "workspace--panning" : ""} ${wheelNavigation.zooming ? "workspace--zooming" : ""} ${wheelNavigation.wheelPanning ? "workspace--wheel-panning" : ""} ${canvasOverrideActive ? "workspace--canvas-override" : ""} ${autoSortMarked.size > 0 ? "workspace--auto-sorting" : ""}`}
       onPointerDownCapture={(event) => {
         if (openRadialLauncher(event)) return;
@@ -1255,6 +1270,12 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         onAddMaterialFiles(Array.from(event.dataTransfer.files), worldPoint(event.clientX, event.clientY));
       }}
     >
+      {isWallpaperId(settings.canvasBackground) && <WallpaperView id={settings.canvasBackground} className="workspace__live-background" paused={settings.canvasBackgroundPaused} />}
+      {packBackground && backgroundMedia?.animated && <SkinMediaView key={packBackground} src={packBackground}
+        media={backgroundMedia} className="workspace__live-background"
+        errorLabel={settings.locale === "ru" ? "Не удалось воспроизвести фон. Выберите другой файл в настройках оформления." : "Background playback failed. Choose another file in Appearance settings."}
+        paused={settings.canvasBackgroundPaused}
+        style={{ "--skin-background-fit": settings.canvasBackgroundFit ?? "contain" } as React.CSSProperties} />}
       <div ref={scene} className="workspace__scene">
         <div className={`workspace__regions ${homeEditing ? "workspace__windows--hidden" : ""}`} aria-hidden={homeEditing}>
           {renderedCanvasRegions.map((region) => (
@@ -1274,7 +1295,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             />
           ))}
         </div>
-        <HomeZone
+        {(!props.sharedWorkspace || props.sharedDocument) && <HomeZone
           settings={settings}
           mediaData={mediaData}
           sessions={sessions}
@@ -1286,9 +1307,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           onOpenAgent={onOpenAgent}
           onOpenTerminal={onOpenTerminal}
           onOpenBrowser={() => onOpenBrowser()}
+          onOpenExplorer={onOpenExplorer}
           onFocusSession={focusSessionFromHome}
           onRequestMedia={onRequestMedia}
           onRemoveMedia={onRemoveMedia}
+          onSettingsChange={onHomeSettingsChange}
           onLayoutChange={onHomeLayoutChange}
           onGridSizeChange={onHomeGridSizeChange}
           onPluginError={onPluginError}
@@ -1303,7 +1326,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             else focusController.cancelHover(id);
           }}
           onPluginCanvasWheel={wheelNavigation.applyCanvasWheel}
-        />
+        />}
         <div className={`workspace__windows ${homeEditing ? "workspace__windows--hidden" : ""}`} aria-hidden={homeEditing}>
           {surfacesMounted && renderedSessions
             .map((session) => (
@@ -1441,6 +1464,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                 onRegisterSession={(sessionId) => onRegisterFileSession(card.id, sessionId)}
                 onOpenDirectory={(relativePath) => onOpenFileDirectory(card.id, relativePath)}
                 onOpenFile={(relativePath) => onOpenFile(card.id, relativePath)}
+                onNavigateFolder={path => onNavigateFileFolder(card.id, path)}
+                onPlaceFile={path => onPlaceFile(card.id, path)}
                 onQuickOpen={(query) => onFileQuickOpen(card.id, query)}
                 onChangeBounds={(bounds) => onFileCardBoundsChange(card.id, bounds)}
                 onClose={() => onCloseFileCard(card.id)}
@@ -1502,10 +1527,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         />
       )}
 
+      {props.sharedWorkspace && <DuoCanvasCursors camera={camera} design={settings.duoCursorDesign}
+        nickname={settings.duoCursorNickname} locale={settings.locale} />}
       {homeEditing && (
         <div className="home-editor-toolbar" data-interactive="true">
           <strong>{t(settings.locale, "homeEditor")}</strong>
+          <button type="button" onClick={onCancelHomeEdit}>{settings.locale === "ru" ? "Отмена" : "Cancel"}</button>
           <button className="button-with-icon" type="button" onClick={onResetHomeLayout}><UiIcon name="reset" size={15} />{t(settings.locale, "resetHome")}</button>
+          {!homeLayoutValid && <span role="status" className="home-editor-toolbar__warning">{t(settings.locale, "homeLayoutOutside")}</span>}
           <button className="home-editor-toolbar__done" type="button" disabled={!homeLayoutValid}
             title={homeLayoutValid ? undefined : t(settings.locale, "homeLayoutOutside")}
             onClick={onFinishHomeEdit}>{t(settings.locale, "doneEditing")}</button>
@@ -1740,14 +1769,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
             )}
             {settings.canvasControlsPlacement === placement && (
               <div className="canvas-controls" data-interactive="true">
-                <button type="button" onClick={onGoHome} title={t(settings.locale, "home")}><UiIcon name="home" size={17} /></button>
+                <button type="button" onClick={onGoHome} aria-label={t(settings.locale, "home")} title={t(settings.locale, "home")}><UiIcon name="home" size={17} /></button>
                 <button type="button" onClick={fitCanvas} title={t(settings.locale, "fitCanvas")} aria-label={t(settings.locale, "fitCanvas")}><UiIcon name="maximize" size={17} /></button>
                 <button type="button" onClick={() => wheelNavigation.zoomBy(0.82)} title={t(settings.locale, "zoomOut")}><UiIcon name="zoom-out" size={17} /></button>
                 <button type="button" onClick={() => wheelNavigation.zoomBy(1.22)} title={t(settings.locale, "zoomIn")}><UiIcon name="zoom-in" size={17} /></button>
               </div>
             )}
             {settings.showShortcutHints && settings.shortcutHintsPlacement === placement && (
-              <aside className="shortcut-hints" aria-label={t(settings.locale, "keyboardShortcuts")}>
+              <details className="shortcut-hints" aria-label={t(settings.locale, "keyboardShortcuts")}><summary data-interactive="true">{t(settings.locale, "keyboardShortcuts")}</summary>
                 {([["home", "homeShortcut"], ["renameWindow", "renameWindow"], ["toggleFullscreen", "toggleFullscreen"],
                   ["focusUp", "keyboardFocusUp"]] as const).map(([action, label]) => (
                   <div key={action}><kbd>{displayShortcutBinding(settings.shortcuts[action], window.canvasTTY.window.isMacOS)}</kbd><span>{t(settings.locale, label)}</span></div>
@@ -1766,7 +1795,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
                   {t(settings.locale, "keyboardShortcuts")}
                   <UiIcon name="app-window" size="1.27em" />
                 </button>
-              </aside>
+              </details>
             )}
           </div>
         ))}

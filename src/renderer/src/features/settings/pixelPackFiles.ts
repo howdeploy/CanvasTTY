@@ -1,7 +1,7 @@
 import type { PixelSkinSlot } from "../../../../shared/contracts";
 
 export function pixelPackSlotForFilename(filename: string): PixelSkinSlot | null {
-  const stem = filename.toLowerCase().replace(/\.png$/, "").replace(/[\s-]+/g, "_");
+  const stem = filename.toLowerCase().replace(/\.(png|apng|gif|webp|mp4|webm)$/, "").replace(/[\s-]+/g, "_");
   if (stem === "background" || stem.endsWith("_background")) return "background";
   const match = /(?:^|_)(minimal|l1|detailed|l2|master)_(idle|working|completed|complete|done)$/.exec(stem);
   if (!match) return null;

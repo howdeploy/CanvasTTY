@@ -1,6 +1,6 @@
 import type { Point, SessionBounds, Size } from "../../../../shared/contracts";
 
-export const PIXEL_SKIN_CARD_SIZE: Size = { width: 1200, height: 800 };
+export const PIXEL_SKIN_CARD_SIZE: Size = { width: 960, height: 640 };
 // Keep the old export for consumers that used it as the initial sizing target.
 export const PIXEL_SKIN_MIN_CARD_SIZE = PIXEL_SKIN_CARD_SIZE;
 const CARD_GAP = 40;

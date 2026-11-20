@@ -38,6 +38,10 @@ asar: true
 afterPack: scripts/after-pack-updates.cjs
 asarUnpack:
   - node_modules/node-pty/**/*
+  # HyperDHT uses these lockfile-pinned native addons. The macOS bundle audit
+  # still scans every file and rejects pristine Darwin node-pty prebuilds.
+  - node_modules/sodium-native/prebuilds/**/*
+  - node_modules/udx-native/prebuilds/**/*
 # Close the remaining LoTL vectors in the packaged binary: ignore NODE_OPTIONS /
 # NODE_EXTRA_CA_CERTS and --inspect from the environment, and validate the
 # embedded asar when app.asar is loaded. Dev builds are unaffected (fuses are
@@ -74,6 +78,11 @@ electronFuses:
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true
 extraResources:
+  - from: assets/live-terminal-presets
+    to: live-terminal-presets
+    filter:
+      - catalog.json
+      - volcanic-forge.zip
   - from: native/desktop-apps
     to: desktop-apps
     filter:

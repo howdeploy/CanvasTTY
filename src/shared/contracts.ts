@@ -1,4 +1,5 @@
 import type { DesktopWindowCandidate, DesktopWindowViewport } from "./desktopWindows";
+import type { SkinMediaInfo } from "./skinMedia";
 import { CANVAS_LAUNCHER_ITEMS, PROVIDER_LABELS, isProviderId, type CanvasLauncherItemId, type ProviderId } from "./providerCatalog.ts";
 export { CANVAS_LAUNCHER_ITEMS, PROVIDER_LABELS, isProviderId };
 export type { CanvasLauncherItemId, ProviderId };
@@ -34,18 +35,26 @@ export type CanvasPatternId = "dots" | "grid" | "waves" | "diagonal" | "rings" |
 export type CustomTerminalBorderSkinId = `custom:${string}`;
 export type PixelTerminalBorderSkinId = `pixel:${string}`;
 export const BUNDLED_CANVAS_BACKGROUND_IDS = ["sakura", "matrix", "forest-cabin", "gold-black", "cat", "gothic-eclipse"] as const;
-export type CanvasBackgroundId = "none" | typeof BUNDLED_CANVAS_BACKGROUND_IDS[number] | PixelTerminalBorderSkinId;
+export type WallpaperId = `wallpaper:${string}`;
+export type ClockFont = "mono" | "sans" | "serif" | "pixel";
+export interface WallpaperRecipe { fit: "contain" | "cover"; x: number; y: number; width: number; height: number; pixelated: boolean; clockFont: ClockFont; dim: number }
+export interface WallpaperSummary { id: WallpaperId; name: string; media: SkinMediaInfo; recipe: WallpaperRecipe }
+export interface WallpaperInstallRequest { name: string; bytes: Uint8Array; recipe: WallpaperRecipe; width: number; height: number }
+export type CanvasBackgroundId = "none" | typeof BUNDLED_CANVAS_BACKGROUND_IDS[number] | PixelTerminalBorderSkinId | WallpaperId;
 export type PixelSkinPreferredDetail = "minimal" | "detailed";
 export type PixelSkinSlot = `${"minimal" | "detailed" | "master"}_${"idle" | "working" | "completed"}` | "background";
 export interface PixelSkinAperture { left: number; right: number; top: number; bottom: number }
 export type PixelSkinApertures = Record<PixelSkinPreferredDetail | "master", PixelSkinAperture>;
+/** Measured plaque rectangle in source-image percentages. */
+export interface PixelSkinControlPlaque { left: number; top: number; width: number; height: number }
+export type PixelSkinControls = Record<PixelSkinPreferredDetail | "master", PixelSkinControlPlaque>;
 export const DEFAULT_PIXEL_SKIN_APERTURES: PixelSkinApertures = {
   minimal: { left: 10, right: 10, top: 16, bottom: 16 },
   detailed: { left: 14, right: 14, top: 18, bottom: 19 },
   master: { left: 15, right: 15, top: 21, bottom: 22 }
 };
-export interface PixelSkinPackSummary { id: PixelTerminalBorderSkinId; name: string; aperture: PixelSkinAperture; apertures: PixelSkinApertures }
-export interface PixelSkinPackInstallRequest { name: string; files: Record<PixelSkinSlot, Uint8Array>; aperture?: PixelSkinAperture; apertures?: PixelSkinApertures }
+export interface PixelSkinPackSummary { media?: Partial<Record<PixelSkinSlot, SkinMediaInfo>>; id: PixelTerminalBorderSkinId; name: string; aperture: PixelSkinAperture; apertures: PixelSkinApertures; controls?: PixelSkinControls }
+export interface PixelSkinPackInstallRequest { name: string; files: Record<PixelSkinSlot, Uint8Array>; aperture?: PixelSkinAperture; apertures?: PixelSkinApertures; controls?: PixelSkinControls }
 export interface PixelSkinZipInstallRequest { name: string; archive: Uint8Array; apertures?: PixelSkinApertures }
 export type TerminalBorderSkinId = "classic" | "minimal" | "glass" | "cyber" | "nord" | "gradient" | "cybercore" | "titanium" | "retro" | "sakura" | "matrix" | "forest-cabin" | "gold-black" | "cat" | "gothic-eclipse" | CustomTerminalBorderSkinId | PixelTerminalBorderSkinId;
 /** v1 manifest uses an unprefixed plain slug; files live at the fixed skin.css path. */
@@ -165,10 +174,10 @@ export interface HomeWidgetPlacement {
 export const DEFAULT_HOME_LAYOUT: HomeWidgetPlacement[] = [
   { widgetId: "core.limits", column: 0, row: 0, columnSpan: 7, rowSpan: 3 },
   { widgetId: "core.sessions", column: 7, row: 0, columnSpan: 5, rowSpan: 3 },
-  { widgetId: "core.clock", column: 0, row: 3, columnSpan: 9, rowSpan: 3 },
-  { widgetId: "core.media", column: 9, row: 3, columnSpan: 3, rowSpan: 3 },
-  { widgetId: "core.launcher", column: 0, row: 6, columnSpan: 10, rowSpan: 2 },
-  { widgetId: "core.settings", column: 10, row: 6, columnSpan: 2, rowSpan: 2 }
+  { widgetId: "core.clock", column: 0, row: 3, columnSpan: 8, rowSpan: 5 },
+  { widgetId: "core.media", column: 8, row: 3, columnSpan: 4, rowSpan: 5 },
+  { widgetId: "core.launcher", column: 0, row: 8, columnSpan: 10, rowSpan: 2 },
+  { widgetId: "core.settings", column: 10, row: 8, columnSpan: 2, rowSpan: 2 }
 ];
 
 export interface ShortcutBindings {
@@ -509,6 +518,17 @@ export interface AppSettings {
   uiScale: number;
   canvasColor: CanvasColorId;
   canvasBackground: CanvasBackgroundId;
+  homeAvatarWallpaper?: WallpaperId | null;
+  homeClockWallpaper?: WallpaperId | null;
+  homeClockFont?: ClockFont;
+  homeClockDesign?: "classic" | "new";
+  duoCursorDesign?: import("./canvasDuo").DuoCursorDesign;
+  duoCursorNickname?: string;
+  /** Runtime only. True on the first launch of a new profile. */
+  isNewProfile?: true;
+  homeTime?: import("./homeTime.ts").HomeTimeSettings;
+  canvasBackgroundPaused: boolean;
+  canvasBackgroundFit: "contain" | "cover";
   pattern: CanvasPatternId;
   terminalBorderSkin: TerminalBorderSkinId;
   terminalBackground: import("./terminalBackground.ts").TerminalBackgroundId;
@@ -810,6 +830,8 @@ export interface MediaSelection {
 }
 
 export interface WindowState {
+  /** Native visibility remains reliable when browser background throttling is disabled. */
+  visible?: boolean;
   isMacOS: boolean;
   maximized: boolean;
   fullscreen: boolean;
@@ -828,6 +850,7 @@ export type PluginPermission =
   | "external:open"
   | "browser:open"
   | "media:library"
+  | "files:read"
   | "playlists:read"
   | "playlists:write"
   | "hermes:hud"
@@ -1263,6 +1286,20 @@ export interface PluginStorageChangeEvent {
   value: unknown;
 }
 
+export interface PluginFileRoot { id: string; name: string }
+export interface PluginFileEntry {
+  name: string;
+  relativePath: string;
+  kind: "directory" | "image" | "video" | "audio" | "text" | "file";
+  size: number;
+  modifiedAt: number;
+  mimeType: string;
+  streamUrl: string | null;
+  /** Opaque, short-lived handle consumed only by the host terminal drop handler. */
+  dragToken: string;
+}
+export interface PluginFileListing { entries: PluginFileEntry[]; total: number; nextOffset: number | null }
+
 export interface PluginMediaLibrary {
   id: string;
   name: string;
@@ -1328,12 +1365,15 @@ export interface FileEntry {
   size: number | null;
 }
 
+export interface FileLocation { label: string; path: string; kind: "home" | "desktop" | "downloads" | "disk" }
+
 export type FileReadUnsupportedReason = "binary" | "not-permitted" | "unavailable";
 
 /** Bounded, typed file content. Unsupported and oversized reads carry no bytes. */
 export type FileReadResult =
   | { kind: "text"; content: string; truncated: boolean; size: number }
   | { kind: "image"; mediaType: string; dataUrl: string; size: number }
+  | { kind: "media"; mediaType: string; url: string; size: number }
   | { kind: "unsupported"; reason: FileReadUnsupportedReason }
   | { kind: "too-large"; reason: "too-large"; size: number };
 
@@ -1904,6 +1944,13 @@ export interface DiagnosticRendererError {
 }
 
 export interface CanvasTTYApi {
+  duo: { diagnostics(): Promise<import("./duoDiagnostics").DuoDiagnosticReport>; onChanged(listener: (reply: import("./canvasDuo").DuoReply) => void): () => void; onInvitation(listener: () => void): () => void; command(command: import("./canvasDuo").DuoCommand): Promise<import("./canvasDuo").DuoReply> };
+  workspacePresets: {
+    list(): Promise<import("./workspacePresets").WorkspacePresetSummary[]>;
+    save(name: string, id?: string): Promise<void>;
+    restore(id: string, mode: "reopen" | "continue"): Promise<import("./workspacePresets").WorkspacePresetRestoreResult>;
+    remove(id: string): Promise<void>;
+  };
   mascots: {
     list(): Promise<MascotProjectSummary[]>;
     start(image: Uint8Array): Promise<MascotLaunch>;
@@ -1946,6 +1993,15 @@ export interface CanvasTTYApi {
     get(id: CustomTerminalBorderSkinId): Promise<TerminalBorderSkinReadResult>;
     onChanged(listener: () => void): () => void;
   };
+  wallpapers: {
+    list(): Promise<WallpaperSummary[]>;
+    install(request: WallpaperInstallRequest): Promise<WallpaperSummary>;
+    importPackage(bytes: Uint8Array): Promise<WallpaperSummary>;
+    read(id: WallpaperId): Promise<{ summary: WallpaperSummary; bytes: Uint8Array } | null>;
+    remove(id: WallpaperId): Promise<void>;
+    export(id: WallpaperId): Promise<Uint8Array>;
+    onChanged(listener: () => void): () => void;
+  };
   pixelSkins: {
     list(): Promise<PixelSkinPackSummary[]>;
     install(request: PixelSkinPackInstallRequest): Promise<PixelSkinPackSummary>;
@@ -1970,6 +2026,8 @@ export interface CanvasTTYApi {
     read(path: string): Promise<string | null>;
   };
   files: {
+    locations(): Promise<FileLocation[]>;
+    resolvePath(rootId: string, relativePath: string): Promise<string>;
     listRoots(): Promise<FileRootDescriptor[]>;
     /** Registers a session or folder root reference; resolves null when unavailable. */
     registerRoot(reference: FileRootReference): Promise<FileRootDescriptor | null>;
@@ -1981,6 +2039,7 @@ export interface CanvasTTYApi {
     closeRoot(rootId: string): Promise<void>;
   };
   materials: {
+    addPaths(paths: string[], point: Point): Promise<MaterialsAddResult>;
     snapshot(): Promise<MaterialsSnapshot>;
     addFiles(files: File[], point: Point): Promise<MaterialsAddResult>;
     pick(point: Point): Promise<MaterialsAddResult>;
@@ -2038,7 +2097,7 @@ export interface CanvasTTYApi {
     launchFieldOptions(pluginId: string, provider: ProviderId): Promise<PluginLaunchFieldOptions>;
     uninstall(pluginId: string): Promise<void>;
     openCanvas(pluginId: string, contributionId: string, sourceCanvasInstanceId?: string): Promise<void>;
-    openWindow(pluginId: string, contributionId: string): Promise<void>;
+    openWindow(pluginId: string, contributionId: string, reuse?: boolean): Promise<void>;
     openExternal(pluginId: string, url: string): Promise<void>;
     openBrowser(pluginId: string, url: string): Promise<void>;
     storageGet(pluginId: string, key: string): Promise<unknown>;
@@ -2046,6 +2105,8 @@ export interface CanvasTTYApi {
     secretsGet(pluginId: string, key: string): Promise<string | null>;
     secretsSet(pluginId: string, key: string, value: string): Promise<void>;
     secretsDelete(pluginId: string, key: string): Promise<void>;
+    filesRequest(pluginId: string, method: string, params?: Record<string, unknown>): Promise<unknown>;
+    fileDropText(token: string): Promise<string>;
     mediaPickLibrary(pluginId: string): Promise<PluginMediaLibrary | null>;
     mediaListLibraries(pluginId: string): Promise<PluginMediaLibrary[]>;
     mediaScanLibrary(pluginId: string, libraryId: string): Promise<PluginMediaTrack[]>;
@@ -2109,7 +2170,7 @@ export interface CanvasTTYApi {
   terminal: {
     openFile(id: string, reference: string): Promise<void>;
     canOpenFile(id: string, reference: string): Promise<boolean>;
-    fileDropText(files: File[]): string;
+    fileDropText(files: File[]): string | Promise<string>;
     list(): Promise<SessionSnapshot[]>;
     readBuffer(id: string): Promise<TerminalBufferSnapshot>;
     create(request: CreateSessionRequest): Promise<SessionSnapshot>;
@@ -2149,6 +2210,15 @@ export interface CanvasTTYApi {
 }
 
 export const IPC = {
+  duoDiagnostics: "canvas-duo:diagnostics",
+  duoCommand: "canvas-duo:command",
+  duoInvitation: "canvas-duo:invitation",
+  duoChanged: "canvas-duo:changed",
+  duoUploadFiles: "canvas-duo:upload-files",
+  workspacePresetsList: "workspace-presets:list",
+  workspacePresetsSave: "workspace-presets:save",
+  workspacePresetsRestore: "workspace-presets:restore",
+  workspacePresetsRemove: "workspace-presets:remove",
   pluginsDesktopWindows: "plugins:desktop-windows",
   pluginsDesktopWindowFocus: "plugins:desktop-window-focus",
   mascotsList: "mascots:list",
@@ -2172,6 +2242,13 @@ export const IPC = {
   terminalBorderSkinsList: "terminal-border-skins:list",
   terminalBorderSkinsGet: "terminal-border-skins:get",
   terminalBorderSkinsChanged: "terminal-border-skins:changed",
+  wallpapersList: "wallpapers:list",
+  wallpapersInstall: "wallpapers:install",
+  wallpapersImport: "wallpapers:import",
+  wallpapersRead: "wallpapers:read",
+  wallpapersRemove: "wallpapers:remove",
+  wallpapersExport: "wallpapers:export",
+  wallpapersChanged: "wallpapers:changed",
   pixelSkinsList: "pixel-skins:list",
   pixelSkinsInstall: "pixel-skins:install",
   pixelSkinsInstallZip: "pixel-skins:install-zip",
@@ -2181,6 +2258,8 @@ export const IPC = {
   dialogPickMedia: "dialog:pick-media",
   mediaRead: "media:read",
   filesListRoots: "files:list-roots",
+  filesLocations: "files:locations",
+  filesResolvePath: "files:resolve-path",
   filesRegisterRoot: "files:register-root",
   filesOpenFolder: "files:open-folder",
   filesList: "files:list",
@@ -2243,6 +2322,8 @@ export const IPC = {
   providerSecretsClear: "provider-secrets:clear",
   pluginsSecretsSet: "plugins:secrets-set",
   pluginsSecretsDelete: "plugins:secrets-delete",
+  pluginsFilesRequest: "plugins:files-request",
+  pluginsFileDropText: "plugins:file-drop-text",
   pluginsMediaPickLibrary: "plugins:media-pick-library",
   pluginsMediaListLibraries: "plugins:media-list-libraries",
   pluginsMediaScanLibrary: "plugins:media-scan-library",

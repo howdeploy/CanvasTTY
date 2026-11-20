@@ -1,10 +1,24 @@
+import { takeDuoInvitation } from "../services/DuoInvitation";
 import { registerDesktopWindowIpc } from "./desktopWindowIpc";
+import { capturePresetLayout, mergePresetLayout } from "../services/workspacePresetLayout";
+import { DuoCanvasSurface } from "../services/DuoCanvasSurface";
+import { DuoDocumentService, setDuoAssetProxy, setDuoStorageReceiver } from '../services/DuoDocumentService';
+import { DuoFileTransferService, sendDuoFiles } from '../services/DuoFileTransferService';
+import { duoSettingsOps, pickDuoSettings } from '../../shared/duoDocument';
+import { randomUUID } from 'node:crypto';
+import { basename, dirname, join } from 'node:path';
+import type { MaterialService } from '../services/materials/MaterialService';
+import { CanvasDuoService } from "../services/CanvasDuoService";
+import type { DuoCommand } from "../../shared/canvasDuo";
+import { WorkspacePresetStore } from "../services/WorkspacePresetStore";
 import { registerLinuxDesktopWindowIpc } from "./linuxDesktopWindowIpc";
 import { realpath } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, clipboard, dialog, shell } from "electron";
 import type { IpcMainEvent, IpcMainInvokeEvent, OpenDialogOptions, WebContents } from "electron";
 import type {
+  WallpaperId,
+  WallpaperInstallRequest,
   AppSettings,
   AgentChatHistoryProviderId,
   AgentCliAvailability,
@@ -40,6 +54,7 @@ import type { PluginManager } from "../services/PluginManager";
 import type { MascotManager } from "../services/MascotManager";
 import type { PluginServiceSupervisor } from "../services/PluginServiceSupervisor";
 import type { PluginCards } from "../services/PluginCards";
+import type { PluginFileService } from "../services/PluginFileService";
 import type { PluginMediaService } from "../services/PluginMediaService";
 import type { PluginSecretsService } from "../services/PluginSecretsService";
 import type { ProviderSecretsService } from "../services/ProviderSecretsService";
@@ -51,6 +66,7 @@ import { PluginBrowserOpenBroker } from "./PluginBrowserOpenBroker";
 import type { GithubAuthService } from "../services/GithubAuthService";
 import type { HermesHudService } from "../services/HermesHudService";
 import { normalizeExternalUrl } from "../../shared/externalUrl";
+import type { WallpaperRegistry } from "../services/WallpaperRegistry";
 import { readHomeMedia } from "../services/homeMedia";
 import { canOpenTerminalFile, resolveTerminalFilePath } from "../services/terminalFileEditor";
 
@@ -58,12 +74,15 @@ interface CriticalDependencies {
   settings: SettingsStore;
   terminalBorderSkins: SkinRegistry;
   pixelSkinPacks: PixelSkinPackRegistry;
+  wallpapers: WallpaperRegistry;
   providerClis: ProviderCliRegistry;
   plugins: PluginManager;
   getMainWindow(): BrowserWindow | null;
 }
 
 interface Dependencies {
+  duoDiagnostic?:(event:import("../../shared/duoDiagnostics").DuoDiagnosticEvent)=>void;
+  materials:MaterialService;
   mascots: MascotManager;
   settings: SettingsStore;
   recheckProviderClis(): Promise<{ availability: AgentCliAvailability; settings: AppSettings }>;
@@ -75,6 +94,7 @@ interface Dependencies {
   pluginServices: PluginServiceSupervisor;
   pluginCards: PluginCards;
   pluginMedia: PluginMediaService;
+  pluginFiles: PluginFileService;
   pluginSecrets: PluginSecretsService;
   providerSecrets: ProviderSecretsService;
   browser: BrowserService;
@@ -87,7 +107,7 @@ interface Dependencies {
   setCanvasNavigationShortcutCapture(active: boolean): void;
   setCanvasNavigationTerminalEditFocus(contents: WebContents, active: boolean): void;
   setCanvasNavigationPointerBinding(input: CanvasNavigationPointerBindingInput): void;
-  openPluginWindow(pluginId: string, contributionId: string): Promise<void>;
+  openPluginWindow(pluginId: string, contributionId: string, reuse?: boolean): Promise<void>;
   closePluginWindows(pluginId: string): void;
   requestPluginLauncher(provider: ProviderId): void;
   requestPluginCanvas(request: PluginCanvasRequest): void;
@@ -103,6 +123,7 @@ export function registerCriticalIpc(ipcMain: IpcRegistrar, {
   settings,
   terminalBorderSkins,
   pixelSkinPacks,
+  wallpapers,
   providerClis,
   plugins,
   getMainWindow
@@ -135,7 +156,8 @@ export function registerCriticalIpc(ipcMain: IpcRegistrar, {
   });
   ipcMain.handle(IPC.settingsGet, (event) => {
     assertMainRenderer(event, getMainWindow);
-    return settings.get();
+    const snapshot = settings.get();
+    return settings.isNewProfile ? { ...snapshot, isNewProfile: true } : snapshot;
   });
   ipcMain.handle(IPC.terminalBorderSkinsList, (event) => {
     assertMainRenderer(event, getMainWindow);
@@ -170,6 +192,16 @@ export function registerCriticalIpc(ipcMain: IpcRegistrar, {
   pixelSkinPacks.onChanged(() => {
     const window = getMainWindow();
     if (window && !window.isDestroyed()) window.webContents.send(IPC.pixelSkinsChanged);
+  });
+  ipcMain.handle(IPC.wallpapersList, (event, _argument: unknown) => { assertMainRenderer(event, getMainWindow); return wallpapers.list(); });
+  ipcMain.handle(IPC.wallpapersInstall, (event, request: WallpaperInstallRequest) => { assertMainRenderer(event, getMainWindow); return wallpapers.install(request); });
+  ipcMain.handle(IPC.wallpapersImport, (event, bytes: Uint8Array) => { assertMainRenderer(event, getMainWindow); return wallpapers.importPackage(bytes); });
+  ipcMain.handle(IPC.wallpapersRead, (event, id: WallpaperId) => { assertMainRenderer(event, getMainWindow); return wallpapers.read(id); });
+  ipcMain.handle(IPC.wallpapersRemove, (event, id: WallpaperId) => { assertMainRenderer(event, getMainWindow); return wallpapers.remove(id); });
+  ipcMain.handle(IPC.wallpapersExport, (event, id: WallpaperId) => { assertMainRenderer(event, getMainWindow); return wallpapers.export(id); });
+  wallpapers.onChanged(() => {
+    const window = getMainWindow();
+    if (window && !window.isDestroyed()) window.webContents.send(IPC.wallpapersChanged);
   });
   ipcMain.handle(IPC.agentsAvailability, (event) => {
     assertMainRenderer(event, getMainWindow);
@@ -209,6 +241,8 @@ export function registerCriticalIpc(ipcMain: IpcRegistrar, {
 }
 
 export function registerIpc(ipcMain: IpcRegistrar, {
+  duoDiagnostic,
+  materials,
   mascots,
   settings,
   recheckProviderClis,
@@ -220,6 +254,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   pluginServices,
   pluginCards,
   pluginMedia,
+  pluginFiles,
   pluginSecrets,
   providerSecrets,
   browser,
@@ -275,6 +310,107 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     plugins.assertPermission(pluginId, "browser:open");
     await pluginBrowserOpenBroker.request(pluginId, normalizePluginBrowserUrl(value));
   };
+
+  const transfers=new DuoFileTransferService(join(app.getPath('userData'),'Duo Imports'));
+  const document=new DuoDocumentService(settings,async(channel,args)=>{
+    const window=getMainWindow();if(!window||window.isDestroyed()||!ipcMain.invokeOwned)throw Error('Canvas is not available.');
+    return ipcMain.invokeOwned(channel,{sender:window.webContents,senderFrame:window.webContents.mainFrame} as IpcMainInvokeEvent,args);
+  },async request=>{
+    const scheme=new URL(request.url).protocol;
+    if(scheme==='canvastty-preview:')return files.protocolResponse(request);
+    if(scheme==='canvastty-material:')return materials.protocolResponse(request);
+    if(scheme==='canvastty-plugin:')return plugins.protocolResponse(request.url);
+    if(scheme==='canvastty-files:')return pluginFiles.protocolResponse(request);
+    if(scheme==='canvastty-media:')return pluginMedia.protocolResponse(request);
+    throw Error('Unsupported Canvas resource.');
+  },next=>getMainWindow()?.webContents.send(IPC.settingsChanged,next),async(channel,args,allowed)=>browser.duoDocumentResource(channel,args,allowed),transfers);
+  setDuoStorageReceiver((id,key,value)=>document.storageChanged(id,key,value));
+  const duo = new CanvasDuoService(terminals,{onDiagnostic:duoDiagnostic,cwd:app.getPath('home'),surface:new DuoCanvasSurface(getMainWindow,browser),document,
+    files:{
+      canOpen:async(id,reference)=>{const session=terminals.getMetadata(id);return session?canOpenTerminalFile(reference,session.cwd):false;},
+      open:async(id,reference,authorized)=>{
+        const session=terminals.getMetadata(id);if(!session)throw Error('Terminal session does not exist.');
+        const path=await resolveTerminalFilePath(reference,session.cwd), folderPath=dirname(path), current=settings.get();
+        const card={id:randomUUID(),root:{rootType:'folder' as const,folderPath},label:basename(folderPath),folderPath,activeFile:basename(path),expandedFolders:[],position:{x:session.position.x+60,y:session.position.y+60},size:{width:780,height:520}};
+        await document.edit(duoSettingsOps(pickDuoSettings(current),{fileCards:[...current.fileCards,card]}),authorized);
+      }
+    },
+    onChanged:reply=>{const window=getMainWindow();if(window&&!window.isDestroyed()&&!window.webContents.isDestroyed())window.webContents.send(IPC.duoChanged,reply);},
+    ...(process.env.CANVASTTY_DUO_LAB_OUTPUT&&process.env.CANVASTTY_DUO_LAB_PUBLIC_ONLY==='1'?{peerOptions:{localConnection:false,shareLocalAddress:false}}:{})});
+  setDuoAssetProxy(async request=>{
+    if(duo.state().role!=='guest'||!duo.state().documentSync)return null;
+    const call=async(channel:string,args:unknown[])=>{
+      const reply=await duo.command({action:'resource',channel,args});return reply.snapshot?.result as any;
+    };
+    try{
+      let part=await call('protocol',[request.url,request.headers.get('range')]);let value:any;
+      if(part.chunk){let text=part.data;while(text.length<part.total){part=await call('chunk',[part.chunk,text.length]);text+=part.data;}value=JSON.parse(text);}else value=part.value;
+      return new Response(Buffer.from(value.body,'base64'),{status:value.status,headers:value.headers});
+    }catch{return new Response('Shared asset unavailable.',{status:503});}
+  });
+  app.once("before-quit", () => { void duo.stop(); });
+  ipcMain.handle(IPC.duoDiagnostics, event => {
+    assertMainRenderer(event, getMainWindow);
+    return {...duo.diagnosticReport(),context:{appVersion:app.getVersion(),platform:process.platform,arch:process.arch}};
+  });
+  ipcMain.handle(IPC.duoCommand, (event, command: DuoCommand) => {
+    assertMainRenderer(event, getMainWindow);
+    if (command?.action === 'invitation') return {state:duo.state(),invitation:takeDuoInvitation()};
+    return duo.command(command);
+  });
+  ipcMain.handle(IPC.duoUploadFiles, async(event,paths:unknown)=>{
+    assertMainRenderer(event,getMainWindow);
+    const workspace=duo.state().workspaceId;
+    const authorized=()=>{const state=duo.state();return state.role==='guest'&&state.status==='connected'&&state.manage===true&&state.documentSync===true&&state.workspaceId===workspace;};
+    return sendDuoFiles(paths,async args=>{
+      if(!authorized())throw Error('Duo: connection or permission changed.');
+      const reply=await duo.command({action:'resource',channel:'file-upload',args});
+      return (reply.snapshot?.result as {value?:unknown})?.value;
+    },authorized);
+  });
+
+  const workspacePresets = new WorkspacePresetStore(app.getPath("userData"));
+  let presetRestoreQueue: Promise<unknown> = Promise.resolve();
+  ipcMain.handle(IPC.workspacePresetsList, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    return workspacePresets.list();
+  });
+  ipcMain.handle(IPC.workspacePresetsSave, (event, name: unknown, id?: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    return workspacePresets.save(name, terminals.captureWorkspaceSessions(), id, capturePresetLayout(settings.get(), browser.getState().tabs.map(tab => tab.url)));
+  });
+  ipcMain.handle(IPC.workspacePresetsRemove, (event, id: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    return workspacePresets.remove(id);
+  });
+  ipcMain.handle(IPC.workspacePresetsRestore, (event, id: unknown, mode: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    if (mode !== "reopen" && mode !== "continue") throw new Error("Invalid workspace restore mode.");
+    const next = presetRestoreQueue.catch(() => undefined).then(async () => {
+      const preset = await workspacePresets.get(id);
+      const cards = await terminals.restoreWorkspaceSessions(preset.sessions, mode);
+      let added = 0;
+      const nextSettings = await settings.updateLatest(latest => {
+        const merged = mergePresetLayout(latest, preset.layout);
+        added = merged.added;
+        return merged.patch;
+      });
+      agentChatHistory.settingsChanged();
+      getMainWindow()?.webContents.send(IPC.settingsChanged, nextSettings);
+      await applyBrowserSettings(nextSettings);
+      const urls = new Set(browser.getState().tabs.map(tab => tab.url));
+      let browserTabsOpened = 0;
+      const failures: string[] = [];
+      for (const url of preset.layout.browserUrls) {
+        if (urls.has(url)) continue;
+        try { await browser.newTab(url); urls.add(url); browserTabsOpened++; }
+        catch (error) { failures.push(`${url}: ${error instanceof Error ? error.message : "Could not open tab"}`); }
+      }
+      return { name: preset.name, cards, surfaces: { added, browserTabsOpened, failures } };
+    });
+    presetRestoreQueue = next;
+    return next;
+  });
 
   ipcMain.handle(IPC.agentsRecheck, (event) => {
     assertMainRenderer(event, getMainWindow);
@@ -347,7 +483,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     const options: OpenDialogOptions = {
       title: "Choose Home media",
       properties: ["openFile"],
-      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }]
+      filters: [{ name: "Images", extensions: ["png", "apng", "jpg", "jpeg", "webp", "gif"] }]
     };
     const result = owner
       ? await dialog.showOpenDialog(owner, options)
@@ -374,6 +510,15 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   ipcMain.handle(IPC.filesListRoots, (event) => {
     assertMainRenderer(event, getMainWindow);
     return files.listRoots();
+  });
+
+  ipcMain.handle(IPC.filesLocations, event => {
+    assertMainRenderer(event, getMainWindow);
+    return files.locations();
+  });
+  ipcMain.handle(IPC.filesResolvePath, (event, rootId: unknown, relativePath: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    return files.resolvePath(stringValue(rootId, "rootId"), fileRelativePath(relativePath));
   });
   ipcMain.handle(IPC.filesRegisterRoot, async (event, reference: unknown) => {
     assertMainRenderer(event, getMainWindow);
@@ -561,12 +706,15 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     // media grant after they are revoked. A failed uninstall keeps the plugin's secrets.
     // A media folder pick still open refuses to store its grant while this runs (and after, the plugin is gone).
     pluginMedia.beginRemoval(pluginId);
+    pluginFiles.beginRemoval(pluginId);
     try {
       await plugins.uninstall(pluginId);
       await pluginSecrets.revokeAll(pluginId);
       await pluginMedia.revokeAll(pluginId);
+      await pluginFiles.revokeAll(pluginId);
     } finally {
       pluginMedia.endRemoval(pluginId);
+      pluginFiles.endRemoval(pluginId);
     }
     pluginServices.forget(pluginId);
   });
@@ -587,9 +735,9 @@ export function registerIpc(ipcMain: IpcRegistrar, {
         : {})
     });
   });
-  ipcMain.handle(IPC.pluginsOpenWindow, (event, pluginId: string, contributionId: string) => {
+  ipcMain.handle(IPC.pluginsOpenWindow, (event, pluginId: string, contributionId: string, reuse?: boolean) => {
     assertMainRenderer(event, getMainWindow);
-    return openPluginWindow(pluginId, contributionId);
+    return openPluginWindow(pluginId, contributionId, reuse === true);
   });
   ipcMain.handle(IPC.pluginsOpenExternal, async (event, pluginId: string, value: string) => {
     assertMainRenderer(event, getMainWindow);
@@ -633,6 +781,37 @@ export function registerIpc(ipcMain: IpcRegistrar, {
   ipcMain.handle(IPC.providerSecretsClear, (event, secretId: string) => {
     assertMainRenderer(event, getMainWindow);
     return providerSecrets.delete(providerSecretValue(secretId));
+  });
+  const requestPluginFiles = async (event: IpcMainInvokeEvent, pluginId: string, method: string, input: unknown): Promise<unknown> => {
+    plugins.assertPermission(pluginId, "files:read");
+    const params = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+    if (method === "files.roots") return pluginFiles.roots(pluginId);
+    if (method === "files.pickFolder") {
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      const options: OpenDialogOptions = { title: "Choose a folder for the file explorer", properties: ["openDirectory"] };
+      const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+      if (result.canceled || !result.filePaths[0]) return null;
+      return pluginFiles.addRoot(pluginId, result.filePaths[0]);
+    }
+    const rootId = stringValue(params.rootId, "rootId");
+    const relativePath = (params.relativePath === undefined || params.relativePath === "") ? "" : stringValue(params.relativePath, "relativePath");
+    if (method === "files.list") return pluginFiles.list(pluginId, rootId, relativePath, params);
+    if (method === "files.stat") return pluginFiles.entry(pluginId, rootId, relativePath);
+    if (method === "files.readText") return pluginFiles.readText(pluginId, rootId, relativePath);
+    if (method === "files.reveal") {
+      shell.showItemInFolder(await pluginFiles.revealPath(pluginId, rootId, relativePath));
+      return null;
+    }
+    if (method === "files.revoke") { await pluginFiles.revoke(pluginId, rootId); return null; }
+    throw new Error("Unknown plugin file method.");
+  };
+  ipcMain.handle(IPC.pluginsFilesRequest, (event, pluginId: string, method: string, params: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    return requestPluginFiles(event, pluginId, method, params);
+  });
+  ipcMain.handle(IPC.pluginsFileDropText, (event, token: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    return pluginFiles.dropText(stringValue(token, "token"));
   });
   ipcMain.handle(IPC.pluginsMediaPickLibrary, (event, pluginId: string) => {
     assertMainRenderer(event, getMainWindow);
@@ -781,6 +960,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
       await requestPluginBrowserOpen(pluginId, values.url);
       return null;
     }
+    if (method.startsWith("files.")) return requestPluginFiles(event, pluginId, method, values);
     if (method === "media.pickLibrary") {
       return pickPluginMediaLibrary(event, pluginId, plugins, pluginMedia);
     }
@@ -815,7 +995,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
       const targetId = stringValue(values.contributionId, "contributionId");
       const target = plugins.contribution(pluginId, targetId);
       if (target.kind !== "window") throw new Error("Plugin requested an unknown window contribution.");
-      await openPluginWindow(pluginId, targetId);
+      await openPluginWindow(pluginId, targetId, values.reuse === true);
       return null;
     }
     if (method === "canvas.open") {

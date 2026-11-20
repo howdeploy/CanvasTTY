@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Canvas Files</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="canvastty-plugin://host/sdk.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div id="app" class="explorer">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">▱</span><span>Canvas <b>Files</b></span></div>
+      <div class="section-label" data-i18n="places">FOLDERS</div>
+      <nav id="roots" aria-label="Folders"></nav>
+      <button id="add-folder" class="add-folder" data-i18n="addFolder">＋ Add folder</button>
+      <div class="sidebar-foot"><span class="status-dot"></span><span data-i18n="local">Local files</span></div>
+    </aside>
+    <main class="main">
+      <header class="toolbar">
+        <div class="navigation">
+          <button id="back" class="icon-button" aria-label="Back" data-title="back">←</button>
+          <button id="forward" class="icon-button" aria-label="Forward" data-title="forward">→</button>
+          <button id="up" class="icon-button" aria-label="Parent folder" data-title="up">↑</button>
+        </div>
+        <div id="breadcrumbs" class="breadcrumbs"></div>
+        <button id="refresh" class="icon-button" aria-label="Refresh" data-title="refresh">↻</button>
+      </header>
+      <div class="subtoolbar">
+        <label class="search"><span>⌕</span><input id="search" type="search" autocomplete="off" placeholder="Filter this folder" aria-label="Filter this folder"></label>
+        <label class="hidden-toggle"><input id="hidden" type="checkbox"><span data-i18n="hidden">Hidden</span></label>
+        <div class="view-switch" role="group" aria-label="View">
+          <button id="list-view" class="icon-button active" aria-label="List view" data-title="list">☰</button>
+          <button id="grid-view" class="icon-button" aria-label="Grid view" data-title="grid">▦</button>
+        </div>
+      </div>
+      <div id="error" class="error" role="alert" hidden></div>
+      <div class="workspace">
+        <section id="browser" class="browser" aria-label="Files">
+          <div class="column-head"><span data-i18n="name">Name</span><span data-i18n="size">Size</span></div>
+          <div id="entries" class="entries" role="listbox" aria-label="Files" tabindex="0"></div>
+          <button id="more" class="more" hidden data-i18n="more">Load more</button>
+          <div id="empty" class="empty"><div class="empty-symbol">▱</div><h1 data-i18n="welcome">Your files. On the canvas.</h1><p data-i18n="chooseHint">Add a folder to browse, preview and drag files into a terminal.</p><button id="choose-first" class="primary" data-i18n="chooseFolder">Choose folder</button></div>
+        </section>
+        <aside id="preview" class="preview" aria-label="File preview"></aside>
+      </div>
+      <footer><span id="count"></span><span id="hint" data-i18n="dragHint">Drag a file into a terminal to insert its path</span></footer>
+    </main>
+  </div>
+</body>
+</html>

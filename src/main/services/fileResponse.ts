@@ -6,11 +6,13 @@ export async function streamFile(
   request: Request,
   path: string,
   mimeType: string,
-  extraHeaders: Readonly<Record<string, string>> = {}
+  extraHeaders: Readonly<Record<string, string>> = {},
+  validate?: (handle: FileHandle) => Promise<void>
 ): Promise<Response> {
   const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   let streaming = false;
   try {
+    await validate?.(handle);
     return await respond(request, handle, mimeType, extraHeaders, () => {
       streaming = true;
     });

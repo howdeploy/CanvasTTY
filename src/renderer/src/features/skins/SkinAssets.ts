@@ -1,3 +1,4 @@
+import type { SkinMediaInfo } from "../../../../shared/skinMedia";
 import { useEffect, useState } from "react";
 import { createReleasingCache } from "./releasingCache";
 import type { PixelSkinPackSummary, PixelSkinSlot, PixelTerminalBorderSkinId } from "../../../../shared/contracts";
@@ -5,7 +6,7 @@ import type { PixelSkinPackSummary, PixelSkinSlot, PixelTerminalBorderSkinId } f
 interface CachedImage { image: HTMLImageElement; references: number; promise: Promise<HTMLImageElement> }
 const images = new Map<string, CachedImage>();
 
-export type PixelSkinPackUrls = Readonly<Record<PixelSkinSlot, string>>;
+export type PixelSkinPackUrls = Readonly<Record<PixelSkinSlot, string>> & { media: Partial<Record<PixelSkinSlot, SkinMediaInfo>> };
 const PACK_SLOTS: readonly PixelSkinSlot[] = [
   "minimal_idle", "minimal_working", "minimal_completed",
   "detailed_idle", "detailed_working", "detailed_completed",
@@ -54,6 +55,7 @@ export function isPixelSkinPackId(value: unknown): value is PixelTerminalBorderS
 
 const packs = createReleasingCache<PixelTerminalBorderSkinId, PixelSkinPackUrls>({
   load: async (id) => {
+    const { inspectSkinMedia, SKIN_MEDIA_MIME } = await import("../../../../shared/skinMedia");
     const slots = await Promise.all(PACK_SLOTS.map(async (slot) => {
       const bytes = await window.canvasTTY.pixelSkins.readAsset(id, slot);
       if (!bytes) throw new Error(`Pixel skin asset ${slot} is unavailable.`);
@@ -61,11 +63,12 @@ const packs = createReleasingCache<PixelTerminalBorderSkinId, PixelSkinPackUrls>
       copy.set(bytes);
       return [slot, copy] as const;
     }));
-    return Object.fromEntries(slots.map(([slot, bytes]) => [
-      slot, URL.createObjectURL(new Blob([bytes], { type: "image/png" }))
-    ])) as Record<PixelSkinSlot, string>;
+    const media = Object.fromEntries(slots.map(([slot, bytes]) => [slot, inspectSkinMedia(bytes)]));
+    return { ...Object.fromEntries(slots.map(([slot, bytes]) => [
+      slot, URL.createObjectURL(new Blob([bytes], { type: SKIN_MEDIA_MIME[media[slot].format] }))
+    ])), media } as PixelSkinPackUrls;
   },
-  dispose: (urls) => Object.values(urls).forEach((url) => URL.revokeObjectURL(url)),
+  dispose: (urls) => PACK_SLOTS.forEach((slot) => URL.revokeObjectURL(urls[slot])),
   delayMs: 30_000
 });
 

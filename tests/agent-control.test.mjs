@@ -12,6 +12,8 @@ import { controlRequest, parseArguments, runCli } from "../scripts/canvastty-con
 import xterm from "@xterm/headless";
 import { AgentControlGateway, CONTROL_REFUSAL_MESSAGE, codexComposerReady } from "../src/main/services/agent-control/AgentControlGateway.ts";
 import { IPC, DEFAULT_SHORTCUTS } from "../src/shared/contracts.ts";
+import { WallpaperRegistry } from "../src/main/services/WallpaperRegistry.ts";
+import { DEFAULT_WALLPAPER_RECIPE } from "../src/shared/wallpaper.ts";
 import { PixelSkinPackRegistry } from "../src/main/services/PixelSkinPackRegistry.ts";
 import { SettingsStore } from "../src/main/services/SettingsStore.ts";
 import { TerminalManager, terminalEnvironment } from "../src/main/services/TerminalManager.ts";
@@ -59,10 +61,11 @@ async function fixture(t, gatewayOptions = {}, agentBrowser, agentRuntime) {
   let lifecycleEnabled = true;
   const pixelSkinPacks = new PixelSkinPackRegistry(root);
   await pixelSkinPacks.initialize();
+  const wallpapers = new WallpaperRegistry(root); await wallpapers.initialize();
   const settings = new SettingsStore(root, "en");
   await settings.load();
   let notifiedSettings = null;
-  gateway = new AgentControlGateway({ userDataPath: root, terminals, pixelSkinPacks, settings,
+  gateway = new AgentControlGateway({ userDataPath: root, terminals, pixelSkinPacks, wallpapers, settings,
     onSettingsChanged: (next) => { notifiedSettings = next; }, lifecycleEnabled: () => lifecycleEnabled, ...gatewayOptions });
   const connectionPath = await gateway.start();
   const clientPath = join(root, "client-a.json");
@@ -83,7 +86,7 @@ async function fixture(t, gatewayOptions = {}, agentBrowser, agentRuntime) {
     }
     assert.fail("fixture composer not ready");
   };
-  return { root, gateway, terminals, calls, connectionPath, clientPath, pixelSkinPacks, settings,
+  return { root, gateway, terminals, calls, connectionPath, clientPath, pixelSkinPacks, wallpapers, settings,
     get notifiedSettings() { return notifiedSettings; }, request, create, signal, ready,
     disableLifecycle() { lifecycleEnabled = false; } };
 }
@@ -1171,4 +1174,28 @@ test("native control recognizes animated placeholders without accepting animated
     else await f.request("send", { sessionId: session.id, text: "task" });
   }
   assert.deepEqual(pty.writes, ["\x1b[200~task\x1b[201~", "\r"]);
+});
+
+
+test("wallpaper CLI imports and selects portable assets for Canvas and Home, with replay safety", localSocket, async t => {
+  const f = await fixture(t);
+  const bytes = await readFile(new URL("./fixtures/live-skins/clock.gif", import.meta.url));
+  const saved = await f.wallpapers.install({ name: "Clock", bytes, width: 960, height: 320, recipe: { ...DEFAULT_WALLPAPER_RECIPE, clockFont: "pixel" } });
+  const packagePath = join(f.root, "clock.ctwallpaper");
+  await writeFile(packagePath, await f.wallpapers.export(saved.id));
+  const { runCli } = await import("../scripts/canvastty-control.mjs");
+  const importedResponse = await runCli(["wallpaper-install", "--package", packagePath, "--target", "clock", "--connection", f.connectionPath, "--client-file", f.clientPath]);
+  const imported = importedResponse.result;
+  assert.equal(f.settings.get().homeClockWallpaper, imported.wallpaper.id);
+  assert.equal(f.settings.get().homeClockFont, "pixel");
+  const replayId = randomUUID();
+  const first = await f.request("wallpaper-install", { packagePath }, replayId);
+  const second = await f.request("wallpaper-install", { packagePath }, replayId);
+  assert.equal(first.wallpaper.id, second.wallpaper.id);
+  assert.equal((await f.request("wallpaper-list")).installed.length, 3);
+  await f.request("wallpaper-select", { wallpaperId: saved.id, target: "canvas" });
+  assert.equal(f.settings.get().canvasBackground, saved.id);
+  assert.equal(f.notifiedSettings.canvasBackground, saved.id);
+  await assert.rejects(f.request("wallpaper-select", { wallpaperId: saved.id, target: "execute" }), e => e.code === "INVALID_PARAMS");
+  await assert.rejects(f.request("wallpaper-install", { packagePath: "relative.ctwallpaper" }), e => e.code === "INVALID_PARAMS");
 });

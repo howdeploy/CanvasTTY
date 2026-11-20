@@ -23,7 +23,9 @@ function latinWords(text) {
 
 async function hintKeys() {
   const [canvas, reference] = await Promise.all([readFile(canvasPath, "utf8"), readFile(referencePath, "utf8")]);
-  const aside = canvas.slice(canvas.indexOf('<aside className="shortcut-hints"'), canvas.indexOf("</aside>"));
+  const panel = /<(aside|details) className="shortcut-hints"/.exec(canvas);
+  const end = panel ? canvas.indexOf(`</${panel[1]}>`, panel.index) : -1;
+  const aside = panel && end > panel.index ? canvas.slice(panel.index, end) : '';
   assert.ok(aside.length > 0, "canvas shortcut hints panel found");
   const keys = new Set();
   for (const match of aside.matchAll(/t\(settings\.locale, "(\w+)"\)/g)) keys.add(match[1]);

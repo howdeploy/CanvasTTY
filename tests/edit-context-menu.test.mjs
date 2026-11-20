@@ -67,6 +67,7 @@ test("a standalone plugin window gets its native edit menu before loading and us
     join,
     __dirname: "/test/main",
     pluginWindows: new Map(),
+    pluginWindowContributions: new WeakMap(),
     pluginManager: {
       contribution: () => ({ kind: "window", title: "Test", defaultSize: { width: 400, height: 300 } }),
       entryUrl: () => "canvastty-plugin://test/window.html"
@@ -82,4 +83,50 @@ test("a standalone plugin window gets its native edit menu before loading and us
   windows[0].webContents.emit("context-menu", {}, { isEditable: false, selectionText: " \t", editFlags: flags });
   assert.equal(shown[1].window, windows[0]);
   assert.deepEqual(shown[1].template, [{ role: "copy", label: "Скопировать", enabled: true }]);
+});
+
+test("preview reuse restores only the matching live plugin window and keeps other contributions separate", async () => {
+  const source = await readFile(new URL("../src/main/index.ts", import.meta.url), "utf8");
+  const start = source.indexOf("async function openPluginWindow(");
+  const end = source.indexOf("function closePluginWindows(", start);
+  const windows = [];
+  class BrowserWindow extends EventEmitter {
+    constructor() {
+      super(); this.destroyed = false; this.minimized = false; this.calls = [];
+      this.webContents = new EventEmitter();
+      this.webContents.setWindowOpenHandler = () => {};
+      windows.push(this);
+    }
+    isDestroyed() { return this.destroyed; }
+    isMinimized() { return this.minimized; }
+    restore() { this.calls.push('restore'); this.minimized = false; }
+    show() { this.calls.push('show'); }
+    focus() { this.calls.push('focus'); }
+    async loadURL(url) { this.url = url; }
+  }
+  const pluginWindows = new Map();
+  const open = runInNewContext(`${stripTypeScriptTypes(source.slice(start, end))}; openPluginWindow`, {
+    BrowserWindow, appIcon: undefined, join, __dirname: '/test/main', pluginWindows,
+    pluginWindowContributions: new WeakMap(),
+    pluginManager: {
+      contribution: () => ({ kind: 'window', title: 'Test', defaultSize: { width: 400, height: 300 } }),
+      entryUrl: (plugin, contribution) => `canvastty-plugin://${plugin}/${contribution}.html`
+    },
+    attachEditContextMenu: () => {}, editMenuLocale: () => 'en', Menu: {}
+  });
+  await open('files', 'preview');
+  await open('files', 'settings');
+  await open('another-plugin', 'preview');
+  windows[0].minimized = true;
+  await open('files', 'preview', true);
+  assert.equal(windows.length, 3);
+  assert.deepEqual(windows[0].calls, ['restore', 'show', 'focus']);
+  assert.deepEqual(windows[1].calls, []);
+  assert.deepEqual(windows[2].calls, []);
+  windows[0].destroyed = true;
+  await open('files', 'preview', true);
+  assert.equal(windows.length, 4, 'a destroyed preview cannot be reused');
+  assert.equal(windows[3].url, 'canvastty-plugin://files/preview.html');
+  windows[3].emit('closed');
+  assert.equal(pluginWindows.has(windows[3]), false);
 });

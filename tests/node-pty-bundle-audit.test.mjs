@@ -92,3 +92,20 @@ test("public vendor metadata never exempts another home path or a credential in 
   assert.ok(issues.includes("personal home path"));
   assert.ok(issues.includes("GitHub token"));
 });
+
+test("Duo Darwin prebuild paths are narrowly allowed and their contents are still audited", async () => {
+  await fixture(async ({ app, resources }) => {
+    const addPrebuild = async (module, arch, name, content) => {
+      const directory = join(resources, "app.asar.unpacked", "node_modules", module, "prebuilds", arch);
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, name), content);
+    };
+    await addPrebuild("sodium-native", "darwin-arm64", "sodium-native.node", "synthetic native bytes");
+    await addPrebuild("udx-native", "darwin-x64", "udx-native.node", "gh" + "p_" + "A".repeat(32));
+    await addPrebuild("udx-native", "darwin-x64", "extra.node", "unknown native module");
+    const { issues } = await auditPtyTestBundle(app);
+    assert.equal(issues.length, 2);
+    assert.ok(issues.some(({ rule, path }) => rule === "GitHub token" && path.endsWith("/udx-native.node")));
+    assert.ok(issues.some(({ rule, path }) => rule === "unpatched Darwin prebuild" && path.endsWith("/extra.node")));
+  });
+});

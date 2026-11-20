@@ -75,12 +75,15 @@ import { canvasCardPropsEqual } from "./terminalCardProps";
 import { markBootOnce } from "../../lib/bootMarks";
 import { webglContextPool } from "./webglContextPool";
 import { skipEmptySelectionRedraws } from "./terminalSelectionRedraw";
-import { Canvas2DSkinView } from "../skins/Canvas2DSkinView";
+const Canvas2DSkinView = lazy(() =>
+  import("../skins/Canvas2DSkinView").then((m) => ({ default: m.Canvas2DSkinView }))
+);
 import { isPixelSkinThemeId, pixelSkinStateForSession } from "../skins/skinCatalog";
 import { isPixelSkinPackId, usePixelSkinPackSummary } from "../skins/SkinAssets";
 import { pixelSkinControlLayout, pixelSkinSurfaceBounds, skinDetailLevel } from "../skins/SkinLayout";
 
 interface TerminalCardProps {
+  terminalRuntime?: import("../../../../shared/contracts").CanvasTTYApi["terminal"];
   claudeCodeMcpEnabled?: boolean;
   grokAcpEnabled?: boolean;
   kimiAcpEnabled?: boolean;
@@ -89,6 +92,7 @@ interface TerminalCardProps {
   locale: LocaleId;
   palette: PaletteId;
   borderSkin: TerminalBorderSkinId;
+  skinAnimationEnabled?: boolean;
   background: TerminalBackgroundId;
   backgroundsSuspended?: boolean;
   backgroundBrightness: number;
@@ -180,6 +184,7 @@ const SEARCH_DECORATIONS = {
 export const TerminalCard = memo(TerminalCardView, canvasCardPropsEqual);
 
 function TerminalCardView({
+  terminalRuntime = window.canvasTTY.terminal,
   session,
   claudeCodeMcpEnabled = false,
   grokAcpEnabled = false,
@@ -190,6 +195,7 @@ function TerminalCardView({
   borderSkin: selectedBorderSkin,
   background,
   backgroundsSuspended = false,
+  skinAnimationEnabled = true,
   backgroundBrightness,
   backgroundContrast,
   backgroundSaturation,
@@ -278,9 +284,6 @@ function TerminalCardView({
     ? pixelSkinSurfaceBounds(pixelSkinTheme, pixelDetail, size.width, size.height, 26,
       pixelPack?.apertures[pixelDetail] ?? pixelPack?.aperture)
     : null;
-  const pixelControls = pixelSkinTheme
-    ? pixelSkinControlLayout(pixelSkinTheme, pixelDetail, size.width, size.height)
-    : null;
   const [restarting, setRestarting] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [noteDismissed, setNoteDismissed] = useState<string | null>(null);
@@ -306,6 +309,11 @@ function TerminalCardView({
   const liveBounds = useRef<SessionBounds>({ position: session.position, size: session.size });
   // Continuous summary scaling is inherited from the scene without rendering every card.
   const summaryMode = useCameraSelector(camera, (current) => current.zoom < SUMMARY_ZOOM);
+  const pixelControls = pixelSkinTheme
+    ? pixelSkinControlLayout(pixelSkinTheme, pixelDetail, size.width, size.height, pixelPack?.controls?.[pixelDetail],
+      2 + (summaryMode ? 0 : 1) + (session.exitCode !== null ? 1 : 0)
+      + (session.exitCode !== null && session.provider !== "terminal" ? 1 : 0) + (hasOptions ? 1 : 0))
+    : null;
   const webglScaleAllowed = useCameraSelector(camera, (current) => current.zoom <= WEBGL_MAX_SCALE);
   const hasAsciiBackground = background !== "none";
   const asciiBackgroundRef = useRef(hasAsciiBackground);
@@ -436,7 +444,7 @@ function TerminalCardView({
     try {
       await onRestart(session.id, resume);
       const terminal = terminalRef.current;
-      if (terminal) window.canvasTTY.terminal.resize(session.id, terminal.cols, terminal.rows);
+      if (terminal) terminalRuntime.resize(session.id, terminal.cols, terminal.rows);
     } finally {
       setRestarting(false);
     }
@@ -457,7 +465,7 @@ function TerminalCardView({
     const openFile = (event: MouseEvent, reference: string): void => {
       event.preventDefault();
       event.stopPropagation();
-      void window.canvasTTY.terminal.openFile(session.id, reference).catch((error: unknown) => {
+      void terminalRuntime.openFile(session.id, reference).catch((error: unknown) => {
         setActionToast({ tone: "error", message: error instanceof Error ? error.message : String(error) });
       });
     };
@@ -512,7 +520,7 @@ function TerminalCardView({
     searchAddonRef.current = searchAddon;
     terminal.loadAddon(webLinksAddon);
     const fileLinks = terminal.registerLinkProvider(terminalFileLinkProvider(
-      terminal, openFile, (reference) => window.canvasTTY.terminal.canOpenFile(session.id, reference)
+      terminal, openFile, (reference) => terminalRuntime.canOpenFile(session.id, reference)
     ));
     terminal.open(host);
     const rendererCache = cacheTerminalRenderers(terminal);
@@ -630,7 +638,7 @@ function TerminalCardView({
       const grid = `${cols}x${rows}`;
       if (grid === lastReportedGrid) return;
       lastReportedGrid = grid;
-      window.canvasTTY.terminal.resize(session.id, cols, rows);
+      terminalRuntime.resize(session.id, cols, rows);
     };
     const resize = terminal.onResize(({ cols, rows }) => {
       reportGrid(cols, rows);
@@ -643,7 +651,7 @@ function TerminalCardView({
     });
     terminalWriterRef.current = outputWriter.write;
     const unsubscribe = attachTerminalOutput(
-      window.canvasTTY.terminal,
+      terminalRuntime,
       session.id,
       (data, parsed) => {
         pool.touch(session.id);
@@ -684,7 +692,7 @@ function TerminalCardView({
           event.preventDefault();
           event.stopPropagation();
           if (matchesShortcut(event, editor.selectAll)) terminal.clearSelection();
-          window.canvasTTY.terminal.input(session.id, sequence);
+          terminalRuntime.input(session.id, sequence);
           return false;
         }
       }
@@ -694,7 +702,7 @@ function TerminalCardView({
         event.preventDefault();
         event.stopPropagation();
         terminal.clearSelection();
-        window.canvasTTY.terminal.input(session.id, CODEX_SELECT_ALL_SEQUENCE);
+        terminalRuntime.input(session.id, CODEX_SELECT_ALL_SEQUENCE);
         return false;
       }
       if (matchesShortcut(event, shortcutsRef.current.toggleDetail)
@@ -722,7 +730,7 @@ function TerminalCardView({
       if (!nativeEditorRef.current && shouldSendTerminalLineBreak(event)) {
         event.preventDefault();
         event.stopPropagation();
-        window.canvasTTY.terminal.input(session.id, SHIFT_ENTER_SEQUENCE);
+        terminalRuntime.input(session.id, SHIFT_ENTER_SEQUENCE);
         return false;
       }
       const pageDirection = shouldScrollTerminalPage(event, shortcutsRef.current);
@@ -738,7 +746,7 @@ function TerminalCardView({
         event.preventDefault();
         event.stopPropagation();
         if (terminal.hasSelection()) window.canvasTTY.clipboard.writeText(terminal.getSelection());
-        else if (session.provider === "codex") window.canvasTTY.terminal.input(session.id,
+        else if (session.provider === "codex") terminalRuntime.input(session.id,
           event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && event.code === "KeyC"
             ? "\u0003" : "\u001b[99;9u");
         return false;
@@ -754,7 +762,7 @@ function TerminalCardView({
         if (codexEnter !== null) {
           event.preventDefault();
           event.stopPropagation();
-          window.canvasTTY.terminal.input(session.id, codexEnter);
+          terminalRuntime.input(session.id, codexEnter);
           return false;
         }
         return true;
@@ -770,12 +778,12 @@ function TerminalCardView({
         .then(async (hasImage) => {
           if (!acceptsPaste()) return;
           if (hasImage) {
-            window.canvasTTY.terminal.input(session.id, "\u0016");
+            terminalRuntime.input(session.id, "\u0016");
             return;
           }
           if (!clipboardPaste) {
             // Without an image, preserve the CLI's literal Ctrl+V semantics.
-            window.canvasTTY.terminal.input(session.id, "\u0016");
+            terminalRuntime.input(session.id, "\u0016");
             return;
           }
           const text = await window.canvasTTY.clipboard.readText();
@@ -836,7 +844,7 @@ function TerminalCardView({
       if (!text.startsWith("\u001b") && /[^\u0000-\u001f\u007f]/.test(text)) {
         window.dispatchEvent(new CustomEvent("canvastty:terminal-input", { detail: { sessionId: session.id } }));
       }
-      window.canvasTTY.terminal.input(session.id, data, queryReplies.isReply(data));
+      terminalRuntime.input(session.id, data, queryReplies.isReply(data));
     });
     // The first terminal card whose xterm is attached and forwards keystrokes: at startup this is a restored
     // session (new sessions cannot exist yet), so this doubles as "restored terminal interactive".
@@ -1009,7 +1017,7 @@ function TerminalCardView({
   // ring (smaller than xterm's scrollback), so a long unattended stretch would cost the card real history.
   const deliveryGate = useRef<SurfaceGate | null>(null);
   useEffect(() => {
-    const gate = createTerminalDeliveryGate(window.canvasTTY.terminal, session.id);
+    const gate = createTerminalDeliveryGate(terminalRuntime, session.id);
     deliveryGate.current = gate;
     return () => {
       gate.dispose();
@@ -1361,19 +1369,24 @@ function TerminalCardView({
       onClick={activateCard}
       onDoubleClick={activateCardDouble}
       onDragOver={(event) => {
-        if (!event.dataTransfer.types.includes("Files")) return;
+        if (!event.dataTransfer.types.includes("Files") && !event.dataTransfer.types.includes("application/x-canvastty-file")) return;
         event.preventDefault();
         event.stopPropagation();
         event.dataTransfer.dropEffect = sessionExited.current || renaming ? "none" : "copy";
       }}
-      onDrop={(event) => {
-        if (!event.dataTransfer.types.includes("Files")) return;
+      onDrop={async (event) => {
+        if (!event.dataTransfer.types.includes("Files") && !event.dataTransfer.types.includes("application/x-canvastty-file")) return;
         event.preventDefault();
         event.stopPropagation();
         const terminal = terminalRef.current;
         if (!terminal || sessionExited.current || renaming) return;
         try {
-          const text = window.canvasTTY.terminal.fileDropText(Array.from(event.dataTransfer.files));
+          const token = event.dataTransfer.types.includes("application/x-canvastty-file")
+            ? event.dataTransfer.getData("application/x-canvastty-file") : "";
+          const text = token ? await window.canvasTTY.plugins.fileDropText(token)
+            : await terminalRuntime.fileDropText(Array.from(event.dataTransfer.files));
+          // Resolving a plugin handle crosses IPC; the target may have closed meanwhile.
+          if (terminalRef.current !== terminal || sessionExited.current || renaming) return;
           onSelect(session.id);
           terminal.focus();
           terminal.paste(text);
@@ -1501,9 +1514,10 @@ function TerminalCardView({
           </Suspense>
         )}
       </div>
+      {/* The frame stays visible in summary mode; only the terminal surface is suspended. */}
       {pixelSkinTheme && (
-        <Canvas2DSkinView theme={pixelSkinTheme} status={session.status} artState={pixelArtState}
-          width={size.width} height={size.height} detail={pixelDetail} surfaceBounds={pixelSurfaceBounds ?? undefined} />
+        <Suspense fallback={null}><Canvas2DSkinView theme={pixelSkinTheme} status={session.status} artState={pixelArtState}
+          width={size.width} height={size.height} detail={pixelDetail} surfaceBounds={pixelSurfaceBounds ?? undefined} paused={!skinAnimationEnabled || hidden} /></Suspense>
       )}
       {pixelSkinTheme && (["top", "right", "bottom", "left"] as const).map((edge) => (
         <div key={edge} className={`terminal-card__skin-drag terminal-card__skin-drag--${edge}`}
@@ -1521,7 +1535,7 @@ function TerminalCardView({
                 checked={session.skipRestore === true}
                 onChange={(event) => {
                   setOptionsOpen(false);
-                  void window.canvasTTY.terminal.setRestore(session.id, !event.target.checked);
+                  void terminalRuntime.setRestore(session.id, !event.target.checked);
                 }}
               />
               {t(locale, "cardSkipRestore")}

@@ -1,9 +1,11 @@
+import { inspectSkinMedia, SKIN_MEDIA_MIME, type SkinMediaInfo } from "../../../../shared/skinMedia";
+import { SkinMediaView } from "../skins/SkinMediaView";
 import { CanvasLinkSettings } from "./CanvasLinkSettings";
 import { EvenG2Controls } from "./EvenG2Controls";
 import { BackgroundAppearanceManager } from "./BackgroundAppearanceManager";
 import { TerminalBackgroundChoices } from "./TerminalBackgroundChoices";
 import "../../assets/vendor/sl-ui/text-input/buttons.css";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   AppSettings,
   AppSkinId,
@@ -95,6 +97,7 @@ import {
   normalizeTerminalBorderSkinList
 } from "../../lib/skinStyles";
 import { PluginSettingsSection } from "../plugins/PluginSettingsSection";
+import { HomeClockAppearance } from "../home/HomeClockAppearance";
 import { HomeAppearanceSettings } from "../home/HomeAppearanceSettings";
 import {
   canvasColorPatch,
@@ -129,6 +132,9 @@ import { MascotsSettings } from "./MascotsSettings";
 
 import { searchSettings } from "./settingsSearch";
 import type { SettingsDestination, SettingsSection } from "./settingsNavigation";
+
+const WallpaperWorkshop = lazy(() => import("./WallpaperWorkshop"));
+const WorkspacePresets = lazy(() => import("./WorkspacePresets"));
 
 const SHORTCUT_LABELS = {
   home: "homeShortcut", renameWindow: "renameWindow", toggleFullscreen: "toggleFullscreen",
@@ -334,6 +340,7 @@ export function SettingsPanel({
     return () => { active = false; unsubscribe(); };
   }, []);
 
+  const [workshopOpen, setWorkshopOpen] = useState(false);
   const [checkingAgentClis, setCheckingAgentClis] = useState(false);
   const [agentCliError, setAgentCliError] = useState<string | null>(null);
 
@@ -591,6 +598,7 @@ export function SettingsPanel({
           >
           {section === "general" && (
             <>
+              <Suspense fallback={null}><WorkspacePresets locale={locale} /></Suspense>
               <SettingGroup label={t(locale, "language")}>
                 <Segmented
                   value={settings.locale}
@@ -820,12 +828,26 @@ export function SettingsPanel({
                 />
               </SettingGroup>
               <SettingGroup
-                label={locale === "ru" ? "Пиксельные фоны" : "Pixel backgrounds"}
-                description={locale === "ru" ? "Только фон Canvas. Рамки терминалов выбираются отдельно ниже." : "Canvas background only. Choose terminal borders separately below."}
+                label={locale === "ru" ? "Фоны и живые обои" : "Backgrounds and live wallpapers"}
+                description={locale === "ru" ? "Обои Canvas, аватарка и фон часов Home. Рамки терминалов выбираются отдельно ниже." : "Canvas wallpapers, Home avatars and clock backgrounds. Choose terminal borders separately below."}
                 layout="stacked"
               >
+                <button type="button" onClick={() => setWorkshopOpen(value => !value)}>{locale === "ru" ? "Мастерская обоев и Home" : "Wallpaper and Home workshop"}</button>
+                {workshopOpen && <Suspense fallback={<small>…</small>}><WallpaperWorkshop settings={settings} onChange={onChange} /></Suspense>}
                 <CanvasBackgroundChoices locale={locale} value={settings.canvasBackground} pixelPacks={pixelPacks}
                   onChange={(canvasBackground) => void onChange({ canvasBackground })} />
+                {settings.canvasBackground !== "none" && <div className="pixel-pack-dialog__agent-actions">
+                  <button type="button" aria-pressed={settings.canvasBackgroundPaused}
+                    onClick={() => void onChange({ canvasBackgroundPaused: !settings.canvasBackgroundPaused })}>
+                    {settings.canvasBackgroundPaused ? (locale === "ru" ? "Продолжить анимацию" : "Resume animation") : (locale === "ru" ? "Приостановить анимацию" : "Pause animation")}
+                  </button>
+                  {!settings.canvasBackground.startsWith("wallpaper:") && <label>{locale === "ru" ? "Масштаб фона " : "Background fit "}
+                    <select value={settings.canvasBackgroundFit ?? "contain"} onChange={(event) => void onChange({ canvasBackgroundFit: event.target.value as "contain" | "cover" })}>
+                      <option value="contain">{locale === "ru" ? "Показать целиком" : "Fit"}</option>
+                      <option value="cover">{locale === "ru" ? "Заполнить экран" : "Fill"}</option>
+                    </select>
+                  </label>}
+                </div>}
                 {pixelPacksState !== "ready" && <small role="status">{pixelPacksState === "loading"
                   ? (locale === "ru" ? "Загрузка пользовательских фонов…" : "Loading custom backgrounds…")
                   : (locale === "ru" ? "Не удалось загрузить пользовательские фоны." : "Custom backgrounds could not be loaded.")}</small>}
@@ -1050,6 +1072,7 @@ export function SettingsPanel({
                   </SettingGroup>
                 </>
               )}
+              <HomeClockAppearance settings={settings} onChange={onChange} />
               <HomeAppearanceSettings
                 settings={settings}
                 plugins={plugins}
@@ -1810,7 +1833,7 @@ function CanvasBackgroundChoices({ locale, value, pixelPacks, onChange }: {
     sakura: "borderSkinSakura", matrix: "borderSkinMatrix", "forest-cabin": "borderSkinForestCabin",
     "gold-black": "borderSkinGoldBlack", cat: "borderSkinCat", "gothic-eclipse": "borderSkinGothicEclipse"
   } as const;
-  return <div className="border-skin-choices" role="group" aria-label={locale === "ru" ? "Пиксельные фоны" : "Pixel backgrounds"}>
+  return <div className="border-skin-choices" role="group" aria-label={locale === "ru" ? "Фоны и живые обои" : "Backgrounds and live wallpapers"}>
     <button type="button" className="pixel-pack-create" aria-pressed={value === "none"} onClick={() => onChange("none")}>
       {locale === "ru" ? "Без картинки — выбранный цвет и узор" : "No image — selected color and pattern"}
     </button>
@@ -2014,13 +2037,16 @@ function BorderSkinChoices({
 
 function PixelSkinPackThumbnail({ id, slot = "detailed_idle" }: { id: PixelTerminalBorderSkinId; slot?: PixelSkinSlot }): React.JSX.Element {
   const [url, setUrl] = useState<string | null>(null);
+  const [media, setMedia] = useState<SkinMediaInfo | null>(null);
   useEffect(() => {
     let active = true;
     let objectUrl: string | null = null;
     setUrl(null);
     void window.canvasTTY.pixelSkins.readAsset(id, slot).then((bytes) => {
       if (!active || !bytes) return;
-      objectUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/png" }));
+      const info = inspectSkinMedia(new Uint8Array(bytes));
+      setMedia(info);
+      objectUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: SKIN_MEDIA_MIME[info.format] }));
       setUrl(objectUrl);
     }).catch(() => { if (active) setUrl(null); });
     return () => {
@@ -2028,7 +2054,7 @@ function PixelSkinPackThumbnail({ id, slot = "detailed_idle" }: { id: PixelTermi
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [id, slot]);
-  return url ? <img src={url} alt="" /> : <span className="border-skin-preview__fallback" />;
+  return url && media ? <SkinMediaView key={url} src={url} media={media} className="skin-media-preview" paused /> : <span className="border-skin-preview__fallback" />;
 }
 
 function PixelBorderSkinThumbnail({ theme }: { theme: PixelSkinThemeId }): React.JSX.Element {

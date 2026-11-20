@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { duoWorkspace } from '../duo/duoWorkspaceRuntime';
 import type { CanvasMaterial, LocaleId, Point, SessionBounds, Size } from "../../../../shared/contracts";
 import { constrainMaterialResize, MATERIAL_MAX_SIZE, MATERIAL_MIN_SIZE, materialUrl } from "../../../../shared/materials";
 import { UiIcon } from "../../components/UiIcon";
@@ -344,6 +345,11 @@ export function MaterialCard({
   );
 }
 
+const duoMediaContext = ():string => {
+  const view=duoWorkspace.get(),state=view.reply?.state;
+  return state?.role==='guest'&&state.documentSync ? `${state.workspaceId}:${view.connected}` : '';
+};
+
 function MaterialBody({
   material,
   locale,
@@ -360,10 +366,24 @@ function MaterialBody({
   onAction(id: string, action: MaterialCommand): void;
 }): React.JSX.Element {
   const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
   const [natural, setNatural] = useState<Size | null>(null);
-  const source = materialUrl(material.id, null, material.liveRevision);
+  // A guest can return to the same material ID in a different session. Its old
+  // failed decoder/request must not survive that transition. Local playback is
+  // deliberately independent of the host's Duo lifecycle.
+  const context=useSyncExternalStore(duoWorkspace.subscribe,duoMediaContext);
+  const baseSource=materialUrl(material.id,null,material.liveRevision)+(context?`&duo=${encodeURIComponent(context)}`:'');
+  const source=baseSource+(context?`&duoRetry=${retry}`:'');
+  const currentSource=useRef(source);currentSource.current=source;
+  const markFailed=():void=>{if(currentSource.current===source)setFailed(true);};
 
   useEffect(() => setFailed(false), [source]);
+  useEffect(()=>{setRetry(0);setFailed(false);},[baseSource]);
+  useEffect(()=>{
+    if(!failed||!context.endsWith(':true')||retry>=3)return;
+    const timer=setTimeout(()=>{setRetry(value=>value+1);setFailed(false);},250*2**retry);
+    return ()=>clearTimeout(timer);
+  },[failed,context,retry,baseSource]);
 
   if (material.state === "missing") {
     return (
@@ -393,12 +413,13 @@ function MaterialBody({
     return (
       <>
         <img
+          key={source}
           className="material-card__image"
           src={source}
           alt={material.name}
           draggable={false}
           onLoad={(event) => setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
-          onError={() => setFailed(true)}
+          onError={markFailed}
         />
         <ImageAnnotator
           locale={locale}
@@ -416,13 +437,13 @@ function MaterialBody({
     );
   }
   if (!failed && material.kind === "video") {
-    return <video className="material-card__video" src={source} controls preload="metadata" onError={() => setFailed(true)} />;
+    return <video key={source} className="material-card__video" src={source} controls preload="metadata" onError={markFailed} />;
   }
   if (!failed && material.kind === "audio") {
     return (
       <div className="material-card__audio">
         <UiIcon name="music" size="2.2em" />
-        <audio src={source} controls preload="metadata" onError={() => setFailed(true)} />
+        <audio key={source} src={source} controls preload="metadata" onError={markFailed} />
       </div>
     );
   }

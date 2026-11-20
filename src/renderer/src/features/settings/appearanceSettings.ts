@@ -42,9 +42,11 @@ export function resolveDisplaySettings(
       appSkin: "classic",
       terminalBorderSkin: "classic",
       terminalSkinAnimationEnabled: false,
+      homeClockFont: "mono",
       canvasColor: "sage"
     } as const : {}),
     canvasBackground: "none",
+    homeClockWallpaper: null,
     pattern: backgroundsSuspended ? "none" : "dots",
     terminalBackground: "none",
     terminalBackgroundOverrides: {}

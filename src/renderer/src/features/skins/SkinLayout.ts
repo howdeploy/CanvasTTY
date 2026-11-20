@@ -1,7 +1,7 @@
 import type { SkinRect, TiledFrame } from "./skinSchema";
 import type { PixelSkinThemeId } from "./skinCatalog";
 import type { PixelSkinDetailLevel } from "./skinCatalog";
-import type { PixelSkinAperture, PixelSkinPreferredDetail, PixelTerminalBorderSkinId } from "../../../../shared/contracts";
+import type { PixelSkinAperture, PixelSkinControlPlaque, PixelSkinPreferredDetail, PixelTerminalBorderSkinId } from "../../../../shared/contracts";
 
 export interface SkinDrawOperation { source: SkinRect; destination: SkinRect }
 export type SkinDetailLevel = PixelSkinDetailLevel;
@@ -85,13 +85,18 @@ export function pixelSkinControlLayout(
   theme: PixelSkinThemeId | PixelTerminalBorderSkinId,
   detail: SkinDetailLevel,
   width: number,
-  height: number
+  height: number,
+  plaque?: PixelSkinControlPlaque,
+  buttonCount = 3
 ): PixelSkinControlLayout {
-  const [x, y, plaqueWidth, plaqueHeight] = CONTROL_PLAQUES[theme]?.[detail] ?? [73, 7, 18, 6];
+  const [x, y, plaqueWidth, plaqueHeight] = plaque
+    ? [plaque.left, plaque.top, plaque.width, plaque.height]
+    : CONTROL_PLAQUES[theme]?.[detail] ?? [73, 7, 18, 6];
   const art = pixelSkinArtworkBounds(theme, detail);
   const controlWidth = width * plaqueWidth / 100 / art.width;
   const controlHeight = height * plaqueHeight / 100 / art.height;
-  const buttonSize = Math.max(0, Math.min(22, controlHeight - 4, (controlWidth - 14) / 2));
+  const count = Math.max(1, Math.ceil(buttonCount));
+  const buttonSize = Math.max(0, Math.min(22, controlHeight - 4, (controlWidth - 8 - 4 * (count - 1)) / count));
   return {
     left: mapArtworkX(x, art, width),
     top: mapArtworkY(y, art, height),

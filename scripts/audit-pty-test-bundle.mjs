@@ -14,13 +14,18 @@ const PRIVATE_FILES = /^(?:\.env(?:\.|$)|(?:auth|credentials?|settings|terminal-
 const publicSpeechPaths = JSON.parse(await readFile(new URL("./fixtures/public-speech-source-path-hashes.json", import.meta.url), "utf8"));
 const PUBLIC_SOURCE_PATH_HASHES = new Map(Object.entries(publicSpeechPaths.files).map(([path, hashes]) => [path, new Set(hashes)]));
 
-function pathIssues(name) {
+// These lockfile-pinned Duo dependencies ship published Darwin addons.
+// Their paths are allowed while the native bytes remain subject to every secret rule.
+const DUO_DARWIN_PREBUILD = /^(?:Contents\/Resources\/app\.asar\.unpacked\/)?node_modules\/(sodium-native|udx-native|bare-buffer|bare-fs|bare-inspect|bare-path|bare-type|bare-url)\/prebuilds\/darwin-(?:arm64|x64)(?:\/(\1\.(?:node|bare)))?$/u;
+
+function pathIssues(name, directory) {
   const parts = name.replaceAll("\\", "/").split("/");
   const issues = [];
   if (parts.some((part) => PRIVATE_SEGMENTS.has(part))) issues.push("private state directory");
   if (PRIVATE_FILES.test(parts.at(-1)) && parts.at(-1) !== ".env.example") issues.push("sensitive filename");
-  if (parts.some((part) => part === "prebuilds") && parts.some((part) => /^darwin-/u.test(part))) {
-    issues.push("unpatched Darwin prebuild");
+  if (parts.includes("prebuilds") && parts.some((part) => /^darwin-/u.test(part))) {
+    const allowed = DUO_DARWIN_PREBUILD.exec(name);
+    if (!allowed || directory === Boolean(allowed[2])) issues.push("unpatched Darwin prebuild");
   }
   return issues;
 }
@@ -59,7 +64,7 @@ export async function auditPtyTestBundle(application) {
     const name = raw.replace(/^[/\\]+/u, "").replaceAll("\\", "/");
     assert.ok(name && !name.split("/").includes(".."), "unsafe ASAR entry");
     const metadata = asar.statFile(archive, name, false);
-    record(`app.asar/${name}`, pathIssues(name));
+    record(`app.asar/${name}`, pathIssues(name, Boolean(metadata.files)));
     if (!ARCHIVE_ROOTS.has(name.split("/")[0])) record(`app.asar/${name}`, ["unexpected archive root"]);
     if (metadata.link !== undefined) {
       record(`app.asar/${name}`, ["archive symlink requires review"]);
@@ -77,7 +82,7 @@ export async function auditPtyTestBundle(application) {
       const path = join(directory, entry.name);
       const label = relative(root, path).replaceAll("\\", "/");
       if (path === archive) continue;
-      record(label, pathIssues(label));
+      record(label, pathIssues(label, entry.isDirectory()));
       if (entry.isSymbolicLink()) {
         const target = await realpath(path);
         if (!target.startsWith(`${root}/`)) record(label, ["bundle symlink escapes application"]);

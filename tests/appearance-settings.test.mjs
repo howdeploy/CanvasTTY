@@ -128,3 +128,15 @@ test("four or more HOME limit rows switch to bounded compact geometry", () => {
   assert.match(styles, /\.limit-row__summary\s*>\s*span\s*\{[^}]*font-size:\s*11px;/u);
   assert.match(styles, /\.limit-row__track\s*\{[^}]*height:\s*4px;/u);
 });
+
+
+test("temporary background/design shortcuts suspend Home clock artwork without modifying saved recipes", () => {
+  const settings = { canvasBackground: "wallpaper:demo", homeClockWallpaper: "wallpaper:demo", homeClockFont: "pixel", homeAvatarWallpaper: "wallpaper:avatar", terminalBackgroundOverrides: {} };
+  const hidden = resolveDisplaySettings(settings, true, false);
+  assert.equal(hidden.homeClockWallpaper, null);
+  assert.equal(hidden.homeClockFont, "pixel");
+  assert.equal(hidden.homeAvatarWallpaper, settings.homeAvatarWallpaper);
+  const plain = resolveDisplaySettings(settings, false, true);
+  assert.equal(plain.homeClockWallpaper, null); assert.equal(plain.homeClockFont, "mono");
+  assert.equal(settings.homeClockWallpaper, "wallpaper:demo");
+});

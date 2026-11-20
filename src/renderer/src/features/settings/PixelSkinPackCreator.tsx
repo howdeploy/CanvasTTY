@@ -1,3 +1,5 @@
+import { inspectSkinMedia, SKIN_MEDIA_MIME, type SkinMediaInfo } from "../../../../shared/skinMedia";
+import { SkinMediaView } from "../skins/SkinMediaView";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DEFAULT_PIXEL_SKIN_APERTURES } from "../../../../shared/contracts";
@@ -18,8 +20,43 @@ const LEVELS = ["minimal", "detailed", "master"] as const;
 const STATES = ["idle", "working", "completed"] as const;
 const SLOTS: readonly PixelSkinSlot[] = LEVELS.flatMap((level) => STATES.map((state) => `${level}_${state}` as PixelSkinSlot)).concat("background");
 
-function isPng(file: File): boolean {
-  return file.name.toLowerCase().endsWith(".png") && (!file.type || file.type === "image/png");
+const IMAGE_ACCEPT = "image/png,image/apng,image/gif,image/webp,.png,.apng,.gif,.webp";
+const MEDIA_ACCEPT = `${IMAGE_ACCEPT},video/mp4,video/webm,.mp4,.webm`;
+function fileMedia(file: File): SkinMediaInfo {
+  const extension = file.name.split(".").at(-1)?.toLowerCase();
+  const format = extension === "apng" ? "png" : extension;
+  return { format: format as SkinMediaInfo["format"], animated: true };
+}
+function supportedFile(file: File, slot?: PixelSkinSlot): boolean {
+  return /\.(png|apng|gif|webp)$/i.test(file.name) || (slot === "background" && /\.(mp4|webm)$/i.test(file.name));
+}
+
+async function readMediaFile(file: File): Promise<Uint8Array> {
+  if (file.size > 80 * 1024 * 1024) throw new Error("Media file exceeds 80 MB.");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const info = inspectSkinMedia(bytes);
+  if ((info.format !== "mp4" && info.format !== "webm") && bytes.byteLength > 20 * 1024 * 1024) throw new Error("Image exceeds 20 MB.");
+  const url = URL.createObjectURL(new Blob([bytes], { type: SKIN_MEDIA_MIME[info.format] }));
+  const video = info.format === "mp4" || info.format === "webm";
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const element = video ? document.createElement("video") : new Image();
+      const cleanup = (): void => { clearTimeout(timer); element.onload = element.onerror = null; if (element instanceof HTMLVideoElement) { element.onloadedmetadata = null; element.removeAttribute("src"); element.load(); } };
+      const failed = (): void => { cleanup(); reject(new Error(`Cannot decode ${file.name}. Use PNG/APNG/GIF, WebP, H.264 MP4, or VP8/VP9 WebM.`)); };
+      const loaded = (): void => {
+        const width = element instanceof HTMLVideoElement ? element.videoWidth : element.naturalWidth;
+        const height = element instanceof HTMLVideoElement ? element.videoHeight : element.naturalHeight;
+        if (width < 320 || height < 200 || width > 4096 || height > 4096) { cleanup(); reject(new Error("Media dimensions must be between 320x200 and 4096x4096.")); return; }
+        cleanup(); resolve();
+      };
+      const timer = setTimeout(failed, 15_000);
+      element.onerror = failed;
+      if (element instanceof HTMLVideoElement) { element.muted = true; element.preload = "metadata"; element.onloadedmetadata = loaded; }
+      else element.onload = loaded;
+      element.src = url;
+    });
+  } finally { URL.revokeObjectURL(url); }
+  return bytes;
 }
 
 export function PixelSkinPackCreator({ locale, onCreated }: {
@@ -63,8 +100,9 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
 
   const assign = (slot: PixelSkinSlot, file: File | undefined): void => {
     if (!file) return;
-    if (!isPng(file)) {
-      setError(ru ? "Нужен файл PNG." : "A PNG file is required.");
+    if (installing) return;
+    if (!supportedFile(file, slot) || file.size > (slot === "background" ? 80 : 20) * 1024 * 1024) {
+      setError(ru ? "Рамки: PNG/APNG/GIF/WebP до 20 МБ. Фон: также MP4/WebM до 80 МБ." : "Frames: PNG/APNG/GIF/WebP up to 20 MB. Background: also MP4/WebM up to 80 MB.");
       return;
     }
     setFiles((current) => ({ ...current, [slot]: file }));
@@ -75,12 +113,11 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
   const assignMany = (selected: FileList | File[]): void => {
     const assigned: Partial<Record<PixelSkinSlot, File>> = {};
     for (const file of Array.from(selected)) {
-      if (!isPng(file)) continue;
       const slot = pixelPackSlotForFilename(file.name);
-      if (slot) assigned[slot] = file;
+      if (slot && supportedFile(file, slot)) assigned[slot] = file;
     }
     if (Object.keys(assigned).length === 0) {
-      setError(ru ? "Не удалось определить роли по именам PNG." : "No PNG roles were found in filenames.");
+      setError(ru ? "Не удалось определить роли по именам файлов." : "No media roles were found in filenames.");
       return;
     }
     setFiles((current) => ({ ...current, ...assigned }));
@@ -113,6 +150,11 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
 
   const install = async (): Promise<void> => {
     if (!name.trim() || (!zipFile && SLOTS.some((slot) => !files[slot]))) return;
+    if (!zipFile && (SLOTS.some((slot) => files[slot]!.size > (slot === "background" ? 80 : 20) * 1024 * 1024)
+      || SLOTS.reduce((total, slot) => total + files[slot]!.size, 0) > 150 * 1024 * 1024)) {
+      setError(ru ? "Рамка — до 20 МБ, видео — до 80 МБ, вся тема — до 150 МБ." : "Frames up to 20 MB, video up to 80 MB, whole theme up to 150 MB.");
+      return;
+    }
     setInstalling(true);
     setError(null);
     try {
@@ -121,7 +163,7 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
           name: name.trim(), apertures, archive: new Uint8Array(await zipFile.arrayBuffer())
         })
         : await (async () => {
-          const bytes = await Promise.all(SLOTS.map(async (slot) => [slot, new Uint8Array(await files[slot]!.arrayBuffer())] as const));
+          const bytes = await Promise.all(SLOTS.map(async (slot) => [slot, await readMediaFile(files[slot]!)] as const));
           return window.canvasTTY.pixelSkins.install({
             name: name.trim(), apertures,
             files: Object.fromEntries(bytes) as Record<PixelSkinSlot, Uint8Array>
@@ -147,7 +189,7 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
     <>
       <button className="pixel-pack-create" type="button" onClick={() => { setPromptCopied(false); setOpen(true); }}>
         <UiIcon name="image-plus" size={19} />
-        {ru ? "Создать пиксельную тему" : "Create pixel theme"}
+        {ru ? "Создать тему / живой скин" : "Create theme / live skin"}
       </button>
       {open && createPortal(
         <div className="pixel-pack-dialog-backdrop" onPointerDown={(event) => {
@@ -155,7 +197,7 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
         }}>
           <div className="pixel-pack-dialog" role="dialog" aria-modal="true" aria-labelledby="pixel-pack-title">
             <div className="pixel-pack-dialog__header">
-              <h2 id="pixel-pack-title">{ru ? "Новая пиксельная тема" : "New pixel theme"}</h2>
+              <h2 id="pixel-pack-title">{ru ? "Новая тема / живой скин" : "New theme / live skin"}</h2>
               <button type="button" className="pixel-pack-dialog__close" onClick={() => setOpen(false)} disabled={installing} title={ru ? "Закрыть" : "Close"} aria-label={ru ? "Закрыть" : "Close"}>
                 <UiIcon name="close" size={19} />
               </button>
@@ -166,7 +208,7 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
                   <h3>{ru ? "Соберите тему с помощью агента" : "Build a theme with your agent"}</h3>
                   <ol>
                     <li>{ru ? "Скопируйте задание ниже, вставьте его в чат агента, опишите стиль и приложите референс." : "Copy the brief below, paste it into your agent chat, describe the style, and attach a reference."}</li>
-                    <li>{ru ? "Загрузите готовый ZIP от агента или 10 PNG: 9 рамок и 1 фон Canvas." : "Upload the agent’s ZIP or 10 PNGs: 9 borders and 1 Canvas background."}</li>
+                    <li>{ru ? "Загрузите ZIP или 10 файлов: 9 рамок PNG/APNG/GIF/WebP и фон PNG/APNG/GIF/WebP/MP4/WebM." : "Upload a ZIP or 10 files: 9 PNG/APNG/GIF/WebP borders and a PNG/APNG/GIF/WebP/MP4/WebM Canvas background."}</li>
                     <li>{ru ? "Назовите тему и нажмите «Создать тему». Её рамки и фон можно выбирать независимо в оформлении." : "Name the theme and select “Create theme”. Its borders and background can be selected independently in Appearance."}</li>
                   </ol>
                 </div>
@@ -180,7 +222,7 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
                   <span>{ru ? "Название темы" : "Theme name"}</span>
                   <input value={name} maxLength={64} autoFocus onChange={(event) => setName(event.target.value)} placeholder={ru ? "Моя тема" : "My theme"} />
                 </label>
-                <input ref={bulkInput} type="file" accept="image/png,.png" multiple hidden onChange={(event) => {
+                <input ref={bulkInput} type="file" accept={MEDIA_ACCEPT} multiple hidden onChange={(event) => {
                   if (event.target.files) assignMany(event.target.files);
                   event.target.value = "";
                 }} />
@@ -194,7 +236,7 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
                 </button>
                 <button type="button" className="pixel-pack-dialog__bulk" onClick={() => bulkInput.current?.click()}>
                   <UiIcon name="folder" size={17} />
-                  {ru ? "Загрузить PNG" : "Add PNGs"}
+                  {ru ? "Загрузить файлы" : "Add files"}
                 </button>
               </div>
               <div className="pixel-pack-dialog__agent-actions">
@@ -209,7 +251,7 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
               </div>
               <p className="pixel-pack-help">{zipFile
                 ? (ru ? "ZIP будет проверен при создании темы. Предпросмотр рамок появится после установки." : "The ZIP will be validated when you create the theme. Border previews are available after installation.")
-                : (ru ? "Ниже — места для ваших PNG, а не готовые варианты. Нажмите на ячейку или перетащите PNG: в ней появится превью. Строки — простая рамка, детальная и Master для оркестратора; столбцы — ожидание, работа и готово." : "These are slots for your PNGs, not existing designs. Click a slot or drop a PNG to see its preview. Rows are simple, detailed, and Master for an orchestrator; columns are idle, working, and completed.")}</p>
+                : (ru ? "Нажмите на ячейку или перетащите файл для предпросмотра. APNG, GIF и WebP поддерживают анимацию; MP4 и WebM доступны для фона. Строки — простая рамка, детальная и Master для оркестратора; столбцы — ожидание, работа и готово." : "Click a slot or drop a file to preview. APNG, GIF and WebP support animation; MP4 and WebM are available for the background. Rows are simple, detailed, and Master for an orchestrator; columns are idle, working, and completed.")}</p>
               {zipFile ? <div className="pixel-pack-zip-selected">
                 <span>{zipFile.name}</span>
                 <button type="button" onClick={() => setZipFile(null)} title={ru ? "Убрать ZIP" : "Remove ZIP"} aria-label={ru ? "Убрать ZIP" : "Remove ZIP"}>
@@ -224,11 +266,11 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
                       event.preventDefault();
                       assign(slot, event.dataTransfer.files[0]);
                     }}>
-                      <span className="pixel-pack-slot__label">{label}<small>{slot}.png</small></span>
+                      <span className="pixel-pack-slot__label">{label}<small>{slot}.png / .gif / .webp</small></span>
                       {previews[slot]
-                        ? <img src={previews[slot]} alt="" />
-                        : <span className="pixel-pack-slot__empty"><UiIcon name="image-plus" size={22} /><span>{ru ? "Нажмите или перетащите PNG" : "Click or drop a PNG"}</span></span>}
-                      <input type="file" accept="image/png,.png" aria-label={label} onChange={(event) => {
+                        ? <SkinMediaView src={previews[slot]} media={fileMedia(files[slot]!)} className="skin-media-preview" />
+                        : <span className="pixel-pack-slot__empty"><UiIcon name="image-plus" size={22} /><span>{ru ? "Нажмите или перетащите файл" : "Click or drop a file"}</span></span>}
+                      <input type="file" accept={IMAGE_ACCEPT} aria-label={label} onChange={(event) => {
                         assign(slot, event.target.files?.[0]);
                         event.target.value = "";
                       }} />
@@ -241,11 +283,11 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
                   event.preventDefault();
                   assign("background", event.dataTransfer.files[0]);
                 }}>
-                  <span className="pixel-pack-slot__label">{ru ? "Фон Canvas" : "Canvas background"}<small>background.png</small></span>
+                  <span className="pixel-pack-slot__label">{ru ? "Фон Canvas" : "Canvas background"}<small>background.png / .gif / .webp / .mp4 / .webm</small></span>
                   {previews.background
-                    ? <img src={previews.background} alt="" />
-                    : <span className="pixel-pack-slot__empty"><UiIcon name="image-plus" size={22} /><span>{ru ? "Нажмите или перетащите PNG" : "Click or drop a PNG"}</span></span>}
-                  <input type="file" accept="image/png,.png" aria-label={ru ? "Фон" : "Background"} onChange={(event) => {
+                    ? <SkinMediaView src={previews.background} media={fileMedia(files.background!)} className="skin-media-preview" />
+                    : <span className="pixel-pack-slot__empty"><UiIcon name="image-plus" size={22} /><span>{ru ? "Нажмите или перетащите файл" : "Click or drop a file"}</span></span>}
+                  <input type="file" accept={MEDIA_ACCEPT} aria-label={ru ? "Фон" : "Background"} onChange={(event) => {
                     assign("background", event.target.files?.[0]);
                     event.target.value = "";
                   }} />
@@ -274,7 +316,7 @@ export function PixelSkinPackCreator({ locale, onCreated }: {
               </div>
             </div>
             <div className="pixel-pack-dialog__footer">
-              <span role="status">{error ?? (zipFile ? zipFile.name : `${count}/10 PNG`)}</span>
+              <span role="status">{error ?? (zipFile ? zipFile.name : `${count}/10`)}</span>
               <button type="button" onClick={() => void install()} disabled={installing || !name.trim() || (!zipFile && count !== SLOTS.length)}>
                 <UiIcon name={installing ? "working" : "done"} size={16} />
                 {installing ? (ru ? "Установка…" : "Installing…") : (ru ? "Создать тему" : "Create theme")}

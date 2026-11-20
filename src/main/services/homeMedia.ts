@@ -7,6 +7,7 @@ const MAX_HOME_MEDIA_BYTES = 25 * 1024 * 1024;
 const MAX_HOME_MEDIA_PATH_LENGTH = 4_096;
 const HOME_MEDIA_MIME: Record<string, string> = {
   ".png": "image/png",
+  ".apng": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",

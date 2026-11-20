@@ -1,0 +1,12 @@
+:root { --font-mono: monospace; --font-sans: system-ui; --home-clock: #203044; --home-clock-text: white; }
+html, body, #root { height: auto; min-height: 100%; overflow: auto; background: #141d2c; color: #edf2f9; font: 14px system-ui; }
+main { padding: 24px; }.probe-layout { display: grid; grid-template-columns: 420px 1fr; gap: 28px; }
+.probe-home { position: sticky; top: 24px; height: fit-content; }.tile { border-radius: 20px; }
+#clock { height: 170px; }#clock > section { height: 100%; }#clock .clock-tile__time { font-size: 92px; }#clock .clock-tile__date { font-size: 14px; }
+#avatar { height: 180px; width: 180px; margin-top: 20px; }#avatar > section { width: 100%; height: 100%; }
+#canvas { height: 230px; margin-top: 20px; background: #293b54; border-radius: 16px; overflow: hidden; }
+button, select, input:not([type=range]):not([type=checkbox]) { background: #30435e; color: #f1f5ff; border-radius: 7px; padding: 8px; }button { cursor: pointer; }button:disabled { opacity: .4; }
+.wallpaper-workshop fieldset { border: 1px solid #3b4a60; border-radius: 14px; padding: 18px; }
+.wallpaper-workshop__preview { max-height: 220px; }
+
+#clock:has(.clock-tile--dashboard) { height: 360px; } #clock .clock-tile--dashboard .clock-tile__time { font-size: 48px; }

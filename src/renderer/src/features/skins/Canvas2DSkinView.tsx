@@ -1,3 +1,4 @@
+import { SkinMediaView } from "./SkinMediaView";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PixelTerminalBorderSkinId, SessionStatus } from "../../../../shared/contracts";
 import { acquireSkinImage, isPixelSkinPackId, PILOT_SKIN_ASSETS, usePixelSkinPackAssets } from "./SkinAssets";
@@ -143,7 +144,7 @@ function paint(canvas: HTMLCanvasElement, state: ViewState, frameOnly = false): 
   if (frameOnly && !state.transparentCenter) context.restore();
 }
 
-export function Canvas2DSkinView({ theme, status, artState, width, height, detail, surfaceBounds }: {
+export function Canvas2DSkinView({ theme, status, artState, width, height, detail, surfaceBounds, paused = false }: {
   theme: PixelSkinThemeId | PixelTerminalBorderSkinId;
   status: SessionStatus;
   artState?: PixelSkinArtState;
@@ -151,6 +152,7 @@ export function Canvas2DSkinView({ theme, status, artState, width, height, detai
   height: number;
   detail: ArtworkDetail;
   surfaceBounds?: PixelSkinSurfaceBounds;
+  paused?: boolean;
 }): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLCanvasElement>(null);
@@ -164,6 +166,7 @@ export function Canvas2DSkinView({ theme, status, artState, width, height, detai
     : null;
   const assetUrl = resolution?.kind === "asset" ? resolution.url
     : packUrls ? packUrls[`${detail}_${stateName}`] : null;
+  const liveMedia = packUrls?.media?.[`${detail}_${stateName}`];
   const transparentCenter = artwork?.transparentCenter ?? false;
   const bounds = surfaceBounds ?? pixelSkinSurfaceBounds(theme, detail, width, height);
 
@@ -204,7 +207,12 @@ export function Canvas2DSkinView({ theme, status, artState, width, height, detai
   }, []);
 
   return <>
-    <canvas ref={canvasRef} className="terminal-skin-canvas" data-detail={artwork?.detail ?? detail} aria-hidden="true" />
-    <canvas ref={frameRef} className="terminal-skin-canvas terminal-skin-canvas--frame" data-overlay={transparentCenter} aria-hidden="true" />
+    <canvas ref={canvasRef} className="terminal-skin-canvas" data-detail={artwork?.detail ?? detail} aria-hidden="true"
+      style={liveMedia?.animated ? { clipPath: `inset(${bounds.top}px ${Math.max(0, width - bounds.right)}px ${Math.max(0, height - bounds.bottom)}px ${bounds.left}px)` } : undefined} />
+    {liveMedia?.animated && assetUrl
+      ? <SkinMediaView key={assetUrl} src={assetUrl} media={liveMedia} paused={paused}
+          className="terminal-skin-canvas terminal-skin-canvas--frame terminal-skin-media"
+          style={{ clipPath: `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${bounds.left}px ${bounds.top}px, ${bounds.left}px ${bounds.bottom}px, ${bounds.right}px ${bounds.bottom}px, ${bounds.right}px ${bounds.top}px, ${bounds.left}px ${bounds.top}px)` }} />
+      : <canvas ref={frameRef} className="terminal-skin-canvas terminal-skin-canvas--frame" data-overlay={transparentCenter} aria-hidden="true" />}
   </>;
 }

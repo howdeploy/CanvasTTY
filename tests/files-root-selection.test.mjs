@@ -101,7 +101,7 @@ test("separate Files cards do not supersede each other's root selections", async
 
 const loadStart = source.indexOf("  const loadFileRoot =");
 const restoreStart = source.indexOf("  const restoreFileCard =");
-const restoreEnd = source.indexOf("  const fileCardsRestored =", restoreStart);
+const restoreEnd = source.indexOf("\n  useEffect(() => {", restoreStart);
 assert.ok(loadStart >= 0 && restoreStart >= 0 && restoreEnd > restoreStart);
 const rootCode = transformSync(source.slice(loadStart, end) + source.slice(restoreStart, restoreEnd), { loader: "ts" }).code;
 

@@ -348,6 +348,10 @@ async function handleRequest({
     await window.canvasTTY.plugins.openBrowser(pluginId, stringParam(params.url, "url"));
     return null;
   }
+  if (method.startsWith("files.")) {
+    requirePermission(plugin, "files:read");
+    return window.canvasTTY.plugins.filesRequest(pluginId, method, params);
+  }
   if (method === "media.pickLibrary") {
     requirePermission(plugin, "media:library");
     return window.canvasTTY.plugins.mediaPickLibrary(pluginId);
@@ -401,7 +405,7 @@ async function handleRequest({
       contribution.id === contributionId && contribution.kind === "window"
     ));
     if (!target) throw new Error("Plugin requested an unknown window contribution.");
-    await window.canvasTTY.plugins.openWindow(pluginId, contributionId);
+    await window.canvasTTY.plugins.openWindow(pluginId, contributionId, params.reuse === true);
     return null;
   }
   if (method === "canvas.open") {

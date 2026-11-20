@@ -17,6 +17,7 @@ test("agent brief starts from the repository and specifies the install artifact"
       assert.ok(prompt.includes(value));
     }
     assert.match(prompt, /background\.png/);
+    assert.match(prompt, /pack_terminal_theme\.py/); assert.match(prompt, /--require-live/); assert.match(prompt, /encode_animation\.py/);
   }
 });
 

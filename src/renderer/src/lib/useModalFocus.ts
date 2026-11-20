@@ -1,6 +1,6 @@
 import { useLayoutEffect, type RefObject } from "react";
 
-const FOCUSABLE = "button, [href], input, select, textarea, [tabindex], [contenteditable='true']";
+const FOCUSABLE = "button, [href], input, select, textarea, summary, [tabindex], [contenteditable='true']";
 
 function controls(dialog: HTMLElement): HTMLElement[] {
   return Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((element) =>

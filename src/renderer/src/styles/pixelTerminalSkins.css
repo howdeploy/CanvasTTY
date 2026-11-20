@@ -48,6 +48,9 @@
   box-shadow: none;
   outline: none;
 }
+.terminal-card--fullscreen[data-pixel-skin="true"] {
+  --card-header-height: 0px;
+}
 .terminal-card[data-border-skin="sakura"]::before {
   content: "";
   position: absolute;

@@ -1,3 +1,4 @@
+import { AuthorThemeService } from "../services/AuthorThemeService";
 import { takeDuoInvitation } from "../services/DuoInvitation";
 import { registerDesktopWindowIpc } from "./desktopWindowIpc";
 import { capturePresetLayout, mergePresetLayout } from "../services/workspacePresetLayout";
@@ -158,6 +159,21 @@ export function registerCriticalIpc(ipcMain: IpcRegistrar, {
     assertMainRenderer(event, getMainWindow);
     const snapshot = settings.get();
     return settings.isNewProfile ? { ...snapshot, isNewProfile: true } : snapshot;
+  });
+  let authorThemes: AuthorThemeService | undefined;
+  const authorThemeService = () => authorThemes ??= new AuthorThemeService(
+    app.isPackaged ? join(process.resourcesPath, "appearance-presets") : join(app.getAppPath(), "assets"),
+    settings, pixelSkinPacks, wallpapers);
+  ipcMain.handle(IPC.authorThemesList, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    return authorThemeService().list();
+  });
+  ipcMain.handle(IPC.authorThemesApply, async (event, id: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    const updated = await authorThemeService().apply(id);
+    const window = getMainWindow();
+    if (window && !window.isDestroyed()) window.webContents.send(IPC.settingsChanged, updated);
+    return updated;
   });
   ipcMain.handle(IPC.terminalBorderSkinsList, (event) => {
     assertMainRenderer(event, getMainWindow);

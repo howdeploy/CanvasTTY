@@ -126,3 +126,13 @@
 .app--canvas-mist { --canvas-bg: #a9b9bd; --dot: rgba(244, 251, 252, 0.18); }
 .app--canvas-rose { --canvas-bg: #b9a6ad; --dot: rgba(255, 245, 249, 0.17); }
 .app--canvas-slate { --canvas-bg: #262b36; --dot: rgba(220, 228, 241, 0.11); }
+
+/* Author profiles change interface typography; the shell keeps a monospace grid. */
+[data-appearance-font="mono"] {
+  --font-sans: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+  font-family: var(--font-sans);
+}
+[data-appearance-font="serif"] {
+  --font-sans: Georgia, "Times New Roman", serif;
+  font-family: var(--font-sans);
+}

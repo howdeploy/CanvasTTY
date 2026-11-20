@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "kind": "canvastty-appearance-preset",
+  "id": "cyberpunk-noodle-bar-v1",
+  "name": "Cyberpunk Noodle Bar",
+  "version": "1.0.0",
+  "terminals": {
+    "file": "../live-terminal-presets/cyberpunk-noodle-bar.zip",
+    "id": "pixel:92020000-0000-4000-8000-000000000009",
+    "sha256": "7afa70100ce4bc081955e8d48b7ccac73a6006ed9511d673ec92eb8828199ae4"
+  },
+  "apertures": {
+    "minimal": {
+      "left": 11.914,
+      "top": 15.137,
+      "right": 8.203,
+      "bottom": 7.812
+    },
+    "detailed": {
+      "left": 15.625,
+      "top": 21.875,
+      "right": 16.016,
+      "bottom": 23.633
+    },
+    "master": {
+      "left": 20.182,
+      "top": 22.363,
+      "right": 20.117,
+      "bottom": 22.266
+    }
+  },
+  "wallpapers": {
+    "canvas": {
+      "file": "cyberpunk-noodle-bar-canvas.ctwallpaper",
+      "sha256": "e58e866861aded3995ec3c8c235fdeefaea9c0ddce036d9fec5e11d484018876"
+    },
+    "avatar": {
+      "file": "cyberpunk-noodle-bar-avatar.ctwallpaper",
+      "sha256": "ebd6fded3acdaa96b5a27c91e44d0b92b4bad0a67331c715306675e0f414374a"
+    },
+    "clock": {
+      "file": "cyberpunk-noodle-bar-clock.ctwallpaper",
+      "sha256": "92dad6887351ef734c7fa2b0dc0162637c987aae0a84d9d4c8d7be39f770b4bd"
+    }
+  },
+  "settings": {
+    "palette": "night",
+    "appSkin": "midnight",
+    "canvasColor": "night",
+    "pattern": "none",
+    "canvasBackgroundFit": "cover",
+    "canvasBackgroundPaused": false,
+    "terminalBackground": "none",
+    "terminalSkinDetail": "detailed",
+    "homeClockFont": "mono",
+    "homeAccentPreset": "custom",
+    "homeAccentColors": {
+      "clock": "#f5a3fd",
+      "launcher": "#80477d",
+      "browser": "#79efdc",
+      "settings": "#f5a3fd",
+      "media": "#80477d"
+    }
+  }
+}

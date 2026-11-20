@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "kind": "canvastty-appearance-preset",
+  "id": "kisa-nocturne-v1",
+  "name": "Kisa’s Theme",
+  "version": "1.0.0-preview.2",
+  "requires": "CanvasTTY 2.0 Live Engine",
+  "terminals": {
+    "file": "../live-terminal-presets/kisa-nocturne.zip",
+    "sha256": "6eda7f7801d4b306287bf6063d7d215f582ea94dc8f3d41b7a9b0f00f79d205c",
+    "id": "pixel:92020000-0000-4000-8000-000000000005"
+  },
+  "apertures": {
+    "minimal": {
+      "left": 4,
+      "right": 4,
+      "top": 12,
+      "bottom": 4
+    },
+    "detailed": {
+      "left": 4,
+      "right": 4,
+      "top": 12,
+      "bottom": 4
+    },
+    "master": {
+      "left": 4,
+      "right": 4,
+      "top": 12,
+      "bottom": 4
+    }
+  },
+  "wallpapers": {
+    "canvas": {
+      "file": "Kisa-Nocturne-canvas.ctwallpaper",
+      "sha256": "d740b6cf027c793a92591cda66ee7cf0cf53668a0d1bc9d403a6c4e6bd1e1585"
+    },
+    "avatar": {
+      "file": "Kisa-Nocturne-avatar.ctwallpaper",
+      "sha256": "c747f7e2f7db1ff126d0e5c881f10721d7c9f40bc73c01d2aa692d6f48cf4c9a"
+    },
+    "clock": {
+      "file": "Kisa-Nocturne-clock.ctwallpaper",
+      "sha256": "642df9fe94deddc9ce3778b55f4219d379d2d86a2dea8c16b0592b80a327e204"
+    }
+  },
+  "settings": {
+    "palette": "night",
+    "appSkin": "midnight",
+    "canvasColor": "night",
+    "pattern": "none",
+    "canvasBackgroundFit": "contain",
+    "canvasBackgroundPaused": false,
+    "terminalBackground": "none",
+    "terminalSkinDetail": "minimal",
+    "homeClockFont": "mono",
+    "homeAccentPreset": "custom",
+    "homeAccentColors": {
+      "clock": "#c7b4df",
+      "launcher": "#b6a0d0",
+      "browser": "#ad9bc2",
+      "settings": "#c0a6cc",
+      "media": "#bda9d2"
+    }
+  }
+}

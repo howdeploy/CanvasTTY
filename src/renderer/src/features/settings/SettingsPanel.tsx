@@ -98,6 +98,7 @@ import {
 } from "../../lib/skinStyles";
 import { PluginSettingsSection } from "../plugins/PluginSettingsSection";
 import { HomeClockAppearance } from "../home/HomeClockAppearance";
+import { AuthorThemePresets } from "./AuthorThemePresets";
 import { HomeAppearanceSettings } from "../home/HomeAppearanceSettings";
 import {
   canvasColorPatch,
@@ -118,7 +119,7 @@ import { Canvas2DSkinView } from "../skins/Canvas2DSkinView";
 import { isPixelSkinPackId, PILOT_SKIN_ASSETS } from "../skins/SkinAssets";
 import { isPixelSkinThemeId, pixelSkinAssetFilename } from "../skins/skinCatalog";
 import type { PixelSkinThemeId } from "../skins/skinCatalog";
-import type { SkinDetailLevel } from "../skins/SkinLayout";
+import { pixelSkinSurfaceBounds, type SkinDetailLevel } from "../skins/SkinLayout";
 import { PixelSkinPackCreator } from "./PixelSkinPackCreator";
 import {
   availableProfiles,
@@ -731,6 +732,9 @@ export function SettingsPanel({
 
           {section === "appearance" && (
             <>
+              <SettingGroup label={t(locale, "authorThemes")} layout="stacked">
+                <AuthorThemePresets locale={locale} />
+              </SettingGroup>
               <SettingGroup label={t(locale, "keyboardHideBackgrounds")}
                 description={`${t(locale, "hideBackgroundsDescription")} ${settings.shortcuts.momEntered || t(locale, "disabled")}`}>
                 <Segmented value={backgroundsSuspended ? "on" : "off"}
@@ -2029,6 +2033,7 @@ function BorderSkinChoices({
           key={value}
           locale={locale}
           theme={value}
+          apertures={pixelPacks.find(pack => pack.id === value)?.apertures}
         />
       )}
     </div>
@@ -2068,9 +2073,11 @@ function PixelBorderSkinThumbnail({ theme }: { theme: PixelSkinThemeId }): React
 function PixelBorderSkinPreview({
   locale,
   theme,
+  apertures,
 }: {
   locale: LocaleId;
   theme: PixelSkinThemeId | PixelTerminalBorderSkinId;
+  apertures?: PixelSkinPackSummary["apertures"];
 }): React.JSX.Element {
   const previewRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -2153,6 +2160,7 @@ function PixelBorderSkinPreview({
             width={size.width}
             height={size.height}
             detail={detail}
+            surfaceBounds={pixelSkinSurfaceBounds(theme, detail, size.width, size.height, 26, apertures?.[detail])}
           />
         )}
       </div>

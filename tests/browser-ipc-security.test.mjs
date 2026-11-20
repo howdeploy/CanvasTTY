@@ -31,7 +31,7 @@ function handlerSource(source, channel) {
 async function ipcModules({ platform = process.platform, shell = {}, terminalFileEditor = {} } = {}) {
   const unusedImports = [
     "../../shared/canvasNavigation", "../windowState", "../services/SkinRegistry",
-    "../services/PixelSkinPackRegistry", "../services/providerCliRegistry", "../services/LimitsService",
+    "../services/PixelSkinPackRegistry", "../services/AuthorThemeService", "../services/providerCliRegistry", "../services/LimitsService",
     "../services/browser/PluginBrowserOpenPolicy", "../../shared/externalUrl", "../services/homeMedia",
     "../services/terminalFileEditor", "../services/materials/materialClipboard.ts", "../services/materials/materialState.ts"
   ];
@@ -113,6 +113,7 @@ test("channels that change settings, plugins, secrets or terminals accept only t
     "workspacePresetsRestore",
     "workspacePresetsRemove",
     "settingsUpdate",
+    "authorThemesApply",
     "mediaRead",
     "pluginsPreviewInstall",
     "pluginsInstall",
@@ -135,6 +136,7 @@ test("channels that change settings, plugins, secrets or terminals accept only t
     "clipboardRead",
     "clipboardWrite",
     "settingsGet",
+    "authorThemesList",
     "dialogPickDirectory",
     "dialogPickMedia",
     "limitsGet",

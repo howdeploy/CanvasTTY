@@ -2252,7 +2252,7 @@ export function App(): React.JSX.Element {
   }, [agentAvailability, homeEditDraft, settings, displaySettings]);
 
   return (
-    <div ref={setOverlayHost} className={`${rootClasses}${duoFullCanvas?" app--duo-full":""}`} style={rootStyle} data-app-skin={displaySettings.appSkin}>
+    <div ref={setOverlayHost} className={`${rootClasses}${duoFullCanvas?" app--duo-full":""}`} style={rootStyle} data-app-skin={displaySettings.appSkin} data-appearance-font={displaySettings.appearanceFont}>
       <TerminalBorderSkinStyleHost skinId={displaySettings.terminalBorderSkin} />
       <TitleBar actionsRef={setTitlebarActions} locale={settings.locale} windowState={windowState} onWindowStateChange={setWindowState} />
       <UsageHistoryPanel

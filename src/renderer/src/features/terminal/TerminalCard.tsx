@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TerminalBackgroundId } from "../../../../shared/terminalBackground";
 
 const AsciiTerminalBackground = lazy(() =>
@@ -25,6 +25,7 @@ import type {
   FocusActivation,
   SessionBounds,
   SessionSnapshot,
+  Size,
   PixelSkinPreferredDetail,
   ShortcutBindings,
   TerminalBorderSkinId
@@ -243,6 +244,7 @@ function TerminalCardView({
   const pixelSkinTheme = isPixelSkinThemeId(borderSkin) || isPixelSkinPackId(borderSkin) ? borderSkin : null;
   const pixelPack = usePixelSkinPackSummary(isPixelSkinPackId(borderSkin) ? borderSkin : null);
   const pixelArtState = pixelSkinStateForSession(session.status, session.turnCompleted);
+  const card = useRef<HTMLElement>(null);
   const terminalHost = useRef<HTMLDivElement>(null);
   const backgroundOutputActivity = useRef<(() => void) | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -277,11 +279,30 @@ function TerminalCardView({
   const resizeState = useRef<ResizeState | null>(null);
   const [position, setPosition] = useState(session.position);
   const [size, setSize] = useState(session.size);
+  const [fullscreenSize, setFullscreenSize] = useState<Size | null>(null);
+  const measureFullscreenSkin = fullscreen && pixelSkinTheme !== null;
+  useLayoutEffect(() => {
+    const element = card.current;
+    if (!measureFullscreenSkin || !element) return;
+    // The portal fills the viewport while the session retains its canvas bounds.
+    const measure = (): void => {
+      const width = element.clientWidth;
+      const height = element.clientHeight;
+      if (width > 0 && height > 0) {
+        setFullscreenSize((current) => current?.width === width && current.height === height ? current : { width, height });
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [measureFullscreenSkin]);
+  const skinSize = fullscreen && fullscreenSize ? fullscreenSize : size;
   const pixelDetail = pixelSkinTheme
     ? skinDetailLevel(skinDetail, forceMasterDetail || session.role === "orchestrator")
     : "minimal";
   const pixelSurfaceBounds = pixelSkinTheme
-    ? pixelSkinSurfaceBounds(pixelSkinTheme, pixelDetail, size.width, size.height, 26,
+    ? pixelSkinSurfaceBounds(pixelSkinTheme, pixelDetail, skinSize.width, skinSize.height, 26,
       pixelPack?.apertures[pixelDetail] ?? pixelPack?.aperture)
     : null;
   const [restarting, setRestarting] = useState(false);
@@ -310,7 +331,7 @@ function TerminalCardView({
   // Continuous summary scaling is inherited from the scene without rendering every card.
   const summaryMode = useCameraSelector(camera, (current) => current.zoom < SUMMARY_ZOOM);
   const pixelControls = pixelSkinTheme
-    ? pixelSkinControlLayout(pixelSkinTheme, pixelDetail, size.width, size.height, pixelPack?.controls?.[pixelDetail],
+    ? pixelSkinControlLayout(pixelSkinTheme, pixelDetail, skinSize.width, skinSize.height, pixelPack?.controls?.[pixelDetail],
       2 + (summaryMode ? 0 : 1) + (session.exitCode !== null ? 1 : 0)
       + (session.exitCode !== null && session.provider !== "terminal" ? 1 : 0) + (hasOptions ? 1 : 0))
     : null;
@@ -1340,6 +1361,7 @@ function TerminalCardView({
   );
   return (
     <article
+      ref={card}
       className={`terminal-card terminal-card--${session.provider} ${summaryMode ? "terminal-card--summary" : ""} ${selected || groupSelected ? "terminal-card--selected" : ""} ${session.status === "needs_approval" || session.status === "failed" ? "terminal-card--attention" : ""} ${fullscreen ? "terminal-card--fullscreen" : ""}`}
       data-interactive="true"
       data-canvas-layer-id={`terminal:${session.id}`}
@@ -1405,12 +1427,12 @@ function TerminalCardView({
         "--terminal-text-backdrop-strength": backgroundReadabilityStrength / 100,
         "--terminal-foreground": terminalForeground,
         "--pixel-skin-left-inset": `${pixelSurfaceBounds?.left ?? 28}px`,
-        "--pixel-skin-right-inset": `${size.width - (pixelSurfaceBounds?.right ?? (size.width - 28))}px`,
+        "--pixel-skin-right-inset": `${skinSize.width - (pixelSurfaceBounds?.right ?? (skinSize.width - 28))}px`,
         "--pixel-skin-top-inset": `${pixelSurfaceBounds?.top ?? 70}px`,
-        "--pixel-skin-bottom-inset": `${size.height - (pixelSurfaceBounds?.bottom ?? (size.height - 58))}px`
+        "--pixel-skin-bottom-inset": `${skinSize.height - (pixelSurfaceBounds?.bottom ?? (skinSize.height - 58))}px`
       } as React.CSSProperties}
     >
-      {fullscreen && (
+      {fullscreen && !pixelSkinTheme && (
         <button
           className="terminal-card__exit-fullscreen"
           type="button"
@@ -1517,7 +1539,7 @@ function TerminalCardView({
       {/* The frame stays visible in summary mode; only the terminal surface is suspended. */}
       {pixelSkinTheme && (
         <Suspense fallback={null}><Canvas2DSkinView theme={pixelSkinTheme} status={session.status} artState={pixelArtState}
-          width={size.width} height={size.height} detail={pixelDetail} surfaceBounds={pixelSurfaceBounds ?? undefined} paused={!skinAnimationEnabled || hidden} /></Suspense>
+          width={skinSize.width} height={skinSize.height} detail={pixelDetail} surfaceBounds={pixelSurfaceBounds ?? undefined} paused={!skinAnimationEnabled || hidden} /></Suspense>
       )}
       {pixelSkinTheme && (["top", "right", "bottom", "left"] as const).map((edge) => (
         <div key={edge} className={`terminal-card__skin-drag terminal-card__skin-drag--${edge}`}

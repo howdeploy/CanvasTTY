@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, copyFile, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,23 +11,25 @@ import { testPng } from './helpers/png.mjs';
 
 const resources = fileURLToPath(new URL('../assets/live-terminal-presets/', import.meta.url));
 const catalog = JSON.parse(await readFile(join(resources, 'catalog.json'), 'utf8'));
+const webpFrameArchives = new Set(['steampunk-airship.zip', 'brutalist-monolith.zip', 'cyberpunk-noodle-bar.zip']);
 
-test('only Living Forge installs on a fresh profile and survives restart without duplicates', async t => {
+test('all approved live themes install and survive restart without duplicates', async t => {
   const profile = await mkdtemp(join(tmpdir(), 'ct-bundled-live-'));
   t.after(() => rm(profile, { recursive: true, force: true }));
   const registry = new PixelSkinPackRegistry(profile, resources);
   await registry.initialize();
-  assert.equal(registry.list().length, 1);
-  assert.equal(registry.list()[0].name, 'Living Forge');
+  assert.deepEqual(registry.list().map(p => p.name), ['Living Forge', 'Kisa’s Theme', 'Teo’s Theme', 'Steampunk Airship', 'Brutalist Monolith', 'Cyberpunk Noodle Bar']);
   assert.deepEqual(registry.list().map(p => p.id), catalog.presets.map(p => p.id));
   for (const pack of registry.list()) {
-    assert.deepEqual(pack.apertures.minimal, { left: 10, right: 10, top: 20, bottom: 15.5 });
+    const preset = catalog.presets.find(p => p.id === pack.id);
+    assert.deepEqual(pack.apertures, preset.apertures);
     assert.ok(pack.controls?.detailed);
     for (const slot of PIXEL_SKIN_SLOTS) {
       const bytes = await registry.readAsset(pack.id, slot);
       const info = inspectSkinMedia(bytes);
       assert.equal(info.animated, true, `${pack.name}/${slot}`);
-      assert.equal(info.format, 'gif');
+      const format = slot !== 'background' && webpFrameArchives.has(preset.archive) ? 'webp' : 'gif';
+      assert.equal(info.format, format, `${pack.name}/${slot}`);
       if (slot !== 'background') assert.deepEqual([info.width, info.height], [1536, 1024]);
     }
     assert.notDeepEqual(await registry.readAsset(pack.id, 'master_idle'), await registry.readAsset(pack.id, 'master_working'));
@@ -40,7 +42,7 @@ test('only Living Forge installs on a fresh profile and survives restart without
   await reopened.initialize();
   assert.deepEqual(reopened.list().map(p => p.id).sort(), [...catalog.presets.map(p => p.id), custom.id].sort());
   assert.equal((await new SettingsStore(profile, 'en').load()).terminalBorderSkin, catalog.presets[0].id);
-  assert.equal((await readdir(join(profile, 'pixel-skins'))).length, 2);
+  assert.equal((await readdir(join(profile, 'pixel-skins'))).length, catalog.presets.length + 1);
 });
 
 test('retired experiments are archived once and personal imports are preserved', async t => {
@@ -54,7 +56,7 @@ test('retired experiments are archived once and personal imports are preserved',
   for (let restart = 0; restart < 2; restart++) {
     const registry = new PixelSkinPackRegistry(profile, resources);
     await registry.initialize();
-    assert.deepEqual(registry.list().map(p => p.id).sort(), [catalog.presets[0].id, own.id].sort());
+    assert.deepEqual(registry.list().map(p => p.id).sort(), [...catalog.presets.map(p => p.id), own.id].sort());
     const archived = await readdir(join(profile, 'pixel-skins', '.retired'));
     assert.equal(archived.length, catalog.retiredIds.length);
     for (const folder of archived) {
@@ -80,7 +82,7 @@ test('updated bundled artwork replaces the old stable ID once and keeps its sele
     const next = new PixelSkinPackRegistry(profile, resources);
     await next.initialize();
     assert.equal(next.list().find(p => p.id === preset.id).name, 'Living Forge');
-    assert.equal(next.list().length, 2);
+    assert.equal(next.list().length, catalog.presets.length + 1);
     assert.ok(next.list().some(p => p.id === custom.id));
     assert.equal((await new SettingsStore(profile, 'en').load()).terminalBorderSkin, preset.id);
     assert.equal((await readdir(join(profile, 'pixel-skins', '.retired'))).length, 1);
@@ -89,9 +91,10 @@ test('updated bundled artwork replaces the old stable ID once and keeps its sele
   const broken = join(profile, 'broken-resources'); await mkdir(broken);
   await writeFile(join(broken, 'catalog.json'), JSON.stringify(catalog));
   await writeFile(join(broken, preset.archive), Buffer.alloc(30));
+  await Promise.all(catalog.presets.slice(1).map(({ archive }) => copyFile(join(resources, archive), join(broken, archive))));
   const fallback = new PixelSkinPackRegistry(profile, broken);
   await fallback.initialize();
-  assert.equal(fallback.list().length, 2);
+  assert.equal(fallback.list().length, catalog.presets.length + 1);
   assert.deepEqual(await fallback.readAsset(preset.id, 'master_idle'), await old.readAsset(preset.id, 'master_idle'));
   assert.equal((await readdir(join(profile, 'pixel-skins', '.retired'))).length, 1);
 });

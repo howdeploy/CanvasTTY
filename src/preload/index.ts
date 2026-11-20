@@ -139,6 +139,10 @@ const api: CanvasTTYApi = {
     update: (patch: Partial<AppSettings>) => invoke(IPC.settingsUpdate, patch),
     onChanged: (listener: (settings: AppSettings) => void) => subscribe(IPC.settingsChanged, listener)
   },
+  authorThemes: {
+    list: () => invoke(IPC.authorThemesList),
+    apply: (id: string) => invoke(IPC.authorThemesApply, id)
+  },
   skins: {
     list: () => invoke(IPC.terminalBorderSkinsList),
     get: (id: CustomTerminalBorderSkinId) => invoke(IPC.terminalBorderSkinsGet, id),

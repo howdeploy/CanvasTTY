@@ -154,7 +154,7 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
         {status && <span className="duo-status" role="status"><span className="duo-status-dot" data-connected={workspace.connected} />{status}</span>}
         <button className="settings-panel__close" type="button" onClick={() => changeOpen(false)} aria-label={ru ? "Закрыть" : "Close"}><UiIcon name="close" size="1.05em" /></button>
       </header>
-      <div className="settings-panel__content duo-panel__body" data-role={state.role}>
+      <div className="settings-panel__content duo-panel__body">
         {state.role === "guest" && state.fullCanvas && <section className="duo-section">
           <h3>{ru ? "Доступ к холсту" : "Canvas access"}</h3>
           <p className="duo-muted">{state.manage && workspace.connected
@@ -163,28 +163,37 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
         </section>}
         {state.role !== "guest" && <section className="duo-setup duo-section">
           <h3>{state.role === "idle" ? (ru ? "Пригласить гостя" : "Invite a guest") : (ru ? "Доступ гостя" : "Guest access")}</h3>
-          {state.role === "idle" && <div className="duo-sharing-scope" role="group" aria-label={ru ? "Что увидит гость" : "What the guest can see"}>
-            <Segmented value={fullCanvas ? "canvas" : "terminals"} disabled={busy}
-              options={[["canvas", ru ? "Весь холст" : "Entire canvas"], ["terminals", ru ? "Терминалы" : "Terminals"]]}
-              onChange={value => setFullCanvas(value === "canvas")} />
-          </div>}
-          {fullCanvas && <p className="duo-muted">{ru ? "Гость увидит содержимое холста, включая открытые страницы браузера." : "The guest can see the canvas, including open browser pages."}</p>}
-          {!fullCanvas && !state.available.length && <p className="duo-muted">{ru ? "Откройте терминал, чтобы поделиться им." : "Open a terminal to share it."}</p>}
-          {!fullCanvas && state.available.map(card => <div className="duo-choice" key={card.id}><label><input type="checkbox" checked={selected.includes(card.id)} disabled={busy || (!selected.includes(card.id) && selected.length >= 8)} onChange={e => { const checked = e.currentTarget.checked; setSelected(ids => checked ? [...ids, card.id] : ids.filter(id => id !== card.id)); if (!checked) setControlled(ids => ids.filter(id => id !== card.id)); }} />{card.title}</label>
-            <label><input type="checkbox" checked={controlled.includes(card.id)} disabled={busy || !selected.includes(card.id)} onChange={e => { const checked = e.currentTarget.checked; setControlled(ids => checked ? [...ids, card.id] : ids.filter(id => id !== card.id)); }} />{ru ? "Разрешить ввод" : "Allow input"}</label></div>)}
-          <label className="duo-manage"><input type="checkbox" checked={manage} disabled={busy} onChange={e=>setManage(e.target.checked)} />
-            <span>{ru ? "Разрешить управление" : "Allow control"}
-              <small className="duo-muted">{ru ? "Действия выполняются на компьютере хоста с его правами." : "Actions run on the host’s computer with the host’s permissions."}</small>
-            </span>
-          </label>
+          <details className="duo-access">
+            <summary>{fullCanvas ? (ru ? "Весь холст" : "Entire canvas") : (ru ? "Терминалы" : "Terminals")} · {manage || controlled.length ? (ru ? "Управление" : "Control enabled") : (ru ? "Просмотр" : "View only")}</summary>
+            <div className="duo-details-content">
+              {state.role === "idle" && <div className="duo-sharing-scope" role="group" aria-label={ru ? "Что увидит гость" : "What the guest can see"}>
+                <Segmented value={fullCanvas ? "canvas" : "terminals"} disabled={busy}
+                  options={[["canvas", ru ? "Весь холст" : "Entire canvas"], ["terminals", ru ? "Терминалы" : "Terminals"]]}
+                  onChange={value => setFullCanvas(value === "canvas")} />
+              </div>}
+              {fullCanvas && <p className="duo-muted">{ru ? "Гость увидит содержимое холста, включая открытые страницы браузера." : "The guest can see the canvas, including open browser pages."}</p>}
+              {!fullCanvas && !state.available.length && <p className="duo-muted">{ru ? "Откройте терминал, чтобы поделиться им." : "Open a terminal to share it."}</p>}
+              {!fullCanvas && state.available.map(card => <div className="duo-choice" key={card.id}><label><input type="checkbox" checked={selected.includes(card.id)} disabled={busy || (!selected.includes(card.id) && selected.length >= 8)} onChange={e => { const checked = e.currentTarget.checked; setSelected(ids => checked ? [...ids, card.id] : ids.filter(id => id !== card.id)); if (!checked) setControlled(ids => ids.filter(id => id !== card.id)); }} />{card.title}</label>
+                <label><input type="checkbox" checked={controlled.includes(card.id)} disabled={busy || !selected.includes(card.id)} onChange={e => { const checked = e.currentTarget.checked; setControlled(ids => checked ? [...ids, card.id] : ids.filter(id => id !== card.id)); }} />{ru ? "Разрешить ввод" : "Allow input"}</label></div>)}
+              <label className="duo-manage"><input type="checkbox" checked={manage} disabled={busy} onChange={e=>setManage(e.target.checked)} />
+                <span>{ru ? "Разрешить управление" : "Allow control"}
+                  <small className="duo-muted">{ru ? "Действия выполняются на компьютере хоста с его правами." : "Actions run on the host’s computer with the host’s permissions."}</small>
+                </span>
+              </label>
+            </div>
+          </details>
           <button type="button" className="duo-action duo-action--primary" disabled={busy || (!fullCanvas && selected.length === 0)} onClick={() => void run({ action: state.role === "host" ? "select" : "host", selected:fullCanvas?[]:selected, controlled:fullCanvas?[]:controlled, manage, ...(state.role==="idle"?{fullCanvas,documentSync:fullCanvas}:{}) })}>
             {state.role === "host" ? (ru ? "Применить доступ" : "Apply access") : (ru ? "Создать и скопировать ссылку" : "Create and copy link")}
           </button>
         </section>}
         {state.role === "idle" && <form className="duo-join duo-section" onSubmit={e => { e.preventDefault(); if (invite && !busy) void run({ action: "join", invite }); }}>
           <h3>{ru ? "Подключиться по ссылке" : "Join with a link"}</h3>
-          <label>{ru ? "Ссылка-приглашение" : "Invitation link"}<input autoComplete="off" spellCheck={false} value={invite} onChange={e => setInvite(e.target.value.trim())} maxLength={1800} placeholder={ru ? "Вставьте ссылку-приглашение" : "Paste invitation link"} /></label>
-          <button className="duo-action duo-action--primary" disabled={busy || !invite}>{ru ? "Подключиться" : "Connect"}</button>
+          <div className="duo-input duo-join__entry">
+            <input aria-label={ru ? "Ссылка-приглашение" : "Invitation link"} autoComplete="off" spellCheck={false} value={invite}
+              onChange={e => setInvite(e.target.value.trim())} maxLength={1800}
+              placeholder={ru ? "Вставьте ссылку" : "Paste invitation link"} />
+            <button className="duo-action duo-action--primary" disabled={busy || !invite}>{ru ? "Подключиться" : "Connect"}</button>
+          </div>
         </form>}
         {state.role === "host" && <section className="duo-section">
           <h3>{ru ? "Приглашение" : "Invitation"}</h3>
@@ -196,31 +205,33 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
             </button>
           </div>)}
         </section>}
-        <section className="duo-cursor-design duo-section">
-          <h3 id="duo-cursor-design-title">{cursorDesignLabel}</h3>
-          <form className="duo-input duo-cursor-nickname" onSubmit={event => {
-            event.preventDefault();
-            if (nextNickname === cursorNickname) return;
-            setNicknameDraft(nextNickname);
-            onCursorNicknameChange(nextNickname);
-          }}>
-            <label>
-              {ru ? "Твой ник" : "Your nickname"}
-              <input autoComplete="off" maxLength={DUO_CURSOR_NICKNAME_MAX_LENGTH} dir="auto"
-                value={nicknameDraft ?? cursorNickname} onChange={event => setNicknameDraft(event.target.value)} />
-            </label>
-            <button type="submit" className="duo-action" disabled={nextNickname === cursorNickname}>{ru ? "Сохранить" : "Save"}</button>
-          </form>
-          <div className="duo-cursor-design__grid" role="group" aria-labelledby="duo-cursor-design-title">
-            {DUO_CURSOR_DESIGNS.map(design => (
-              <button type="button" key={design} className="duo-cursor-design__option"
-                aria-pressed={selectedCursorDesign === design} onClick={() => onCursorDesignChange(design)}>
-                <DuoCursorMark design={design} />
-                <span>{duoCursorName(design, locale)}</span>
-              </button>
-            ))}
+        <details className="duo-cursor-design duo-section">
+          <summary id="duo-cursor-design-title">{cursorDesignLabel}{ru ? " и ник" : " and nickname"}</summary>
+          <div className="duo-details-content">
+            <form className="duo-input duo-cursor-nickname" onSubmit={event => {
+              event.preventDefault();
+              if (nextNickname === cursorNickname) return;
+              setNicknameDraft(nextNickname);
+              onCursorNicknameChange(nextNickname);
+            }}>
+              <label>
+                {ru ? "Твой ник" : "Your nickname"}
+                <input autoComplete="off" maxLength={DUO_CURSOR_NICKNAME_MAX_LENGTH} dir="auto"
+                  value={nicknameDraft ?? cursorNickname} onChange={event => setNicknameDraft(event.target.value)} />
+              </label>
+              <button type="submit" className="duo-action" disabled={nextNickname === cursorNickname}>{ru ? "Сохранить" : "Save"}</button>
+            </form>
+            <div className="duo-cursor-design__grid" role="group" aria-labelledby="duo-cursor-design-title">
+              {DUO_CURSOR_DESIGNS.map(design => (
+                <button type="button" key={design} className="duo-cursor-design__option"
+                  aria-pressed={selectedCursorDesign === design} onClick={() => onCursorDesignChange(design)}>
+                  <DuoCursorMark design={design} />
+                  <span>{duoCursorName(design, locale)}</span>
+                </button>
+              ))}
+            </div>
           </div>
-        </section>
+        </details>
         {error && <p role="alert" className="duo-error">{error}</p>}
         {Boolean(snapshot?.cards.length) && <div className="duo-cards">{snapshot?.cards.map(card => <article key={card.id} className="duo-card duo-section">
           <h3><span>{card.title}</span><small className="duo-muted">{card.provider} · {card.running ? (ru ? "Активен" : "Running") : (ru ? "Остановлен" : "Stopped")}{card.control ? (ru ? " · Ввод разрешён" : " · Input allowed") : ""}</small></h3>

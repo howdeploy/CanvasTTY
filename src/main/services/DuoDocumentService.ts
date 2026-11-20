@@ -5,6 +5,12 @@ import { DUO_FILE_READ_CHANNELS, DUO_READ_CHANNELS, DUO_WRITE_CHANNELS } from '.
 import type { DuoFileTransferService } from './DuoFileTransferService';
 
 const CHUNK=128_000, MAX_RESULT=32*1024*1024;
+
+function isPluginShared(settings: AppSettings, pluginId: string): boolean {
+  return settings.pluginCanvas.some(card => card.pluginId === pluginId)
+    || settings.homeLayout.some(widget => widget.widgetId.startsWith(`plugin:${pluginId}:`));
+}
+
 export class DuoDocumentService implements DuoDocumentPort {
   private chunks = new Map<string, { text: string; at: number; allowed: () => boolean }>();
   private fileRoots = new Map<string, FileRootReference>();
@@ -42,8 +48,8 @@ export class DuoDocumentService implements DuoDocumentPort {
     const [materials,plugins,browser]=await Promise.all([
       this.invoke(IPC.materialsSnapshot,[]),this.invoke(IPC.pluginsList,[]),this.invoke(IPC.browserGetState,[])
     ]);
-    const settings=this.settings.get();const shared=(id:string)=>settings.pluginCanvas.some(p=>p.pluginId===id)||settings.homeLayout.some(p=>p.widgetId.startsWith(`plugin:${id}:`));
-    return {settings:pickDuoSettings(settings),materials,plugins,browser,storageEvents:[...this.storage.values()].filter(e=>shared(e.pluginId))};
+    const settings = this.settings.get();
+    return {settings:pickDuoSettings(settings),materials,plugins,browser,storageEvents:[...this.storage.values()].filter(e=>isPluginShared(settings,e.pluginId))};
   }
   edit(ops:DuoDocumentOp[],authorized:()=>boolean):Promise<void>{
     const task=this.edits.catch(()=>undefined).then(async()=>{
@@ -93,7 +99,9 @@ export class DuoDocumentService implements DuoDocumentPort {
         allowed = () => connected() && this.rootReadable(url.hostname, authorized);
         if (!allowed()) throw Error('This Files folder is not shared.');
       }
-      if(url.protocol==='canvastty-plugin:'&&url.hostname!=='host'&&!this.settings.get().pluginCanvas.some(p=>p.pluginId===url.hostname)&&!this.settings.get().homeLayout.some(p=>p.widgetId.startsWith(`plugin:${url.hostname}:`)))throw Error('This plugin is not on the shared canvas.');
+      if (url.protocol === 'canvastty-plugin:' && url.hostname !== 'host' && !isPluginShared(this.settings.get(), url.hostname)) {
+        throw Error('This plugin is not on the shared canvas.');
+      }
       const headers=new Headers();
       if(range!==null&&range!==undefined){
         const match=/^bytes=(\d+)-(\d*)$/.exec(String(range));if(!match)throw Error('Invalid media range.');
@@ -109,7 +117,10 @@ export class DuoDocumentService implements DuoDocumentPort {
       result=await this.browserResource(channel,args,authorized);
     }else{
       if(channel.startsWith('plugins:')){
-        const pluginId=args[0];if(typeof pluginId!=='string'||!this.settings.get().pluginCanvas.some(p=>p.pluginId===pluginId)&&!this.settings.get().homeLayout.some(p=>p.widgetId.startsWith(`plugin:${pluginId}:`)))throw Error('This plugin is not on the shared canvas.');
+        const pluginId = args[0];
+        if (typeof pluginId !== 'string' || !isPluginShared(this.settings.get(), pluginId)) {
+          throw Error('This plugin is not on the shared canvas.');
+        }
       }
       if(channel===IPC.mediaRead&&args[0]!==this.settings.get().mediaPath)throw Error('Only the shared background media is readable.');
       if (register && this.fileRoots.size >= 256) throw Error('Too many shared Files folders.');

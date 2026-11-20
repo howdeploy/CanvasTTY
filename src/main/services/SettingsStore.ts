@@ -327,13 +327,17 @@ export class SettingsStore {
 
   async update(patch: Partial<AppSettings>): Promise<AppSettings> {
     const updatePatch = structuredClone(patch);
-    return this.updateLatest(() => updatePatch);
+    return this.enqueueUpdate(() => updatePatch);
   }
 
   /** Derive a patch from the state at the head of the persistence queue. */
   async updateLatest(derive: (latest: AppSettings) => Partial<AppSettings>): Promise<AppSettings> {
+    return this.enqueueUpdate(() => derive(this.get()));
+  }
+
+  private async enqueueUpdate(derive: () => Partial<AppSettings>): Promise<AppSettings> {
     const write = this.writeQueue.catch(() => undefined).then(async () => {
-      const updatePatch = derive(this.get());
+      const updatePatch = derive();
       const nextHasPersistedLegacyWheelCapture = this.hasPersistedLegacyWheelCapture
         || updatePatch.canvasWheelCaptureMode !== undefined;
       const nextPatch = updatePatch.canvasWheelCaptureMode === "key"

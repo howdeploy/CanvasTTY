@@ -34,24 +34,9 @@ export function TitleBar({ actionsRef, locale, windowState, onWindowStateChange 
     </div>
   );
 
-  if (windowState.isMacOS) {
-    return (
-      <header className="titlebar titlebar--macos">
-        <div className="titlebar__macos-controls-space" aria-hidden="true" />
-        <div className="titlebar__brand">
-          <img className="titlebar__logo" src={appLogo} alt="" aria-hidden="true" />
-          <strong>{APP_NAME}</strong>
-          <span className={`titlebar__build titlebar__build--${BUILD_CHANNEL.toLowerCase()}`}>{BUILD_LABEL}</span>
-          <span className="titlebar__subtitle">{t(locale, "appSubtitle")}</span>
-        </div>
-        <div className="titlebar__drag" />
-        <div ref={actionsRef} className="titlebar__actions" />
-      </header>
-    );
-  }
-
   return (
-    <header className="titlebar">
+    <header className={windowState.isMacOS ? "titlebar titlebar--macos" : "titlebar"}>
+      {windowState.isMacOS && <div className="titlebar__macos-controls-space" aria-hidden="true" />}
       <div className="titlebar__brand">
         <img className="titlebar__logo" src={appLogo} alt="" aria-hidden="true" />
         <strong>{APP_NAME}</strong>
@@ -60,7 +45,7 @@ export function TitleBar({ actionsRef, locale, windowState, onWindowStateChange 
       </div>
       <div className="titlebar__drag" />
       <div ref={actionsRef} className="titlebar__actions" />
-      {controls}
+      {!windowState.isMacOS && controls}
     </header>
   );
 }

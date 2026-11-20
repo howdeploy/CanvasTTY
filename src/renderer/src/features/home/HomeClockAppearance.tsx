@@ -15,14 +15,13 @@ export function HomeClockAppearance({ settings, onChange }: {
     if (busy) return;
     setBusy(true); setError("");
     try {
-      if (file.size > 20 * 1024 * 1024) throw new Error("Image too large");
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file);
-      });
-      const { installAvatarSelection } = await import("./avatarMedia");
-      const saved = await installAvatarSelection({ path: file.name, dataUrl }, "clock");
+      const { installClockBackground } = await import("./avatarMedia");
+      const saved = await installClockBackground(file);
       try { await onChange({ homeClockWallpaper: saved.id }); }
-      catch (error) { await window.canvasTTY.wallpapers.remove(saved.id); throw error; }
+      catch {
+        await window.canvasTTY.wallpapers.remove(saved.id).catch(() => undefined);
+        setError(ru ? "Не удалось сохранить фон часов." : "Could not save the clock background.");
+      }
     } catch { setError(ru ? "Выберите GIF, PNG или WebP до 20 МБ." : "Choose a GIF, PNG or WebP up to 20 MB."); }
     finally { setBusy(false); if (wallpaperInput.current) wallpaperInput.current.value = ""; }
   };

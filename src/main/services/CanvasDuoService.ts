@@ -57,10 +57,13 @@ export function parseDuoInvite(raw: unknown): Invite {
   return value;
 }
 export function sealDuo(value: unknown, key: Buffer, direction: "request" | "response"): Packet {
+  return sealDuoJson(JSON.stringify(value), key, direction);
+}
+function sealDuoJson(json: string, key: Buffer, direction: "request" | "response"): Packet {
   const nonce = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, nonce);
   cipher.setAAD(Buffer.from(`CanvasDuo/1/${direction}`));
-  const data = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  const data = Buffer.concat([cipher.update(json, "utf8"), cipher.final()]);
   return { nonce: nonce.toString("base64"), data: data.toString("base64"), tag: cipher.getAuthTag().toString("base64") };
 }
 export function openDuo(packet: unknown, key: Buffer, direction: "request" | "response"): unknown {
@@ -199,9 +202,17 @@ export class CanvasDuoService {
   private expirePeer(): void {
     if (!this.connectedPeer || Date.now() - this.peerLastSeen <= PEER_LEASE_MS) return;
     this.trace?.record("peer-lease-expired");
-    this.connectedPeer = ""; this.peerLastSeen = 0;
+    this.releaseGuest();
+  }
+  private releaseGuest(): void {
+    this.connectedPeer = "";
+    this.peerLastSeen = 0;
     this.documentPages.clear();
-    this.controlled.clear(); this.manage = false; this.options.surface?.release(); this.options.document?.clear(); this.cursors.delete("guest");
+    this.controlled.clear();
+    this.manage = false;
+    this.options.surface?.release();
+    this.options.document?.clear();
+    this.cursors.delete("guest");
   }
   state(): DuoState {
     this.expirePeer();
@@ -332,11 +343,13 @@ export class CanvasDuoService {
       this.trace?.record("peer-authenticated");
     }
     this.connectedPeer = value.peer; this.peerLastSeen = Date.now();
-    let result: unknown;
+    let json: string;
     try {
       const generation = this.generation;
+      const epoch = this.peerEpoch;
+      const isCurrent = () => generation === this.generation && this.key === key && this.peerEpoch === epoch;
       const perform = () => {
-        if (generation !== this.generation || this.key !== key || this.connectedPeer !== value.peer) throw Error('Duo session changed.');
+        if (!isCurrent() || this.connectedPeer !== value.peer) throw Error('Duo session changed.');
         return this.perform(value, 'guest');
       };
       const read = ['heartbeat', 'snapshot', 'updates', 'document-page', 'surface', 'file-can-open'].includes(value.action)
@@ -352,8 +365,10 @@ export class CanvasDuoService {
         this.receivedMutations = task;
       }
       const snapshot = await task;
-      result = { id: value.id, ok: true, snapshot };
-      if (snapshot.document && Buffer.byteLength(JSON.stringify(result)) > MAX_RESPONSE_BYTES) {
+      if (!isCurrent() || (value.action !== 'leave' && this.connectedPeer !== value.peer)) throw Error('Duo session changed.');
+      json = JSON.stringify({ id: value.id, ok: true, snapshot });
+      if (Buffer.byteLength(json) > MAX_RESPONSE_BYTES) {
+        if (!snapshot.document) throw Error('Duo response is too large.');
         const { document, ...metadata } = snapshot;
         const text = JSON.stringify(document);
         if (Buffer.byteLength(text) > MAX_DOCUMENT_BYTES) throw Error('Shared Canvas document is too large.');
@@ -361,14 +376,16 @@ export class CanvasDuoService {
         const now = Date.now();
         for (const [key, page] of this.documentPages) if (page.expires <= now) this.documentPages.delete(key);
         if (this.documentPages.size >= 2) this.documentPages.delete(this.documentPages.keys().next().value!);
+        json = JSON.stringify({ id: value.id, ok: true, snapshot: { ...metadata, documentPage: { id, length: text.length } } });
+        if (Buffer.byteLength(json) > MAX_RESPONSE_BYTES) throw Error('Duo response is too large.');
         this.documentPages.set(id, { text, peer: value.peer, expires: now + 60_000 });
-        result = { id: value.id, ok: true, snapshot: { ...metadata, documentPage: { id, length: text.length } } };
       }
-      if (Buffer.byteLength(JSON.stringify(result)) > MAX_RESPONSE_BYTES) throw Error('Duo response is too large.');
     }
-    catch (error) { result = {id:value.id,ok:false,error:error instanceof Error ? error.message : 'Duo request failed.'}; }
+    catch (error) {
+      json = JSON.stringify({ id: value.id, ok: false, error: error instanceof Error ? error.message : 'Duo request failed.' });
+    }
     if(this.key!==key)throw new Error('Duo session changed.');
-    return sealDuo(result,key,'response');
+    return sealDuoJson(json, key, 'response');
   }
   private validateMessage(value: Message): void {
     const now = Date.now();
@@ -384,10 +401,10 @@ export class CanvasDuoService {
   }
   private remoteInFlight = 0;
   private remoteWaiters: Array<() => void> = [];
-  private outgoingUpload: Promise<unknown> = Promise.resolve();
-  private lastUploadAt = 0;
-  private outgoingDocumentPage: Promise<unknown> = Promise.resolve();
-  private lastDocumentPageAt = 0;
+  private readonly bulkRequests = {
+    upload: { tail: Promise.resolve<unknown>(undefined), lastAt: -Infinity, intervalMs: 85 },
+    "document-page": { tail: Promise.resolve<unknown>(undefined), lastAt: -Infinity, intervalMs: 55 }
+  };
   /** Chromium throttles hidden-window timers; a renderer poll cannot own the peer lease. */
   private startHeartbeat(generation:number):void {
     if(this.heartbeatTimer)clearInterval(this.heartbeatTimer);
@@ -404,15 +421,7 @@ export class CanvasDuoService {
     if (command.action === 'heartbeat') return this.remoteNow(command);
     if (command.action === 'resource' && command.channel === 'file-upload') {
       // A single paced bulk slot leaves the normal queue and keepalive free.
-      const task = this.outgoingUpload.catch(() => undefined).then(async () => {
-        const wait = this.lastUploadAt + 85 - performance.now();
-        if (wait > 0) await delay(wait);
-        if (generation !== this.generation) throw Error('Duo session changed.');
-        this.lastUploadAt = performance.now();
-        return this.remoteNow(command);
-      });
-      this.outgoingUpload = task;
-      return task;
+      return this.requestBulk('upload', command, generation);
     }
     if (this.remoteInFlight >= 4) {
       if (this.remoteWaiters.length >= 128) throw Error('Duo request queue is full.');
@@ -427,7 +436,7 @@ export class CanvasDuoService {
           || documentPage.length < 1 || documentPage.length > MAX_DOCUMENT_BYTES) throw Error('Invalid Duo document size.');
       const chunks: string[] = [];
       for (let offset = 0; offset < documentPage.length; ) {
-        const page = await this.readDocumentPage(documentPage.id, offset, generation);
+        const page = await this.requestBulk('document-page', { action: 'document-page', pageId: documentPage.id, pageOffset: offset }, generation);
         const chunk = page.result;
         if (typeof chunk !== 'string' || chunk.length !== Math.min(DOCUMENT_PAGE_SIZE, documentPage.length - offset)) throw Error('Invalid Duo document page.');
         chunks.push(chunk);
@@ -440,15 +449,16 @@ export class CanvasDuoService {
       else this.remoteInFlight--;
     }
   }
-  private readDocumentPage(pageId: string, offset: number, generation: number): Promise<DuoSnapshot> {
-    const task = this.outgoingDocumentPage.catch(() => undefined).then(async () => {
-      const wait = this.lastDocumentPageAt + 55 - performance.now();
+  private requestBulk(lane: keyof typeof this.bulkRequests, command: RemoteAction, generation: number): Promise<DuoSnapshot> {
+    const queue = this.bulkRequests[lane];
+    const task = queue.tail.catch(() => undefined).then(async () => {
+      const wait = queue.lastAt + queue.intervalMs - performance.now();
       if (wait > 0) await delay(wait);
       if (generation !== this.generation) throw Error('Duo session changed.');
-      this.lastDocumentPageAt = performance.now();
-      return this.remoteNow({ action: 'document-page', pageId, pageOffset: offset });
+      queue.lastAt = performance.now();
+      return this.remoteNow(command);
     });
-    this.outgoingDocumentPage = task;
+    queue.tail = task;
     return task;
   }
 
@@ -481,7 +491,6 @@ export class CanvasDuoService {
     if (!result.ok) throw new Error(result.error ?? "Duo request failed.");
     if (!result.snapshot || !Array.isArray(result.snapshot.cards) || result.snapshot.cards.length > 128 || !Array.isArray(result.snapshot.comments) || !Array.isArray(result.snapshot.cursors)) throw new Error("Invalid Duo snapshot.");
     if(result.snapshot.surface&&!validSurfaceFrame(result.snapshot.surface))throw new Error("Invalid shared canvas frame.");
-    this.lastSuccessAt = Date.now();
     if (command.action === 'document-page') return result.snapshot;
     this.workspaceId=result.snapshot.workspaceId ?? ""; this.manage=result.snapshot.manage===true; this.fullCanvas=result.snapshot.fullCanvas===true; this.documentSync=result.snapshot.documentSync===true;
     return result.snapshot;
@@ -521,7 +530,7 @@ export class CanvasDuoService {
         ...(command.action==='document-edit'?{document:await this.options.document.snapshot()}:{result})};
     }
     if (command.action === "leave" && author === "guest") {
-      this.connectedPeer = ""; this.peerLastSeen = 0; this.documentPages.clear(); this.controlled.clear(); this.manage = false; this.options.surface?.release(); this.options.document?.clear(); this.cursors.delete("guest");
+      this.releaseGuest();
       return { cards: [], comments: [], cursors: [], expiresAt: this.expiresAt };
     }
     if(command.action==='surface'||command.action==='surface-input'||command.action==='surface-action') {
@@ -647,12 +656,15 @@ export class CanvasDuoService {
         }
         let screen = this.screens.get(card.id);
         if (!screen) { screen = new SessionScreen(this.terminals, card.id); this.screens.set(card.id, screen); }
-        else { const output = this.terminals.readBuffer(card.id); screen.feed({ id: card.id, data: output.buffer, outputOffset: output.outputOffset }); }
+        else screen.feed({ id: card.id, data: raw.buffer, outputOffset: raw.outputOffset });
         const output = { buffer: raw.buffer.slice(-32768), outputOffset: raw.outputOffset, restorePrefix: raw.restorePrefix?.slice(-8192), ...geometry };
         const text = (await screen.text()).slice(-16 * 1024);
         const bytes = Buffer.byteLength(JSON.stringify({ output, text }));
         if (bytes <= budget) { cards[index] = { ...card, output, text }; budget -= bytes; }
-        else if (Buffer.byteLength(JSON.stringify(text)) <= budget) { cards[index] = { ...card, text }; budget -= Buffer.byteLength(JSON.stringify(text)); }
+        else {
+          const textBytes = Buffer.byteLength(JSON.stringify(text));
+          if (textBytes <= budget) { cards[index] = { ...card, text }; budget -= textBytes; }
+        }
       } catch { cards[index] = { ...card, text: "Terminal is no longer available." }; }
     }
     const document = this.documentSync ? await this.options.document!.snapshot() : undefined;

@@ -184,6 +184,44 @@ test("an orchestrator's control connection cannot choose, dismiss or type into a
   assert.deepEqual(f.written(call).slice(3), ["y", "3"], "only the person's answers reached the card");
 });
 
+test("a known menu's title only counts in the menu's own block, over its own options", () => {
+  // A worker can print any text: a title elsewhere on the screen, or over options that are not that menu's, does not
+  // make an unrecognised prompt the orchestrator's.
+  const unknown = "Allow Codex to open the browser on example.com?\n› 1. Allow\n  2. Allow for this session\n  3. Deny";
+  for (const screen of [
+    `Hooks need review\nsome output\nmore output\nand more\n${unknown}`,
+    `Update available! 0.200.0 -> 0.201.0\n\n\n\n\n${unknown}`,
+    "Approaching rate limits\n› 1. Allow\n  2. Deny",
+    "Hooks need review\n› 1. Review hooks\n  2. Trust all and continue\n  3. Continue without hooks\n  4. Allow network access",
+    `6 hooks reviewed\n${unknown}\nPress esc to close`,
+    `Hooks\n6 hooks reviewed\nPress esc to close\n${unknown}`
+  ]) {
+    assert.equal(codexOrchestratorMenu(screen), false, screen);
+  }
+});
+
+test("hooks review stays the person's trust decision: an orchestrator may only continue without hooks or dismiss it", localSocket, async (t) => {
+  const f = await fixture(t);
+  const { session } = await f.agent("create", { provider: "codex", cwd: f.inner });
+  const call = f.callOf(session.id);
+  echoPromptInput(call.process, "codex", COMPOSER);
+  f.terminals.applyProviderSignal(session.id, { kind: "lifecycle", state: "idle" });
+  const hooks = await show(f.agent, session.id, call, HOOKS, "Hooks need review");
+  const trustRefused = (error) => error.code === "NEEDS_PERSON" && /Continue without hooks/.test(error.message);
+  for (const choice of [1, 2]) {
+    await assert.rejects(f.agent("choose", { sessionId: session.id, choice, revision: hooks.interaction.revision }), trustRefused);
+  }
+  assert.deepEqual(f.written(call), [], "nothing was written");
+  await f.agent("dismiss", { sessionId: session.id, revision: hooks.revision });
+  await f.agent("choose", { sessionId: session.id, choice: 3, revision: hooks.interaction.revision });
+  assert.deepEqual(f.written(call), ["\x1b", "\x1b[B\x1b[B\r"]);
+
+  // A title the worker printed above an unrecognised prompt does not make that prompt the orchestrator's.
+  const spoof = await show(f.agent, session.id, call, `\x1b[2J\x1b[HHooks need review\r\nnote\r\nnote\r\nnote\r\n${UNKNOWN_APPROVAL.slice(7)}`, "Allow Codex");
+  await assert.rejects(f.agent("choose", { sessionId: session.id, choice: 1, revision: spoof.interaction.revision }), unknownMenu);
+  assert.equal(f.written(call).length, 2);
+});
+
 test("an orchestrator still resolves menus that are not approvals, and the person's own connection still chooses approvals", localSocket, async (t) => {
   const f = await fixture(t);
   const { session } = await f.agent("create", { provider: "codex", cwd: f.inner });
@@ -300,8 +338,9 @@ test("wait_for_agent reports each approval request once, a consecutive one with 
   assert.equal(next.reason, "needs_approval", "the new request is reported");
   assert.ok(next.waitedMs < 2_000, `reported at once, not at the timeout (${next.waitedMs} ms)`);
   // And reported once: the next wait waits for the person again.
-  assert.equal(await pending(control.waitFor(child.id, { timeoutMs: 5_000 })), true);
+  const again = control.waitFor(child.id, { timeoutMs: 5_000 });
+  assert.equal(await pending(again), true);
   // A third one, from another CLI's request event, is new again.
   terminals.applyProviderSignal(child.id, { kind: "lifecycle", state: "needs_approval", event: "pre_approval_request" });
-  assert.equal((await control.waitFor(child.id, { timeoutMs: 5_000 })).reason, "needs_approval");
+  assert.equal((await again).reason, "needs_approval");
 });

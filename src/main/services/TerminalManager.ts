@@ -69,7 +69,7 @@ import { launchEffortProblem, launchModelProblem, type ReasoningEffort } from ".
 import { SecretRedactionRegistry } from "./safety/SecretRedaction.ts";
 import type { DecisionSession } from "./DecisionHooks.ts";
 import { tryPtyOperation } from "./ptySafety.ts";
-import { SessionScreen } from "./materials/sessionScreen.ts";
+import { SessionScreen, terminalScreenText } from "./materials/sessionScreen.ts";
 import { TerminalReplayState } from "./terminalReplayState.ts";
 import { codexPromptInput, codexTerminalComposerReady } from "./codexInput.ts";
 import { claudeTerminalComposerReady, promptComposer, promptPasteObserved, type PromptDeliveryReceipt } from "./promptDelivery.ts";
@@ -197,6 +197,11 @@ interface ManagedSession {
    * reader comparing it with an earlier value never mistakes a new request for one it already saw.
    */
   approvalRequests?: number;
+  /**
+   * The current approval request: whether a request hook (not only a title or an echo) has told it yet, and the
+   * output offset and time it was counted at (see approvalPrompt).
+   */
+  approvalRequestState?: { hooked: boolean; outputOffset: number; at: number };
 }
 
 type EnvironmentService = Pick<EnvironmentRegistry,
@@ -236,6 +241,8 @@ export const PTY_EXIT_WAIT_MS = 2_000;
 export const PTY_KILL_WAIT_MS = 1_000;
 /** Longer than every plugin step of a launch together (prepare, resume, launch options, wrap). */
 export const LAUNCH_INPUT_WAIT_MS = 60_000;
+/** A menu's "Esc to cancel" hint sits in its last lines; output above them is not a menu. */
+const DISMISS_HINT_LINES = 8;
 
 /** `delivered` acknowledges a PTY write, not the CLI accepting or submitting it. */
 export type InputDelivery = ({ delivered: true } | { delivered: false; reason: string }) & { receipt?: PromptDeliveryReceipt };
@@ -684,11 +691,22 @@ export class TerminalManager {
    * Identifies the approval request the card shows now: it advances each time the card turns needs_approval, and on
    * each further request hook while it stays needs_approval (a second PermissionRequest right after the person answered
    * the first moves neither the status nor the revision). A permission_prompt Notification while the card already
-   * waits is the same prompt again and does not advance it. null when the session does not exist.
+   * waits is the same prompt again and does not advance it, except for Grok, whose Notification is its only request
+   * hook. The first request hook after a title (Qwen) or an echo turned the card needs_approval is that same request.
+   * null when the session does not exist.
    */
   approvalRequest(id: string): number | null {
     const session = this.sessions.get(id);
     return session ? session.approvalRequests ?? 0 : null;
+  }
+
+  /**
+   * The output offset and time at which the current approval request was counted, so a reader can tell whether the
+   * prompt has reached the screen since; null when the session does not exist or has shown no request.
+   */
+  approvalPrompt(id: string): { outputOffset: number; at: number } | null {
+    const state = this.sessions.get(id)?.approvalRequestState;
+    return state ? { outputOffset: state.outputOffset, at: state.at } : null;
   }
 
   /** The session's output offset without copying its scrollback; null when it does not exist. */
@@ -1048,6 +1066,46 @@ export class TerminalManager {
       receipt: { stage: "not-written", acceptance: "unconfirmed" } };
     const data = staged || options.bracketedPaste ? codexPromptInput(text, false) : text;
     return this.deliverInput(id, data, options.waitMs ?? LAUNCH_INPUT_WAIT_MS, signal, provider === "codex", prompt);
+  }
+
+  /**
+   * Presses Esc in an idle agent card that shows a dismissible menu (such as Claude's usage-limit options), the guard
+   * agent-control `dismiss` uses: never while a turn runs, an approval waits, input is queued, or the composer is ready.
+   * Nor after the person typed since the last clean turn: their draft is not a menu. The hint must be in the last
+   * lines of the screen, where menus put it, not in the agent's earlier output.
+   */
+  async dismissIdleMenu(id: string): Promise<{ dismissed: boolean; reason?: string }> {
+    const session = this.sessions.get(id);
+    if (!session || session.metadata.exitCode !== null || !session.process) return { dismissed: false, reason: "The session does not accept input." };
+    const busy = (): boolean => session.metadata.status === "working" || session.metadata.status === "needs_approval";
+    if (busy() || session.inputQueue) return { dismissed: false, reason: "The agent is busy; nothing was written." };
+    const typed = (): boolean => (session.manualInputRevision ?? 0) !== (session.cleanInputRevision ?? 0);
+    if (typed()) return { dismissed: false, reason: "The person typed into the card; nothing was written." };
+    const provider = session.metadata.provider;
+    // Without a composer check an "Esc to interrupt" footer of a running process would read as a menu.
+    if (provider !== "claude" && provider !== "kimi" && provider !== "codex") {
+      return { dismissed: false, reason: `Menus are not recognized in ${provider} cards; nothing was written.` };
+    }
+    const screen = new SessionScreen({ geometry: (target) => this.geometry(target), readBuffer: (target) => this.readBuffer(target) }, id);
+    try {
+      const state = await screen.inspect((terminal) => ({
+        ready: provider === "claude" ? claudeTerminalComposerReady(terminal, this.claudeUnstyledComposerAllowed(id))
+          : provider === "kimi" ? kimiComposerReady(terminal)
+            : codexTerminalComposerReady(terminal, this.codexUnstyledComposerAllowed(id)),
+        text: terminalScreenText(terminal)
+      }));
+      const footer = state?.text.split("\n").filter((line) => line.trim()).slice(-DISMISS_HINT_LINES).join("\n") ?? "";
+      if (!state || state.ready || !/\besc(?:ape)?\s+to\s+(?:cancel|exit|go back)|Press[^\n]*(?:esc|escape)/iu.test(footer)) {
+        return { dismissed: false, reason: "No dismissible idle menu is visible." };
+      }
+    } finally {
+      screen.dispose();
+    }
+    // A prompt delivery may have started during the inspection: Esc between its paste and submit would break it.
+    if (this.sessions.get(id) !== session || busy() || session.inputQueue || typed()) {
+      return { dismissed: false, reason: "The card changed; nothing was written." };
+    }
+    return this.inputChecked(id, "\x1b", "automation") ? { dismissed: true } : { dismissed: false, reason: "The terminal no longer accepts input." };
   }
 
   lastPromptDelivery(id: string): PromptDeliveryReceipt | undefined {
@@ -1450,9 +1508,16 @@ export class TerminalManager {
     }
 
     const nextStatus = signal.state;
-    if (nextStatus === "needs_approval" && (session.metadata.status !== "needs_approval"
-      || (source === "hook" && signal.event !== "Notification"))) {
-      session.approvalRequests = (session.approvalRequests ?? 0) + 1;
+    if (nextStatus === "needs_approval") {
+      // A request hook names one request; a title or an echo Notification only says the card waits.
+      const requestHook = source === "hook" && (signal.event !== "Notification" || session.metadata.provider === "grok");
+      const pending = session.metadata.status === "needs_approval" ? session.approvalRequestState : undefined;
+      if (!pending || (requestHook && pending.hooked)) {
+        session.approvalRequests = (session.approvalRequests ?? 0) + 1;
+        session.approvalRequestState = { hooked: requestHook, outputOffset: session.outputOffset, at: Date.now() };
+      } else if (requestHook) {
+        pending.hooked = true;
+      }
     }
     const submittedTurn = source === "hook" && signal.event === "UserPromptSubmit"
       && session.promptDelivery?.stage === "submitted" && session.promptDelivery.acceptance === "unconfirmed";

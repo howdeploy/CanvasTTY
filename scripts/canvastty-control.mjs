@@ -161,7 +161,8 @@ create --cwd <directory> [--provider <id>] [--title <name>] [--yolo | --profile 
   choose/dismiss; the create response lists each worker's capabilities. From an
   Orchestrator session, choose, dismiss and send are refused (NEEDS_PERSON) while
   a worker waits at an approval or permission prompt: only the person answers it.
-  There, choose/dismiss act only on hooks review and model or update notices.
+  There, choose/dismiss act only on hooks review (Continue without hooks or
+  dismiss; trusting hooks is the person's) and model or update notices.
 list
 status <session-id>
 screen <session-id>

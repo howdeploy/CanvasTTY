@@ -270,7 +270,9 @@ export class CanvasDuoService {
         try {
           const key = this.key;
           const peer = await DuoPeerTransport.host(key.toString('base64url'), packet => this.receive(packet, key), () => {
-            trace.record('peer-disconnected');this.connectedPeer='';this.peerLastSeen=0;this.controlled.clear();this.manage=false;this.options.surface?.release(); this.options.document?.clear();this.cursors.delete('guest');
+            if (generation !== this.generation) return;
+            trace.record('peer-disconnected');
+            this.releaseGuest();
           }, this.options.peerOptions, trace);
           if (generation !== this.generation) { await peer.transport.stop(); throw new Error("Duo connection cancelled."); }
           this.peerHost = peer.transport;

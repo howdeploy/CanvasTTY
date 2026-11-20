@@ -1,4 +1,5 @@
 import { normalizeHomeTime } from "../../shared/homeTime.ts";
+import { normalizeDuoCursorDesign, normalizeDuoCursorNickname } from "../../shared/canvasDuo.ts";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -129,6 +130,7 @@ export class SettingsStore {
   private hasPersistedLegacyWheelCapture = false;
   private writeQueue = Promise.resolve();
   private persistenceError: Error | null = null;
+  private newProfile = false;
   private availableProviders: ReadonlySet<AgentProviderId>;
 
   constructor(userDataPath: string, systemLocale: string, platform: string = process.platform, availability?: AgentCliAvailability) {
@@ -283,6 +285,7 @@ export class SettingsStore {
       if (isMissingFile(error)) {
         this.persistenceError = null;
         await this.queuePersist();
+        this.newProfile = true;
       } else if (!sourceRead) {
         // Defaults may be used in memory, but never replace a source we could not read.
         // A malformed file can be replaced only after its exact contents are kept aside.
@@ -307,6 +310,10 @@ export class SettingsStore {
 
   get(): AppSettings {
     return structuredClone(this.value);
+  }
+
+  get isNewProfile(): boolean {
+    return this.newProfile;
   }
 
   async setAvailableProviders(availability: AgentCliAvailability): Promise<AppSettings> {
@@ -497,6 +504,7 @@ function createDefaults(systemLocale: string, platform: string): AppSettings {
     apiProfiles: [],
     homeGridSize: { ...DEFAULT_HOME_GRID_SIZE },
     homeLayout: structuredClone(DEFAULT_HOME_LAYOUT),
+    homeClockDesign: "classic",
     canvasRegions: [],
     stickyNotes: [],
     pluginCanvas: [],
@@ -712,6 +720,9 @@ export function normalizeSettings(
     homeAvatarWallpaper: isWallpaperId(source.homeAvatarWallpaper) ? source.homeAvatarWallpaper : null,
     homeClockWallpaper: isWallpaperId(source.homeClockWallpaper) ? source.homeClockWallpaper : null,
     homeTime: normalizeHomeTime(source.homeTime),
+    homeClockDesign: source.homeClockDesign === "new" ? "new" : "classic",
+    duoCursorDesign: normalizeDuoCursorDesign(source.duoCursorDesign),
+    duoCursorNickname: normalizeDuoCursorNickname(source.duoCursorNickname),
     homeClockFont: ["mono", "sans", "serif", "pixel"].includes(source.homeClockFont as string) ? source.homeClockFont as AppSettings["homeClockFont"] : "mono",
     canvasBackgroundPaused: typeof source.canvasBackgroundPaused === "boolean" ? source.canvasBackgroundPaused : fallback.canvasBackgroundPaused ?? false,
     canvasBackgroundFit: source.canvasBackgroundFit === "cover" || source.canvasBackgroundFit === "contain" ? source.canvasBackgroundFit : fallback.canvasBackgroundFit ?? "contain",

@@ -541,7 +541,7 @@ export function BrowserCard({
         className="browser-card__viewport"
         data-browser-canvas-wheel-owner={freezeFrameVisible ? "canvas" : undefined}
       >
-        {remote && activeTab && <DuoRemoteBrowser tabId={activeTab.id} visible={visible && !summaryMode} />}
+        {remote && activeTab && <DuoRemoteBrowser tabId={activeTab.id} visible={visible && !summaryMode} locale={locale} />}
         {!remote && freezeFrameDataUrl && (
           <img
             className="browser-card__freeze-frame"

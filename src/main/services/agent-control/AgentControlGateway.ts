@@ -845,7 +845,7 @@ export class AgentControlGateway {
     }
     if (params.target) {
       const updated = await settings.update(params.target === "canvas" ? { canvasBackground: wallpaper.id, canvasBackgroundPaused: false }
-        : params.target === "avatar" ? { homeAvatarWallpaper: wallpaper.id } : { homeClockWallpaper: wallpaper.id, homeClockFont: wallpaper.recipe.clockFont });
+        : params.target === "avatar" ? { homeAvatarWallpaper: wallpaper.id } : { homeClockDesign: "new", homeClockWallpaper: wallpaper.id, homeClockFont: wallpaper.recipe.clockFont });
       this.options.onSettingsChanged?.(updated);
     }
     return { wallpaper, target: params.target ?? null };

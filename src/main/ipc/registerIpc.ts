@@ -156,7 +156,8 @@ export function registerCriticalIpc(ipcMain: IpcRegistrar, {
   });
   ipcMain.handle(IPC.settingsGet, (event) => {
     assertMainRenderer(event, getMainWindow);
-    return settings.get();
+    const snapshot = settings.get();
+    return settings.isNewProfile ? { ...snapshot, isNewProfile: true } : snapshot;
   });
   ipcMain.handle(IPC.terminalBorderSkinsList, (event) => {
     assertMainRenderer(event, getMainWindow);

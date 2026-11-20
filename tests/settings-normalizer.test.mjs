@@ -166,6 +166,26 @@ test("appearance shortcut migration frees F8 without replacing customized bindin
   }
 });
 
+test("the classic clock is the default and only a new profile receives the clock design offer", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "canvastty-clock-design-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const fresh = new SettingsStore(dir, "en");
+  assert.equal((await fresh.load()).homeClockDesign, "classic");
+  assert.equal(fresh.isNewProfile, true);
+  assert.equal((await fresh.update({ homeClockDesign: "new" })).homeClockDesign, "new");
+
+  const reopened = new SettingsStore(dir, "en");
+  assert.equal((await reopened.load()).homeClockDesign, "new");
+  assert.equal(reopened.isNewProfile, false);
+
+  await writeFile(join(dir, "settings.json"), JSON.stringify({ locale: "en", homeClockFont: "pixel" }));
+  const existing = new SettingsStore(dir, "en");
+  const settings = await existing.load();
+  assert.equal(settings.homeClockDesign, "classic");
+  assert.equal(settings.homeClockFont, "pixel");
+  assert.equal(existing.isNewProfile, false);
+});
+
 test("protection and wheel inversion default off while explicit choices survive reload on every platform", async (t) => {
   for (const platform of ["linux", "darwin", "win32"]) {
     const dir = await mkdtemp(join(tmpdir(), "canvastty-protection-opt-in-"));

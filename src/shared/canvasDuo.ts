@@ -1,6 +1,21 @@
 import type { SessionBounds, SessionMetadata } from "./contracts";
 import type { DuoSurfaceFrame, DuoSurfaceInput } from "./duoSurface";
 import type { DuoDocument, DuoDocumentOp } from './duoDocument';
+export const DUO_CURSOR_DESIGNS = ["blob", "circle", "triangle", "square", "diamond", "capsule", "cloud", "star", "hexagon", "heart"] as const;
+export type DuoCursorDesign = typeof DUO_CURSOR_DESIGNS[number];
+
+export function normalizeDuoCursorDesign(value: unknown): DuoCursorDesign | undefined {
+  return DUO_CURSOR_DESIGNS.find(design => design === value);
+}
+
+export const DUO_CURSOR_NICKNAME_MAX_LENGTH = 24;
+
+export function normalizeDuoCursorNickname(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const nickname = value.replace(/[\p{Cc}\p{Bidi_Control}]/gu, "").trim();
+  return nickname.length <= DUO_CURSOR_NICKNAME_MAX_LENGTH ? nickname || undefined : undefined;
+}
+
 export interface DuoCard {
   id: string;
   title: string;
@@ -15,7 +30,7 @@ export interface DuoCard {
   output?: { buffer: string; outputOffset: number; startOffset?: number; restorePrefix?: string; cols: number; rows: number };
 }
 export interface DuoComment { id: string; cardId: string; author: string; text: string; at: number }
-export interface DuoCursor { cardId: string; x: number; y: number; at: number; author: string }
+export interface DuoCursor { cardId: string; x: number; y: number; at: number; author: string; design?: DuoCursorDesign; nickname?: string }
 export interface DuoSnapshot {
   /** Partial acknowledgements never replace the visible workspace. */
   partial?: boolean;
@@ -64,7 +79,7 @@ export type DuoCommand =
   | { action: "rename"; cardId: string; text: string }
   | { action: "close"; cardId: string }
   | { action: "resize"; cardId: string; cols: number; rows: number }
-  | { action: "cursor"; cardId: string; x: number; y: number };
+  | { action: "cursor"; cardId: string; x: number; y: number; design?: DuoCursorDesign; nickname?: string };
 export interface DuoReply { state: DuoState; snapshot?: DuoSnapshot; invitation?: string; error?: string }
 
 /** Merge wire deltas without losing terminal history, documents or deleted cards. */

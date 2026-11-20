@@ -51,7 +51,7 @@ export async function prepareV2Profile(profile, { demo = true } = {}) {
       recipe: { fit: 'cover', x: 50, y: 50, width: 1440, height: 810, pixelated: true, clockFont: 'pixel', dim: .2 } });
     const timer = (id, label, minutes) => ({ id, label, durationMs: minutes * 60000, remainingMs: minutes * 60000, endsAt: null, status: 'idle' });
     Object.assign(patch, {
-      homeAvatarWallpaper: avatar.id, homeClockWallpaper: wallpaper.id, homeClockFont: 'pixel',
+      homeAvatarWallpaper: avatar.id, homeClockDesign: 'new', homeClockWallpaper: wallpaper.id, homeClockFont: 'pixel',
       canvasBackground: wallpaper.id, canvasBackgroundFit: 'cover', canvasBackgroundPaused: false,
       homeTime: { ...defaultHomeTime(), timers: [timer('focus', 'Фокус', 25), timer('break', 'Перерыв', 5)] },
       homeGridSize: { columns: 12, rows: 10 },

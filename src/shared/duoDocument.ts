@@ -3,7 +3,7 @@ import type { AppSettings, BrowserSnapshot, InstalledPlugin, MaterialsSnapshot }
 /** Workspace data only. Camera, focus, OS shortcuts, accounts and credentials stay local. */
 export const DUO_SETTINGS_KEYS = [
   'canvasRegions','stickyNotes','fileCards','pluginCanvas','browserCanvas',
-  'homeLayout','homeGridSize','homeTime','homeAvatarWallpaper','homeClockWallpaper','homeClockFont',
+  'homeLayout','homeGridSize','homeTime','homeAvatarWallpaper','homeClockWallpaper','homeClockFont','homeClockDesign',
   'canvasBackground','canvasBackgroundPaused','canvasBackgroundFit','canvasColor','pattern',
   'mediaPath','mediaFit','homeAccentPreset','homeAccentColors',
   'terminalBorderSkin','terminalBackground','terminalBackgroundBrightness','terminalBackgroundContrast',

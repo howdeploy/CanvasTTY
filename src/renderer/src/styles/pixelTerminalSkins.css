@@ -373,7 +373,7 @@
 .clock-font--mono, .clock-font--mono .clock-tile__time { font-family: var(--font-mono); }
 .clock-font--sans, .clock-font--sans .clock-tile__time { font-family: var(--font-sans); }
 .clock-font--serif, .clock-font--serif .clock-tile__time { font-family: Georgia, "Times New Roman", serif; }
-.clock-font--pixel, .clock-font--pixel .clock-tile__time { font-family: "Courier New", monospace; font-weight: 900; letter-spacing: .01em; text-shadow: 2px 2px 0 #0008; }
+.clock-font--pixel .clock-tile__time, .wallpaper-clock-preview.clock-font--pixel { font-family: "Courier New", monospace; font-weight: 900; letter-spacing: .01em; }
 .clock-tile--wallpaper { position: relative; overflow: hidden; isolation: isolate; color: white; }
 .clock-tile__background, .clock-tile__scrim { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
 .clock-tile__time, .clock-tile__date { position: relative; }

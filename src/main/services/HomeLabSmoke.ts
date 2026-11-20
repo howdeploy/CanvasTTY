@@ -34,8 +34,9 @@ export async function runHomeLabSmoke(window: BrowserWindow, output: string): Pr
     await click(".home-appearance-settings .setting-inline-action");
     await until(`Boolean(document.querySelector('.home-editor-toolbar') && ${avatarMove})`, "Home editor controls missing");
   };
-  await until("Boolean(document.querySelector('.mini-media [data-skin-media=gif] img')?.complete && document.querySelector('.clock-tile [data-skin-media=gif] img')?.complete)", "Home media missing");
   const original = await run("window.canvasTTY.settings.get()");
+  await apply({ homeClockDesign: "new" });
+  await until("Boolean(document.querySelector('.mini-media [data-skin-media=gif] img')?.complete && document.querySelector('.clock-tile [data-skin-media=gif] img')?.complete)", "Home media missing");
   const checks: string[] = [];
   const motion = async (selector: string): Promise<void> => {
     const rect = await run(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x:Math.round(r.x)+3, y:Math.round(r.y)+3, width:Math.max(1,Math.round(r.width)-6), height:Math.max(1,Math.round(r.height)-6) }; })()`);
@@ -168,6 +169,7 @@ export async function runHomeLabSmoke(window: BrowserWindow, output: string): Pr
     const { runV2LabSmoke } = await import("./V2LabSmoke");
     checks.push(...await runV2LabSmoke(window, output));
   }
+  await apply({ homeClockDesign: original.homeClockDesign });
   const report = { result: "passed", app: app.getName(), version: app.getVersion(), packaged: app.isPackaged, profile: app.getPath("userData"), checks, geometry };
   await writeFile(join(output, "verification.json"), JSON.stringify(report, null, 2));
   console.log("CANVASTTY_HOME_LAB_OK " + JSON.stringify({ ...report, geometry: geometry.length }));

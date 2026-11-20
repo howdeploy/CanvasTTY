@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type { AppSettings } from "../../../../shared/contracts";
+import { t } from "../../lib/i18n";
 import { Segmented, SettingGroup } from "../settings/SettingsControls";
 
 export function HomeClockAppearance({ settings, onChange }: {
@@ -26,23 +27,30 @@ export function HomeClockAppearance({ settings, onChange }: {
     finally { setBusy(false); if (wallpaperInput.current) wallpaperInput.current.value = ""; }
   };
   return <>
-    <SettingGroup label={ru ? "Шрифт часов" : "Clock font"}>
-      <Segmented value={settings.homeClockFont ?? "mono"}
-        options={[["mono", ru ? "Моно" : "Mono"], ["sans", "Sans"], ["serif", "Serif"], ["pixel", ru ? "Пиксельный" : "Pixel"]]}
-        onChange={value => void onChange({ homeClockFont: value as AppSettings["homeClockFont"] })} />
+    <SettingGroup label={t(settings.locale, "homeClockDesign")}>
+      <Segmented value={settings.homeClockDesign ?? "classic"}
+        options={[["classic", ru ? "Старый" : "Classic"], ["new", ru ? "Новый" : "New"]]}
+        onChange={value => void onChange({ homeClockDesign: value === "new" ? "new" : "classic" })} />
     </SettingGroup>
-    <SettingGroup label={ru ? "Фон часов" : "Clock background"}>
-      <div className="settings-inline-controls">
-        <input hidden ref={wallpaperInput} type="file" accept="image/gif,image/png,image/webp"
-          onChange={event => { const file = event.target.files?.[0]; if (file) void importBackground(file); }} />
-        <button className="setting-inline-action" type="button" disabled={busy} onClick={() => wallpaperInput.current?.click()}>
-          {ru ? "Выбрать изображение" : "Choose image"}
-        </button>
-        <button className="setting-inline-action" type="button" disabled={busy || !settings.homeClockWallpaper}
-          onClick={() => void onChange({ homeClockWallpaper: null })}>{ru ? "Сбросить" : "Reset"}</button>
-      </div>
-      {error && <p role="alert">{error}</p>}
-    </SettingGroup>
+    {settings.homeClockDesign === "new" && <>
+      <SettingGroup label={ru ? "Шрифт часов" : "Clock font"}>
+        <Segmented value={settings.homeClockFont ?? "mono"}
+          options={[["mono", ru ? "Моно" : "Mono"], ["sans", "Sans"], ["serif", "Serif"], ["pixel", ru ? "Пиксельный" : "Pixel"]]}
+          onChange={value => void onChange({ homeClockFont: value as AppSettings["homeClockFont"] })} />
+      </SettingGroup>
+      <SettingGroup label={ru ? "Фон часов" : "Clock background"}>
+        <div className="settings-inline-controls">
+          <input hidden ref={wallpaperInput} type="file" accept="image/gif,image/png,image/webp"
+            onChange={event => { const file = event.target.files?.[0]; if (file) void importBackground(file); }} />
+          <button className="setting-inline-action" type="button" disabled={busy} onClick={() => wallpaperInput.current?.click()}>
+            {ru ? "Выбрать изображение" : "Choose image"}
+          </button>
+          <button className="setting-inline-action" type="button" disabled={busy || !settings.homeClockWallpaper}
+            onClick={() => void onChange({ homeClockWallpaper: null })}>{ru ? "Сбросить" : "Reset"}</button>
+        </div>
+        {error && <p role="alert">{error}</p>}
+      </SettingGroup>
+    </>}
     <SettingGroup label={ru ? "Фон аватарки" : "Avatar background"}>
       <div className="settings-inline-controls">
         <button className="setting-inline-action" type="button" disabled={!settings.homeAvatarWallpaper}

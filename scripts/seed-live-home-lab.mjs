@@ -12,7 +12,7 @@ catch {
   const bytes = await readFile(new URL('../tests/fixtures/live-skins/clock.gif',import.meta.url));
   const wallpaper = await library.install({name:'Pixel night demo',bytes,width:960,height:320,recipe:{fit:'cover',x:50,y:50,width:1440,height:480,pixelated:true,clockFont:'pixel',dim:0.5}});
   const timer = (id,label,minutes) => ({id,label,durationMs:minutes*60000,remainingMs:minutes*60000,endsAt:null,status:'idle'});
-  await settings.update({ locale:'ru',homeAvatarWallpaper:wallpaper.id,homeClockWallpaper:wallpaper.id,homeClockFont:'pixel',
+  await settings.update({ locale:'ru',homeAvatarWallpaper:wallpaper.id,homeClockDesign:'new',homeClockWallpaper:wallpaper.id,homeClockFont:'pixel',
     homeTime:{...defaultHomeTime(),clocks:[{id:'moscow',label:'Москва',timeZone:'Europe/Moscow'},{id:'tokyo',label:'Токио',timeZone:'Asia/Tokyo'},{id:'newyork',label:'Нью-Йорк',timeZone:'America/New_York'}],timers:[timer('focus','Фокус',25),timer('break','Перерыв',5)]},
     homeLayout: settings.get().homeLayout.map(item => item.widgetId === 'core.clock' ? {...item,rowSpan:5} : ['core.launcher','core.settings'].includes(item.widgetId) ? {...item,row:8} : item),
     sessionRestoreMode:'off' });

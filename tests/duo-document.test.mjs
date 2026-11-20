@@ -44,7 +44,11 @@ test('real encrypted transport shares all objects and host terminals, rejects de
  await p.guest.command({action:'document-edit',ops:duoSettingsOps(pickDuoSettings(p.get()),{stickyNotes:[note('a','Windows note'),note('b','second')]})});
  assert.equal(p.get().stickyNotes[0].text,'Windows note');
  await p.guest.command({action:'input',cardId:p.cards[0].id,text:'echo shared\r'});assert.equal(p.writes[0].text,'echo shared\r');
- await p.guest.command({action:'cursor',cardId:'canvas',x:-3400,y:2400});assert.equal((await p.host.command({action:'snapshot'})).snapshot.cursors[0].x,-3400);
+ await p.guest.command({action:'cursor',cardId:'canvas',x:-3400,y:2400,design:'heart',nickname:'Canvas guest'});
+ const [cursor] = (await p.host.command({action:'snapshot'})).snapshot.cursors;
+ assert.equal(cursor.x,-3400);
+ assert.equal(cursor.design,'heart');
+ assert.equal(cursor.nickname,'Canvas guest');
  await assert.rejects(p.guest.command({action:'surface-action',name:'home'}),/not enabled/);
  await assert.rejects(p.guest.command({action:'document-edit',ops:[{key:'camera',before:null,after:{x:7}}]}),/private/);
 });

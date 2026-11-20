@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import type { LocaleId } from '../../../../shared/contracts';
 import type { DuoSurfaceFrame, DuoSurfaceInput } from '../../../../shared/duoSurface';
 import { useDuoWorkspace } from './duoWorkspaceRuntime';
 
 /** The host's live Canvas. A guest gesture operates the original widget, never a local replica. */
-export default function DuoCanvasSurface():React.JSX.Element {
+export default function DuoCanvasSurface({ locale }: { locale: LocaleId }):React.JSX.Element {
+  const ru = locale === "ru";
   const view=useDuoWorkspace();
   const [frame,setFrame]=useState<DuoSurfaceFrame|null>(null);
   const [error,setError]=useState('');
@@ -21,7 +23,7 @@ export default function DuoCanvasSurface():React.JSX.Element {
     const last=queue.current.at(-1);
     if(event.type==='mouseMove'&&last?.type==='mouseMove')queue.current[queue.current.length-1]=event;
     else if(queue.current.length<128)queue.current.push(event);
-    else {queue.current=[{type:'release'}];setError('Слишком быстрый ввод. Повторите действие.');}
+    else {queue.current=[{type:'release'}];setError(ru ? "Ввод слишком быстрый. Повторите действие." : "Input too fast. Repeat the action.");}
   };
   useEffect(()=>{
     let disposed=false,frameTimer:ReturnType<typeof setTimeout>,inputTimer:ReturnType<typeof setTimeout>;
@@ -66,13 +68,13 @@ export default function DuoCanvasSurface():React.JSX.Element {
     if(!up&&e.key.length===1&&!e.ctrlKey&&!e.metaKey&&!e.altKey)send({type:'text',text:e.key});
     else if(e.key.length!==1||e.ctrlKey||e.metaKey||e.altKey)send({type:up?'keyUp':'keyDown',key:e.key,modifiers:mods(e)});
   };
-  return <section ref={shell} className="duo-surface-shell" aria-label="Полный общий Canvas">
-    <div className="duo-surface-hint" role="status">{canControl?'Общий Canvas · мышь и клавиатура управляют тем же холстом хозяина':'Общий Canvas · просмотр, управление разрешает хозяин'} · область просмотра общая</div>
-    {!frame&&<p className="duo-surface-loading">{error||'Подключаем живой холст…'}</p>}
+  return <section ref={shell} className="duo-surface-shell" aria-label={ru ? "Общий холст" : "Shared canvas"}>
+    <div className="duo-surface-hint" role="status">{canControl ? (ru ? "Управление разрешено" : "Control enabled") : (ru ? "Только просмотр" : "View only")}</div>
+    {!frame&&<p className="duo-surface-loading" role={error ? "alert" : "status"}>{error || (ru ? "Подключение к холсту…" : "Connecting to canvas…")}</p>}
     {frame&&<div ref={element} className={`duo-surface${canControl?' duo-surface--control':''}`} tabIndex={0}
       style={{width:Math.min(size.width,size.height*frame.viewport.width/frame.viewport.height)||"100%",aspectRatio:`${frame.viewport.width} / ${frame.viewport.height}`}}
       contentEditable={canControl} suppressContentEditableWarning onBeforeInput={e=>{e.preventDefault();const text=(e.nativeEvent as InputEvent).data;if(text)send({type:"text",text});}}
-      role="application" aria-label="Живой холст хозяина" onContextMenu={e=>e.preventDefault()}
+      role="application" aria-label={ru ? "Холст хоста" : "Host canvas"} onContextMenu={e=>e.preventDefault()}
       onPointerDown={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.focus();if(canControl){e.currentTarget.setPointerCapture(e.pointerId);send({type:'mouseDown',...point(e),button:e.button===2?'right':e.button===1?'middle':'left',buttons:e.buttons,clickCount:e.detail||1,modifiers:mods(e)});}}}
       onPointerMove={e=>{e.stopPropagation();send({type:'mouseMove',...point(e),buttons:e.buttons,modifiers:mods(e)});}}
       onPointerUp={e=>{e.preventDefault();e.stopPropagation();send({type:'mouseUp',...point(e),button:e.button===2?'right':e.button===1?'middle':'left',buttons:e.buttons,modifiers:mods(e)});if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}}
@@ -80,7 +82,7 @@ export default function DuoCanvasSurface():React.JSX.Element {
       onWheel={e=>{e.preventDefault();e.stopPropagation();send({type:'mouseWheel',...point(e),deltaX:Math.max(-2000,Math.min(2000,-e.deltaX)),deltaY:Math.max(-2000,Math.min(2000,-e.deltaY)),modifiers:mods(e)});}}
       onKeyDown={e=>key(e,false)} onKeyUp={e=>key(e,true)}
       onCompositionEnd={e=>{if(e.data)send({type:'text',text:e.data});}}
-      onPaste={e=>{e.preventDefault();e.stopPropagation();const text=e.clipboardData.getData('text/plain');if(text.length>4096)setError('Вставляйте текст порциями до 4096 символов.');else if(text)send({type:'text',text});}}
+      onPaste={e=>{e.preventDefault();e.stopPropagation();const text=e.clipboardData.getData('text/plain');if(text.length>4096)setError(ru ? "Вставляйте до 4096 символов за раз." : "Paste up to 4096 characters at a time.");else if(text)send({type:'text',text});}}
       onBlur={()=>send({type:'release'})}>
       <img className="duo-surface__base" src={frame.image} alt="" draggable={false}/>
       {frame.layers.map((layer,i)=><img className="duo-surface__layer" key={i} src={layer.image} alt="" draggable={false} style={{left:`${layer.x*100}%`,top:`${layer.y*100}%`,width:`${layer.width*100}%`,height:`${layer.height*100}%`}}/>)}

@@ -12,7 +12,7 @@ export function SettingGroup({
   children: ReactNode;
 }): React.JSX.Element {
   return (
-    <section className={`setting-group setting-group--field${layout === "stacked" ? " setting-group--stacked" : ""}`}>
+    <section data-setting-label={label} tabIndex={-1} className={`setting-group setting-group--field${layout === "stacked" ? " setting-group--stacked" : ""}`}>
       <div className="setting-group__copy">
         <h3>{label}</h3>
         {description && <p className="setting-group__description">{description}</p>}
@@ -42,6 +42,7 @@ export function Segmented({
           className={value === optionValue ? "segmented__button segmented__button--active" : "segmented__button"}
           type="button"
           key={optionValue}
+          aria-pressed={value === optionValue}
           disabled={disabled}
           onClick={() => onChange(optionValue)}
         >{label}</button>

@@ -54,6 +54,7 @@ export async function runDuoLabSmoke(window: BrowserWindow, output: string,uploa
       const cardId = created[0];
       await terminal('input', created[1], process.platform === 'win32' ? 'echo DO_NOT_SHARE_CANVAS_PRIVATE\r' : "printf 'DO_NOT_SHARE_CANVAS_PRIVATE\\n'\r");
       await terminal('input', cardId, process.platform === 'win32' ? 'echo DUO_HOST_READY\r' : "printf 'DUO_HOST_READY\\n'\r");
+      await click('.duo-sharing-scope button:nth-child(2)');
       await until(() => run("document.querySelectorAll('.duo-choice').length===2"), 'Host cards not listed');
       await run(`(()=>{const row=[...document.querySelectorAll('.duo-choice')].find(e=>e.textContent.includes('Duo shared acceptance'));row.querySelector('input').click()})()`);
       if (config.transport === 'lan') await api({action:'host',transport:'lan',selected:[cardId],controlled:[]}); else await click('.duo-setup > button');
@@ -66,7 +67,7 @@ export async function runDuoLabSmoke(window: BrowserWindow, output: string,uploa
       const initial = await api({action:'snapshot'});connection=initial.state.connection;
       if (!initial.state.peer || !initial.snapshot.cursors.some((c: any) => c.author === 'guest')) throw new Error('Guest cursor missing');
       checks.push('peer client joined; only selected card shared; read-only input denied; guest comment and cursor arrived');
-      const grant = async (): Promise<void> => { if (!(await run("document.querySelector('.duo-setup').open"))) await click('.duo-setup > summary'); await run("(()=>{const row=[...document.querySelectorAll('.duo-choice')].find(e=>e.textContent.includes('Duo shared acceptance'));const e=row.querySelectorAll('input')[1];if(!e.checked)e.click()})()"); await click('.duo-setup > button'); };
+      const grant = async (): Promise<void> => { await run("(()=>{const row=[...document.querySelectorAll('.duo-choice')].find(e=>e.textContent.includes('Duo shared acceptance'));const e=row.querySelectorAll('input')[1];if(!e.checked)e.click()})()"); await click('.duo-setup > button'); };
       await grant();
       await until(async () => (await api({action:'snapshot'})).snapshot.cards[0]?.text?.includes('DUO_CROSS_DEVICE_OK'), 'Guest command did not reach actual host PTY');
       checks.push('explicit UI input grant; real remote command executed in host PTY and output returned');

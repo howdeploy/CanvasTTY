@@ -521,6 +521,11 @@ export interface AppSettings {
   homeAvatarWallpaper?: WallpaperId | null;
   homeClockWallpaper?: WallpaperId | null;
   homeClockFont?: ClockFont;
+  homeClockDesign?: "classic" | "new";
+  duoCursorDesign?: import("./canvasDuo").DuoCursorDesign;
+  duoCursorNickname?: string;
+  /** Runtime only. True on the first launch of a new profile. */
+  isNewProfile?: true;
   homeTime?: import("./homeTime.ts").HomeTimeSettings;
   canvasBackgroundPaused: boolean;
   canvasBackgroundFit: "contain" | "cover";

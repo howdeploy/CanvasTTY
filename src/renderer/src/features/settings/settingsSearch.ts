@@ -61,6 +61,10 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   },
   {
     "section": "appearance",
+    "label": "homeClockDesign"
+  },
+  {
+    "section": "appearance",
     "label": "keyboardHideBackgrounds"
   },
   {

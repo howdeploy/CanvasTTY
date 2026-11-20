@@ -10,7 +10,7 @@ import type { DuoDiagnosticEvent } from "../../shared/duoDiagnostics.ts";
 import { DuoPeerTransport, type PeerInvite } from "./DuoPeerTransport.ts";
 import { SessionScreen, type ScreenPort } from "./materials/sessionScreen.ts";
 import type { DuoDocumentPort, DuoDocumentOp } from '../../shared/duoDocument';
-import { mergeDuoSnapshot } from '../../shared/canvasDuo.ts';
+import { mergeDuoSnapshot, normalizeDuoCursorDesign, normalizeDuoCursorNickname } from '../../shared/canvasDuo.ts';
 import { DUO_READ_CHANNELS } from '../../shared/duoResources.ts';
 
 interface TerminalPort extends ScreenPort {
@@ -29,7 +29,7 @@ interface DuoTerminalFiles {
   canOpen(id:string,reference:string):Promise<boolean>;
   open(id:string,reference:string,authorized:()=>boolean):Promise<void>;
 }
-type RemoteAction = { pageId?: string; pageOffset?: number; outputOffsets?:Record<string,number>; documentVersion?:string; ops?:DuoDocumentOp[]; channel?:string; args?:unknown[]; name?:"terminal"|"note"|"home"; frameId?:string; events?:DuoSurfaceInput[]; action: string; cardId?: string; text?: string; x?: number; y?: number; bounds?: import("../../shared/contracts").SessionBounds; cols?: number; rows?: number };
+type RemoteAction = { pageId?: string; pageOffset?: number; outputOffsets?:Record<string,number>; documentVersion?:string; ops?:DuoDocumentOp[]; channel?:string; args?:unknown[]; name?:"terminal"|"note"|"home"; frameId?:string; events?:DuoSurfaceInput[]; action: string; cardId?: string; text?: string; x?: number; y?: number; design?: unknown; nickname?: unknown; bounds?: import("../../shared/contracts").SessionBounds; cols?: number; rows?: number };
 type Message = RemoteAction & { id: string; peer: string; at: number };
 const LIMIT = 2 * 1024 * 1024;
 // AES envelope base64 adds one third to the plaintext, plus transport framing.
@@ -499,6 +499,14 @@ export class CanvasDuoService {
     } catch (error) { trace?.record(authenticated?"remote-rejected":"request-failed",error); if (!authenticated && generation === this.generation) { this.lastSuccessAt = 0; this.manage = false; } throw error; }
     finally { if(performance.now()-started>2000)trace?.record("request-slow"); }
   }
+  private recordCursor(author: "host" | "guest", cardId: string, x: number, y: number, command: RemoteAction): void {
+    this.cursors.set(author, {
+      cardId, x, y, author, at: Date.now(),
+      design: normalizeDuoCursorDesign(command.design),
+      nickname: normalizeDuoCursorNickname(command.nickname)
+    });
+  }
+
   private async perform(command: RemoteAction, author: "host" | "guest"): Promise<DuoSnapshot> {
     // No document, terminal reads or browser capture on this authenticated keepalive path.
     if(command.action==='heartbeat')return {partial:true,cards:[],comments:[],cursors:[],expiresAt:this.expiresAt,
@@ -570,7 +578,7 @@ export class CanvasDuoService {
       }
       if(command.action==='cursor'&&id==='canvas'&&this.documentSync){
         if(!finite(command.x)||!finite(command.y))throw Error('Invalid canvas cursor.');
-        this.cursors.set(author,{cardId:id,x:command.x,y:command.y,author,at:Date.now()});
+        this.recordCursor(author, id, command.x, command.y, command);
       } else {
       if (typeof id !== "string" || (!this.fullCanvas&&!this.selected.has(id)) || !this.available().some(c => c.id === id)) throw new Error("This card is not shared.");
       if(command.action==='file-open'||command.action==='file-can-open') {
@@ -607,7 +615,7 @@ export class CanvasDuoService {
         this.comments = [...this.comments.slice(-99), { id: randomUUID(), cardId: id, author, text: command.text.trim(), at: Date.now() }];
       } else if (command.action === "cursor") {
         if (!Number.isFinite(command.x) || !Number.isFinite(command.y) || command.x! < 0 || command.x! > 1 || command.y! < 0 || command.y! > 1) throw new Error("Invalid cursor position.");
-        this.cursors.set(author, { cardId: id, x: command.x!, y: command.y!, author, at: Date.now() });
+        this.recordCursor(author, id, command.x!, command.y!, command);
       } else throw new Error("Unsupported Duo action.");
       }
     }

@@ -60,6 +60,7 @@ export async function runDuoWorkspaceLab(window: BrowserWindow, output: string, 
       report.sharedId=shared.id;report.privateId=privateCard.id;
       await terminal('input',shared.id,"printf '\\033[32mDUO_HOST_READY\\033[0m\\n'\r");
       await click('.duo-launch');
+      await click('.duo-sharing-scope button:nth-child(2)');
       await until("document.querySelectorAll('.duo-choice').length===2",'Host selection not loaded');
       await run(`(()=>{const row=[...document.querySelectorAll('.duo-choice')].find(e=>e.textContent.includes('общий терминал Mac'));row.querySelector('input').click();row.querySelectorAll('input')[1].click();document.querySelector('.duo-manage input').click()})()`);
       await click('.duo-setup > button');
@@ -76,7 +77,7 @@ export async function runDuoWorkspaceLab(window: BrowserWindow, output: string, 
       report.guestCreatedId=guestCard.id;report.workspaceId=snapshot.workspaceId;
       await until(`window.canvasTTY.terminal.readBuffer(${JSON.stringify(guestCard.id)}).then(o=>o.buffer.includes('DUO_REAL_PTY_FROM_WINDOWS'))`,'Guest keyboard did not reach host PTY');
       checks.push('Guest-created card is a real Mac PTY; Windows xterm keyboard reached it');
-      await fill('select[aria-label="Терминал для комментария"]',guestCard.id);
+      await fill('.duo-shared-comments select',guestCard.id);
       await submitComment('MAC_SEES_SHARED_TERMINAL');
       await capture('03-mac-shared-terminal');
       await until(`window.canvasTTY.terminal.list().then(s=>s.some(c=>c.id===${JSON.stringify(guestCard.id)}&&c.title==='Windows → общий Mac'))`,'Guest rename not applied');
@@ -114,7 +115,7 @@ export async function runDuoWorkspaceLab(window: BrowserWindow, output: string, 
       await window.webContents.insertText("printf '\\104\\125\\117\\137\\122\\105\\101\\114\\137\\120\\124\\131\\137\\106\\122\\117\\115\\137\\127\\111\\116\\104\\117\\127\\123\\n'");
       window.webContents.sendInputEvent({type:'keyDown',keyCode:'Return'});window.webContents.sendInputEvent({type:'keyUp',keyCode:'Return'});
       await until(`window.canvasTTY.duo.command({action:'snapshot'}).then(r=>r.snapshot.cards.some(c=>c.id===${JSON.stringify(created.id)}&&c.text.includes('DUO_REAL_PTY_FROM_WINDOWS')))`,'Remote command output missing');
-      await fill('select[aria-label="Терминал для комментария"]',created.id);
+      await fill('.duo-shared-comments select',created.id);
       await until("document.querySelector('.duo-shared-comments')?.textContent.includes('MAC_SEES_SHARED_TERMINAL')",'Mac comment not rendered');
       await capture('02-windows-live-host-pty');checks.push('Remote ANSI output and Mac reply rendered in real Windows client');
       await api({action:'rename',cardId:created.id,text:'Windows → общий Mac'});

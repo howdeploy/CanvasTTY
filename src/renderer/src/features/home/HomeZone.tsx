@@ -334,7 +334,11 @@ export function HomeZone({
         </section>
       );
     }
-    if (widgetId === "core.clock") return <Suspense fallback={null}><ClockWidget locale={locale} now={now} settings={settings} onChange={onSettingsChange} /></Suspense>;
+    if (widgetId === "core.clock") {
+      return settings.homeClockDesign === "new"
+        ? <Suspense fallback={null}><ClockWidget locale={locale} now={now} settings={settings} onChange={onSettingsChange} /></Suspense>
+        : <ClassicClockWidget locale={locale} now={now} />;
+    }
     if (widgetId === "core.media") {
       return (
         <HomeMediaWidget
@@ -459,6 +463,19 @@ function isFocusableHomeWidget(widgetId: string, plugins: readonly InstalledPlug
     )));
 }
 
+
+function ClassicClockWidget({ locale, now }: { locale: LocaleId; now: Date }): React.JSX.Element {
+  const formatLocale = locale === "ru" ? "ru-RU" : "en-GB";
+  const time = now.toLocaleTimeString(formatLocale, { hour: "2-digit", minute: "2-digit" });
+  const date = now.toLocaleDateString(formatLocale, { weekday: "short", day: "numeric", month: "long", year: "numeric" });
+
+  return (
+    <section className="tile clock-tile">
+      <time className="clock-tile__time" dateTime={now.toISOString()}>{time}</time>
+      <span className="clock-tile__date">{date}</span>
+    </section>
+  );
+}
 
 function LimitRow({ row, locale, now, onOpenSettings }: { row: HomeLimitRow; locale: LocaleId; now: number; onOpenSettings(target?: SettingsDestination): void }): React.JSX.Element {
   const providerLabel = PROVIDERS[row.provider].limitsLabel ?? PROVIDERS[row.provider].label;

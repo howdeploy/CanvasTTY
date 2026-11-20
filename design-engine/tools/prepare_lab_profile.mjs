@@ -41,7 +41,7 @@ try {
   const skin = await skins.installZip(terminalBytes,manifest.name,manifest.apertures,manifest.terminals.id);
   const ids = {};
   for (const target of ['canvas','avatar','clock']) ids[target] = (await wallpapers.importPackage(wallpaperBytes[target])).id;
-  const patch = { ...manifest.settings, terminalBorderSkin: skin.id, canvasBackground: ids.canvas, homeAvatarWallpaper: ids.avatar, homeClockWallpaper: ids.clock };
+  const patch = { ...manifest.settings, terminalBorderSkin: skin.id, canvasBackground: ids.canvas, homeAvatarWallpaper: ids.avatar, homeClockDesign: 'new', homeClockWallpaper: ids.clock };
   const applied = await settings.update(patch);
   const restored = new SettingsStore(profile, 'ru'); await restored.load();
   for (const key of Object.keys(patch)) assert.deepEqual(restored.get()[key], applied[key], `Setting did not persist: ${key}`);

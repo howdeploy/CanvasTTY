@@ -460,6 +460,21 @@ export function App(): React.JSX.Element {
     setToastAction(null);
     setToast(message);
   }, []);
+  const clockDesignOfferShown = useRef(false);
+  useEffect(() => {
+    if (!ready || duoActive || !settings.isNewProfile || settings.homeClockDesign === "new" || clockDesignOfferShown.current) return;
+    clockDesignOfferShown.current = true;
+    setToast(t(settings.locale, "homeClockDesignOffer"));
+    setToastAction({
+      label: t(settings.locale, "homeClockDesign"),
+      run: () => {
+        setToast(null);
+        setToastAction(null);
+        setSettingsTarget({ section: "appearance", label: "homeClockDesign" });
+        setSettingsOpen(true);
+      }
+    });
+  }, [ready, duoActive, settings.isNewProfile, settings.homeClockDesign, settings.locale]);
   // A plugin page could not reach its service because its native code or module is off: say so with the way there.
   const showPluginError = useCallback((message: string): void => {
     const notice = pluginServiceNoticeKind(message);
@@ -2247,10 +2262,13 @@ export function App(): React.JSX.Element {
         titlebarSlot={titlebarActions}
         onOpenChange={changeUsageHistoryOpen}
       />
-      {ready && <Suspense fallback={null}><CanvasDuo titlebarSlot={titlebarActions} locale={settings.locale} onVisibilityChange={setDuoOpen} onCreateShared={() => void openTerminal()} onGoHome={goHome} onCreateNote={() => { const c=cameraStore.get(); const size={width:window.innerWidth,height:window.innerHeight}; createStickyNote({id:crypto.randomUUID(),text:"",position:{x:(size.width/2-c.x)/c.zoom-150,y:(size.height/2-c.y)/c.zoom-110},size:{width:300,height:220}}); }} /></Suspense>}
+      {ready && <Suspense fallback={null}><CanvasDuo titlebarSlot={titlebarActions} locale={settings.locale}
+        cursorDesign={settings.duoCursorDesign} onCursorDesignChange={design => void saveSettings({ duoCursorDesign: design })}
+        cursorNickname={settings.duoCursorNickname} onCursorNicknameChange={nickname => void saveSettings({ duoCursorNickname: nickname })}
+        onVisibilityChange={setDuoOpen} onCreateShared={() => void openTerminal()} onGoHome={goHome} onCreateNote={() => { const c=cameraStore.get(); const size={width:window.innerWidth,height:window.innerHeight}; createStickyNote({id:crypto.randomUUID(),text:"",position:{x:(size.width/2-c.x)/c.zoom-150,y:(size.height/2-c.y)/c.zoom-110},size:{width:300,height:220}}); }} /></Suspense>}
       <main className="app__content">
         {!ready && <div className="loading-screen"><span>{t(settings.locale, "loading")}</span></div>}
-        {ready && duoFullCanvas && duoGuest && !duoDocument && <Suspense fallback={null}><DuoCanvasSurface /></Suspense>}
+        {ready && duoFullCanvas && duoGuest && !duoDocument && <Suspense fallback={null}><DuoCanvasSurface locale={settings.locale} /></Suspense>}
         {ready && !(duoFullCanvas && duoGuest && !duoDocument) && <WorkspaceCanvas
           key={duoActive ? `duo-${duoView.reply?.state.workspaceId}` : "local-workspace"}
           sharedWorkspace={duoActive}

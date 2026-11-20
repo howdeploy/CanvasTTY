@@ -76,7 +76,7 @@ export async function runV2LabSmoke(window: BrowserWindow, output: string): Prom
     await run("document.querySelector('.duo-launch').click()");
     for (let i = 0; i < 60; i++) { if (await run("Boolean(document.querySelector('.duo-card pre')?.textContent)")) break; await wait(100); }
     if (!(await run("Boolean(document.querySelector('.duo-panel') && document.querySelector('.duo-card pre'))"))) throw new Error("Duo panel failed to render live shared terminal");
-    const panelFits = await run(`(() => { const p=document.querySelector('.duo-panel'); const r=p.getBoundingClientRect(); const c=getComputedStyle(p); return c.position==='fixed' && r.width>400 && r.height>300 && r.top>=0 && r.right<=innerWidth && r.bottom<=innerHeight; })()`);
+    const panelFits = await run(`(() => { const p=document.querySelector('.duo-panel'); const r=p.getBoundingClientRect(); return getComputedStyle(p.parentElement).position==='fixed' && r.width>400 && r.height>300 && r.left>=0 && r.top>=0 && r.right<=innerWidth && r.bottom<=innerHeight; })()`);
     if (!panelFits) throw new Error("Duo panel is not visible inside the application viewport");
     await writeFile(join(output, "duo-panel.png"), (await window.webContents.capturePage()).toPNG());
     await run("document.querySelector('.duo-panel>header button').click()");

@@ -1527,7 +1527,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
         />
       )}
 
-      {props.sharedWorkspace && <DuoCanvasCursors camera={camera} />}
+      {props.sharedWorkspace && <DuoCanvasCursors camera={camera} design={settings.duoCursorDesign}
+        nickname={settings.duoCursorNickname} locale={settings.locale} />}
       {homeEditing && (
         <div className="home-editor-toolbar" data-interactive="true">
           <strong>{t(settings.locale, "homeEditor")}</strong>

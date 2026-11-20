@@ -65,7 +65,7 @@ export default function WallpaperWorkshop({ settings, onChange }: { settings: Ap
     const saved = await save();
     await onChange(destination === "canvas" ? { canvasBackground: saved.id, canvasBackgroundPaused: false }
       : destination === "avatar" ? { homeAvatarWallpaper: saved.id }
-      : { homeClockWallpaper: saved.id, homeClockFont: saved.recipe.clockFont });
+      : { homeClockDesign: "new", homeClockWallpaper: saved.id, homeClockFont: saved.recipe.clockFont });
   };
   const src = draftUrl ?? asset?.src, media = draft?.media ?? asset?.summary.media;
   const set = (patch: Partial<WallpaperRecipe>): void => setRecipe(current => ({ ...current, ...patch }));

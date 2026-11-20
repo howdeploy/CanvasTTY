@@ -44,10 +44,16 @@ test('real Duo transport shares only selected cards, cursors and comments; input
   await guest.command({ action: 'input', cardId: 'shared', text: 'echo safe\r' });
   assert.deepEqual(writes, [{ id: 'shared', text: 'echo safe\r' }]);
   await guest.command({ action: 'comment', cardId: 'shared', text: '<script>plain text</script>' });
-  await guest.command({ action: 'cursor', cardId: 'shared', x: .25, y: .75 });
+  await guest.command({ action: 'cursor', cardId: 'shared', x: .25, y: .75, design: 'triangle', nickname: '  Киса  ' });
   const view = await host.command({ action: 'snapshot' });
   assert.equal(view.snapshot.comments[0].text, '<script>plain text</script>');
   assert.equal(view.snapshot.cursors[0].x, .25);
+  assert.equal(view.snapshot.cursors[0].design, 'triangle');
+  assert.equal(view.snapshot.cursors[0].nickname, 'Киса');
+  await guest.command({ action: 'cursor', cardId: 'shared', x: .25, y: .75, design: 'unknown' });
+  const [fallbackCursor] = (await host.command({ action: 'snapshot' })).snapshot.cursors;
+  assert.equal(fallbackCursor.design, undefined);
+  assert.equal(fallbackCursor.nickname, undefined);
   await host.command({ action: 'select', selected: [], controlled: [] });
   const revoked = await guest.command({ action: 'snapshot' });
   assert.deepEqual(revoked.snapshot.cards, []);

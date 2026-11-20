@@ -96,3 +96,44 @@ for (const [elapsed, expected] of [[320, 1], [501, 0]]) {
     assert.equal(calls.length, expected);
   });
 }
+
+test("Duo releases held keys and mouse buttons on the original tab when the tab changes or control ends", async (t) => {
+  const { BrowserService, FakeWindow, root, onCleanup } = await browserServiceHarness(t);
+  const owner = new FakeWindow();
+  const browser = new BrowserService(() => owner, { userDataPath: root, restoreTabs: false });
+  onCleanup(() => browser.dispose());
+
+  const first = (await browser.newTab("https://first.test/")).activeTabId;
+  const second = (await browser.newTab("https://second.test/")).activeTabId;
+  const firstEvents = [], secondEvents = [];
+  browser.tabs.get(first).view.webContents.sendInputEvent = event => firstEvents.push(event);
+  browser.tabs.get(second).view.webContents.sendInputEvent = event => secondEvents.push(event);
+
+  const input = [
+    { type: "keyDown", key: "Shift" },
+    { type: "mouseDown", x: .25, y: .5, button: "right" }
+  ];
+  const assertReleased = events => {
+    const [key, mouse] = events.slice(-2);
+    assert.equal(key.type, "keyUp");
+    assert.equal(key.keyCode, events[0].keyCode);
+    assert.equal(mouse.type, "mouseUp");
+    assert.equal(mouse.button, "right");
+    assert.equal(mouse.x, events[2].x);
+    assert.equal(mouse.y, events[2].y);
+  };
+
+  await browser.selectTab(first);
+  await browser.duoDocumentResource("browser-input", [first, input]);
+  await browser.selectTab(second);
+  assertReleased(firstEvents);
+  assert.deepEqual(secondEvents, []);
+  await assert.rejects(browser.duoDocumentResource("browser-input", [first, input]), /Invalid shared browser input/);
+
+  await browser.duoDocumentResource("browser-input", [second, input]);
+  await browser.duoDocumentResource("browser-release", []);
+  assertReleased(secondEvents);
+  const total = secondEvents.length;
+  await browser.duoDocumentResource("browser-release", []);
+  assert.equal(secondEvents.length, total);
+});

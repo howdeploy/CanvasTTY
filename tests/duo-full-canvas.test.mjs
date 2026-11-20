@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {CanvasDuoService,parseDuoInvite} from '../src/main/services/CanvasDuoService.ts';
 import {validSurfaceInputs,validSurfaceFrame} from '../src/shared/duoSurface.ts';
+import {fileURLToPath} from 'node:url';
 import {buildSync} from 'esbuild';
 // The real port uses Electron types and TS parameter properties. Bundle it with
 // the installed project compiler, then exercise it with fake Electron handles.
-const surfaceModule=buildSync({entryPoints:[new URL('../src/main/services/DuoCanvasSurface.ts',import.meta.url).pathname],bundle:true,platform:'node',format:'esm',write:false,logLevel:'silent'}).outputFiles[0].text;
+const surfaceModule=buildSync({entryPoints:[fileURLToPath(new URL('../src/main/services/DuoCanvasSurface.ts',import.meta.url))],bundle:true,platform:'node',format:'esm',write:false,logLevel:'silent'}).outputFiles[0].text;
 const {DuoCanvasSurface}=await import('data:text/javascript;base64,'+Buffer.from(surfaceModule).toString('base64'));
 function pair(t){
   const cards=[],actions=[];let controls=0,releases=0,gate=()=>true,pause;

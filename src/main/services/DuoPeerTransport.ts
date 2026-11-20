@@ -18,10 +18,10 @@ class PeerChannel {
     this.socket=socket;
     socket.on('error',(error:Error)=>{trace?.('socket-error',error);this.fail();});socket.on('close',()=>{trace?.('socket-closed');this.fail();});
     socket.on('data',(chunk:Buffer)=>{
-      if(this.buffer.length+chunk.length>MAX_FRAME){socket.destroy(new Error('Duo packet too large.'));return;}
       this.buffer=Buffer.concat([this.buffer,chunk]);
       let end:number;
       while((end=this.buffer.indexOf(10))>=0){
+        if(end>=MAX_FRAME){socket.destroy(new Error('Duo packet too large.'));return;}
         const bytes=this.buffer.subarray(0,end);this.buffer=this.buffer.subarray(end+1);
         try{
           const frame=JSON.parse(bytes.toString('utf8')) as Frame;
@@ -41,6 +41,7 @@ class PeerChannel {
           }
         }catch{socket.destroy(new Error('Invalid Duo frame.'));return;}
       }
+      if(this.buffer.length>=MAX_FRAME)socket.destroy(new Error('Duo packet too large.'));
     });
   }
   private send(frame:Frame):void {const data=JSON.stringify(frame)+'\n';if(Buffer.byteLength(data)>MAX_FRAME||this.socket.destroyed)throw new Error('Duo connection closed.');this.socket.write(data);}

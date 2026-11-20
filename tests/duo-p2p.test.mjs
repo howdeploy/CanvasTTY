@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
+import {mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {DuoFileTransferService, sendDuoFiles} from '../src/main/services/DuoFileTransferService.ts';
+import {mergeDuoSnapshot} from '../src/shared/canvasDuo.ts';
 import createTestnet from 'hyperdht/testnet.js';
 import {CanvasDuoService,parseDuoInvite} from '../src/main/services/CanvasDuoService.ts';
 function fixture(options){const writes=[];return{writes,service:new CanvasDuoService({listMetadata:()=>['shared','private'].map(id=>({id,title:id,provider:'terminal',exitCode:null,position:{x:0,y:0},size:{width:700,height:400}})),geometry:()=>({cols:80,rows:24}),readBuffer:id=>({buffer:id==='shared'?'visible output':'PRIVATE_CANARY',outputOffset:14}),inputChecked:(id,text)=>{writes.push({id,text});return true;}},{peerOptions:options})};}
@@ -81,4 +86,74 @@ test('broken P2P transport reconnects automatically, revokes input and never rep
  await host.command({action:'select',selected:['shared'],controlled:['shared']});await guest.command({action:'input',cardId:'shared',text:'after grant\r'});
  await guest.stop();await new Promise(r=>setTimeout(r,2100));assert.equal(guest.state().role,'idle');assert.equal(guest.peerClient,null);
  assert.deepEqual(writes.map(w=>w.text),['before break\r','after grant\r']);
+});
+
+
+test('populated canvas joins over P2P and fetches omitted terminal output and document pages', { timeout: 15000 }, async t => {
+  const net = await createTestnet(3);
+  const options = { bootstrap: net.bootstrap, host: '127.0.0.1', firewalled: false };
+  const { service: host } = fixture(options);
+  const { service: guest } = fixture(options);
+  t.after(async () => { await Promise.all([host.stop(), guest.stop()]); await net.destroy(); });
+  const entry = host.terminals.listMetadata()[0];
+  host.terminals.listMetadata = () => Array.from({ length: 96 }, (_, i) => ({ ...entry, id: `term-${i}` }));
+  const buffer = '\x1b[32m界'.repeat(5000).slice(-32768);
+  host.terminals.readBuffer = () => ({ buffer, outputOffset: buffer.length, restorePrefix: '\x1b[0m' });
+  const document = { settings: { stickyNotes: Array.from({ length: 180 }, (_, i) => ({ id: String(i), text: '界'.repeat(4000) })) } };
+  host.options.document = { snapshot: async () => document, clear() {} };
+  const h = await host.command({ action: 'host', selected: [], controlled: [], fullCanvas: true, documentSync: true });
+  let snapshot = (await guest.command({ action: 'join', invite: h.state.invites[0] })).snapshot;
+  assert.deepEqual(snapshot.document, document);
+  assert.equal(snapshot.cards.length, 96);
+  assert.ok(snapshot.cards.some(card => !card.output));
+  for (let round = 0; round < 25 && snapshot.cards.some(card => !card.output); round++) {
+    const outputOffsets = Object.fromEntries(snapshot.cards.flatMap(card => card.output ? [[card.id, card.output.outputOffset]] : []));
+    const next = await guest.command({ action: 'updates', outputOffsets, documentVersion: snapshot.documentVersion });
+    snapshot = mergeDuoSnapshot(snapshot, next.snapshot);
+  }
+  assert.ok(snapshot.cards.every(card => card.output?.buffer === buffer));
+  assert.equal(guest.state().status, 'connected');
+});
+
+test('large file upload over real P2P leaves heartbeat and terminal input available', { timeout: 20000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'duo-transfer-p2p-'));
+  const net = await createTestnet(3);
+  const options = { bootstrap: net.bootstrap, host: '127.0.0.1', firewalled: false };
+  const { service: host, writes } = fixture(options);
+  const { service: guest } = fixture(options);
+  t.after(async () => {
+    await Promise.all([host.stop(), guest.stop()]);
+    await net.destroy();
+    await rm(root, { recursive: true, force: true });
+  });
+  const imports = join(root, 'imports');
+  const transfers = new DuoFileTransferService(imports);
+  const source = join(root, 'transfer.bin');
+  const data = randomBytes(2 * 1024 * 1024);
+  await writeFile(source, data);
+  host.options.document = {
+    snapshot: async () => ({}), clear: () => transfers.clear(),
+    resource: async (_channel, args, authorized) => ({ value: await transfers.receive(args, authorized) })
+  };
+  const h = await host.command({ action: 'host', selected: [], controlled: [], fullCanvas: true, documentSync: true, manage: true });
+  await guest.command({ action: 'join', invite: h.state.invites[0] });
+  let heartbeats = 0;
+  const perform = host.perform.bind(host);
+  host.perform = async (command, author) => {
+    if (command.action === 'heartbeat' && author === 'guest') heartbeats++;
+    return perform(command, author);
+  };
+  let chunks = 0;
+  await sendDuoFiles([source], async args => {
+    const reply = await guest.command({ action: 'resource', channel: 'file-upload', args });
+    if (args[0] === 'chunk' && ++chunks === 34) {
+      await guest.command({ action: 'input', cardId: 'shared', text: 'during upload' });
+    }
+    return reply.snapshot.result.value;
+  }, () => guest.state().status === 'connected' && guest.state().manage);
+  assert.ok(chunks > 60);
+  assert.ok(heartbeats >= 2);
+  assert.deepEqual(writes, [{ id: 'shared', text: 'during upload' }]);
+  const directory = join(imports, (await readdir(imports))[0]);
+  assert.deepEqual(await readFile(join(directory, (await readdir(directory))[0])), data);
 });

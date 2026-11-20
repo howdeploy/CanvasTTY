@@ -11,7 +11,7 @@ const initial=()=>({locale:'ru',lastDirectory:'/private-guest',stickyNotes:[note
 const materials={materials:[],remarks:[],handoffs:[]},browser={tabs:[],activeTabId:null};
 function pair(t,options={}){
  let settings=initial(),buffer='\x1b[32mHOST\x1b[0m';const cards=[],writes=[],calls=[];
- const doc=new DuoDocumentService({get:()=>settings,update:async p=>(settings={...settings,...p})},async(channel,args)=>{calls.push({channel,args});if(channel===IPC.materialsSnapshot)return materials;if(channel===IPC.pluginsList)return [];if(channel===IPC.browserGetState)return browser;return null;},async request=>new Response('host-only-asset',{headers:{'content-type':'text/plain'}}),()=>{},async()=>null);
+ const doc=new DuoDocumentService({get:()=>settings,update:async p=>(settings={...settings,...p})},async(channel,args)=>{calls.push({channel,args});if(channel===IPC.materialsSnapshot)return materials;if(channel===IPC.pluginsList)return [];if(channel===IPC.browserGetState)return browser;if(channel===IPC.filesRegisterRoot)return {rootId:'registered-root',available:true};if(channel===IPC.filesList)return [];return null;},async request=>new Response('host-only-asset',{headers:{'content-type':'text/plain'}}),()=>{},async()=>null);
  const terminals={listMetadata:()=>cards,create:r=>{const c={...r,id:'terminal-'+cards.length,title:'Shared terminal',exitCode:null,size:{width:700,height:400}};cards.push(c);return c;},geometry:()=>({cols:80,rows:24}),readBuffer:()=>({buffer:'\x1b[32mHOST\x1b[0m',outputOffset:18}),inputChecked:(id,text)=>{writes.push({id,text});return true;},setBounds:(id,b)=>Object.assign(cards.find(c=>c.id===id),b),resize:()=>{throw Error('local fit must not resize host PTY');}};
  terminals.readBuffer=()=>({buffer,outputOffset:buffer.length});
  const host=new CanvasDuoService(terminals,{document:doc,files:options.files,onChanged:options.hostChanged}),guest=new CanvasDuoService({...terminals,listMetadata:()=>[],create:()=>{throw Error('Guest must not create local PTY');}},{onChanged:options.guestChanged});
@@ -121,12 +121,15 @@ test('asset capability rejects arbitrary URLs, private media, non-shared plugins
  const p=pair(t);
  for(const args of [['file:///etc/passwd',null],['https://invalid.test',null],['canvastty-plugin://private/index.html',null],['canvastty-preview://root/path','bytes=0-1,4-5']])await assert.rejects(p.doc.resource('protocol',args,()=>true,true));
  await assert.rejects(p.doc.resource(IPC.mediaRead,['/private/image.png'],()=>true,true),/background/);
- const response=await p.doc.resource('protocol',['canvastty-preview://root/file',null],()=>true,false);assert.equal(Buffer.from(response.value.body,'base64').toString(),'host-only-asset');
+ await assert.rejects(p.doc.resource('protocol',['canvastty-preview://root/file',null],()=>false,false),/not shared/);
 });
 test('large resource chunks are bounded, revocable and removed on disconnect',async()=>{
- const doc=new DuoDocumentService({get:initial,update:async()=>initial()},async()=>({data:'x'.repeat(160000)}),async()=>new Response(''),()=>{},async()=>null);
- const first=await doc.resource(IPC.filesRead,[],()=>true,true);assert.equal(first.data.length,128000);
- await assert.rejects(doc.resource('chunk',[first.chunk,128000],()=>false,false),/revoked/);
+ const doc=new DuoDocumentService({get:()=>({...initial(),pluginCanvas:[{pluginId:'shared'}]}),update:async()=>initial()},async()=>({data:'x'.repeat(160000)}),async()=>new Response(''),()=>{},async()=>null);
+ let allowed = true;
+ const authorized = () => allowed;
+ const first=await doc.resource(IPC.pluginsPlaylistsWrite,['shared'],authorized,true);assert.equal(first.data.length,128000);
+ allowed = false;
+ await assert.rejects(doc.resource('chunk',[first.chunk,128000],authorized,false),/revoked/);
  doc.clear();await assert.rejects(doc.resource('chunk',[first.chunk,128000],()=>true,true),/expired/);
 });
 
@@ -146,4 +149,23 @@ test('preload keeps rapid note edits pending across old polls, preserves guest p
  release();await Promise.all([first,second]);assert.equal(p.get().stickyNotes[0].text,'Wi');assert.equal(local.stickyNotes.length,0);assert.equal(local.canvasColor,'#local');
  assert.equal(router.localEvent(IPC.settingsChanged,local).stickyNotes[0].text,'Wi');
  await router.invoke(IPC.duoCommand,{action:'stop'});assert.equal((await router.invoke(IPC.settingsGet)).canvasColor,'#local');assert.equal(router.active(),false);
+});
+
+
+test('view-only guest opens an existing Files card, cannot register a new folder, and loses access after removal', async t => {
+  const p = pair(t);
+  const root = { rootType: 'folder', folderPath: '/shared' };
+  p.set({ fileCards: [{ id: 'files', root, folderPath: '/shared' }] });
+  await connect(p, false);
+  const request = async (channel, args) => (await p.guest.command({ action: 'resource', channel, args })).snapshot.result.value;
+  const { rootId } = await request(IPC.filesRegisterRoot, [root]);
+  assert.deepEqual(await request(IPC.filesList, [rootId, '']), []);
+  const response = await request('protocol', [`canvastty-preview://${rootId}/preview.mp4`, null]);
+  assert.equal(Buffer.from(response.body, 'base64').toString(), 'host-only-asset');
+  await assert.rejects(request(IPC.filesRegisterRoot, [{...root, folderPath: '/private'}]), /not granted/);
+  await assert.rejects(request(IPC.filesRead, ['host-local-root', 'preview.mp4']), /not shared/);
+  p.set({ fileCards: [] });
+  await assert.rejects(request(IPC.filesList, [rootId, '']), /not shared/);
+  await assert.rejects(request('protocol', [`canvastty-preview://${rootId}/preview.mp4`, null]), /not shared/);
+  await request(IPC.filesCloseRoot, [rootId]);
 });

@@ -55,6 +55,8 @@ button { border: 0; }
 .titlebar__build--release { border-color: rgba(184,207,153,.34); color: var(--primary); background: rgba(184,207,153,.09); }
 .titlebar__subtitle { color: rgba(255,255,255,.43); font-size: 11px; }
 .titlebar__logo { width: 25px; height: 25px; display: block; flex: 0 0 auto; object-fit: contain; }
+.titlebar__actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; margin-inline: 10px; -webkit-app-region: no-drag; }
+.titlebar__actions:empty { display: none; }
 .titlebar__drag { flex: 1; height: 100%; -webkit-app-region: drag; }
 .titlebar__controls { height: 100%; display: flex; -webkit-app-region: no-drag; }
 .titlebar__controls button { width: 46px; display: grid; place-items: center; color: rgba(255,255,255,.76); background: transparent; cursor: pointer; transition: background .15s ease, color .15s ease; }
@@ -176,8 +178,16 @@ button { border: 0; }
 .home-zone--editing .home-widget-slot > .tile { pointer-events: none; }
 .home-zone--editing .home-widget-slot { border-radius: var(--radius-lg); outline: 2px dashed rgba(255,255,255,.72); outline-offset: 4px; }
 .home-zone--editing .home-widget-slot--outside { outline-color: var(--danger); }
-.home-widget-slot__move { position: absolute; inset: 0; z-index: 30; width: 100%; height: 100%; padding: 12px; display: flex; align-items: flex-start; justify-content: flex-start; overflow: hidden; border-radius: var(--radius-lg); color: white; background: rgba(31,32,42,.22); cursor: move; font: 800 11px/1.2 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; touch-action: none; }
-.home-widget-slot__move:hover { background: rgba(31,32,42,.34); }
+.home-widget-slot__move {
+  position: absolute; inset: 0; z-index: 30; width: 100%; height: 100%; padding: 12px;
+  display: grid; place-items: center; overflow: hidden; border-radius: var(--radius-lg);
+  color: white; background: #15202a90; cursor: move; font: 700 18px/1.2 var(--font-sans); touch-action: none;
+}
+.home-widget-slot__move:hover { background: #15202aaa; }
+.home-widget-slot__move span {
+  max-width: 100%; padding: 4px 9px; border-radius: 6px; background: #15202ae6;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none;
+}
 .home-widget-slot__resize { position: absolute; z-index: 40; padding: 0; background: transparent; touch-action: none; }
 .home-widget-slot__resize--n { top: -9px; left: 23px; right: 23px; height: 18px; cursor: ns-resize; }
 .home-widget-slot__resize--e { top: 23px; right: -9px; bottom: 23px; width: 18px; cursor: ew-resize; }
@@ -1774,43 +1784,27 @@ button { border: 0; }
 .setting-group[data-setting-label] { position: relative; }
 .setting-group[data-setting-label]:focus { outline: none; }
 .setting-group[data-setting-highlight]::after { content: ""; position: absolute; inset: .25em -.6em; border: 1px solid var(--primary); border-radius: .65em; pointer-events: none; }
-/* Visible Home customization stays on the canvas; the editor controls stay in screen space. */
-.home-customize { position: absolute; left: 0; top: -43px; display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 12px; border-radius: 9px; background: var(--surface); color: var(--text-primary); font: 700 13px var(--font-sans); cursor: pointer; pointer-events: auto; }
-.home-customize:focus-visible, .home-layout-panel :focus-visible, .home-widget-slot__move:focus-visible { outline: 3px solid #95c956; outline-offset: 3px; }
-.home-widget-slot__move { flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: #15202a99; backdrop-filter: blur(2px); white-space: normal; text-align: center; font: 700 18px var(--font-sans); }
-.home-widget-slot__move span { border: 1px solid #ffffff66; padding: 4px 10px; border-radius: 5px; font: 14px var(--font-mono); }
-.home-widget-slot__move small { max-width: 90%; font: 12px/1.5 var(--font-sans); opacity: .85; }
-.home-widget-slot__move:hover { background: #15202aaa; }
 .home-widget-slot__resize { min-height: 0; }
+.home-widget-slot__move:focus-visible { outline: 2px solid var(--primary); outline-offset: -3px; }
+.home-editor-toolbar__warning { color: var(--yellow); font-size: 11px; }
 .home-editor-toolbar { max-width: calc(100% - 32px); flex-wrap: wrap; justify-content: center; }
-.home-editor-toolbar__hint { font: 11px/1.3 var(--font-sans); opacity: .75; max-width: 230px; }
-.home-layout-panel { position: absolute; right: 16px; top: 105px; z-index: 500; width: 230px; max-height: calc(100% - 185px); overflow: auto; padding: 16px; display: grid; gap: 14px; border: 1px solid #ffffff25; border-radius: 14px; color: white; background: #282934f5; box-shadow: var(--shadow-md); font: 12px/1.5 var(--font-sans); }
-.home-layout-panel label { display: grid; gap: 5px; min-width: 0; }
-.home-layout-panel select, .home-layout-panel input { width: 100%; min-width: 0; padding: 8px; color: white; background: #ffffff15; border: 1px solid #ffffff30; border-radius: 7px; }
-.home-layout-panel option { background: #282934; }
-.home-layout-panel button { color: white; background: #ffffff20; padding: 9px; border-radius: 7px; cursor: pointer; }
-.home-layout-panel button:disabled { opacity: .4; cursor: default; }
-.home-layout-panel__geometry { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.home-layout-panel [role=status] { color: #ffcda8; }
 .launcher-button { align-content: center; gap: 5px; min-width: 0; padding: 8px 3px; overflow: hidden; }
 .launcher-button > span:last-child:not(.provider-icon) { font: 650 11px/1.3 var(--font-sans); max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .launcher-button--files, .launcher-button--files:hover { background: #edc56a; color: #382d1a; }
 .mini-media__caption { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; border: 1px solid #ffffff38; border-radius: 9px; background: #15202acc; color: white; font: 650 12px/1.3 var(--font-sans); pointer-events: none; }
 .mini-media__empty-icon { display: grid; justify-items: center; gap: 15px; }
 .mini-media__pick > [data-wallpaper-animated=true]::after { content: attr(data-wallpaper-format) " ↻"; position: absolute; left: 14px; top: 14px; z-index: 2; padding: 5px 8px; border-radius: 5px; background: #132522dd; color: #c1f394; text-transform: uppercase; font: 750 11px var(--font-mono); pointer-events: none; }
-@media (max-width: 900px) { .home-layout-panel { width: 190px; } .home-editor-toolbar__hint { display: none; } }
 
 .workspace-presets { padding: 18px; border: 1px solid var(--surface-soft); border-radius: 14px; margin-bottom: 24px; }
-.workspace-presets h3 { margin: 0 0 10px; }
-.workspace-presets p { font-size: 13px; line-height: 1.5; margin: 10px 0; }
+.workspace-presets > h3 { margin: 0 0 10px; }
+.workspace-presets > p, .workspace-presets [role="status"] > p { font-size: 13px; line-height: 1.5; margin: 10px 0; }
 .workspace-presets form, .workspace-presets article { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .workspace-presets article { padding-top: 12px; border-top: 1px solid var(--surface-soft); }
 .workspace-presets article > div { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
 .workspace-presets small { display: block; font-size: 11px; opacity: .75; margin-top: 5px; }
-.workspace-presets input { flex: 1; min-width: 180px; }
-.workspace-presets input, .workspace-presets select, .workspace-presets button { padding: 9px 12px; border: 1px solid var(--text-muted-on-dark); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; }
-.workspace-presets button { cursor: pointer; }
-.workspace-presets button:disabled { opacity: .5; cursor: default; }
+.workspace-presets__name { flex: 1; min-width: min(180px, 100%); padding: .65em .8em; border: 1px solid color-mix(in srgb, var(--text) 14%, transparent); border-radius: .6em; background: var(--surface-soft); color: var(--text); font: inherit; }
+.settings-inline-controls { display: flex; flex-wrap: wrap; gap: .5em; }
+.settings-inline-controls button:disabled, .workspace-presets .setting-inline-action:disabled { opacity: .5; cursor: default; }
 .workspace-presets :focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 .workspace-presets [role=alert] { color: #f5a9a9; }
 .shortcut-hints:not([open]) { min-width: 0; }

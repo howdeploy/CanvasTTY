@@ -74,6 +74,7 @@ export function applyDuoSettingsOps(settings: AppSettings, ops: DuoDocumentOp[])
 export interface DuoDocumentPort {
   snapshot(): Promise<DuoDocument>;
   edit(ops: DuoDocumentOp[], authorized:()=>boolean): Promise<void>;
-  resource(channel:string,args:unknown[],authorized:()=>boolean,manage:boolean): Promise<unknown>;
+  resource(channel:string,args:unknown[],authorized:()=>boolean,manage:boolean,connected?:()=>boolean): Promise<unknown>;
+  revokeControl?():void;
   clear():void;
 }

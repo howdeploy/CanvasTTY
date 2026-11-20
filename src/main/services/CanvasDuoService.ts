@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server, type IncomingMessage } from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
 import { networkInterfaces } from "node:os";
 import type { AddressInfo } from "node:net";
 import type { DuoCard, DuoCommand, DuoComment, DuoCursor, DuoReply, DuoSnapshot, DuoState } from "../../shared/canvasDuo.ts";
@@ -28,9 +29,14 @@ interface DuoTerminalFiles {
   canOpen(id:string,reference:string):Promise<boolean>;
   open(id:string,reference:string,authorized:()=>boolean):Promise<void>;
 }
-type RemoteAction = { outputOffsets?:Record<string,number>; documentVersion?:string; ops?:DuoDocumentOp[]; channel?:string; args?:unknown[]; name?:"terminal"|"note"|"home"; frameId?:string; events?:DuoSurfaceInput[]; action: string; cardId?: string; text?: string; x?: number; y?: number; bounds?: import("../../shared/contracts").SessionBounds; cols?: number; rows?: number };
+type RemoteAction = { pageId?: string; pageOffset?: number; outputOffsets?:Record<string,number>; documentVersion?:string; ops?:DuoDocumentOp[]; channel?:string; args?:unknown[]; name?:"terminal"|"note"|"home"; frameId?:string; events?:DuoSurfaceInput[]; action: string; cardId?: string; text?: string; x?: number; y?: number; bounds?: import("../../shared/contracts").SessionBounds; cols?: number; rows?: number };
 type Message = RemoteAction & { id: string; peer: string; at: number };
 const LIMIT = 2 * 1024 * 1024;
+// AES envelope base64 adds one third to the plaintext, plus transport framing.
+const MAX_RESPONSE_BYTES = 1_400_000;
+const OUTPUT_BUDGET_BYTES = 480_000;
+const DOCUMENT_PAGE_SIZE = 128_000;
+const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
 const TTL = 60 * 60 * 1000;
 const PEER_LEASE_MS = 15_000;
 export function duoLanAddress(host: string): boolean {
@@ -88,6 +94,7 @@ export class CanvasDuoService {
   private guest: Invite | null = null;
   private peerId = randomUUID();
   private connectedPeer = "";
+  private peerEpoch = 0;
   private peerLastSeen = 0;
   private expiresAt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -103,7 +110,9 @@ export class CanvasDuoService {
   private controlled = new Set<string>();
   private invites: string[] = [];
   private seen = new Map<string, number>();
-  private requests: number[] = [];
+  private requests = new Map<string, number[]>();
+  private documentPages = new Map<string, { text: string; peer: string; expires: number }>();
+  private outputCursor = 0;
   private comments: DuoComment[] = [];
   private cursors = new Map<string, DuoCursor>();
   private screens = new Map<string, SessionScreen>();
@@ -191,6 +200,7 @@ export class CanvasDuoService {
     if (!this.connectedPeer || Date.now() - this.peerLastSeen <= PEER_LEASE_MS) return;
     this.trace?.record("peer-lease-expired");
     this.connectedPeer = ""; this.peerLastSeen = 0;
+    this.documentPages.clear();
     this.controlled.clear(); this.manage = false; this.options.surface?.release(); this.options.document?.clear(); this.cursors.delete("guest");
   }
   state(): DuoState {
@@ -286,7 +296,7 @@ export class CanvasDuoService {
       this.startUpdates(generation);
       return { state: this.state() };
     }
-    if (command.action === "select") { if (!this.hosting()) throw new Error("Start hosting first."); this.select(command.selected, command.controlled); this.manage=command.manage===true; if(!this.manage)this.options.surface?.release(); this.options.document?.clear(); return { state: this.state() }; }
+    if (command.action === "select") { if (!this.hosting()) throw new Error("Start hosting first."); this.select(command.selected, command.controlled); this.manage=command.manage===true; if(!this.manage) { this.options.surface?.release(); this.options.document?.revokeControl?.(); } return { state: this.state() }; }
     if (command.action === "join") {
       let invite: Invite;
       try { invite = parseDuoInvite(command.invite); } catch { this.diagnostics.begin('guest','p2p').record('invitation-invalid',new Error('Invalid Canvas Duo invitation.')); throw new Error('Invalid Canvas Duo invitation.'); }
@@ -317,7 +327,10 @@ export class CanvasDuoService {
     if (this.key !== key || (this.expiresAt <= Date.now() && this.connectedPeer !== value.peer)) throw new Error('Duo session changed.');
     this.validateMessage(value);
     if (this.connectedPeer && value.peer !== this.connectedPeer) throw new Error('This invitation is already in use.');
-    if (!this.connectedPeer) this.trace?.record("peer-authenticated");
+    if (!this.connectedPeer) {
+      this.peerEpoch++;
+      this.trace?.record("peer-authenticated");
+    }
     this.connectedPeer = value.peer; this.peerLastSeen = Date.now();
     let result: unknown;
     try {
@@ -326,7 +339,7 @@ export class CanvasDuoService {
         if (generation !== this.generation || this.key !== key || this.connectedPeer !== value.peer) throw Error('Duo session changed.');
         return this.perform(value, 'guest');
       };
-      const read = ['heartbeat', 'snapshot', 'updates', 'surface', 'file-can-open'].includes(value.action)
+      const read = ['heartbeat', 'snapshot', 'updates', 'document-page', 'surface', 'file-can-open'].includes(value.action)
         || (value.action === 'resource' && (DUO_READ_CHANNELS.has(value.channel ?? '')
           || ['protocol', 'chunk', 'browser-frame'].includes(value.channel ?? '')));
       // Slow capture/media/document reads must not hold keyboard input or the
@@ -338,7 +351,20 @@ export class CanvasDuoService {
         task = this.receivedMutations.catch(() => undefined).then(perform);
         this.receivedMutations = task;
       }
-      result = {id:value.id,ok:true,snapshot:await task};
+      const snapshot = await task;
+      result = { id: value.id, ok: true, snapshot };
+      if (snapshot.document && Buffer.byteLength(JSON.stringify(result)) > MAX_RESPONSE_BYTES) {
+        const { document, ...metadata } = snapshot;
+        const text = JSON.stringify(document);
+        if (Buffer.byteLength(text) > MAX_DOCUMENT_BYTES) throw Error('Shared Canvas document is too large.');
+        const id = randomUUID();
+        const now = Date.now();
+        for (const [key, page] of this.documentPages) if (page.expires <= now) this.documentPages.delete(key);
+        if (this.documentPages.size >= 2) this.documentPages.delete(this.documentPages.keys().next().value!);
+        this.documentPages.set(id, { text, peer: value.peer, expires: now + 60_000 });
+        result = { id: value.id, ok: true, snapshot: { ...metadata, documentPage: { id, length: text.length } } };
+      }
+      if (Buffer.byteLength(JSON.stringify(result)) > MAX_RESPONSE_BYTES) throw Error('Duo response is too large.');
     }
     catch (error) { result = {id:value.id,ok:false,error:error instanceof Error ? error.message : 'Duo request failed.'}; }
     if(this.key!==key)throw new Error('Duo session changed.');
@@ -348,12 +374,20 @@ export class CanvasDuoService {
     const now = Date.now();
     if (!value || typeof value.id !== "string" || !/^[\w-]{1,80}$/.test(value.id) || typeof value.peer !== "string" || !/^[\w-]{1,80}$/.test(value.peer) || !Number.isFinite(value.at) || Math.abs(now - value.at) > 60_000) throw new Error("Expired request.");
     for (const [id, at] of this.seen) if (now - at > 120_000) this.seen.delete(id);
-    this.requests = this.requests.filter(at => now - at < 1000);
-    if (this.seen.has(value.id) || this.seen.size >= 2048 || this.requests.length >= 30) throw new Error("Repeated or excessive request.");
-    this.seen.set(value.id, now); this.requests.push(now);
+    const upload = value.action === 'resource' && value.channel === 'file-upload';
+    const lane = upload ? 'upload' : value.action === 'heartbeat' || value.action === 'document-page' ? value.action : 'control';
+    const limit = lane === 'upload' ? 16 : lane === 'heartbeat' ? 4 : lane === 'document-page' ? 22 : 30;
+    const requests = (this.requests.get(lane) ?? []).filter(at => now - at < 1000);
+    if (this.seen.has(value.id) || this.seen.size >= 10_000 || requests.length >= limit) throw new Error("Repeated or excessive request.");
+    this.seen.set(value.id, now);
+    this.requests.set(lane, [...requests, now]);
   }
-  private remoteInFlight=0;
-  private remoteWaiters:Array<()=>void>=[];
+  private remoteInFlight = 0;
+  private remoteWaiters: Array<() => void> = [];
+  private outgoingUpload: Promise<unknown> = Promise.resolve();
+  private lastUploadAt = 0;
+  private outgoingDocumentPage: Promise<unknown> = Promise.resolve();
+  private lastDocumentPageAt = 0;
   /** Chromium throttles hidden-window timers; a renderer poll cannot own the peer lease. */
   private startHeartbeat(generation:number):void {
     if(this.heartbeatTimer)clearInterval(this.heartbeatTimer);
@@ -365,15 +399,59 @@ export class CanvasDuoService {
     },2000);
     this.heartbeatTimer.unref();
   }
-  private async remote(command:RemoteAction):Promise<DuoSnapshot>{
-    const generation=this.generation;
-    if(this.remoteInFlight>=4){
-      if(this.remoteWaiters.length>=128)throw Error('Duo request queue is full.');
-      await new Promise<void>(resolve=>this.remoteWaiters.push(resolve));
-    }else this.remoteInFlight++;
-    try{if(generation!==this.generation)throw Error('Duo session changed.');return await this.remoteNow(command);}
-    finally{const next=this.remoteWaiters.shift();if(next)next();else this.remoteInFlight--;}
+  private async remote(command: RemoteAction): Promise<DuoSnapshot> {
+    const generation = this.generation;
+    if (command.action === 'heartbeat') return this.remoteNow(command);
+    if (command.action === 'resource' && command.channel === 'file-upload') {
+      // A single paced bulk slot leaves the normal queue and keepalive free.
+      const task = this.outgoingUpload.catch(() => undefined).then(async () => {
+        const wait = this.lastUploadAt + 85 - performance.now();
+        if (wait > 0) await delay(wait);
+        if (generation !== this.generation) throw Error('Duo session changed.');
+        this.lastUploadAt = performance.now();
+        return this.remoteNow(command);
+      });
+      this.outgoingUpload = task;
+      return task;
+    }
+    if (this.remoteInFlight >= 4) {
+      if (this.remoteWaiters.length >= 128) throw Error('Duo request queue is full.');
+      await new Promise<void>(resolve => this.remoteWaiters.push(resolve));
+    } else this.remoteInFlight++;
+    try {
+      if (generation !== this.generation) throw Error('Duo session changed.');
+      const snapshot = await this.remoteNow(command);
+      const { documentPage, ...metadata } = snapshot;
+      if (!documentPage) return snapshot;
+      if (!/^[\w-]{1,80}$/.test(documentPage.id) || !Number.isSafeInteger(documentPage.length)
+          || documentPage.length < 1 || documentPage.length > MAX_DOCUMENT_BYTES) throw Error('Invalid Duo document size.');
+      const chunks: string[] = [];
+      for (let offset = 0; offset < documentPage.length; ) {
+        const page = await this.readDocumentPage(documentPage.id, offset, generation);
+        const chunk = page.result;
+        if (typeof chunk !== 'string' || chunk.length !== Math.min(DOCUMENT_PAGE_SIZE, documentPage.length - offset)) throw Error('Invalid Duo document page.');
+        chunks.push(chunk);
+        offset += chunk.length;
+      }
+      return { ...metadata, document: JSON.parse(chunks.join('')) };
+    } finally {
+      const next = this.remoteWaiters.shift();
+      if (next) next();
+      else this.remoteInFlight--;
+    }
   }
+  private readDocumentPage(pageId: string, offset: number, generation: number): Promise<DuoSnapshot> {
+    const task = this.outgoingDocumentPage.catch(() => undefined).then(async () => {
+      const wait = this.lastDocumentPageAt + 55 - performance.now();
+      if (wait > 0) await delay(wait);
+      if (generation !== this.generation) throw Error('Duo session changed.');
+      this.lastDocumentPageAt = performance.now();
+      return this.remoteNow({ action: 'document-page', pageId, pageOffset: offset });
+    });
+    this.outgoingDocumentPage = task;
+    return task;
+  }
+
   private async remoteNow(command: RemoteAction): Promise<DuoSnapshot> {
     const invite = this.guest;
     if (!invite) throw new Error("Duo is disconnected.");
@@ -403,7 +481,9 @@ export class CanvasDuoService {
     if (!result.ok) throw new Error(result.error ?? "Duo request failed.");
     if (!result.snapshot || !Array.isArray(result.snapshot.cards) || result.snapshot.cards.length > 128 || !Array.isArray(result.snapshot.comments) || !Array.isArray(result.snapshot.cursors)) throw new Error("Invalid Duo snapshot.");
     if(result.snapshot.surface&&!validSurfaceFrame(result.snapshot.surface))throw new Error("Invalid shared canvas frame.");
-    this.lastSuccessAt=Date.now(); this.workspaceId=result.snapshot.workspaceId ?? ""; this.manage=result.snapshot.manage===true; this.fullCanvas=result.snapshot.fullCanvas===true; this.documentSync=result.snapshot.documentSync===true;
+    this.lastSuccessAt = Date.now();
+    if (command.action === 'document-page') return result.snapshot;
+    this.workspaceId=result.snapshot.workspaceId ?? ""; this.manage=result.snapshot.manage===true; this.fullCanvas=result.snapshot.fullCanvas===true; this.documentSync=result.snapshot.documentSync===true;
     return result.snapshot;
     } catch (error) { trace?.record(authenticated?"remote-rejected":"request-failed",error); if (!authenticated && generation === this.generation) { this.lastSuccessAt = 0; this.manage = false; } throw error; }
     finally { if(performance.now()-started>2000)trace?.record("request-slow"); }
@@ -412,21 +492,36 @@ export class CanvasDuoService {
     // No document, terminal reads or browser capture on this authenticated keepalive path.
     if(command.action==='heartbeat')return {partial:true,cards:[],comments:[],cursors:[],expiresAt:this.expiresAt,
       workspaceId:this.workspaceId,manage:this.manage,fullCanvas:this.fullCanvas,documentSync:this.documentSync};
+    if (command.action === 'document-page') {
+      const page = this.documentPages.get(command.pageId ?? '');
+      const offset = command.pageOffset;
+      if (author !== 'guest' || !page || page.peer !== this.connectedPeer || page.expires < Date.now()
+          || typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0 || offset >= page.text.length) {
+        throw Error('Shared document page expired.');
+      }
+      const result = page.text.slice(offset, offset + DOCUMENT_PAGE_SIZE);
+      if (offset + result.length === page.text.length) this.documentPages.delete(command.pageId!);
+      return { partial: true, cards: [], comments: [], cursors: [], expiresAt: this.expiresAt, result };
+    }
     if(command.action==='document-edit'||command.action==='resource'){
       if(!this.documentSync||!this.options.document)throw Error('Shared object synchronization is not enabled.');
       const generation=this.generation;
-      const authorized=()=>generation===this.generation&&this.documentSync&&(author==='host'||this.manage);
+      const peer = this.connectedPeer;
+      const epoch = this.peerEpoch;
+      const connected = () => generation === this.generation && this.documentSync
+        && (author === 'host' || Boolean(peer) && this.connectedPeer === peer && this.peerEpoch === epoch);
+      const authorized = () => connected() && (author === 'host' || this.manage);
       let result:unknown;
       if(command.action==='document-edit'){
         if(!authorized())throw Error('The host has not granted shared workspace control.');
         await this.options.document.edit(command.ops!,authorized);
-      }else result=await this.options.document.resource(command.channel!,command.args!,authorized,author==='host'||this.manage);
-      if(generation!==this.generation)throw Error('Duo session changed.');
+      }else result=await this.options.document.resource(command.channel!,command.args!,authorized,author==='host'||this.manage,connected);
+      if(!connected())throw Error('Duo session changed.');
       return {incremental:true,sequence:++this.snapshotSequence,cards:this.available(),comments:this.comments,cursors:[],expiresAt:this.expiresAt,workspaceId:this.workspaceId,manage:this.manage,fullCanvas:true,documentSync:true,
         ...(command.action==='document-edit'?{document:await this.options.document.snapshot()}:{result})};
     }
     if (command.action === "leave" && author === "guest") {
-      this.connectedPeer = ""; this.peerLastSeen = 0; this.controlled.clear(); this.manage = false; this.options.surface?.release(); this.options.document?.clear(); this.cursors.delete("guest");
+      this.connectedPeer = ""; this.peerLastSeen = 0; this.documentPages.clear(); this.controlled.clear(); this.manage = false; this.options.surface?.release(); this.options.document?.clear(); this.cursors.delete("guest");
       return { cards: [], comments: [], cursors: [], expiresAt: this.expiresAt };
     }
     if(command.action==='surface'||command.action==='surface-input'||command.action==='surface-action') {
@@ -524,23 +619,41 @@ export class CanvasDuoService {
   private async snapshot(updates?:RemoteAction): Promise<DuoSnapshot> {
     const sequence = ++this.snapshotSequence;
     if(this.fullCanvas&&!this.documentSync)return {sequence,cards:this.available(),comments:[],cursors:[],expiresAt:this.expiresAt,fullCanvas:true};
-    const cards: DuoCard[] = [];
-    for (const card of this.available().filter(c => this.documentSync||this.selected.has(c.id))) {
+    const cards = this.available().filter(card => this.documentSync || this.selected.has(card.id));
+    let budget = OUTPUT_BUDGET_BYTES;
+    const cursor = this.outputCursor % Math.max(1, cards.length);
+    for (let i = 0; i < cards.length; i++) {
+      const index = (cursor + i) % cards.length;
+      const card = cards[index]!;
       try {
         const raw=this.terminals.readBuffer(card.id);const geometry=this.terminals.geometry(card.id);
         if (this.documentSync) {
           const offset = updates?.outputOffsets?.[card.id];
           const unchanged = offset === raw.outputOffset;
           const count = offset !== undefined && offset <= raw.outputOffset ? Math.min(32768, raw.outputOffset-offset) : 32768;
-          const buffer = raw.buffer.slice(-count);
-          cards.push({ ...card, ...(!unchanged ? { output:{buffer,outputOffset:raw.outputOffset,startOffset:raw.outputOffset-buffer.length,restorePrefix:raw.restorePrefix?.slice(-8192),...geometry} } : {}) });
+          const buffer = count ? raw.buffer.slice(-count) : "";
+          if (!unchanged) {
+            const output = { buffer, outputOffset: raw.outputOffset, startOffset: raw.outputOffset - buffer.length, restorePrefix: raw.restorePrefix?.slice(-8192), ...geometry };
+            const bytes = Buffer.byteLength(JSON.stringify(output));
+            if (bytes > budget) {
+              // Leave offsets untouched for skipped cards. The next update starts here.
+              this.outputCursor = index;
+              break;
+            }
+            budget -= bytes;
+            cards[index] = { ...card, output };
+          }
           continue;
         }
         let screen = this.screens.get(card.id);
         if (!screen) { screen = new SessionScreen(this.terminals, card.id); this.screens.set(card.id, screen); }
         else { const output = this.terminals.readBuffer(card.id); screen.feed({ id: card.id, data: output.buffer, outputOffset: output.outputOffset }); }
-        cards.push({ ...card, output:{buffer:raw.buffer.slice(-32768),outputOffset:raw.outputOffset,restorePrefix:raw.restorePrefix?.slice(-8192),...geometry}, text: (await screen.text()).slice(-16 * 1024) });
-      } catch { cards.push({ ...card, text: "Terminal is no longer available." }); }
+        const output = { buffer: raw.buffer.slice(-32768), outputOffset: raw.outputOffset, restorePrefix: raw.restorePrefix?.slice(-8192), ...geometry };
+        const text = (await screen.text()).slice(-16 * 1024);
+        const bytes = Buffer.byteLength(JSON.stringify({ output, text }));
+        if (bytes <= budget) { cards[index] = { ...card, output, text }; budget -= bytes; }
+        else if (Buffer.byteLength(JSON.stringify(text)) <= budget) { cards[index] = { ...card, text }; budget -= Buffer.byteLength(JSON.stringify(text)); }
+      } catch { cards[index] = { ...card, text: "Terminal is no longer available." }; }
     }
     const document = this.documentSync ? await this.options.document!.snapshot() : undefined;
     const documentVersion = document ? createHash('sha256').update(JSON.stringify(document)).digest('hex') : undefined;
@@ -560,7 +673,7 @@ export class CanvasDuoService {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer); this.heartbeatTimer = null;
     if (this.updatesTimer) clearTimeout(this.updatesTimer); this.updatesTimer = null;
     this.updateSnapshot=undefined;this.reconnectAfter=0;this.reconnectAttempts=0;this.reconnectPending=null;
-    this.invites = []; this.selected.clear(); this.controlled.clear(); this.comments = []; this.cursors.clear(); this.seen.clear(); this.requests = [];
+    this.invites = []; this.selected.clear(); this.controlled.clear(); this.comments = []; this.cursors.clear(); this.seen.clear(); this.requests.clear(); this.documentPages.clear(); this.outputCursor = 0;
     for (const screen of this.screens.values()) screen.dispose(); this.screens.clear(); this.snapshotPending = null;
     this.published='';this.publish({state:this.state()});
     await Promise.all([host?.stop(),client?.stop()]);

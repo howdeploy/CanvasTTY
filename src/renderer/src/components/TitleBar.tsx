@@ -11,11 +11,12 @@ const BUILD_LABEL = `${BUILD_CHANNEL} v${import.meta.env.VITE_BUILD_VERSION || a
 
 interface TitleBarProps {
   locale: LocaleId;
+  actionsRef?: React.Ref<HTMLDivElement>;
   windowState: WindowState;
   onWindowStateChange(state: WindowState): void;
 }
 
-export function TitleBar({ locale, windowState, onWindowStateChange }: TitleBarProps): React.JSX.Element | null {
+export function TitleBar({ actionsRef, locale, windowState, onWindowStateChange }: TitleBarProps): React.JSX.Element | null {
   const toggleMaximize = async (): Promise<void> => {
     const state = await window.canvasTTY.window.toggleMaximize();
     onWindowStateChange(state);
@@ -44,6 +45,7 @@ export function TitleBar({ locale, windowState, onWindowStateChange }: TitleBarP
           <span className="titlebar__subtitle">{t(locale, "appSubtitle")}</span>
         </div>
         <div className="titlebar__drag" />
+        <div ref={actionsRef} className="titlebar__actions" />
       </header>
     );
   }
@@ -57,6 +59,7 @@ export function TitleBar({ locale, windowState, onWindowStateChange }: TitleBarP
         <span className="titlebar__subtitle">{t(locale, "appSubtitle")}</span>
       </div>
       <div className="titlebar__drag" />
+      <div ref={actionsRef} className="titlebar__actions" />
       {controls}
     </header>
   );

@@ -25,6 +25,7 @@
 .usage-history-trigger:focus-visible { outline: 0; box-shadow: 0 0 0 2px var(--secondary), 0 6px 16px rgba(0, 0, 0, .24); transform: translateY(-1px); }
 .usage-history-trigger--open { box-shadow: 0 0 0 2px var(--secondary), 0 6px 16px rgba(0, 0, 0, .24); }
 .app--macos .usage-history-trigger { top: 4px; right: 10px; height: calc(var(--titlebar-height, 32px) - 8px); font-size: 11px; }
+.titlebar__actions .usage-history-trigger { position: static; order: 1; }
 .app--macos-fullscreen .usage-history-trigger { top: 10px; right: auto; left: 50%; height: 30px; transform: translateX(-50%); }
 .app--macos-fullscreen .usage-history-trigger:hover,
 .app--macos-fullscreen .usage-history-trigger:focus-visible { transform: translateX(-50%) translateY(-1px); }

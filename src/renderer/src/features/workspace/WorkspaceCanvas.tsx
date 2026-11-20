@@ -42,7 +42,6 @@ import { fileCardRuntimeFor, type FileCardRuntimeState } from "../files/fileCard
 import { attentionQueueRenderedAt, attentionSessions } from "../home/attentionQueue";
 import type { LimitsLoadState } from "../home/homeModel";
 import { homeGridPixelSize, homeLayoutFitsGrid } from "../home/homeLayout";
-const HomeLayoutPanel = lazy(() => import("../home/HomeLayoutPanel").then(module => ({ default: module.HomeLayoutPanel })));
 import { HomeZone } from "../home/HomeZone";
 import { SessionFailureDetails, sessionFailureDetails } from "../home/SessionFailureDetails";
 import { sessionStatusLabel } from "../../lib/sessionStatus";
@@ -228,7 +227,6 @@ interface WorkspaceCanvasProps {
   onOpenTerminal(position?: Point): void;
   onOpenBrowser(position?: Point): void;
   onOpenExplorer(): void;
-  onEditHome(): void;
   onCancelHomeEdit(): void;
   onOpenTerminalUrl(url: string): void;
   onFocusSession(session: SessionSnapshot): void;
@@ -307,7 +305,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
   const {
     settings, backgroundsSuspended = false, mediaData, sessions, limits, limitsLoadState, plugins, browser,
     browserViewVisible, homeEditing, camera, onCameraChange, onGoHome,
-    onOpenSettings, onOpenAgent, onOpenTerminal, onOpenBrowser, onOpenExplorer, onEditHome, onCancelHomeEdit, onOpenTerminalUrl, onFocusSession,
+    onOpenSettings, onOpenAgent, onOpenTerminal, onOpenBrowser, onOpenExplorer, onCancelHomeEdit, onOpenTerminalUrl, onFocusSession,
     activeSessionId, browserSelected, renamingSessionId, fullscreenSessionId, onToggleFullscreen, onSelectSession,
     onSelectBrowser, onClearCanvasSelection, onRenameSession, onRenameEnd,
     onRequestMedia, onRemoveMedia, onHomeSettingsChange, onHomeLayoutChange, onHomeGridSizeChange,
@@ -1310,7 +1308,6 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
           onOpenTerminal={onOpenTerminal}
           onOpenBrowser={() => onOpenBrowser()}
           onOpenExplorer={onOpenExplorer}
-          onEditHome={onEditHome}
           onFocusSession={focusSessionFromHome}
           onRequestMedia={onRequestMedia}
           onRemoveMedia={onRemoveMedia}
@@ -1531,13 +1528,12 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
       )}
 
       {props.sharedWorkspace && <DuoCanvasCursors camera={camera} />}
-      {homeEditing && <Suspense fallback={null}><HomeLayoutPanel layout={settings.homeLayout} grid={settings.homeGridSize} locale={settings.locale} onLayout={onHomeLayoutChange} onGrid={onHomeGridSizeChange} /></Suspense>}
       {homeEditing && (
         <div className="home-editor-toolbar" data-interactive="true">
           <strong>{t(settings.locale, "homeEditor")}</strong>
-          <span className="home-editor-toolbar__hint">{settings.locale === "ru" ? "Тяните плитку или её край · стрелки / Shift + стрелки" : "Drag tiles or edges · arrows / Shift + arrows"}</span>
           <button type="button" onClick={onCancelHomeEdit}>{settings.locale === "ru" ? "Отмена" : "Cancel"}</button>
           <button className="button-with-icon" type="button" onClick={onResetHomeLayout}><UiIcon name="reset" size={15} />{t(settings.locale, "resetHome")}</button>
+          {!homeLayoutValid && <span role="status" className="home-editor-toolbar__warning">{t(settings.locale, "homeLayoutOutside")}</span>}
           <button className="home-editor-toolbar__done" type="button" disabled={!homeLayoutValid}
             title={homeLayoutValid ? undefined : t(settings.locale, "homeLayoutOutside")}
             onClick={onFinishHomeEdit}>{t(settings.locale, "doneEditing")}</button>

@@ -28,9 +28,6 @@ import {
 import { sessionStatusIcon, sessionStatusLabel } from "../../lib/sessionStatus";
 import { sessionStatusTone } from "../../lib/sessionStatusTone";
 import { scheduleMinuteTicks } from "./homeClockSchedule";
-const HomeLauncherDock = lazy(() => import("./HomeLauncherDock"));
-const HomeWidgetControls = lazy(() => import("./HomeWidgetControls"));
-const ClockWidget = lazy(() => import("./ClockWidget"));
 import { HomeMediaWidget } from "./HomeMediaWidget";
 import { SessionFailureDetails, sessionFailureDetails } from "./SessionFailureDetails";
 import { PluginFrame } from "../plugins/PluginFrame";
@@ -55,6 +52,10 @@ import {
 } from "./homeModel";
 import { homeCanvasWidgetId } from "../workspace/canvasWidgetFocus";
 
+const HomeLauncherDock = lazy(() => import("./HomeLauncherDock"));
+const HomeWidgetControls = lazy(() => import("./HomeWidgetControls"));
+const ClockWidget = lazy(() => import("./ClockWidget"));
+
 interface HomeZoneProps {
   settings: AppSettings;
   mediaData: string | null;
@@ -68,7 +69,6 @@ interface HomeZoneProps {
   onOpenTerminal(): void;
   onOpenBrowser(): void;
   onOpenExplorer(): void;
-  onEditHome(): void;
   onFocusSession(session: SessionSnapshot): void;
   onRequestMedia(): Promise<void>;
   onRemoveMedia(): Promise<void>;
@@ -113,7 +113,6 @@ export function HomeZone({
   onOpenTerminal,
   onOpenBrowser,
   onOpenExplorer,
-  onEditHome,
   onFocusSession,
   onRequestMedia,
   onSettingsChange,
@@ -402,9 +401,6 @@ export function HomeZone({
         gridTemplateRows: `repeat(${draftGridSize.rows}, ${HOME_GRID_CELL_HEIGHT}px)`
       }}
     >
-      {!editing && <button type="button" className="home-customize" onClick={onEditHome}>
-        <UiIcon name="sliders-horizontal" size={18} />{locale === "ru" ? "Настроить Home" : "Customize Home"}
-      </button>}
       {editing && (
         <>
           <span className="home-zone__boundary-label">

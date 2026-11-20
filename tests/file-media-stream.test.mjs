@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileAccessService } from '../src/main/services/FileAccessService.ts';
@@ -49,7 +49,7 @@ test('media URL cannot escape a registered root or serve arbitrary HTML', async 
     if (process.platform !== 'win32') {
       await symlink(join(dir, 'outside.mp4'), join(dir, 'link.mp4'));
       // A contained link is allowed by the canonical resolver; the descriptor still matches.
-      assert.equal(await service.resolvePath(root.rootId, 'link.mp4'), join(dir, 'outside.mp4'));
+      assert.equal(await service.resolvePath(root.rootId, 'link.mp4'), await realpath(join(dir, 'outside.mp4')));
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

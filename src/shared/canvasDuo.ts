@@ -22,6 +22,7 @@ export interface DuoSnapshot {
   /** Complete card metadata, with only changed output/document payloads. */
   incremental?: boolean;
   documentVersion?: string;
+  documentPage?: { id: string; length: number };
   documentSync?: boolean;
   document?: DuoDocument;
   result?: unknown;

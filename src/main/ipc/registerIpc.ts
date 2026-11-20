@@ -387,9 +387,13 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     if (mode !== "reopen" && mode !== "continue") throw new Error("Invalid workspace restore mode.");
     const next = presetRestoreQueue.catch(() => undefined).then(async () => {
       const preset = await workspacePresets.get(id);
-      const merged = mergePresetLayout(settings.get(), preset.layout);
       const cards = await terminals.restoreWorkspaceSessions(preset.sessions, mode);
-      const nextSettings = await settings.update(merged.patch);
+      let added = 0;
+      const nextSettings = await settings.updateLatest(latest => {
+        const merged = mergePresetLayout(latest, preset.layout);
+        added = merged.added;
+        return merged.patch;
+      });
       agentChatHistory.settingsChanged();
       getMainWindow()?.webContents.send(IPC.settingsChanged, nextSettings);
       await applyBrowserSettings(nextSettings);
@@ -401,7 +405,7 @@ export function registerIpc(ipcMain: IpcRegistrar, {
         try { await browser.newTab(url); urls.add(url); browserTabsOpened++; }
         catch (error) { failures.push(`${url}: ${error instanceof Error ? error.message : "Could not open tab"}`); }
       }
-      return { name: preset.name, cards, surfaces: { added: merged.added, browserTabsOpened, failures } };
+      return { name: preset.name, cards, surfaces: { added, browserTabsOpened, failures } };
     });
     presetRestoreQueue = next;
     return next;

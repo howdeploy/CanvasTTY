@@ -24,7 +24,7 @@ export default function HomeWidgetControls({ placement, layout, grid, locale, on
     <button className="home-widget-slot__move" type="button" onPointerDown={event => onStart(event, placement, "move")}
       onPointerMove={onMove} onPointerUp={onEnd} onPointerCancel={onEnd} onKeyDown={keyboard}
       aria-label={`${label}: ${ru ? "стрелки — перемещение, Shift + стрелки — размер" : "arrows to move, Shift + arrows to resize"}`}>
-      <strong>{label}</strong><span>{placement.columnSpan} × {placement.rowSpan}</span><small>{ru ? "Перетащите · за край — размер" : "Drag to move · edges to resize"}</small>
+      <span>{label}</span>
     </button>
     {directions.map(direction => <button className={`home-widget-slot__resize home-widget-slot__resize--${direction}`} type="button" key={direction}
       aria-label={`${ru ? "Размер" : "Resize"}: ${label} (${direction})`} onPointerDown={event => onStart(event, placement, "resize", direction)}

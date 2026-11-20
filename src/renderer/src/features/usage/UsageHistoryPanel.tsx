@@ -15,13 +15,14 @@ interface UsageHistoryPanelProps {
   open: boolean;
   /** Portal host outside the transformed canvas; it must carry the app's theme tokens. */
   container: Element | null;
+  titlebarSlot?: Element | null;
   onOpenChange(open: boolean): void;
 }
 
 const TABBABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, a[href], [tabindex]:not([tabindex='-1'])";
 
 /** Toolbar trigger plus the modal overlay. All hooks run unconditionally on every render. */
-export function UsageHistoryPanel({ locale, open, container, onOpenChange }: UsageHistoryPanelProps): React.JSX.Element {
+export function UsageHistoryPanel({ locale, open, container, titlebarSlot, onOpenChange }: UsageHistoryPanelProps): React.JSX.Element {
   const [Report, setReport] = useState<typeof import("./UsageHistoryReport").UsageHistoryReport | null>(null);
   const [reportLoadError, setReportLoadError] = useState<string | null>(null);
   const [history, setHistory] = useState<UsageHistory | null>(null);
@@ -111,21 +112,25 @@ export function UsageHistoryPanel({ locale, open, container, onOpenChange }: Usa
     };
   }, [open, Report]);
 
+  const trigger = (
+    <button
+      ref={triggerRef}
+      type="button"
+      className={`usage-history-trigger${open ? " usage-history-trigger--open" : ""}`}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      aria-controls={open ? dialogId : undefined}
+      title={text.trigger}
+      onClick={() => onOpenChange(!open)}
+    >
+      <UiIcon name="sliders-horizontal" size={15} />
+      <span>{text.trigger}</span>
+    </button>
+  );
+
   return (
     <>
-      <button
-        ref={triggerRef}
-        type="button"
-        className={`usage-history-trigger${open ? " usage-history-trigger--open" : ""}`}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? dialogId : undefined}
-        title={text.trigger}
-        onClick={() => onOpenChange(!open)}
-      >
-        <UiIcon name="sliders-horizontal" size={15} />
-        <span>{text.trigger}</span>
-      </button>
+      {titlebarSlot ? createPortal(trigger, titlebarSlot) : trigger}
       {open && container && createPortal(
         <div className="usage-history-backdrop" role="presentation" onMouseDown={(event) => {
           if (event.target === event.currentTarget) onOpenChange(false);

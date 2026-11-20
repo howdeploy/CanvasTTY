@@ -429,6 +429,7 @@ export function App(): React.JSX.Element {
   const [usageHistoryOpen, setUsageHistoryOpen] = useState(false);
   /** App root outside the canvas transform; overlays portal here to inherit the theme tokens. */
   const [overlayHost, setOverlayHost] = useState<HTMLDivElement | null>(null);
+  const [titlebarActions, setTitlebarActions] = useState<HTMLDivElement | null>(null);
   const [homeEditDraft, setHomeEditDraft] = useState<HomeEditDraft | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [browserSelected, setBrowserSelected] = useState(false);
@@ -2238,14 +2239,15 @@ export function App(): React.JSX.Element {
   return (
     <div ref={setOverlayHost} className={`${rootClasses}${duoFullCanvas?" app--duo-full":""}`} style={rootStyle} data-app-skin={displaySettings.appSkin}>
       <TerminalBorderSkinStyleHost skinId={displaySettings.terminalBorderSkin} />
-      <TitleBar locale={settings.locale} windowState={windowState} onWindowStateChange={setWindowState} />
+      <TitleBar actionsRef={setTitlebarActions} locale={settings.locale} windowState={windowState} onWindowStateChange={setWindowState} />
       <UsageHistoryPanel
         locale={settings.locale}
         open={usageHistoryOpen}
         container={overlayHost}
+        titlebarSlot={titlebarActions}
         onOpenChange={changeUsageHistoryOpen}
       />
-      {ready && <Suspense fallback={null}><CanvasDuo locale={settings.locale} onVisibilityChange={setDuoOpen} onCreateShared={() => void openTerminal()} onGoHome={goHome} onCreateNote={() => { const c=cameraStore.get(); const size={width:window.innerWidth,height:window.innerHeight}; createStickyNote({id:crypto.randomUUID(),text:"",position:{x:(size.width/2-c.x)/c.zoom-150,y:(size.height/2-c.y)/c.zoom-110},size:{width:300,height:220}}); }} /></Suspense>}
+      {ready && <Suspense fallback={null}><CanvasDuo titlebarSlot={titlebarActions} locale={settings.locale} onVisibilityChange={setDuoOpen} onCreateShared={() => void openTerminal()} onGoHome={goHome} onCreateNote={() => { const c=cameraStore.get(); const size={width:window.innerWidth,height:window.innerHeight}; createStickyNote({id:crypto.randomUUID(),text:"",position:{x:(size.width/2-c.x)/c.zoom-150,y:(size.height/2-c.y)/c.zoom-110},size:{width:300,height:220}}); }} /></Suspense>}
       <main className="app__content">
         {!ready && <div className="loading-screen"><span>{t(settings.locale, "loading")}</span></div>}
         {ready && duoFullCanvas && duoGuest && !duoDocument && <Suspense fallback={null}><DuoCanvasSurface /></Suspense>}
@@ -2274,7 +2276,6 @@ export function App(): React.JSX.Element {
           onOpenTerminal={(position) => void openTerminal(position)}
           onOpenBrowser={openBrowserFromUi}
           onOpenExplorer={openHomeExplorer}
-          onEditHome={startHomeEditor}
           onCancelHomeEdit={() => { setHomeEditDraft(null); isHomeCamera.current = true; setCamera(homeCamera(settings.homeGridSize)); }}
           onOpenTerminalUrl={(url) => void openTerminalUrl(url)}
           onRequestMedia={requestMedia}

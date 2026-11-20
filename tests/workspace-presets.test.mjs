@@ -3,6 +3,8 @@ import test from 'node:test';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { SettingsStore } from '../src/main/services/SettingsStore.ts';
+import { capturePresetLayout, mergePresetLayout } from '../src/main/services/workspacePresetLayout.ts';
 import { WorkspacePresetStore } from '../src/main/services/WorkspacePresetStore.ts';
 import { TerminalManager } from '../src/main/services/TerminalManager.ts';
 import { availableRegistry, fakeSpawner } from './helpers/terminal.mjs';
@@ -111,4 +113,25 @@ test('workspace recipes restore browser URLs and missing cards without moving ex
     assert.equal(list[0].browserTabs, 1);
     assert.deepEqual((await new WorkspacePresetStore(dir).get(list[0].id)).layout, saved);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+
+test('preset layout merge uses the saved edits and new Files cards at the head of the write queue', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'canvas-restore-race-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const settings = new SettingsStore(root, 'en');
+  await settings.load();
+  const bounds = { position: { x: 60, y: 50 }, size: { width: 400, height: 300 } };
+  const note = { ...bounds, id: 'existing-note', text: 'Initial' };
+  const savedNote = { ...bounds, id: 'preset-note', text: 'From preset' };
+  await settings.update({ stickyNotes: [note] });
+  const saved = capturePresetLayout({ ...settings.get(), stickyNotes: [note, savedNote] }, []);
+  const files = { ...bounds, id: 'new-files', root: { rootType: 'folder', folderPath: root }, folderPath: root };
+  const writing = settings.update({ stickyNotes: [{ ...note, text: 'Concurrent edit' }], fileCards: [files] });
+  await settings.updateLatest(latest => mergePresetLayout(latest, saved).patch);
+  await writing;
+  const restored = new SettingsStore(root, 'en');
+  await restored.load();
+  assert.deepEqual(restored.get().stickyNotes.map(n => n.text), ['Concurrent edit', 'From preset']);
+  assert.deepEqual(restored.get().fileCards.map(card => card.id), ['new-files']);
 });

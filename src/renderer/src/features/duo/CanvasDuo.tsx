@@ -1,10 +1,11 @@
 import "./canvasDuo.css";
 import { duoWorkspace, useDuoWorkspace } from "./duoWorkspaceRuntime";
+import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
 import type { LocaleId } from "../../../../shared/contracts";
 import type { DuoCommand, DuoReply, DuoSnapshot, DuoState } from "../../../../shared/canvasDuo";
 const EMPTY: DuoState = { role: "idle", invites: [], expiresAt: 0, available: [], selected: [], controlled: [], peer: false };
-export default function CanvasDuo({ locale, onVisibilityChange, onCreateShared, onGoHome, onCreateNote }: { locale: LocaleId; onVisibilityChange(open: boolean): void; onCreateShared(): void; onGoHome(): void; onCreateNote(): void }): React.JSX.Element {
+export default function CanvasDuo({ titlebarSlot, locale, onVisibilityChange, onCreateShared, onGoHome, onCreateNote }: { titlebarSlot: HTMLDivElement | null; locale: LocaleId; onVisibilityChange(open: boolean): void; onCreateShared(): void; onGoHome(): void; onCreateNote(): void }): React.JSX.Element {
   const ru = locale === "ru";
   const [open, setOpen] = useState(false);
   const [state, setState] = useState(EMPTY);
@@ -87,6 +88,7 @@ export default function CanvasDuo({ locale, onVisibilityChange, onCreateShared, 
   const shared = workspace.reply?.snapshot;
   const sharedActive = Boolean(workspace.reply && workspace.reply.state.role!=="idle");
   const selectedCommentCard = shared?.cards.some(c=>c.id===commentCard) ? commentCard : (state.fullCanvas?"canvas":shared?.cards[0]?.id ?? "");
+  const launch = <button type="button" className={`duo-launch${state.role !== "idle" ? " duo-launch--active" : ""}`} onClick={() => changeOpen(!open)} aria-expanded={open} aria-controls="canvas-duo-panel">◉ Duo{state.role !== "idle" ? workspace.connected ? " · LIVE" : state.role === "host" ? (ru ? " · Ожидание" : " · Waiting") : (ru ? " · Нет связи" : " · Disconnected") : ""}</button>;
   return <>
     {sharedActive && <aside className="duo-workspace-hud" aria-label="Общее рабочее пространство">
       <strong>Общий стол · {state.role==="host" ? "этот компьютер — хост" : state.fullCanvas ? "тот же Canvas хозяина" : "терминалы на компьютере хоста"}</strong>
@@ -104,7 +106,7 @@ export default function CanvasDuo({ locale, onVisibilityChange, onCreateShared, 
         </form>
       </details>
     </aside>}
-    <button className={`duo-launch${state.role !== "idle" ? " duo-launch--active" : ""}`} onClick={() => changeOpen(!open)} aria-expanded={open} aria-controls="canvas-duo-panel">◉ Duo{state.role !== "idle" ? workspace.connected ? " · LIVE" : state.role==="host" ? " · ОЖИДАНИЕ" : " · НЕТ СВЯЗИ" : ""}</button>
+    {titlebarSlot ? createPortal(launch, titlebarSlot) : launch}
     {open && <div className="duo-backdrop" onPointerDown={() => changeOpen(false)} /> }
     {open && <section ref={panel} id="canvas-duo-panel" className="duo-panel" role="dialog" aria-label="Canvas Duo" aria-modal="true" onKeyDown={e => {
       if (e.key === "Tab") {

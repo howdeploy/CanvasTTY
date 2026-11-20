@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { AppSettings } from "../../../src/shared/contracts";
 import WallpaperWorkshop from "../../../src/renderer/src/features/settings/WallpaperWorkshop";
+import { HomeClockAppearance } from "../../../src/renderer/src/features/home/HomeClockAppearance";
 import ClockWidget from "../../../src/renderer/src/features/home/ClockWidget";
 import { HomeMediaWidget } from "../../../src/renderer/src/features/home/HomeMediaWidget";
 import { WallpaperView } from "../../../src/renderer/src/features/skins/WallpaperView";
@@ -26,7 +27,7 @@ function App(): React.JSX.Element {
       await change({ homeAvatarWallpaper: saved.id, mediaPath: null });
     }} onRemoveMedia={() => change({ homeAvatarWallpaper: null })} /></div>
     <div id="canvas"><WallpaperView id={settings.canvasBackground.startsWith("wallpaper:") ? settings.canvasBackground as `wallpaper:${string}` : null} /></div>
-  </section><WallpaperWorkshop settings={settings} onChange={change} /></div></main>;
+  </section><div><section id="clock-settings"><HomeClockAppearance settings={settings} onChange={change} /></section><WallpaperWorkshop settings={settings} onChange={change} /></div></div></main>;
 }
 root.render(<App />);
 Object.assign(window, { wallpaperProbe: {
@@ -41,7 +42,7 @@ Object.assign(window, { wallpaperProbe: {
   async clockBackground() {
     const bytes = await (await fetch(gif)).arrayBuffer();
     const transfer = new DataTransfer(); transfer.items.add(new File([bytes], "Clock.gif", { type: "image/gif" }));
-    const input = document.querySelector<HTMLInputElement>('.clock-tile input[type=file]')!;
+    const input = document.querySelector<HTMLInputElement>('#clock-settings input[type=file]')!;
     input.files = transfer.files; input.dispatchEvent(new Event("change", { bubbles: true }));
   },
   button(text: string) { const button = [...document.querySelectorAll("button")].find(e => e.textContent === text); if (!button) throw new Error(`Missing button: ${text}`); button.click(); },

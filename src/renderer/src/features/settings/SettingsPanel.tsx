@@ -1,7 +1,5 @@
 import { inspectSkinMedia, SKIN_MEDIA_MIME, type SkinMediaInfo } from "../../../../shared/skinMedia";
 import { SkinMediaView } from "../skins/SkinMediaView";
-const WallpaperWorkshop = lazy(() => import("./WallpaperWorkshop"));
-const WorkspacePresets = lazy(() => import("./WorkspacePresets"));
 import { CanvasLinkSettings } from "./CanvasLinkSettings";
 import { EvenG2Controls } from "./EvenG2Controls";
 import { BackgroundAppearanceManager } from "./BackgroundAppearanceManager";
@@ -99,6 +97,7 @@ import {
   normalizeTerminalBorderSkinList
 } from "../../lib/skinStyles";
 import { PluginSettingsSection } from "../plugins/PluginSettingsSection";
+import { HomeClockAppearance } from "../home/HomeClockAppearance";
 import { HomeAppearanceSettings } from "../home/HomeAppearanceSettings";
 import {
   canvasColorPatch,
@@ -133,6 +132,9 @@ import { MascotsSettings } from "./MascotsSettings";
 
 import { searchSettings } from "./settingsSearch";
 import type { SettingsDestination, SettingsSection } from "./settingsNavigation";
+
+const WallpaperWorkshop = lazy(() => import("./WallpaperWorkshop"));
+const WorkspacePresets = lazy(() => import("./WorkspacePresets"));
 
 const SHORTCUT_LABELS = {
   home: "homeShortcut", renameWindow: "renameWindow", toggleFullscreen: "toggleFullscreen",
@@ -1070,13 +1072,7 @@ export function SettingsPanel({
                   </SettingGroup>
                 </>
               )}
-              <div className="wallpaper-workshop__actions">
-                <label>{locale === "ru" ? "Шрифт часов " : "Clock font "}<select value={settings.homeClockFont ?? "mono"} onChange={e => void onChange({ homeClockFont: e.target.value as AppSettings["homeClockFont"] })}>
-                  <option value="mono">Mono</option><option value="sans">Sans</option><option value="serif">Serif</option><option value="pixel">Pixel / retro</option>
-                </select></label>
-                <button type="button" onClick={() => void onChange({ homeClockWallpaper: null })}>{locale === "ru" ? "Убрать фон часов" : "Clear clock background"}</button>
-                <button type="button" onClick={() => void onChange({ homeAvatarWallpaper: null })}>{locale === "ru" ? "Убрать фон аватарки" : "Clear avatar background"}</button>
-              </div>
+              <HomeClockAppearance settings={settings} onChange={onChange} />
               <HomeAppearanceSettings
                 settings={settings}
                 plugins={plugins}

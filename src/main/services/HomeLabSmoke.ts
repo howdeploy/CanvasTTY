@@ -1,6 +1,6 @@
 /** Opt-in acceptance probe. Only runs in an explicitly selected local alpha test profile. */
 import { app, type BrowserWindow } from "electron";
-import { IPC } from "../../shared/contracts";
+import { HOME_GRID_CELL_WIDTH, HOME_GRID_GAP, IPC } from "../../shared/contracts";
 import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 export async function runHomeLabSmoke(window: BrowserWindow, output: string): Promise<void> {
@@ -26,7 +26,15 @@ export async function runHomeLabSmoke(window: BrowserWindow, output: string): Pr
     await until(`Boolean(${target} && !${target}.disabled)`, `Control not ready: ${selector}`);
     await run(`${target}.click()`); await wait(100);
   };
-  await until("Boolean(document.querySelector('.mini-media [data-skin-media=gif] img')?.complete && document.querySelector('.clock-tile [data-skin-media=gif] img')?.complete && document.querySelector('.home-customize'))", "Home media/editor missing");
+  const settingsButton = ".home-zone .settings-button";
+  const avatarMove = "document.querySelector('.home-widget-slot:has(.mini-media) .home-widget-slot__move')";
+  const openHomeEditor = async (): Promise<void> => {
+    await click(settingsButton);
+    await click("#settings-tab-appearance");
+    await click(".home-appearance-settings .setting-inline-action");
+    await until(`Boolean(document.querySelector('.home-editor-toolbar') && ${avatarMove})`, "Home editor controls missing");
+  };
+  await until("Boolean(document.querySelector('.mini-media [data-skin-media=gif] img')?.complete && document.querySelector('.clock-tile [data-skin-media=gif] img')?.complete)", "Home media missing");
   const original = await run("window.canvasTTY.settings.get()");
   const checks: string[] = [];
   const motion = async (selector: string): Promise<void> => {
@@ -45,7 +53,7 @@ export async function runHomeLabSmoke(window: BrowserWindow, output: string): Pr
       await click('[aria-label="Домой"]');
       const result = await run(`(() => {
         const canvas = document.querySelector('.workspace').getBoundingClientRect();
-        const selectors = ['.clock-tile__time','.clock-tile__edit','.clock-tile__background-pick','.home-timers__start','.home-timers article:nth-child(2) .home-timers__start','.launcher-button--browser','.launcher-button--files','.mini-media','.home-customize'];
+        const selectors = ['.clock-tile__time','.clock-tile__configure','.home-timers__start','.home-timers article:nth-child(2) .home-timers__start','.launcher-button--browser','.launcher-button--files','.mini-media',${JSON.stringify(settingsButton)}];
         return selectors.map(selector => { const e = document.querySelector(selector); if (!e) return {selector,error:'missing'};
           const r=e.getBoundingClientRect(); const p=e.closest('.home-widget-slot')?.getBoundingClientRect() ?? canvas;
           const hit = document.elementFromPoint(r.x+r.width/2,r.y+r.height/2); const reachable = e.tagName!=='BUTTON' || e.contains(hit);
@@ -58,12 +66,11 @@ export async function runHomeLabSmoke(window: BrowserWindow, output: string): Pr
   checks.push("9 window-size/UI-scale combinations: actual text and control bounds");
   await apply({ uiScale: 1 }); window.setSize(1440, 1000); await wait(200); await click('[aria-label="Домой"]');
   // The default avatar has four columns. Shrink one, then drag it one column right at actual canvas scale.
-  await click('.home-customize');
-  await until("Boolean(document.querySelector('.home-layout-panel'))", "Tile inspector missing");
+  await openHomeEditor();
   // Use the widget ID-independent slot lookup because focus IDs are implementation details.
-  const move = "[...document.querySelectorAll('.home-widget-slot__move')].find(e=>e.textContent.includes('Аватар'))";
-  await run(`${move}.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',shiftKey:true,bubbles:true}))`); await wait(100);
-  const drag = await run(`(() => {const e=${move}; const r=e.getBoundingClientRect(); const zone=document.querySelector('.home-zone').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),dx:Math.round(zone.width / ${original.homeGridSize.columns} * 1.01)};})()`);
+  await run(`${avatarMove}.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',shiftKey:true,bubbles:true}))`); await wait(100);
+  const columnStep = HOME_GRID_CELL_WIDTH + HOME_GRID_GAP;
+  const drag = await run(`(() => {const e=${avatarMove}; const r=e.getBoundingClientRect(); const zone=document.querySelector('.home-zone');return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),dx:Math.round(zone.getBoundingClientRect().width / zone.offsetWidth * ${columnStep})};})()`);
   window.webContents.sendInputEvent({ type: "mouseMove", x: drag.x, y: drag.y });
   window.webContents.sendInputEvent({ type: "mouseDown", x: drag.x, y: drag.y, button: "left", clickCount: 1 });
   window.webContents.sendInputEvent({ type: "mouseMove", x: drag.x + drag.dx, y: drag.y, movementX: drag.dx, movementY: 0 });
@@ -76,14 +83,12 @@ export async function runHomeLabSmoke(window: BrowserWindow, output: string): Pr
   const before = original.homeLayout.find((item: any) => item.widgetId === "core.media");
   if (avatar.columnSpan !== before.columnSpan - 1 || avatar.column !== before.column + 1) throw new Error(`Scaled drag/keyboard resize did not persist: ${JSON.stringify(avatar)}`);
   checks.push("keyboard resize and mouse drag at canvas zoom persist via Save");
-  await click('.home-customize');
-  await click('.home-layout-panel > button');
-  await until("!document.querySelector('.mini-media')", "Avatar hide failed");
-  await click('.home-layout-panel > button'); await until("Boolean(document.querySelector('.mini-media'))", "Avatar restore failed");
-  await run("[...document.querySelectorAll('.home-editor-toolbar button')].find(e=>e.textContent==='Отмена').click()"); await wait(100);
+  await openHomeEditor();
+  await run(`${avatarMove}.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',shiftKey:true,bubbles:true}))`);
+  await click('.home-editor-toolbar > button:first-of-type');
   const afterCancel = await run("window.canvasTTY.settings.get()");
   if (JSON.stringify(afterCancel.homeLayout) !== JSON.stringify(changed.homeLayout)) throw new Error("Cancel changed saved layout");
-  checks.push("hide/show tiles in inspector and Cancel preserves saved layout");
+  checks.push("Cancel discards draft resize and preserves saved layout");
   await apply({ homeLayout: original.homeLayout, uiScale: 1 }); await wait(100);
   // Quick start, pause/resume/reset and a short real deadline, independently from the user's seeded timers.
   await click('.home-timers__presets button');
@@ -104,7 +109,7 @@ export async function runHomeLabSmoke(window: BrowserWindow, output: string): Pr
   checks.push("quick timer start/pause/resume/reset and actual deadline completion");
   await apply({ homeTime: original.homeTime });
   // Exercise the existing clock editor through its actual controls and persisted settings.
-  await click('.clock-tile__edit');
+  await click('.clock-tile__configure');
   await until("Boolean(document.querySelector('.home-time-editor[open]'))", "Clock editor missing");
   const clockTheme = await run("(() => {const e=document.querySelector('.home-time-editor');return {inApp:Boolean(e.closest('.app')),background:getComputedStyle(e).backgroundColor,surface:getComputedStyle(document.querySelector('.app')).getPropertyValue('--surface').trim()}})()");
   if (!clockTheme.inApp || clockTheme.background === 'rgba(0, 0, 0, 0)') throw new Error('Clock editor lost the app theme');
@@ -115,7 +120,7 @@ export async function runHomeLabSmoke(window: BrowserWindow, output: string): Pr
   await until("!document.querySelector('.home-time-editor')", "Clock editor failed to save");
   const clockSaved = await run("window.canvasTTY.settings.get().then(s=>s.homeTime)");
   if (clockSaved.hour12 !== !original.homeTime.hour12 || clockSaved.showSeconds !== !original.homeTime.showSeconds) throw new Error("Clock format options did not persist");
-  await click('.clock-tile__edit');
+  await click('.clock-tile__configure');
   await until("Boolean(document.querySelector('.home-time-editor[open]'))", "Clock editor failed to reopen");
   if (!(await run(`document.querySelector('.home-time-editor__options label:nth-child(1) input').checked === ${clockSaved.hour12} && document.querySelector('.home-time-editor__options label:nth-child(2) input').checked === ${clockSaved.showSeconds}`))) throw new Error("Reopened clock controls lost their values");
   await click('.home-time-editor header button');

@@ -841,6 +841,7 @@ export type PluginPermission =
   | "sessions:read-screen"
   | "sessions:launch"
   | "sessions:control"
+  | "sessions:control-any"
   | "cards:decorate"
   | "browser:engine";
 

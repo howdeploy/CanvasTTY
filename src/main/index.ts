@@ -414,6 +414,11 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
         return pluginSecretsService.get(pluginId, key);
       },
       sessions: (pluginId, serviceId, method, params, permissions) => pluginSessions?.handle(pluginId, serviceId, method, params, permissions),
+      limits: async () => {
+        // A service may ask while startup still runs; it gets the same answer a surface gets before its first snapshot.
+        if (!limitsService) return { state: "loading", snapshot: null };
+        return { state: "ready", snapshot: withoutAccountScope(await limitsService.get()) };
+      },
       setBadge: (pluginId, params) => {
         if (!pluginCards) throw new Error("Cards are not ready yet.");
         return pluginCards.setBadge(pluginId, params);

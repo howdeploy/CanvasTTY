@@ -1151,6 +1151,7 @@ function permissionKey(permission: PluginPermission): TranslationKey {
     "sessions:read-screen": "permissionSessionsReadScreen",
     "sessions:launch": "permissionSessionsLaunch",
     "sessions:control": "permissionSessionsControl",
+    "sessions:control-any": "permissionSessionsControlAny",
     "cards:decorate": "permissionCardsDecorate",
     "browser:engine": "permissionBrowserEngine",
     network: "permissionNetwork"

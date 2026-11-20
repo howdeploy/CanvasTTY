@@ -90,7 +90,10 @@ export interface AgentWaitResult {
 export interface AgentWaitTiming {
   /** How often a waiting call reads the session again. */
   checkMs: number;
-  /** How long the screen must stay the same before an idle status counts (a CLI may still be drawing its answer). */
+  /**
+   * How long the screen must stay the same before an idle status counts (a CLI may still be drawing its answer), and
+   * the longest a needs_approval waits for its prompt to reach the screen.
+   */
   settleMs: number;
   /** How long a session without status must show the same screen before it counts as "quiet". */
   quietMs: number;
@@ -393,12 +396,15 @@ export class AgentControlService {
       if (!session) return answer(null, "closed");
       const now = Date.now();
       const current = this.outputOffset(sessionId);
-      if (current !== offset) { offset = current; changedAt = now; }
+      const stillWriting = current !== offset;
+      if (stillWriting) { offset = current; changedAt = now; }
       const quietFor = now - changedAt;
       if (session.exitCode !== null) return answer(session, session.exitCode === 0 ? "done" : "failed");
       // A request a wait already returned (the card shows no newer one) is the person's to answer: wait for it.
       const reported = this.reportedApprovals.has(sessionId) && this.reportedApprovals.get(sessionId) === this.approvalRequest(sessionId);
-      if (session.status === "needs_approval" && !reported) return answer(session, "needs_approval");
+      if (session.status === "needs_approval" && !reported && this.approvalOnScreen(sessionId, current, stillWriting, now, timing)) {
+        return answer(session, "needs_approval");
+      }
       if (session.status !== "needs_approval") this.reportedApprovals.delete(sessionId);
       // After a prompt, an idle that no turn followed (the CLI's startup idle, or one reported before the turn began)
       // is not the answer: only an idle after a turn that started since that prompt is. A CLI that never reports its
@@ -481,6 +487,18 @@ export class AgentControlService {
   private redactTail(text: string, maxChars: number): string {
     if (typeof this.terminals.redactSecretsTail === "function") return this.terminals.redactSecretsTail(text, maxChars);
     return tail(typeof this.terminals.redactSecrets === "function" ? this.terminals.redactSecrets(text) : text, maxChars);
+  }
+
+  /**
+   * Whether the current approval request's prompt can be read: the screen has changed since the request was counted
+   * and did not change in the last check. A request signal can come before its prompt is drawn (OpenCode's
+   * permission.asked); one whose prompt was drawn first, or never is, counts as shown once settleMs passed.
+   */
+  private approvalOnScreen(sessionId: string, current: number, stillWriting: boolean, now: number, timing: AgentWaitTiming): boolean {
+    let prompt: { outputOffset: number; at: number } | null = null;
+    try { prompt = typeof this.terminals.approvalPrompt === "function" ? this.terminals.approvalPrompt(sessionId) : null; } catch { prompt = null; }
+    if (!prompt) return true;
+    return (current > prompt.outputOffset && !stillWriting) || now - prompt.at >= timing.settleMs;
   }
 
   /** The card's current approval request (TerminalManager.approvalRequest); undefined when the manager has none. */

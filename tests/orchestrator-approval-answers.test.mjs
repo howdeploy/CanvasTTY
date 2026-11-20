@@ -300,8 +300,9 @@ test("wait_for_agent reports each approval request once, a consecutive one with 
   assert.equal(next.reason, "needs_approval", "the new request is reported");
   assert.ok(next.waitedMs < 2_000, `reported at once, not at the timeout (${next.waitedMs} ms)`);
   // And reported once: the next wait waits for the person again.
-  assert.equal(await pending(control.waitFor(child.id, { timeoutMs: 5_000 })), true);
+  const again = control.waitFor(child.id, { timeoutMs: 5_000 });
+  assert.equal(await pending(again), true);
   // A third one, from another CLI's request event, is new again.
   terminals.applyProviderSignal(child.id, { kind: "lifecycle", state: "needs_approval", event: "pre_approval_request" });
-  assert.equal((await control.waitFor(child.id, { timeoutMs: 5_000 })).reason, "needs_approval");
+  assert.equal((await again).reason, "needs_approval");
 });

@@ -197,6 +197,11 @@ interface ManagedSession {
    * reader comparing it with an earlier value never mistakes a new request for one it already saw.
    */
   approvalRequests?: number;
+  /**
+   * The current approval request: whether a request hook (not only a title or an echo) has told it yet, and the
+   * output offset and time it was counted at (see approvalPrompt).
+   */
+  approvalRequestState?: { hooked: boolean; outputOffset: number; at: number };
 }
 
 type EnvironmentService = Pick<EnvironmentRegistry,
@@ -669,11 +674,22 @@ export class TerminalManager {
    * Identifies the approval request the card shows now: it advances each time the card turns needs_approval, and on
    * each further request hook while it stays needs_approval (a second PermissionRequest right after the person answered
    * the first moves neither the status nor the revision). A permission_prompt Notification while the card already
-   * waits is the same prompt again and does not advance it. null when the session does not exist.
+   * waits is the same prompt again and does not advance it, except for Grok, whose Notification is its only request
+   * hook. The first request hook after a title (Qwen) or an echo turned the card needs_approval is that same request.
+   * null when the session does not exist.
    */
   approvalRequest(id: string): number | null {
     const session = this.sessions.get(id);
     return session ? session.approvalRequests ?? 0 : null;
+  }
+
+  /**
+   * The output offset and time at which the current approval request was counted, so a reader can tell whether the
+   * prompt has reached the screen since; null when the session does not exist or has shown no request.
+   */
+  approvalPrompt(id: string): { outputOffset: number; at: number } | null {
+    const state = this.sessions.get(id)?.approvalRequestState;
+    return state ? { outputOffset: state.outputOffset, at: state.at } : null;
   }
 
   /** The session's output offset without copying its scrollback; null when it does not exist. */
@@ -1475,9 +1491,16 @@ export class TerminalManager {
     }
 
     const nextStatus = signal.state;
-    if (nextStatus === "needs_approval" && (session.metadata.status !== "needs_approval"
-      || (source === "hook" && signal.event !== "Notification"))) {
-      session.approvalRequests = (session.approvalRequests ?? 0) + 1;
+    if (nextStatus === "needs_approval") {
+      // A request hook names one request; a title or an echo Notification only says the card waits.
+      const requestHook = source === "hook" && (signal.event !== "Notification" || session.metadata.provider === "grok");
+      const pending = session.metadata.status === "needs_approval" ? session.approvalRequestState : undefined;
+      if (!pending || (requestHook && pending.hooked)) {
+        session.approvalRequests = (session.approvalRequests ?? 0) + 1;
+        session.approvalRequestState = { hooked: requestHook, outputOffset: session.outputOffset, at: Date.now() };
+      } else if (requestHook) {
+        pending.hooked = true;
+      }
     }
     const submittedTurn = source === "hook" && signal.event === "UserPromptSubmit"
       && session.promptDelivery?.stage === "submitted" && session.promptDelivery.acceptance === "unconfirmed";

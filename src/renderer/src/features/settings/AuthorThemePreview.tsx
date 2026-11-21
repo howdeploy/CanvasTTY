@@ -17,8 +17,6 @@ export function AuthorThemePreview({ skin, locale, paused, readOnly, children }:
   const [themes, setThemes] = useState<AuthorThemeSummary[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [slot, setSlot] = useState<PreviewSlot>("terminal");
-  const [applying, setApplying] = useState(false);
-  const [result, setResult] = useState<"success" | "failed" | null>(null);
   const theme = themes?.find(item => item.skin === skin);
   const ru = locale === "ru";
 
@@ -31,6 +29,24 @@ export function AuthorThemePreview({ skin, locale, paused, readOnly, children }:
     return () => { active = false; };
   }, []);
 
+  if (!theme) return <>{children}{loadFailed && <p role="alert">{t(locale, "authorThemesLoadFailed")}</p>}</>;
+
+  return <div className="theme-preview">
+    <AuthorThemeApply theme={theme} locale={locale} readOnly={readOnly} />
+    <Segmented value={slot} options={[
+      ["terminal", ru ? "Терминал" : "Terminal"], ["canvas", ru ? "Холст" : "Canvas"],
+      ["avatar", ru ? "Аватар" : "Avatar"], ["clock", ru ? "Часы" : "Clock"]
+    ]} onChange={value => setSlot(value as PreviewSlot)} />
+    {slot === "terminal" ? children :
+      <ThemeWallpaperPreview key={slot} id={theme.id} slot={slot} paused={paused} locale={locale} />}
+    {readOnly && <p className="setting-group__description">{ru ? "В общем холсте тему применяет хост." : "The host applies themes on the shared canvas."}</p>}
+
+  </div>;
+}
+
+export function AuthorThemeApply({ theme, locale, readOnly }: { theme: AuthorThemeSummary; locale: LocaleId; readOnly: boolean }) {
+  const [applying, setApplying] = useState(false);
+  const [result, setResult] = useState<"success" | "failed" | null>(null);
   async function apply(id: string): Promise<void> {
     setApplying(true);
     setResult(null);
@@ -44,26 +60,17 @@ export function AuthorThemePreview({ skin, locale, paused, readOnly, children }:
     }
   }
 
-  if (!theme) return <>{children}{loadFailed && <p role="alert">{t(locale, "authorThemesLoadFailed")}</p>}</>;
-
-  return <div className="theme-preview">
-    <Segmented value={slot} options={[
-      ["terminal", ru ? "Терминал" : "Terminal"], ["canvas", ru ? "Холст" : "Canvas"],
-      ["avatar", ru ? "Аватар" : "Avatar"], ["clock", ru ? "Часы" : "Clock"]
-    ]} onChange={value => setSlot(value as PreviewSlot)} />
-    {slot === "terminal" ? children :
-      <ThemeWallpaperPreview key={slot} id={theme.id} slot={slot} paused={paused} locale={locale} />}
-    <div className="settings-inline-controls">
+  return <>
+    <div className="theme-preview__apply">
       <button type="button" className="setting-inline-action" disabled={applying || readOnly}
         onClick={() => void apply(theme.id)}>
         {t(locale, applying ? "authorThemeApplying" : "authorThemeApply")}
       </button>
     </div>
-    {readOnly && <p className="setting-group__description">{ru ? "В общем холсте тему применяет хост." : "The host applies themes on the shared canvas."}</p>}
     {result && <p role={result === "failed" ? "alert" : "status"} className="setting-group__description">
       {t(locale, result === "failed" ? "authorThemeApplyFailed" : "authorThemeApplied")}
     </p>}
-  </div>;
+  </>;
 }
 
 function ThemeWallpaperPreview({ id, slot, locale, paused }: {

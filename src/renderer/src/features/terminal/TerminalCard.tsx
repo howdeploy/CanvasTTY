@@ -1,3 +1,5 @@
+import { useSyncExternalStore as useDuoStore } from "react";
+import { duoWorkspace } from "../duo/duoWorkspaceRuntime";
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TerminalBackgroundId } from "../../../../shared/terminalBackground";
 
@@ -1479,6 +1481,7 @@ function TerminalCardView({
               {visibleTitle}
             </strong>
           )}
+          {!summaryMode && <DuoTerminalParticipants sessionId={session.id} locale={locale} />}
           {session.role === "orchestrator" && (
             <span className="terminal-card__role" title={t(locale, "orchestratorRoleNote")}>{t(locale, "roleOrchestrator")}</span>
           )}
@@ -1665,7 +1668,11 @@ function TerminalCardView({
       >
         <div className="terminal-card__summary-content">
           <ProviderIcon provider={session.provider} size="large" />
-          <div className="terminal-card__summary-copy"><strong>{visibleTitle}</strong><span>{sessionStatusLabel(locale, session.status, session.provider)}</span></div>
+          <div className="terminal-card__summary-copy">
+            <strong>{visibleTitle}</strong>
+            {summaryMode && <DuoTerminalParticipants sessionId={session.id} locale={locale} />}
+            <span>{sessionStatusLabel(locale, session.status, session.provider)}</span>
+          </div>
         </div>
       </button>
       {RESIZE_DIRECTIONS.map((direction) => (
@@ -1696,4 +1703,27 @@ function terminalTheme(palette: PaletteId, pixelSkin: string | null = null, asci
 
 function isCardControl(target: EventTarget): boolean {
   return target instanceof Element && Boolean(target.closest("button, input, .terminal-card__menu, .terminal-card__note, .terminal-card__resize-handle"));
+}
+
+
+function DuoTerminalParticipants({ sessionId, locale }: { sessionId: string; locale: string }) {
+  const viewer = useDuoStore(duoWorkspace.subscribe, () => duoWorkspace.get().reply?.state.role);
+  const participant = useDuoStore(duoWorkspace.subscribe, () => {
+    const view = duoWorkspace.get();
+    if (!view.connected) return undefined;
+    return view.reply?.snapshot?.cards.find(card => card.id === sessionId)?.participant;
+  });
+  const focusedBy = useDuoStore(duoWorkspace.subscribe, () => {
+    const view = duoWorkspace.get();
+    const names = view.connected && view.reply?.snapshot?.cards.find(card => card.id === sessionId)?.focusedBy;
+    return names ? names.map(name => name === "host" ? (locale === "ru" ? "Хост" : "Host") : name === "guest" ? (locale === "ru" ? "Гость" : "Guest") : name).join(", ") : "";
+  });
+  const ru = locale === "ru";
+  const ownerLabel = participant === viewer ? (ru ? "Мой терминал" : "My terminal")
+    : participant === "guest" ? (ru ? "Терминал гостя" : "Guest terminal") : (ru ? "Терминал хоста" : "Host terminal");
+  return <>
+    {participant && <span className="terminal-card__role duo-terminal-owner" data-duo-participant={participant}
+      title={ru ? "Кто создал терминал" : "Terminal creator"}>{ownerLabel}</span>}
+    {focusedBy && <span className="terminal-card__role">{ru ? "Выбран" : "Selected"} · {focusedBy}</span>}
+  </>;
 }

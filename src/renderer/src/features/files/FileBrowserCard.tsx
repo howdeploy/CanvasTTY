@@ -356,13 +356,6 @@ export function FileBrowserCard({
       </header>
 
       <div className="file-browser-card__body">
-        <aside className="file-browser-card__tree">
-          <nav className="file-browser-card__places" aria-label={ru ? "Папки и диски" : "Places and drives"}>
-            {locations.map(place => <button type="button" key={place.path} title={place.path} aria-current={currentPath === place.path ? "location" : undefined} onClick={() => onNavigateFolder?.(place.path)}>
-              <UiIcon name="folder" size={14} />{ru ? ({ home: "Домой", desktop: "Рабочий стол", downloads: "Загрузки", disk: place.label })[place.kind] : place.label}
-            </button>)}
-          </nav>
-          {sessionOptions.length > 0 && <div className="file-browser-card__session-options">{sessionOptions.map(option => <button type="button" key={option.sessionId} title={option.label} onClick={() => onRegisterSession(option.sessionId)}>{option.label}</button>)}</div>}
           <form className="file-browser-card__path" onSubmit={event => { event.preventDefault(); if (pathDraft.trim()) onNavigateFolder?.(pathDraft.trim()); }}>
             <button type="button" aria-label={ru ? "На уровень выше" : "Parent folder"} disabled={!currentPath} onClick={() => {
               const path = currentPath.replace(/[\\/]+$/, "");
@@ -372,6 +365,15 @@ export function FileBrowserCard({
             <input aria-label={ru ? "Путь к папке" : "Folder path"} value={pathDraft} onChange={event => setPathDraft(event.target.value)} placeholder={ru ? "Путь к папке…" : "Folder path…"} />
             <button type="submit" aria-label={ru ? "Перейти" : "Go"}>↵</button>
           </form>
+        <aside className="file-browser-card__sidebar">
+          <nav className="file-browser-card__places" aria-label={ru ? "Папки и диски" : "Places and drives"}>
+            {locations.map(place => <button type="button" key={place.path} title={place.path} aria-current={currentPath === place.path ? "location" : undefined} onClick={() => onNavigateFolder?.(place.path)}>
+              <UiIcon name="folder" size={14} />{ru ? ({ home: "Домой", desktop: "Рабочий стол", downloads: "Загрузки", disk: place.label })[place.kind] : place.label}
+            </button>)}
+          </nav>
+          {sessionOptions.length > 0 && <div className="file-browser-card__session-options">{sessionOptions.map(option => <button type="button" key={option.sessionId} title={option.label} onClick={() => onRegisterSession(option.sessionId)}>{option.label}</button>)}</div>}
+        </aside>
+        <aside className="file-browser-card__tree">
           <div className="file-browser-card__tree-toolbar">
             <span className="file-browser-card__tree-search">
               <UiIcon name="search" size={14} />
@@ -444,7 +446,7 @@ export function FileBrowserCard({
                   <span className="file-browser-card__tree-caret" aria-hidden="true">
                     {row.isDirectory && <UiIcon name="chevron" size={13} />}
                   </span>
-                  <UiIcon name="folder" size={14} />
+                  <UiIcon name={row.isDirectory ? "folder" : "file"} size={14} />
                   <span className="file-browser-card__tree-name">{row.entry.name}</span>
                 </button>
               ))}
@@ -453,6 +455,7 @@ export function FileBrowserCard({
         </aside>
 
         <section className="file-browser-card__viewer" aria-label={activeName ?? t(locale, "files")}>
+          {activeName && <div className="file-browser-card__preview-title" title={activeFile ?? undefined}>{activeName}</div>}
           {renderViewer()}
         </section>
       </div>

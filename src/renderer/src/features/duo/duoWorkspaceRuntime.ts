@@ -39,9 +39,9 @@ export const duoWorkspace = {
 };
 export function useDuoWorkspace(): View { return useSyncExternalStore(duoWorkspace.subscribe, duoWorkspace.get); }
 export function duoSession(card: DuoCard): SessionSnapshot {
-  const key = JSON.stringify([card.title, card.provider, card.position, card.size, card.running, card.revision, card.control, card.nativeEditor]);
+  const key = JSON.stringify([card.title, card.provider, card.position, card.size, card.running, card.revision, card.control, card.nativeEditor, card.role, card.status, card.turnCompleted]);
   const old = sessions.get(card.id); if (old?.key === key) return old.session;
-  const session: SessionSnapshot = { id: card.id, revision: card.revision ?? 1, provider: card.provider as ProviderId, profile: "normal", title: card.title, titleCustomized: true, cwd: "", position: card.position, size: card.size, role: "agent", status: card.running ? "idle" : "done", startedAt: 0, exitCode: card.running ? null : 0, failureDetails: null, buffer: "", nativeEditor: card.nativeEditor };
+  const session: SessionSnapshot = { id: card.id, revision: card.revision ?? 1, provider: card.provider as ProviderId, profile: "normal", title: card.title, titleCustomized: true, cwd: "", position: card.position, size: card.size, role: card.role ?? "agent", status: card.status ?? (card.running ? "idle" : "done"), turnCompleted: card.turnCompleted, startedAt: 0, exitCode: card.running ? null : 0, failureDetails: null, buffer: "", nativeEditor: card.nativeEditor };
   sessions.set(card.id, { key, session }); return session;
 }
 const guest = (): boolean => view.reply?.state.role === "guest";

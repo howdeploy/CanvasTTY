@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import type { AppSettings, LocaleId } from "../../../../shared/contracts";
 import { MAX_HOME_TIMERS, formatHomeClock, formatTimer, normalizeHomeTime, timerAction, timerRemaining, type HomeTimer } from "../../../../shared/homeTime";
-import { WallpaperView } from "../skins/WallpaperView";
+import { ClockTile } from "./ClockTile";
 import { PixelDigits } from "./PixelDigits";
 import "./homeTime.css";
 const HomeTimeEditor = lazy(() => import("./HomeTimeEditor"));
@@ -43,8 +43,7 @@ export default function ClockWidget({ locale, now, settings, onChange }: {
     finally { setBusy(false); }
   };
   const detailed = config.clocks.length > 1 || config.timers.length > 0 || Boolean(onChange);
-  return <section className={`tile clock-tile clock-font--${settings.homeClockFont ?? "mono"} ${settings.homeClockWallpaper ? "clock-tile--wallpaper" : ""} ${detailed ? "clock-tile--dashboard" : ""}`}>
-    <WallpaperView id={settings.homeClockWallpaper} className="clock-tile__background" clock />
+  return <ClockTile settings={settings} dashboard={detailed}>
     <div className="clock-tile__primary">
       {(detailed || config.clocks[0].label || config.clocks[0].timeZone !== "local") && <small>{config.clocks[0].label || zoneLabel(config.clocks[0].timeZone)}</small>}
       <time className={`clock-tile__time ${config.showSeconds ? "clock-tile__time--seconds" : ""}`} dateTime={current.toISOString()}>{settings.homeClockFont === "pixel" ? <PixelDigits value={first.time} /> : first.time}{first.period && <small>{first.period}</small>}</time>
@@ -84,5 +83,5 @@ export default function ClockWidget({ locale, now, settings, onChange }: {
     </div>}
     {error && <span role="alert" className="clock-tile__error">{error}</span>}
     {editing && onChange && <Suspense fallback={null}><HomeTimeEditor settings={settings} onSave={onChange} onClose={() => setEditing(false)} /></Suspense>}
-  </section>;
+  </ClockTile>;
 }

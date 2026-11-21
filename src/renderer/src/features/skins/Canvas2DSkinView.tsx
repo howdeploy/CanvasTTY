@@ -1,7 +1,7 @@
 import { SkinMediaView } from "./SkinMediaView";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PixelTerminalBorderSkinId, SessionStatus } from "../../../../shared/contracts";
-import { acquireSkinImage, isPixelSkinPackId, PILOT_SKIN_ASSETS, usePixelSkinPackAssets } from "./SkinAssets";
+import { acquireSkinImage, isPixelSkinPackId, PILOT_SKIN_ASSETS, usePixelSkinPackAsset } from "./SkinAssets";
 import { pixelSkinArtworkBounds, pixelSkinSurfaceBounds } from "./SkinLayout";
 import type { PixelSkinSurfaceBounds, SkinDetailLevel } from "./SkinLayout";
 import { needsGoldMinimalWorkingMarker, resolvePixelSkinViewAsset } from "./skinViewAssets";
@@ -159,14 +159,14 @@ export function Canvas2DSkinView({ theme, status, artState, width, height, detai
   const [artwork, setArtwork] = useState<SkinArtwork | null>(null);
   const previousArtwork = useRef<SkinArtwork | null>(null);
   const transitions = useRef(new Set<() => void>());
-  const packUrls = usePixelSkinPackAssets(isPixelSkinPackId(theme) ? theme : null);
   const stateName = artState ?? pixelSkinStateForSession(status);
+  const packAsset = usePixelSkinPackAsset(isPixelSkinPackId(theme) ? theme : null, `${detail}_${stateName}`);
   const resolution = isPixelSkinThemeId(theme)
     ? resolvePixelSkinViewAsset(theme, detail, stateName, PILOT_SKIN_ASSETS)
     : null;
   const assetUrl = resolution?.kind === "asset" ? resolution.url
-    : packUrls ? packUrls[`${detail}_${stateName}`] : null;
-  const liveMedia = packUrls?.media?.[`${detail}_${stateName}`];
+    : packAsset?.url ?? null;
+  const liveMedia = packAsset?.media;
   const transparentCenter = artwork?.transparentCenter ?? false;
   const bounds = surfaceBounds ?? pixelSkinSurfaceBounds(theme, detail, width, height);
 

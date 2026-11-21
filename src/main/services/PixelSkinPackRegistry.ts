@@ -281,7 +281,7 @@ export class PixelSkinPackRegistry {
   }
 
   list(): PixelSkinPackSummary[] {
-    return [...this.packs.values()].map(({ id, name, aperture, apertures, controls, media }) => ({ id, name, aperture, apertures, ...(controls ? { controls } : {}), ...(media ? { media } : {}) }));
+    return [...this.packs.values()].map(({ id, name, aperture, apertures, controls, media, bundledSha256 }) => ({ id, name, aperture, apertures, ...(bundledSha256 ? { bundledSha256 } : {}), ...(controls ? { controls } : {}), ...(media ? { media } : {}) }));
   }
 
   onChanged(listener: () => void): () => void {

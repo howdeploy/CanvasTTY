@@ -257,6 +257,25 @@
 .pixel-skin-preview-tools__heading { width: 100%; max-width: 520px; }
 .pixel-skin-preview-tools__heading strong { display: inline-block; padding: 4px 8px; border: 1px solid var(--primary); border-radius: 4px; font-size: 12px; }
 .pixel-skin-preview-tools__heading p { margin: 8px 0 0; font-size: 12px; line-height: 1.5; }
+.canvas-background-controls,
+.canvas-background-controls label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5em;
+}
+.canvas-background-controls { margin-block-start: .7em; gap: .6em 1em; }
+.canvas-background-controls :is(button, select) {
+  min-height: 2.3em;
+  padding: .3em .7em;
+  border: 1px solid var(--border);
+  border-radius: .5em;
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.canvas-background-controls :is(button, select):focus-visible { outline: 2px solid var(--primary); }
 .canvas-background-preview img { width: 100%; height: 100%; object-fit: cover; }
 .pixel-pack-create[aria-pressed="true"] { border-style: solid; border-color: var(--primary); }
 

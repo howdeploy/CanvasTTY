@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {buildSync} from 'esbuild';
 import {CanvasDuoService,parseDuoInvite} from '../src/main/services/CanvasDuoService.ts';
-import {duoWorkspace,duoTerminalTransport} from '../src/renderer/src/features/duo/duoWorkspaceRuntime.ts';
+import {duoWorkspace,duoTerminalTransport,duoSession} from '../src/renderer/src/features/duo/duoWorkspaceRuntime.ts';
 import {mergeDuoSnapshot} from '../src/shared/canvasDuo.ts';
 const code=buildSync({stdin:{contents:`export * from './src/shared/duoDocument.ts';export * from './src/main/services/DuoDocumentService.ts';export * from './src/preload/duoDocumentRouter.ts';export {IPC} from './src/shared/contracts.ts';`,resolveDir:process.cwd()},bundle:true,platform:'node',format:'esm',write:false,logLevel:'silent'}).outputFiles[0].text;
 const {pickDuoSettings,duoSettingsOps,applyDuoSettingsOps,DuoDocumentService,createDuoDocumentRouter,IPC}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
@@ -172,4 +172,103 @@ test('view-only guest opens an existing Files card, cannot register a new folder
   await assert.rejects(request(IPC.filesList, [rootId, '']), /not shared/);
   await assert.rejects(request('protocol', [`canvastty-preview://${rootId}/preview.mp4`, null]), /not shared/);
   await request(IPC.filesCloseRoot, [rootId]);
+});
+
+test('host directory handles, participant focus and cursor acknowledgements cross the Duo connection', async t => {
+ const p = pair(t);
+ await connect(p);
+ const selected = await p.guest.command({action:'resource',channel:IPC.filesRegisterRoot,args:[{rootType:'folder',folderPath:'/host/project'}]});
+ const rootId = selected.snapshot.result.value.rootId;
+ const created = await p.guest.command({action:'create',rootId,x:24,y:32});
+ assert.equal(p.cards[0].cwd,'/host/project');
+ const cardId = created.snapshot.createdId;
+ assert.equal(created.snapshot.cards[0].participant,'guest');
+ for (const peer of [p.host,p.guest]) await peer.command({action:'focus',cardId,nickname:'Teo',design:'diamond'});
+ const cursor = await p.guest.command({action:'cursor',cardId:'canvas',x:15,y:2,nickname:'Teo',design:'diamond'});
+ assert.equal(cursor.snapshot.cursors[0].nickname,'Teo 2');
+ assert.notEqual(cursor.snapshot.cursors[0].design,'diamond');
+ assert.equal(cursor.snapshot.partial,true);
+ assert.ok(!cursor.snapshot.document && !cursor.snapshot.cards.length);
+ assert.deepEqual((await p.host.command({action:'snapshot'})).snapshot.cards[0].focusedBy,['Teo','Teo 2']);
+ await p.guest.command({action:'resource',channel:IPC.filesCloseRoot,args:[rootId]});
+ await assert.rejects(p.guest.command({action:'create',rootId,x:0,y:0}),/no longer available/);
+});
+
+test('shared wallpaper bytes survive JSON and multiple resource pages',async () => {
+ const bytes = Uint8Array.from({length:200000},(_,i)=>i%251);
+ const service = new DuoDocumentService({get:initial},async()=>({summary:{name:'clock'},bytes}),async()=>null,()=>{},async()=>null);
+ const state = {role:'guest',documentSync:true,workspaceId:'binary-test'};
+ const router = createDuoDocumentRouter(async(channel,request)=>{
+   if(channel===IPC.settingsGet)return initial();
+   return {state,snapshot:{result:await service.resource(request.channel,request.args,()=>true,true)}};
+ },()=>{});
+ await router.accept({state,snapshot:{document:{settings:pickDuoSettings(initial()),materials,plugins:[],browser}}});
+ const result=await router.invoke(IPC.wallpapersRead,'shared');
+ assert.deepEqual(result.bytes,bytes);
+ assert.equal(result.summary.name,'clock');
+});
+
+test('parallel theme assets finish without evicting a still-visible frame', async () => {
+  const bytes = new Uint8Array(150000).fill(0x4b);
+  const doc = new DuoDocumentService({ get: initial }, async () => bytes);
+  const state = { role: 'guest', workspaceId: 'skin-test', documentSync: true };
+  const router = createDuoDocumentRouter(async (_channel, request) => {
+    if (!request) return initial();
+    await new Promise(resolve => setImmediate(resolve));
+    return {state, snapshot:{result:await doc.resource(request.channel, request.args, () => true, true)}};
+  }, () => {});
+  await router.accept({state, snapshot:{document:{settings:pickDuoSettings(initial()),materials,plugins:[],browser}}});
+  const assets = await Promise.all(Array.from({length:12}, () => router.resource(IPC.pixelSkinsReadAsset, ['id','minimal_idle'])));
+  for (const asset of assets) assert.deepEqual(asset, bytes);
+});
+
+test('guest updates skin state and orchestrator detail even when terminal output is unchanged', () => {
+  const card = {id:'skin-state', running:true, title:'Build', provider:'terminal'};
+  assert.equal(duoSession(card).status, 'idle');
+  const working = duoSession({...card, role:'orchestrator', status:'working'});
+  assert.equal(working.role, 'orchestrator');
+  assert.equal(working.status, 'working');
+  assert.equal(duoSession({...card, status:'idle', turnCompleted:true}).turnCompleted, true);
+});
+
+test('revoking control releases temporary folder handles and keeps visible Files cards readable', async () => {
+  const settings = initial();
+  const shared = {rootType:'folder', folderPath:'/project'};
+  settings.fileCards = [{id:'project-card', root:shared}];
+  const closed = [];
+  const doc = new DuoDocumentService({get:() => settings}, async (channel, [arg]) => {
+    if (channel === IPC.filesRegisterRoot) return {rootId:arg.folderPath, folderPath:arg.folderPath};
+    if (channel === IPC.filesCloseRoot) closed.push(arg);
+    if (channel === IPC.filesList) return [];
+  }, undefined, () => {}, async () => null);
+  for (const folder of [shared, {rootType:'folder', folderPath:'/temporary'}]) {
+    await doc.resource(IPC.filesRegisterRoot, [folder], () => true, true);
+  }
+  doc.revokeControl();
+  assert.deepEqual(closed, ['/temporary']);
+  assert.equal(doc.terminalDirectory('/temporary'), undefined);
+  assert.deepEqual(await doc.resource(IPC.filesList, ['/project',''], () => false, false), {value:[]});
+  doc.clear();
+  assert.deepEqual(closed, ['/temporary','/project']);
+});
+
+test('discard an in-flight local skin read when the guest changes rooms', async () => {
+  const pack = {id:'test-pack', bundledSha256:'same-digest'};
+  const state = {role:'guest', documentSync:true, workspaceId:'first'};
+  const document = {settings:pickDuoSettings(initial()), materials, plugins:[], browser};
+  const started = Promise.withResolvers();
+  const read = Promise.withResolvers();
+  const router = createDuoDocumentRouter(async (channel) => {
+    if (channel === IPC.settingsGet) return initial();
+    if (channel === IPC.pixelSkinsList) return [pack];
+    if (channel === IPC.duoCommand) return {state, snapshot:{result:{value:[pack]}}};
+    if (channel === IPC.pixelSkinsReadAsset) { started.resolve(); return read.promise; }
+    assert.fail('Unexpected IPC call');
+  }, () => {});
+  await router.accept({state, snapshot:{document}});
+  const pending = router.invoke(IPC.pixelSkinsReadAsset, pack.id, 'minimal_idle');
+  await started.promise;
+  await router.accept({state:{...state,workspaceId:'second'}, snapshot:{document}});
+  read.resolve(new Uint8Array([1]));
+  await assert.rejects(pending, /workspace changed/);
 });

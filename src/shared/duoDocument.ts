@@ -4,7 +4,7 @@ import type { AppSettings, BrowserSnapshot, InstalledPlugin, MaterialsSnapshot }
 export const DUO_SETTINGS_KEYS = [
   'canvasRegions','stickyNotes','fileCards','pluginCanvas','browserCanvas',
   'homeLayout','homeGridSize','homeTime','homeAvatarWallpaper','homeClockWallpaper','homeClockFont','homeClockDesign',
-  'canvasBackground','canvasBackgroundPaused','canvasBackgroundFit','canvasColor','pattern',
+  'palette','appSkin','appearanceFont','canvasBackground','canvasBackgroundPaused','canvasBackgroundFit','canvasColor','pattern',
   'mediaPath','mediaFit','homeAccentPreset','homeAccentColors',
   'terminalBorderSkin','terminalBackground','terminalBackgroundBrightness','terminalBackgroundContrast',
   'terminalBackgroundSaturation','terminalBackgroundPaused','terminalBackgroundSpeed','terminalBackgroundScale',
@@ -76,5 +76,6 @@ export interface DuoDocumentPort {
   edit(ops: DuoDocumentOp[], authorized:()=>boolean): Promise<void>;
   resource(channel:string,args:unknown[],authorized:()=>boolean,manage:boolean,connected?:()=>boolean): Promise<unknown>;
   revokeControl?():void;
+  terminalDirectory?(rootId: string): string | undefined;
   clear():void;
 }

@@ -17,10 +17,15 @@ export function normalizeDuoCursorNickname(value: unknown): string | undefined {
 }
 
 export interface DuoCard {
+  participant?: "host" | "guest";
+  focusedBy?: string[];
   id: string;
   title: string;
   provider: string;
   running: boolean;
+  role?: SessionMetadata["role"];
+  status?: SessionMetadata["status"];
+  turnCompleted?: boolean;
   control: boolean;
   text?: string;
   position: { x: number; y: number };
@@ -41,7 +46,7 @@ export interface DuoSnapshot {
   documentSync?: boolean;
   document?: DuoDocument;
   result?: unknown;
-  surface?: DuoSurfaceFrame; fullCanvas?: boolean; sequence?: number; cards: DuoCard[]; comments: DuoComment[]; cursors: DuoCursor[]; expiresAt: number; workspaceId?: string; manage?: boolean; createdId?: string }
+  cursorUpdate?: boolean; surface?: DuoSurfaceFrame; fullCanvas?: boolean; sequence?: number; cards: DuoCard[]; comments: DuoComment[]; cursors: DuoCursor[]; expiresAt: number; workspaceId?: string; manage?: boolean; createdId?: string }
 export interface DuoState {
   role: "idle" | "host" | "guest";
   invites: string[];
@@ -74,7 +79,8 @@ export type DuoCommand =
   | { action: "input"; cardId: string; text: string }
   | { action: 'file-open' | 'file-can-open'; cardId:string; text:string }
   | { action: "comment"; cardId: string; text: string }
-  | { action: "create"; x: number; y: number }
+  | { action: "focus"; cardId?: string; nickname?: string; design?: DuoCursorDesign }
+  | { action: "create"; rootId?: string; x: number; y: number }
   | { action: "bounds"; cardId: string; bounds: SessionBounds }
   | { action: "rename"; cardId: string; text: string }
   | { action: "close"; cardId: string }
@@ -85,7 +91,13 @@ export interface DuoReply { state: DuoState; snapshot?: DuoSnapshot; invitation?
 /** Merge wire deltas without losing terminal history, documents or deleted cards. */
 export function mergeDuoSnapshot(previous: DuoSnapshot | undefined, next: DuoSnapshot): DuoSnapshot {
   if (!previous) return next;
-  if (next.partial) return { ...previous, manage: next.manage, expiresAt: next.expiresAt, cards:previous.cards.map(card=>previous.documentSync?{...card,control:next.manage===true}:card) };
+  if (next.partial) {
+    const cards = previous.documentSync && next.manage !== previous.manage
+      ? previous.cards.map(card => ({ ...card, control: next.manage === true }))
+      : previous.cards;
+    return { ...previous, cards, cursors: next.cursorUpdate ? next.cursors : previous.cursors,
+      manage: next.manage, expiresAt: next.expiresAt };
+  }
   if ((next.sequence ?? 0) < (previous.sequence ?? 0)) return previous;
   if (!next.incremental) return next;
   const cards = next.cards.map(card => {

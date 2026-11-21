@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { IPC, type AppSettings, type FileRootDescriptor, type FileRootReference } from '../../shared/contracts';
 import { applyDuoSettingsOps, pickDuoSettings, type DuoDocument, type DuoDocumentOp, type DuoDocumentPort } from '../../shared/duoDocument';
-import { DUO_FILE_READ_CHANNELS, DUO_READ_CHANNELS, DUO_WRITE_CHANNELS } from '../../shared/duoResources';
+import { DUO_RESOURCE_TRANSFER_LIMIT, DUO_FILE_READ_CHANNELS, DUO_READ_CHANNELS, DUO_WRITE_CHANNELS } from '../../shared/duoResources';
 import type { DuoFileTransferService } from './DuoFileTransferService';
 
 const CHUNK=128_000, MAX_RESULT=32*1024*1024;
@@ -29,6 +29,10 @@ export class DuoDocumentService implements DuoDocumentPort {
   private rootReadable(id: unknown, authorized: () => boolean): boolean {
     const reference = typeof id === 'string' ? this.fileRoots.get(id) : undefined;
     return reference !== undefined && (this.sharedRoot(reference) || authorized());
+  }
+  terminalDirectory(rootId: string): string | undefined {
+    const root = this.fileRoots.get(rootId);
+    return root?.rootType === 'folder' ? root.folderPath : undefined;
   }
   private storage=new Map<string,{pluginId:string;key:string;value:unknown;version:number}>();
   private storageVersion=0;
@@ -67,7 +71,10 @@ export class DuoDocumentService implements DuoDocumentPort {
       const [id,offset]=args as [string,number],c=this.chunks.get(id);
       if(!c||!Number.isSafeInteger(offset)||offset<0||offset>=c.text.length)throw Error('Canvas resource expired.');
       if(!c.allowed())throw Error('Shared resource access was revoked.');
-      return {chunk:id,total:c.text.length,offset,data:c.text.slice(offset,offset+CHUNK)};
+      c.at = Date.now();
+      const data = c.text.slice(offset, offset + CHUNK);
+      if (offset + data.length === c.text.length) this.chunks.delete(id);
+      return {chunk:id,total:c.text.length,offset,data};
     }
     const reference = args[0] as FileRootReference | null;
     const register = channel === IPC.filesRegisterRoot;
@@ -126,23 +133,36 @@ export class DuoDocumentService implements DuoDocumentPort {
       if (register && this.fileRoots.size >= 256) throw Error('Too many shared Files folders.');
       result=await this.invoke(channel,args);
       if (register && result) {
-        const { rootId } = result as FileRootDescriptor;
+        const { rootId, folderPath } = result as FileRootDescriptor;
         if (!connected() || !reference || (!authorized() && !this.sharedRoot(reference))) {
           await this.invoke(IPC.filesCloseRoot, [rootId]);
           throw Error('Shared Files access was revoked.');
         }
-        this.fileRoots.set(rootId, reference);
+        this.fileRoots.set(rootId, folderPath && reference.rootType === 'folder'
+          ? { rootType: 'folder', folderPath } : reference);
       }
       if (closingRoot) this.fileRoots.delete(args[0] as string);
     }
     if(!allowed())throw Error('Shared resource access was revoked.');
+    if (result instanceof Uint8Array && (channel === IPC.authorThemesPreview || channel === IPC.pixelSkinsReadAsset)) {
+      result = { base64: Buffer.from(result).toString('base64') };
+    } else if (channel === IPC.wallpapersRead && result) {
+      const { summary, bytes } = result as { summary: unknown; bytes: Uint8Array };
+      result = { summary, base64: Buffer.from(bytes).toString('base64') };
+    }
     const text=JSON.stringify(result??null);if(text.length>MAX_RESULT)throw Error('Canvas resource is too large.');
     if(text.length<=CHUNK)return {value:result??null};
-    if(this.chunks.size>=8)this.chunks.delete(this.chunks.keys().next().value!);
+    if (this.chunks.size >= DUO_RESOURCE_TRANSFER_LIMIT) throw Error("Too many active shared resource transfers.");
     const id=randomUUID();this.chunks.set(id,{text,at:Date.now(),allowed});
     return {chunk:id,total:text.length,offset:0,data:text.slice(0,CHUNK)};
   }
   revokeControl(): void {
+    // The picker can unmount after revocation, when it can no longer release its temporary roots.
+    for (const [id, reference] of this.fileRoots) {
+      if (this.sharedRoot(reference)) continue;
+      this.fileRoots.delete(id);
+      void this.invoke(IPC.filesCloseRoot, [id]).catch(() => undefined);
+    }
     this.transfers?.clear();
     void this.browserResource('browser-release', [], () => true).catch(() => undefined);
     for (const [id, chunk] of this.chunks) if (!chunk.allowed()) this.chunks.delete(id);

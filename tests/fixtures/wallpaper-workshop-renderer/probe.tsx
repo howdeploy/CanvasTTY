@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import type { AppSettings } from "../../../src/shared/contracts";
 import WallpaperWorkshop from "../../../src/renderer/src/features/settings/WallpaperWorkshop";
 import { HomeClockAppearance } from "../../../src/renderer/src/features/home/HomeClockAppearance";
-import ClockWidget from "../../../src/renderer/src/features/home/ClockWidget";
+import { HomeClock } from "../../../src/renderer/src/features/home/HomeClock";
 import { HomeMediaWidget } from "../../../src/renderer/src/features/home/HomeMediaWidget";
 import { WallpaperView } from "../../../src/renderer/src/features/skins/WallpaperView";
 import { DEFAULT_WALLPAPER_RECIPE } from "../../../src/shared/wallpaper";
@@ -20,7 +20,7 @@ function App(): React.JSX.Element {
   const change = async (patch: Partial<AppSettings>): Promise<void> => { setSettings(await window.canvasTTY.settings.update(patch)); };
   return <main><div className="probe-layout"><section className="probe-home">
     <h1>CanvasTTY · Home</h1>
-    <div id="clock"><ClockWidget locale="ru" now={new Date("2026-10-30T12:34:00Z")} settings={settings} onChange={change} /></div>
+    <div id="clock"><HomeClock locale="ru" now={new Date("2026-10-30T12:34:00Z")} settings={settings} onChange={change} /></div>
     <div id="avatar"><HomeMediaWidget locale="ru" wallpaperId={settings.homeAvatarWallpaper} dataUrl={null} fit="cover" onRequestMedia={async () => {
       const bytes = new Uint8Array(await (await fetch(gif)).arrayBuffer());
       const saved = await installAvatarSelection({ path: "/fixture/avatar.gif", dataUrl: `data:image/gif;base64,${btoa(String.fromCharCode(...bytes))}` });

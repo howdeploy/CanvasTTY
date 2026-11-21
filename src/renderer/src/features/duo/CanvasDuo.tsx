@@ -3,13 +3,13 @@ import { duoWorkspace, useDuoWorkspace } from "./duoWorkspaceRuntime";
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
 import type { LocaleId } from "../../../../shared/contracts";
-import { DUO_CURSOR_DESIGNS, DUO_CURSOR_NICKNAME_MAX_LENGTH, normalizeDuoCursorNickname, type DuoCommand, type DuoCursorDesign, type DuoReply, type DuoSnapshot, type DuoState } from "../../../../shared/canvasDuo";
+import { DUO_CURSOR_DESIGNS, DUO_CURSOR_NICKNAME_MAX_LENGTH, normalizeDuoCursorNickname, type DuoCard, type DuoCommand, type DuoCursorDesign, type DuoReply, type DuoSnapshot, type DuoState } from "../../../../shared/canvasDuo";
 import { defaultDuoCursorDesign, duoCursorName, DuoCursorMark } from "./DuoCursorMark";
 import { UiIcon } from "../../components/UiIcon";
 import { useModalFocus } from "../../lib/useModalFocus";
 import { Segmented } from "../settings/SettingsControls";
 const EMPTY: DuoState = { role: "idle", invites: [], expiresAt: 0, available: [], selected: [], controlled: [], peer: false };
-export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNickname = "", onCursorDesignChange, onCursorNicknameChange, onVisibilityChange, onCreateShared, onGoHome, onCreateNote }: {
+export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNickname = "", onCursorDesignChange, onCursorNicknameChange, onVisibilityChange, onCreateShared, onFocusTerminal, onGoHome, onCreateNote }: {
   titlebarSlot: HTMLDivElement | null;
   locale: LocaleId;
   cursorDesign?: DuoCursorDesign;
@@ -18,6 +18,7 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
   onCursorNicknameChange(nickname: string): void;
   onVisibilityChange(open: boolean): void;
   onCreateShared(): void;
+  onFocusTerminal(card: DuoCard): void;
   onGoHome(): void;
   onCreateNote(): void;
 }): React.JSX.Element {
@@ -123,6 +124,9 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
       <button type="button" className="duo-action" disabled={state.role==="guest" && (!workspace.connected || !shared?.manage)} onClick={()=>{if(state.role==="guest"&&state.fullCanvas&&!state.documentSync){void duoWorkspace.command({action:"surface-action",name:"terminal"}).catch(()=>undefined);}else onCreateShared();}}>
         <UiIcon name="terminal" size="1em" />{ru ? "Терминал" : "Terminal"}
       </button>
+      {workspace.connected && (!state.fullCanvas || state.documentSync) && shared?.cards.length ? (
+        <DuoTerminalPicker cards={shared.cards} viewer={state.role} ru={ru} onFocusTerminal={onFocusTerminal} />
+      ) : null}
       {state.fullCanvas && <>
         <button type="button" className="duo-action" disabled={state.role==='guest'&&(!workspace.connected||!state.manage)} onClick={()=>{if(state.documentSync)onCreateNote();else void duoWorkspace.command({action:'surface-action',name:'note'}).catch(()=>undefined);}}>
           <UiIcon name="sticky-note" size="1em" />{ru ? "Заметка" : "Note"}
@@ -133,11 +137,11 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
       </>}
       <button type="button" className="duo-action duo-action--danger" onClick={()=>void run({action:"stop"})}>{ru ? "Отключиться" : "Disconnect"}</button>
       {workspace.error && <p role="alert">{workspace.error}</p>}
-      <details className="duo-shared-comments" open={state.fullCanvas?undefined:true}><summary>{ru ? "Комментарии" : "Comments"}</summary>
-        <select aria-label={ru ? "Куда добавить комментарий" : "Comment target"} value={selectedCommentCard} onChange={e=>setCommentCard(e.target.value)}>{state.fullCanvas&&<option value="canvas">{ru ? "Весь холст" : "Entire canvas"}</option>}{shared?.cards.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select>
+      <details className="duo-shared-comments" open={state.fullCanvas?undefined:true}><summary>{ru ? "Чат" : "Chat"}</summary>
+        <select aria-label={ru ? "Канал чата" : "Chat channel"} value={selectedCommentCard} onChange={e=>setCommentCard(e.target.value)}>{state.fullCanvas&&<option value="canvas">{ru ? "Весь холст" : "Entire canvas"}</option>}{shared?.cards.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select>
         <div className="duo-comments" aria-live="polite">{shared?.comments.filter(c=>c.cardId===selectedCommentCard).map(c=><p key={c.id}><b>{c.author === "host" ? (ru ? "Хост" : "Host") : (ru ? "Гость" : "Guest")}</b> {c.text}</p>)}</div>
         <form onSubmit={e=>{e.preventDefault();void duoWorkspace.command({action:"comment",cardId:selectedCommentCard,text:sharedComment}).then(()=>setSharedComment("")).catch(()=>undefined);}}>
-          <input aria-label={ru ? "Общий комментарий" : "Shared comment"} value={sharedComment} maxLength={1000} onChange={e=>setSharedComment(e.target.value)} placeholder={ru ? "Комментарий…" : "Comment…"} />
+          <input aria-label={ru ? "Сообщение" : "Chat message"} value={sharedComment} maxLength={1000} onChange={e=>setSharedComment(e.target.value)} placeholder={ru ? "Сообщение…" : "Message…"} />
           <button className="duo-action" disabled={!selectedCommentCard || !sharedComment.trim() || (state.role==="guest"&&!workspace.connected)}>{ru ? "Отправить" : "Send"}</button>
         </form>
       </details>
@@ -237,7 +241,7 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
             <button type="button" className="duo-action" disabled={busy || !card.running} onClick={() => void run({ action: "input", cardId: card.id, text: "\u0003" })}>Ctrl+C</button>
           </form>}
           <div className="duo-comments">{snapshot.comments.filter(c => c.cardId === card.id).map(c => <p key={c.id}><strong>{c.author === "host" ? (ru ? "Хост" : "Host") : (ru ? "Гость" : "Guest")}</strong> {c.text}</p>)}</div>
-          <form className="duo-input" onSubmit={e => { e.preventDefault(); void run({ action: "comment", cardId: card.id, text: comments[card.id] ?? "" }).then(ok => { if (ok) setComments(d => ({ ...d, [card.id]: "" })); }); }}><input aria-label={ru ? "Комментарий к карточке" : "Card comment"} placeholder={ru ? "Комментарий к карточке…" : "Comment on this card…"} maxLength={1000} disabled={busy} value={comments[card.id] ?? ""} onChange={e => { const value = e.currentTarget.value; setComments(d => ({ ...d, [card.id]: value })); }} /><button className="duo-action" disabled={busy || !comments[card.id]?.trim()}>{ru ? "Добавить" : "Add"}</button></form>
+          <form className="duo-input" onSubmit={e => { e.preventDefault(); void run({ action: "comment", cardId: card.id, text: comments[card.id] ?? "" }).then(ok => { if (ok) setComments(d => ({ ...d, [card.id]: "" })); }); }}><input aria-label={ru ? "Сообщение в чат терминала" : "Terminal chat message"} placeholder={ru ? "Сообщение в чат терминала…" : "Message…"} maxLength={1000} disabled={busy} value={comments[card.id] ?? ""} onChange={e => { const value = e.currentTarget.value; setComments(d => ({ ...d, [card.id]: value })); }} /><button className="duo-action" disabled={busy || !comments[card.id]?.trim()}>{ru ? "Отправить" : "Send"}</button></form>
         </article>)}</div>}
       </div>
       <footer className="duo-panel__footer">
@@ -259,4 +263,31 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
       </footer>
     </section></div>}
   </>;
+}
+
+function DuoTerminalPicker({ cards, viewer, ru, onFocusTerminal }: {
+  cards: DuoCard[];
+  viewer: DuoState["role"];
+  ru: boolean;
+  onFocusTerminal(card: DuoCard): void;
+}) {
+  const other = viewer === "guest" ? "host" : "guest";
+  const groups = [
+    { role: viewer, label: ru ? "Мои терминалы" : "My terminals" },
+    { role: other, label: other === "host" ? (ru ? "Терминалы хоста" : "Host terminals") : (ru ? "Терминалы гостя" : "Guest terminals") },
+    { role: undefined, label: ru ? "Общие терминалы" : "Shared terminals" }
+  ];
+  const label = ru ? "Перейти к терминалу" : "Go to terminal";
+  return <select className="duo-terminal-picker" aria-label={label} value="" onChange={event => {
+    const card = cards.find(item => item.id === event.target.value);
+    if (card) onFocusTerminal(card);
+  }}>
+    <option value="" disabled>{label}</option>
+    {groups.map(group => {
+      const owned = cards.filter(card => card.participant === group.role);
+      return owned.length > 0 && <optgroup key={group.role ?? "shared"} label={group.label}>
+        {owned.map((card, index) => <option key={card.id} value={card.id}>{index + 1}. {card.title}</option>)}
+      </optgroup>;
+    })}
+  </select>;
 }

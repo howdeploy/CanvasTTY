@@ -840,7 +840,7 @@ export function SettingsPanel({
                 {workshopOpen && <Suspense fallback={<small>…</small>}><WallpaperWorkshop settings={settings} onChange={onChange} /></Suspense>}
                 <CanvasBackgroundChoices locale={locale} value={settings.canvasBackground} pixelPacks={pixelPacks}
                   onChange={(canvasBackground) => void onChange({ canvasBackground })} />
-                {settings.canvasBackground !== "none" && <div className="pixel-pack-dialog__agent-actions">
+                {settings.canvasBackground !== "none" && <div className="canvas-background-controls">
                   <button type="button" aria-pressed={settings.canvasBackgroundPaused}
                     onClick={() => void onChange({ canvasBackgroundPaused: !settings.canvasBackgroundPaused })}>
                     {settings.canvasBackgroundPaused ? (locale === "ru" ? "Продолжить анимацию" : "Resume animation") : (locale === "ru" ? "Приостановить анимацию" : "Pause animation")}

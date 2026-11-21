@@ -43,7 +43,7 @@ test('all bundled profiles apply atomically and survive restart without duplicat
     assert.deepEqual(next.canvasRegions, before.canvasRegions);
     assert.deepEqual(next.stickyNotes, before.stickyNotes);
     assert.equal(next.homeAccentPreset, 'custom'); assert.equal(next.terminalSkinAnimationEnabled, true);
-    assert.equal(next.homeClockDesign, 'new');
+    assert.equal(next.homeClockDesign, before.homeClockDesign);
     assert.equal(next.terminalBorderSkin, item.skin);
     if (item.id === 'teo-kurohane') {
       const { summary } = await f.wallpapers.read(next.canvasBackground);
@@ -62,8 +62,10 @@ test('all bundled profiles apply atomically and survive restart without duplicat
   assert.equal(f.wallpapers.list().length, listing.length * 3);
   const restarted = new WallpaperRegistry(f.dir); await restarted.initialize();
   const service = new AuthorThemeService(assets, f.settings, f.skins, restarted);
+  await f.settings.update({ homeClockDesign: 'new' });
   await service.apply('kisa-nocturne'); assert.equal(restarted.list().length, listing.length * 3);
   const persisted = new SettingsStore(f.dir, 'ru'); await persisted.load();
+  assert.equal(persisted.get().homeClockDesign, 'new');
   assert.equal(persisted.get().appearanceFont, 'mono');
   const background = await restarted.read(persisted.get().canvasBackground);
   assert.equal(background.summary.recipe.fit, 'cover');
@@ -91,10 +93,31 @@ test('invalid IDs and corrupted assets leave appearance and wallpaper library un
   assert.deepEqual(f.settings.get(), before); assert.equal(f.wallpapers.list().length, 0);
 });
 
+test('guest access revoked while a settings write is queued rolls back the imported wallpapers', async t => {
+  const f = await fixture(t);
+  const before = f.settings.get();
+  const queued = Promise.withResolvers();
+  const resume = Promise.withResolvers();
+  let allowed = true;
+  const settings = { async updateLatest(derive) {
+    queued.resolve();
+    await resume.promise;
+    return f.settings.updateLatest(derive);
+  } };
+  const service = new AuthorThemeService(assets, settings, f.skins, f.wallpapers);
+  const apply = service.apply('kisa-nocturne', () => allowed);
+  await queued.promise;
+  allowed = false;
+  resume.resolve();
+  await assert.rejects(apply, /Only the host/);
+  assert.deepEqual(f.settings.get(), before);
+  assert.equal(f.wallpapers.list().length, 0);
+});
+
 test('failed settings persistence rolls back newly imported wallpapers and permits retry', async t => {
   const f = await fixture(t); const before = f.settings.get();
   let fail = true;
-  const service = new AuthorThemeService(assets, { update: patch => fail ? Promise.reject(new Error('disk full')) : f.settings.update(patch) }, f.skins, f.wallpapers);
+  const service = new AuthorThemeService(assets, { updateLatest: derive => fail ? Promise.reject(new Error('disk full')) : f.settings.updateLatest(derive) }, f.skins, f.wallpapers);
   await assert.rejects(service.apply('kisa-nocturne'), /disk full/);
   assert.deepEqual(f.settings.get(), before); assert.equal(f.wallpapers.list().length, 0);
   fail = false; await service.apply('kisa-nocturne'); assert.equal(f.wallpapers.list().length, 3);

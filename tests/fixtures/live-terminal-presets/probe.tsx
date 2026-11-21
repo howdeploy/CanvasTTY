@@ -1,4 +1,5 @@
 import React from 'react';
+import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Canvas2DSkinView } from '../../../src/renderer/src/features/skins/Canvas2DSkinView';
 import { SkinMediaView } from '../../../src/renderer/src/features/skins/SkinMediaView';
@@ -36,7 +37,7 @@ function render() {
 render();
 Object.assign(window, { presetProbe: {
   packIds() { return packs.map((pack: { id: string }) => pack.id); },
-  set(next: any) { visiblePack = packs.find((pack: { id: string }) => pack.id === next.packId) ?? visiblePack; detail = next.detail ?? detail; status = next.status ?? status; paused = next.paused ?? paused; offscreen = next.offscreen ?? offscreen; comparison = next.comparison ?? comparison; render(); },
+  set(next: any) { visiblePack = packs.find((pack: { id: string }) => pack.id === next.packId) ?? visiblePack; detail = next.detail ?? detail; status = next.status ?? status; paused = next.paused ?? paused; offscreen = next.offscreen ?? offscreen; comparison = next.comparison ?? comparison; flushSync(render); },
   async verifyApertures() {
     let decoded = 0;
     for (const pack of packs) for (const detail of ['minimal','detailed','master']) for (const state of ['idle','working','completed']) {

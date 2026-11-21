@@ -28,7 +28,8 @@ test('all approved live themes install and survive restart without duplicates', 
       const bytes = await registry.readAsset(pack.id, slot);
       const info = inspectSkinMedia(bytes);
       assert.equal(info.animated, true, `${pack.name}/${slot}`);
-      const format = slot !== 'background' && webpFrameArchives.has(preset.archive) ? 'webp' : 'gif';
+      const usesWebp = slot === 'background' ? preset.archive !== 'volcanic-forge.zip' : webpFrameArchives.has(preset.archive);
+      const format = usesWebp ? 'webp' : 'gif';
       assert.equal(info.format, format, `${pack.name}/${slot}`);
       if (slot !== 'background') assert.deepEqual([info.width, info.height], [1536, 1024]);
     }

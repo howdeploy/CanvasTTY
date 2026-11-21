@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { AuthorThemeSummary, AuthorThemeWallpaperSlot, LocaleId, PixelTerminalBorderSkinId } from "../../../../shared/contracts";
+import type { AuthorThemeSummary, AuthorThemeWallpaperSlot, LocaleId, TerminalBorderSkinId } from "../../../../shared/contracts";
 import { inspectSkinMedia, SKIN_MEDIA_MIME, type SkinMediaInfo } from "../../../../shared/skinMedia";
 import { t } from "../../lib/i18n";
 import { SkinMediaView } from "../skins/SkinMediaView";
@@ -7,19 +7,19 @@ import { Segmented } from "./SettingsControls";
 
 type PreviewSlot = AuthorThemeWallpaperSlot | "terminal";
 
-export function AuthorThemePresets({ locale, paused, readOnly, renderTerminal }: {
+export function AuthorThemePreview({ skin, locale, paused, readOnly, children }: {
   locale: LocaleId;
   paused: boolean;
   readOnly: boolean;
-  renderTerminal(skin: PixelTerminalBorderSkinId): ReactNode;
+  skin: TerminalBorderSkinId;
+  children: ReactNode;
 }) {
   const [themes, setThemes] = useState<AuthorThemeSummary[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [selection, setSelection] = useState("");
-  const [slot, setSlot] = useState<PreviewSlot>("canvas");
+  const [slot, setSlot] = useState<PreviewSlot>("terminal");
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState<"success" | "failed" | null>(null);
-  const theme = themes?.find(item => item.id === selection);
+  const theme = themes?.find(item => item.skin === skin);
   const ru = locale === "ru";
 
   useEffect(() => {
@@ -44,18 +44,18 @@ export function AuthorThemePresets({ locale, paused, readOnly, renderTerminal }:
     }
   }
 
-  if (loadFailed) return <p role="alert">{t(locale, "authorThemesLoadFailed")}</p>;
-  if (!themes) return <p role="status">{t(locale, "authorThemesLoading")}</p>;
+  if (!theme) return <>{children}{loadFailed && <p role="alert">{t(locale, "authorThemesLoadFailed")}</p>}</>;
 
-  return <>
-    <div className="settings-inline-controls theme-selection">
-      <select aria-label={t(locale, "authorThemes")} value={selection} disabled={applying}
-        onChange={event => { setSelection(event.currentTarget.value); setResult(null); }}>
-        <option value="">{ru ? "Выбрать тему" : "Choose a theme"}</option>
-        {themes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-      </select>
-      <button type="button" className="setting-inline-action" disabled={!theme || applying || readOnly}
-        onClick={() => { if (theme) void apply(theme.id); }}>
+  return <div className="theme-preview">
+    <Segmented value={slot} options={[
+      ["terminal", ru ? "Терминал" : "Terminal"], ["canvas", ru ? "Холст" : "Canvas"],
+      ["avatar", ru ? "Аватар" : "Avatar"], ["clock", ru ? "Часы" : "Clock"]
+    ]} onChange={value => setSlot(value as PreviewSlot)} />
+    {slot === "terminal" ? children :
+      <ThemeWallpaperPreview key={slot} id={theme.id} slot={slot} paused={paused} locale={locale} />}
+    <div className="settings-inline-controls">
+      <button type="button" className="setting-inline-action" disabled={applying || readOnly}
+        onClick={() => void apply(theme.id)}>
         {t(locale, applying ? "authorThemeApplying" : "authorThemeApply")}
       </button>
     </div>
@@ -63,15 +63,7 @@ export function AuthorThemePresets({ locale, paused, readOnly, renderTerminal }:
     {result && <p role={result === "failed" ? "alert" : "status"} className="setting-group__description">
       {t(locale, result === "failed" ? "authorThemeApplyFailed" : "authorThemeApplied")}
     </p>}
-    {theme && <div className="theme-preview">
-      <Segmented value={slot} options={[
-        ["canvas", ru ? "Холст" : "Canvas"], ["avatar", ru ? "Аватар" : "Avatar"],
-        ["clock", ru ? "Часы" : "Clock"], ["terminal", ru ? "Терминал" : "Terminal"]
-      ]} wrap onChange={value => setSlot(value as PreviewSlot)} />
-      {slot === "terminal" ? renderTerminal(theme.skin) :
-        <ThemeWallpaperPreview key={`${theme.id}:${slot}`} id={theme.id} slot={slot} paused={paused} locale={locale} />}
-    </div>}
-  </>;
+  </div>;
 }
 
 function ThemeWallpaperPreview({ id, slot, locale, paused }: {

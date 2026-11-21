@@ -78,10 +78,6 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   },
   {
     "section": "appearance",
-    "label": "authorThemes"
-  },
-  {
-    "section": "appearance",
     "label": "homeColors",
     "description": "homeColorsDescription"
   },
@@ -104,7 +100,7 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   },
   {
     "section": "appearance",
-    "label": "terminalBorderSkin"
+    "label": "terminalBordersAndThemes"
   },
   {
     "section": "appearance",

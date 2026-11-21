@@ -9,7 +9,7 @@ This branch builds on 1.8.7. It keeps the normal release version under maintaine
 - Animated skins and wallpapers support pause, offscreen and hidden-window suspension, and reduced-motion preferences.
 - Home gains layout customization, animated avatar/clock media, and clock, countdown and timer settings.
 - The theme engine includes agent instructions, media validation, packing tools and testable pixel-animation helpers. See [the engine guide](../design-engine/LIVE_ENGINE.md).
-- Applying a bundled profile sets the canvas background, Home avatar and clock, font, color accents, and terminal skin together. Individual wallpaper packages can still be imported in Appearance.
+- Select a bundled theme in **Appearance → Terminal borders and themes** to preview its terminal, canvas, avatar and clock. **Apply full theme** sets those assets, the font and color accents while preserving the selected Home clock design. Individual wallpaper packages can still be imported in Appearance.
 
 ## Files and workspace
 
@@ -21,7 +21,7 @@ This branch builds on 1.8.7. It keeps the normal release version under maintaine
 
 Duo connects a host and guest, synchronizes the shared canvas document and terminal operations, and keeps each person's camera local. Host permissions govern guest edits and terminal input; disconnect/revocation must remain enforceable across asynchronous operations. See [connection, permissions and diagnostics](CANVAS-DUO-P2P.ru.md).
 
-The compact Duo panel keeps hosting, joining, and diagnostics visible. Expand the access or cursor sections to configure sharing, cursor style, or nickname. The local connection recorder tracks attempt IDs, elapsed times, transport stages and safe error codes. The Duo panel can copy a bounded report containing version/platform details and up to 200 events. It excludes invitations, secrets, endpoint addresses, file paths and terminal content. Events also enter the existing rotated local application log. Reports are not uploaded automatically.
+Opening Duo shows guest access, the nickname field and cursor choices immediately. The local connection recorder tracks attempt IDs, elapsed times, transport stages and safe error codes. The Duo panel can copy a bounded report containing version/platform details and up to 200 events. It excludes invitations, secrets, endpoint addresses, file paths and terminal content. Events also enter the existing rotated local application log. Reports are not uploaded automatically.
 
 Direct Internet connectivity remains dependent on NAT/firewall conditions; this branch does not provide an always-available relay. Automated local-DHT socket tests and a packaged macOS diagnostics check do not prove connectivity between arbitrary Internet providers.
 

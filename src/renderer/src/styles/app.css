@@ -1830,7 +1830,6 @@ button { border: 0; }
 
 .file-browser-card__actions .file-browser-card__place { width: auto; padding: 6px 10px; }
 
-.theme-selection select { min-width: 0; max-width: 100%; padding: 7px 10px; color: var(--text); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
-.theme-preview { display: grid; gap: .65em; margin-top: .85em; }
+.theme-preview { grid-column: 1 / -1; min-width: 0; display: grid; gap: .65em; margin-top: .85em; }
 .theme-preview__wallpaper { display: grid; place-items: center; background: var(--surface-soft); border-radius: 8px; overflow: hidden; }
 .theme-preview__wallpaper > :is(img, canvas, video) { display: block; max-width: 100%; max-height: 240px; object-fit: contain; image-rendering: pixelated; }

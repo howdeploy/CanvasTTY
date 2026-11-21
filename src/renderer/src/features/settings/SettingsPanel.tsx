@@ -59,6 +59,7 @@ import {
   BROWSER_PROVIDER_COLORS,
   keyboardPresetShortcuts,
   shortcutsShareContext,
+  BUNDLED_CANVAS_BACKGROUND_IDS,
   CANVAS_LAUNCHER_ITEMS,
   DEFAULT_CANVAS_LAUNCHER_ITEMS,
   DEFAULT_RADIAL_LAUNCHER_ITEMS,
@@ -97,7 +98,7 @@ import {
 } from "../../lib/skinStyles";
 import { PluginSettingsSection } from "../plugins/PluginSettingsSection";
 import { HomeClockAppearance } from "../home/HomeClockAppearance";
-import { AuthorThemePresets } from "./AuthorThemePresets";
+import { AuthorThemePreview } from "./AuthorThemePreview";
 import { HomeAppearanceSettings } from "../home/HomeAppearanceSettings";
 import {
   canvasColorPatch,
@@ -752,11 +753,6 @@ export function SettingsPanel({
                   onChange={(value) => void onChange({ palette: value as PaletteId })}
                 />
               </SettingGroup>
-              <SettingGroup label={t(locale, "authorThemes")} layout="stacked">
-                <AuthorThemePresets locale={locale} readOnly={sharedCanvasGuest} paused={backgroundsSuspended || designDisabled}
-                  renderTerminal={skin => <PixelBorderSkinPreview key={skin} locale={locale} theme={skin}
-                    apertures={pixelPacks.find(pack => pack.id === skin)?.apertures} />} />
-              </SettingGroup>
               <SettingGroup label={t(locale, "homeColors")} description={t(locale, "homeColorsDescription")}>
                 <SwatchChoices
                   value={appearance.homeAccentPreset}
@@ -859,11 +855,14 @@ export function SettingsPanel({
                   ? (locale === "ru" ? "Загрузка пользовательских фонов…" : "Loading custom backgrounds…")
                   : (locale === "ru" ? "Не удалось загрузить пользовательские фоны." : "Custom backgrounds could not be loaded.")}</small>}
               </SettingGroup>
-              <SettingGroup label={t(locale, "terminalBorderSkin")} layout="stacked"
-                description={locale === "ru" ? "Только оформление окон. Выбранный фон Canvas сохранится." : "Window appearance only. Your Canvas background stays selected."}>
+              <SettingGroup label={t(locale, "terminalBordersAndThemes")} layout="stacked"
+                description={locale === "ru" ? "Выберите рамку терминала. Для авторских тем здесь же можно посмотреть фон, аватар и часы и применить весь комплект." : "Select a terminal border. For bundled themes you can also preview the wallpaper, avatar and clock and apply the full theme."}>
                 <BorderSkinChoices
                   locale={locale}
                   value={settings.terminalBorderSkin}
+                  paused={backgroundsSuspended || designDisabled}
+                  terminalAnimationEnabled={settings.terminalSkinAnimationEnabled}
+                  readOnly={sharedCanvasGuest}
                   pixelPacks={pixelPacks}
                   onPackCreated={(pack) => setPixelPacks((current) => current.some((item) => item.id === pack.id) ? current : [...current, pack])}
                   onChange={(terminalBorderSkin) => void onChange({ terminalBorderSkin })}
@@ -1826,16 +1825,31 @@ function PlacementChoices({
 
 
 
+const BACKGROUND_ASSETS = import.meta.glob<string>("../../assets/theme-backgrounds/*.avif", {
+  eager: true, query: "?url", import: "default"
+});
+
 function CanvasBackgroundChoices({ locale, value, pixelPacks, onChange }: {
   locale: LocaleId;
   value: CanvasBackgroundId;
   pixelPacks: PixelSkinPackSummary[];
   onChange(value: CanvasBackgroundId): void;
 }): React.JSX.Element {
+  const labelKeys = {
+    sakura: "borderSkinSakura", matrix: "borderSkinMatrix", "forest-cabin": "borderSkinForestCabin",
+    "gold-black": "borderSkinGoldBlack", cat: "borderSkinCat", "gothic-eclipse": "borderSkinGothicEclipse"
+  } as const;
   return <div className="border-skin-choices" role="group" aria-label={locale === "ru" ? "Фоны и живые обои" : "Backgrounds and live wallpapers"}>
     <button type="button" className="pixel-pack-create" aria-pressed={value === "none"} onClick={() => onChange("none")}>
       {locale === "ru" ? "Без картинки — выбранный цвет и узор" : "No image — selected color and pattern"}
     </button>
+    {BUNDLED_CANVAS_BACKGROUND_IDS.map((id) => <button key={id} type="button" className="border-skin-choice"
+      aria-pressed={value === id} onClick={() => onChange(id)}>
+      <span className="border-skin-preview border-skin-preview--pixel canvas-background-preview" aria-hidden="true">
+        <img src={BACKGROUND_ASSETS[`../../assets/theme-backgrounds/${id}.avif`]} alt="" loading="lazy" />
+      </span>
+      <span className="border-skin-choice__label">{t(locale, labelKeys[id])}</span>
+    </button>)}
     {pixelPacks.map((pack) => <button key={pack.id} type="button" className="border-skin-choice"
       aria-pressed={value === pack.id} onClick={() => onChange(pack.id)}>
       <span className="border-skin-preview border-skin-preview--pixel canvas-background-preview" aria-hidden="true">
@@ -1852,12 +1866,18 @@ function CanvasBackgroundChoices({ locale, value, pixelPacks, onChange }: {
 function BorderSkinChoices({
   locale,
   value,
+  paused,
+  terminalAnimationEnabled,
+  readOnly,
   pixelPacks,
   onPackCreated,
   onChange
 }: {
   locale: LocaleId;
   value: TerminalBorderSkinId;
+  paused: boolean;
+  terminalAnimationEnabled: boolean;
+  readOnly: boolean;
   pixelPacks: PixelSkinPackSummary[];
   onPackCreated(pack: PixelSkinPackSummary): void;
   onChange(value: TerminalBorderSkinId): void;
@@ -2017,12 +2037,11 @@ function BorderSkinChoices({
         </button>
       )}
       {(isPixelSkinThemeId(value) || isPixelSkinPackId(value)) && (
-        <PixelBorderSkinPreview
-          key={value}
-          locale={locale}
-          theme={value}
-          apertures={pixelPacks.find(pack => pack.id === value)?.apertures}
-        />
+        <AuthorThemePreview key={value} skin={value} locale={locale} paused={paused} readOnly={readOnly}>
+          <PixelBorderSkinPreview
+            locale={locale} theme={value} paused={paused || !terminalAnimationEnabled}
+            apertures={pixelPacks.find(pack => pack.id === value)?.apertures} />
+        </AuthorThemePreview>
       )}
     </div>
   );
@@ -2062,10 +2081,12 @@ function PixelBorderSkinPreview({
   locale,
   theme,
   apertures,
+  paused,
 }: {
   locale: LocaleId;
   theme: PixelSkinThemeId | PixelTerminalBorderSkinId;
   apertures?: PixelSkinPackSummary["apertures"];
+  paused: boolean;
 }): React.JSX.Element {
   const previewRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -2148,6 +2169,7 @@ function PixelBorderSkinPreview({
             width={size.width}
             height={size.height}
             detail={detail}
+            paused={paused}
             surfaceBounds={pixelSkinSurfaceBounds(theme, detail, size.width, size.height, 26, apertures?.[detail])}
           />
         )}

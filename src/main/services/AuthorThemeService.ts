@@ -22,7 +22,7 @@ const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("h
 export class AuthorThemeService {
   private queue: Promise<unknown> = Promise.resolve();
   private readonly root: string;
-  private readonly settings: Pick<SettingsStore, "update">;
+  private readonly settings: Pick<SettingsStore, "updateLatest">;
   private readonly skins: Pick<PixelSkinPackRegistry, "list">;
   private readonly wallpapers: Pick<WallpaperRegistry, "list" | "read" | "importPackage" | "remove">;
 
@@ -99,9 +99,11 @@ export class AuthorThemeService {
       }
       const patch: Partial<AppSettings> = {};
       for (const key of APPEARANCE_KEYS) if (Object.hasOwn(manifest.settings ?? {}, key)) Object.assign(patch, { [key]: manifest.settings[key] });
-      assertCanApply();
-      return await this.settings.update({ ...patch, appearanceFont: theme.font, homeClockDesign: "new", terminalBorderSkin: theme.skin,
-        terminalSkinAnimationEnabled: true, canvasBackground: ids[0], homeAvatarWallpaper: ids[1], homeClockWallpaper: ids[2] });
+      return await this.settings.updateLatest(() => {
+        assertCanApply();
+        return { ...patch, appearanceFont: theme.font, terminalBorderSkin: theme.skin, terminalSkinAnimationEnabled: true,
+          canvasBackground: ids[0], homeAvatarWallpaper: ids[1], homeClockWallpaper: ids[2] };
+      });
     } catch (error) {
       await Promise.allSettled(created.map(asset => this.wallpapers.remove(asset)));
       throw error;

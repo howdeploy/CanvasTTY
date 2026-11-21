@@ -494,8 +494,10 @@ export interface CameraState extends Point {
 export interface AuthorThemeSummary {
   id: string;
   name: string;
-  preview?: string;
+  skin: PixelTerminalBorderSkinId;
 }
+
+export type AuthorThemeWallpaperSlot = "canvas" | "avatar" | "clock";
 
 export interface AppSettings {
   appearanceFont?: "default" | "mono" | "serif";
@@ -1997,6 +1999,7 @@ export interface CanvasTTYApi {
   };
   authorThemes: {
     list(): Promise<AuthorThemeSummary[]>;
+    preview(id: string, slot: AuthorThemeWallpaperSlot): Promise<Uint8Array>;
     apply(id: string): Promise<AppSettings>;
   };
   skins: {
@@ -2248,6 +2251,7 @@ export const IPC = {
   externalOpenUrl: "external:open-url",
   terminalSetVisible: "terminal:set-visible",
   authorThemesList: "author-themes:list",
+  authorThemesPreview: "author-themes:preview",
   authorThemesApply: "author-themes:apply",
   settingsGet: "settings:get",
   settingsUpdate: "settings:update",

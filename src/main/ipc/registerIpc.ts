@@ -82,6 +82,8 @@ interface CriticalDependencies {
 }
 
 interface Dependencies {
+  pixelSkinPacks: PixelSkinPackRegistry;
+  wallpapers: WallpaperRegistry;
   duoDiagnostic?:(event:import("../../shared/duoDiagnostics").DuoDiagnosticEvent)=>void;
   materials:MaterialService;
   mascots: MascotManager;
@@ -159,21 +161,6 @@ export function registerCriticalIpc(ipcMain: IpcRegistrar, {
     assertMainRenderer(event, getMainWindow);
     const snapshot = settings.get();
     return settings.isNewProfile ? { ...snapshot, isNewProfile: true } : snapshot;
-  });
-  let authorThemes: AuthorThemeService | undefined;
-  const authorThemeService = () => authorThemes ??= new AuthorThemeService(
-    app.isPackaged ? join(process.resourcesPath, "appearance-presets") : join(app.getAppPath(), "assets"),
-    settings, pixelSkinPacks, wallpapers);
-  ipcMain.handle(IPC.authorThemesList, (event) => {
-    assertMainRenderer(event, getMainWindow);
-    return authorThemeService().list();
-  });
-  ipcMain.handle(IPC.authorThemesApply, async (event, id: unknown) => {
-    assertMainRenderer(event, getMainWindow);
-    const updated = await authorThemeService().apply(id);
-    const window = getMainWindow();
-    if (window && !window.isDestroyed()) window.webContents.send(IPC.settingsChanged, updated);
-    return updated;
   });
   ipcMain.handle(IPC.terminalBorderSkinsList, (event) => {
     assertMainRenderer(event, getMainWindow);
@@ -257,6 +244,8 @@ export function registerCriticalIpc(ipcMain: IpcRegistrar, {
 }
 
 export function registerIpc(ipcMain: IpcRegistrar, {
+  pixelSkinPacks,
+  wallpapers,
   duoDiagnostic,
   materials,
   mascots,
@@ -353,6 +342,28 @@ export function registerIpc(ipcMain: IpcRegistrar, {
     },
     onChanged:reply=>{const window=getMainWindow();if(window&&!window.isDestroyed()&&!window.webContents.isDestroyed())window.webContents.send(IPC.duoChanged,reply);},
     ...(process.env.CANVASTTY_DUO_LAB_OUTPUT&&process.env.CANVASTTY_DUO_LAB_PUBLIC_ONLY==='1'?{peerOptions:{localConnection:false,shareLocalAddress:false}}:{})});
+  let authorThemes: AuthorThemeService | undefined;
+  const authorThemeService = () => authorThemes ??= new AuthorThemeService(
+    app.isPackaged ? join(process.resourcesPath, "appearance-presets") : join(app.getAppPath(), "assets"),
+    settings, pixelSkinPacks, wallpapers);
+  ipcMain.handle(IPC.authorThemesList, (event) => {
+    assertMainRenderer(event, getMainWindow);
+    return authorThemeService().list();
+  });
+  ipcMain.handle(IPC.authorThemesPreview, (event, id: unknown, slot: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    return authorThemeService().preview(id, slot);
+  });
+  ipcMain.handle(IPC.authorThemesApply, async (event, id: unknown) => {
+    assertMainRenderer(event, getMainWindow);
+    const updated = await authorThemeService().apply(id, () => {
+      const state = duo.state();
+      return state.role !== "guest" || !state.documentSync;
+    });
+    const window = getMainWindow();
+    if (window && !window.isDestroyed()) window.webContents.send(IPC.settingsChanged, updated);
+    return updated;
+  });
   setDuoAssetProxy(async request=>{
     if(duo.state().role!=='guest'||!duo.state().documentSync)return null;
     const call=async(channel:string,args:unknown[])=>{

@@ -164,7 +164,7 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
         {state.role !== "guest" && <section className="duo-setup duo-section">
           <h3>{state.role === "idle" ? (ru ? "Пригласить гостя" : "Invite a guest") : (ru ? "Доступ гостя" : "Guest access")}</h3>
           <details className="duo-access">
-            <summary>{fullCanvas ? (ru ? "Весь холст" : "Entire canvas") : (ru ? "Терминалы" : "Terminals")} · {manage || controlled.length ? (ru ? "Управление" : "Control enabled") : (ru ? "Просмотр" : "View only")}</summary>
+            <summary>{fullCanvas ? (ru ? "Весь холст" : "Entire canvas") : (ru ? "Терминалы" : "Terminals")} · {manage || (!fullCanvas && controlled.length > 0) ? (ru ? "Управление" : "Control enabled") : (ru ? "Просмотр" : "View only")}</summary>
             <div className="duo-details-content">
               {state.role === "idle" && <div className="duo-sharing-scope" role="group" aria-label={ru ? "Что увидит гость" : "What the guest can see"}>
                 <Segmented value={fullCanvas ? "canvas" : "terminals"} disabled={busy}

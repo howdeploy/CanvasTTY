@@ -7,7 +7,7 @@
   "requires": "CanvasTTY 2.0 Live Engine",
   "terminals": {
     "file": "../live-terminal-presets/kisa-nocturne.zip",
-    "sha256": "6eda7f7801d4b306287bf6063d7d215f582ea94dc8f3d41b7a9b0f00f79d205c",
+    "sha256": "1bea03ae0db0b417893475b31dcbb2c096c778548f5fae8f724378c50fa300d5",
     "id": "pixel:92020000-0000-4000-8000-000000000005"
   },
   "apertures": {
@@ -33,15 +33,15 @@
   "wallpapers": {
     "canvas": {
       "file": "Kisa-Nocturne-canvas.ctwallpaper",
-      "sha256": "d740b6cf027c793a92591cda66ee7cf0cf53668a0d1bc9d403a6c4e6bd1e1585"
+      "sha256": "b6f6b758776255899af5a7e960fe86285e0df19d8746d23e55e46517fa8c0aae"
     },
     "avatar": {
       "file": "Kisa-Nocturne-avatar.ctwallpaper",
-      "sha256": "c747f7e2f7db1ff126d0e5c881f10721d7c9f40bc73c01d2aa692d6f48cf4c9a"
+      "sha256": "90de41a1196e6f1e68a6a2396ae13987feab07327a72e866700ed6b3400ded25"
     },
     "clock": {
       "file": "Kisa-Nocturne-clock.ctwallpaper",
-      "sha256": "642df9fe94deddc9ce3778b55f4219d379d2d86a2dea8c16b0592b80a327e204"
+      "sha256": "c34d0e8b2f9c5fb6bbd877085a1f8ee959c12fe159e1d96b74a0ccf99398f9ab"
     }
   },
   "settings": {
@@ -49,7 +49,7 @@
     "appSkin": "midnight",
     "canvasColor": "night",
     "pattern": "none",
-    "canvasBackgroundFit": "contain",
+    "canvasBackgroundFit": "cover",
     "canvasBackgroundPaused": false,
     "terminalBackground": "none",
     "terminalSkinDetail": "minimal",

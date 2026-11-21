@@ -2,3 +2,5 @@
 Pillow==13.0.0
 # Optional: animate_emissive.py (heat flow, sparks and exact technical aperture).
 numpy==2.5.5
+# Compositing the built-in live wallpaper plates.
+opencv-python-headless==5.1.0.95

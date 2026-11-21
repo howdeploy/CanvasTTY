@@ -67,6 +67,7 @@ export function createDuoDocumentRouter(raw:(channel:string,...args:any[])=>Prom
   const invoke=async(channel:string,...args:any[]):Promise<any>=>{
     if(channel===IPC.duoCommand)return command(args[0]);
     if(!document)return raw(channel,...args);
+    if(channel===IPC.authorThemesApply)throw new Error("Only the host can apply a theme in a shared Canvas.");
     if(channel===IPC.settingsGet)return {...localSettings,...document.settings};
     if(channel===IPC.settingsUpdate){
       const active=workspace,patch=args[0] as Partial<AppSettings>,base=document.settings;

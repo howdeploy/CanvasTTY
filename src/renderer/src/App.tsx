@@ -2416,6 +2416,7 @@ export function App(): React.JSX.Element {
           settings={settings}
           backgroundsSuspended={backgroundsSuspended}
           designDisabled={designDisabled}
+          sharedCanvasGuest={duoGuest && duoFullCanvas}
           onToggleBackgrounds={toggleBackgrounds}
           onToggleDesign={toggleDesign}
           agentAvailability={agentAvailability}

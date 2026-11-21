@@ -7,7 +7,7 @@
   "terminals": {
     "file": "../live-terminal-presets/steampunk-airship.zip",
     "id": "pixel:92020000-0000-4000-8000-000000000007",
-    "sha256": "8dccbb88b8086116e22ac71be419b55cda703abbf007a3a73b45c971ef02ad67"
+    "sha256": "0adbd70cf2bace1cce8fa6e04b569d0cbd0819dbd11fa7a72957dceecc884cc5"
   },
   "apertures": {
     "minimal": {
@@ -32,15 +32,15 @@
   "wallpapers": {
     "canvas": {
       "file": "steampunk-airship-canvas.ctwallpaper",
-      "sha256": "d97dcf59bfdf9f7dc2a8fdd27b65ccfbdc2202fdd012a043d87454435446cca3"
+      "sha256": "af0cd6d1f729eced24f3deb387cabf355c55bfe5d26cc7ce5b6a5d2b97012fb9"
     },
     "avatar": {
       "file": "steampunk-airship-avatar.ctwallpaper",
-      "sha256": "da8c87c0a447f84541e2efcf0e69843d55699235a640394c6de19d4897cd68d9"
+      "sha256": "a71e285928798728dd4d15b24cf80c4bb60789001681fba20c1ad931fb604276"
     },
     "clock": {
       "file": "steampunk-airship-clock.ctwallpaper",
-      "sha256": "2c2b14dfb783cf1d6b9dbd96b81c6994de4d74983a1ab92f8ec161cd56d9d827"
+      "sha256": "5193fd72da2d94a1de4ec356a44034fec26fa708fa0ebb4558582a86688102a3"
     }
   },
   "settings": {

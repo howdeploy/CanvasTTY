@@ -54,40 +54,54 @@ async function probe() {
     // decoded frame; do not confuse authored time steps with stored GIF frames.
     const decoded = await run('window.presetProbe.verifyApertures()'); assert.ok(decoded >= 18 * expectedPacks);
     const checks = [themePath ? 'new engine ZIP imported by production registry in fresh profile' : 'fresh-profile production registry installs all catalog entries', `${decoded} Chromium-decoded animation frames have a fully transparent terminal aperture`];
-    for (const detail of ['minimal','detailed','master']) for (const [state,status] of [['idle','idle'],['working','working'],['completed','done']]) {
-      await run(`window.presetProbe.set(${JSON.stringify({detail,status})})`); await delay(350);
-      const rect = await run("(()=>{const r=document.getElementById('1').getBoundingClientRect();return {x:Math.round(r.x),y:Math.round(r.y)+12,width:Math.round(r.width),height:72}})()");
-      const first = (await window.webContents.capturePage(rect)).toBitmap();
-      let changed = false;
-      for (let attempts = 0; attempts < 5 && !changed; attempts++) {
-        await delay(375);
-        changed = !first.equals((await window.webContents.capturePage(rect)).toBitmap());
+    const mediaCount = tag => run(`document.querySelectorAll('.terminal-skin-media ${tag}').length`);
+    const waitForBorder = async () => {
+      for (let tries = 0; tries < 100; tries++) {
+        if (await run("document.querySelector('.terminal-skin-media img')?.naturalWidth === 1536")) return;
+        await delay(30);
       }
-      assert.ok(changed, `${detail}/${state} border must move on screen`);
-      await writeFile(join(output,`${detail}-${state}.png`),(await window.webContents.capturePage()).toPNG());
+      assert.fail('Live border did not load');
+    };
+    const set = data => run(`window.presetProbe.set(${JSON.stringify(data)})`);
+    const capture = async filename => writeFile(join(output, filename),(await window.webContents.capturePage()).toPNG());
+    const packIds = await run('window.presetProbe.packIds()');
+    for (const [index, packId] of packIds.entries()) {
+      await set({packId,paused:false});
+      for (const detail of ['minimal','detailed','master']) for (const status of ['idle','working','done']) {
+        await set({detail,status});
+        await waitForBorder();
+        const rect = await run("(()=>{const r=document.getElementById('1').getBoundingClientRect();return {x:Math.round(r.x),y:Math.round(r.y)+12,width:Math.round(r.width),height:72}})()");
+        const first = (await window.webContents.capturePage(rect)).toBitmap();
+        let changed = false;
+        for (let attempts = 0; attempts < 7 && !changed; attempts++) {
+          await delay(170);
+          changed = !first.equals((await window.webContents.capturePage(rect)).toBitmap());
+        }
+        assert.ok(changed, `${packId}/${detail}/${status} border must move on screen`);
+        if (detail === 'detailed') await capture(`theme-${index + 1}-${status}.png`);
+      }
+      await set({paused:true}); await delay(180);
+      assert.equal(await mediaCount('canvas'),1);
+      const still=(await window.webContents.capturePage()).toBitmap(); await delay(250);
+      assert.deepEqual(still,(await window.webContents.capturePage()).toBitmap());
+      await set({paused:false}); await waitForBorder();
+      window.webContents.debugger.attach('1.3');
+      await window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]}); await delay(220);
+      assert.equal(await mediaCount('canvas'),1);
+      await window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[]});
+      window.webContents.debugger.detach();
+      await set({offscreen:true}); await delay(200);
+      assert.equal(await mediaCount('canvas'),1);
+      await set({offscreen:false}); await waitForBorder();
     }
-    checks.push('all detail levels and session states render and animate in production React components');
-    await run('window.presetProbe.set({paused:true})'); await delay(400);
-    assert.equal(await run("document.querySelectorAll('.terminal-skin-media canvas').length"),1);
-    const still=(await window.webContents.capturePage()).toBitmap(); await delay(500);
-    assert.deepEqual(still,(await window.webContents.capturePage()).toBitmap());
-    await run('window.presetProbe.set({paused:false})'); await delay(250);
-    window.webContents.debugger.attach('1.3');
-    await window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]}); await delay(350);
-    assert.equal(await run("document.querySelectorAll('.terminal-skin-media canvas').length"),1);
-    await window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[]});
-    window.webContents.debugger.detach();
-    await run('window.presetProbe.set({offscreen:true})'); await delay(350);
-    assert.equal(await run("document.querySelectorAll('.terminal-skin-media canvas').length"),1);
-    await run('window.presetProbe.set({offscreen:false})'); await delay(350);
-    assert.equal(await run("document.querySelectorAll('.terminal-skin-media img').length"),1);
+    checks.push('every bundled theme renders all nine states and honors pause, reduced motion and offscreen in the production compositor');
     window.hide(); await delay(500);
     assert.equal(await run("document.querySelectorAll('.terminal-skin-media canvas').length"),1);
     checks.push('pause freezes the actual compositor; system reduced-motion uses still frames');
     checks.push('offscreen cards and hidden window freeze animations; visible cards resume');
     // Keep an immediately readable nine-frame comparison for visual acceptance.
     window.setSize(1140, 850); window.showInactive();
-    await run('window.presetProbe.set({comparison:true,paused:false})');
+    await set({packId:packIds[0],comparison:true,paused:false});
     for (let tries=0;tries<120;tries++) {
       if (await run("document.querySelectorAll('.terminal-skin-media img').length===9 && [...document.querySelectorAll('.terminal-skin-media img')].every(i=>i.complete&&i.naturalWidth===1536)")) break;
       await delay(50);

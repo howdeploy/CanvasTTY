@@ -38,41 +38,50 @@ export class AuthorThemeService {
     this.wallpapers = wallpapers;
   }
 
-  private folder(id: string): string { return join(this.root, `${id}-profile`); }
-  async list(): Promise<AuthorThemeSummary[]> {
-    return Promise.all(THEMES.map(async ({ id, name }) => {
-      let preview: string | undefined;
-      try {
-        const file = join(this.folder(id), "preview.png");
-        if ((await stat(file)).size <= 512 * 1024) preview = `data:image/png;base64,${(await readFile(file)).toString("base64")}`;
-      } catch { /* A missing thumbnail does not prevent applying a complete theme. */ }
-      return { id, name, preview };
-    }));
+  list(): AuthorThemeSummary[] {
+    return THEMES.map(({ id, name, skin }) => ({ id, name, skin }));
   }
 
-  apply(id: unknown): Promise<AppSettings> {
-    const run = this.queue.then(() => this.applyOne(id));
+  async preview(id: unknown, slot: unknown): Promise<Uint8Array> {
+    if (slot !== "canvas" && slot !== "avatar" && slot !== "clock") throw new Error("Invalid theme preview.");
+    const { folder, manifest } = await this.readManifest(id);
+    const bytes = await this.readWallpaper(folder, manifest.wallpapers?.[slot]);
+    return Buffer.from(JSON.parse(bytes.toString("utf8")).source.base64, "base64");
+  }
+
+  apply(id: unknown, canApply: () => boolean = () => true): Promise<AppSettings> {
+    const run = this.queue.then(() => this.applyOne(id, canApply));
     this.queue = run.catch(() => undefined);
     return run;
   }
 
-  private async applyOne(id: unknown): Promise<AppSettings> {
+  private async readManifest(id: unknown) {
     const theme = THEMES.find(t => t.id === id);
     if (!theme) throw new Error("Unknown appearance preset.");
-    const folder = this.folder(theme.id);
+    const folder = join(this.root, `${theme.id}-profile`);
     const manifest = JSON.parse((await readFile(join(folder, "preset.json"))).toString("utf8"));
     if (manifest.schemaVersion !== 1 || manifest.kind !== "canvastty-appearance-preset" || manifest.terminals?.id !== theme.skin) throw new Error("Invalid appearance preset manifest.");
-    const verified = async (entry: { file: string; sha256: string }) => {
-      if (!entry || typeof entry.file !== "string" || basename(entry.file) !== entry.file || entry.file.includes("\\") || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error("Invalid theme asset.");
-      const file = join(folder, entry.file);
-      if ((await stat(file)).size > MAX_WALLPAPER_PACKAGE_BYTES) throw new Error("Theme asset is too large.");
-      const bytes = await readFile(file);
-      if (hash(bytes) !== entry.sha256) throw new Error(`Theme asset checksum mismatch: ${entry.file}`);
-      return bytes;
+    return { theme, folder, manifest };
+  }
+
+  private async readWallpaper(folder: string, entry: { file: string; sha256: string }) {
+    if (!entry || typeof entry.file !== "string" || basename(entry.file) !== entry.file || entry.file.includes("\\") || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error("Invalid theme asset.");
+    const file = join(folder, entry.file);
+    if ((await stat(file)).size > MAX_WALLPAPER_PACKAGE_BYTES) throw new Error("Theme asset is too large.");
+    const bytes = await readFile(file);
+    if (hash(bytes) !== entry.sha256) throw new Error(`Theme asset checksum mismatch: ${entry.file}`);
+    return bytes;
+  }
+
+  private async applyOne(id: unknown, canApply: () => boolean): Promise<AppSettings> {
+    const assertCanApply = () => {
+      if (!canApply()) throw new Error("Only the host can apply a theme in a shared Canvas.");
     };
+    assertCanApply();
+    const { theme, folder, manifest } = await this.readManifest(id);
     if (!this.skins.list().some(skin => skin.id === theme.skin)) throw new Error("Bundled terminal theme is unavailable.");
     // The terminal catalog has already validated the frame ZIP. Check the wallpaper packages before changing the profile.
-    const packages = await Promise.all(["canvas", "avatar", "clock"].map(slot => verified(manifest.wallpapers?.[slot])));
+    const packages = await Promise.all(["canvas", "avatar", "clock"].map(slot => this.readWallpaper(folder, manifest.wallpapers?.[slot])));
     const created: WallpaperId[] = [];
     try {
       const ids: WallpaperId[] = [];
@@ -90,6 +99,7 @@ export class AuthorThemeService {
       }
       const patch: Partial<AppSettings> = {};
       for (const key of APPEARANCE_KEYS) if (Object.hasOwn(manifest.settings ?? {}, key)) Object.assign(patch, { [key]: manifest.settings[key] });
+      assertCanApply();
       return await this.settings.update({ ...patch, appearanceFont: theme.font, homeClockDesign: "new", terminalBorderSkin: theme.skin,
         terminalSkinAnimationEnabled: true, canvasBackground: ids[0], homeAvatarWallpaper: ids[1], homeClockWallpaper: ids[2] });
     } catch (error) {

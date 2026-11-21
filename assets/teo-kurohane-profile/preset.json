@@ -7,7 +7,7 @@
   "requires": "CanvasTTY 2.0 Live Engine",
   "terminals": {
     "file": "../live-terminal-presets/teo-kurohane.zip",
-    "sha256": "5783beae9f1381d2774d5ae50d1d4f88df9f9ffc449555f1a0d6e9032e1bce9b",
+    "sha256": "654fa1d99466a9125dfec5f1ffcfdc94b86e34dd24215fa4ea39259fb027e07b",
     "id": "pixel:92020000-0000-4000-8000-000000000006"
   },
   "apertures": {

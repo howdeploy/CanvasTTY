@@ -32,6 +32,7 @@ import type {
   PixelSkinZipInstallRequest,
   PixelSkinSlot,
   PixelTerminalBorderSkinId,
+  AuthorThemeWallpaperSlot,
   RemarkDraft,
   RemarkPatch,
   UpdateStatus,
@@ -141,6 +142,7 @@ const api: CanvasTTYApi = {
   },
   authorThemes: {
     list: () => invoke(IPC.authorThemesList),
+    preview: (id: string, slot: AuthorThemeWallpaperSlot) => invoke(IPC.authorThemesPreview, id, slot),
     apply: (id: string) => invoke(IPC.authorThemesApply, id)
   },
   skins: {

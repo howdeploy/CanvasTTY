@@ -59,7 +59,6 @@ import {
   BROWSER_PROVIDER_COLORS,
   keyboardPresetShortcuts,
   shortcutsShareContext,
-  BUNDLED_CANVAS_BACKGROUND_IDS,
   CANVAS_LAUNCHER_ITEMS,
   DEFAULT_CANVAS_LAUNCHER_ITEMS,
   DEFAULT_RADIAL_LAUNCHER_ITEMS,
@@ -186,6 +185,7 @@ interface SettingsPanelProps {
   settings: AppSettings;
   backgroundsSuspended?: boolean;
   designDisabled?: boolean;
+  sharedCanvasGuest?: boolean;
   onToggleBackgrounds?(): void;
   onToggleDesign?(): void;
   agentAvailability: AgentCliAvailability | null;
@@ -228,6 +228,7 @@ export function SettingsPanel({
   settings,
   backgroundsSuspended = false,
   designDisabled = false,
+  sharedCanvasGuest = false,
   onToggleBackgrounds,
   onToggleDesign,
   agentAvailability,
@@ -732,9 +733,6 @@ export function SettingsPanel({
 
           {section === "appearance" && (
             <>
-              <SettingGroup label={t(locale, "authorThemes")} layout="stacked">
-                <AuthorThemePresets locale={locale} />
-              </SettingGroup>
               <SettingGroup label={t(locale, "keyboardHideBackgrounds")}
                 description={`${t(locale, "hideBackgroundsDescription")} ${settings.shortcuts.momEntered || t(locale, "disabled")}`}>
                 <Segmented value={backgroundsSuspended ? "on" : "off"}
@@ -753,6 +751,11 @@ export function SettingsPanel({
                   options={( ["sage", "lilac", "night"] as PaletteId[]).map((value) => [value, t(locale, value)])}
                   onChange={(value) => void onChange({ palette: value as PaletteId })}
                 />
+              </SettingGroup>
+              <SettingGroup label={t(locale, "authorThemes")} layout="stacked">
+                <AuthorThemePresets locale={locale} readOnly={sharedCanvasGuest} paused={backgroundsSuspended || designDisabled}
+                  renderTerminal={skin => <PixelBorderSkinPreview key={skin} locale={locale} theme={skin}
+                    apertures={pixelPacks.find(pack => pack.id === skin)?.apertures} />} />
               </SettingGroup>
               <SettingGroup label={t(locale, "homeColors")} description={t(locale, "homeColorsDescription")}>
                 <SwatchChoices
@@ -1823,31 +1826,16 @@ function PlacementChoices({
 
 
 
-const BACKGROUND_ASSETS = import.meta.glob<string>("../../assets/theme-backgrounds/*.avif", {
-  eager: true, query: "?url", import: "default"
-});
-
 function CanvasBackgroundChoices({ locale, value, pixelPacks, onChange }: {
   locale: LocaleId;
   value: CanvasBackgroundId;
   pixelPacks: PixelSkinPackSummary[];
   onChange(value: CanvasBackgroundId): void;
 }): React.JSX.Element {
-  const labelKeys = {
-    sakura: "borderSkinSakura", matrix: "borderSkinMatrix", "forest-cabin": "borderSkinForestCabin",
-    "gold-black": "borderSkinGoldBlack", cat: "borderSkinCat", "gothic-eclipse": "borderSkinGothicEclipse"
-  } as const;
   return <div className="border-skin-choices" role="group" aria-label={locale === "ru" ? "Фоны и живые обои" : "Backgrounds and live wallpapers"}>
     <button type="button" className="pixel-pack-create" aria-pressed={value === "none"} onClick={() => onChange("none")}>
       {locale === "ru" ? "Без картинки — выбранный цвет и узор" : "No image — selected color and pattern"}
     </button>
-    {BUNDLED_CANVAS_BACKGROUND_IDS.map((id) => <button key={id} type="button" className="border-skin-choice"
-      aria-pressed={value === id} onClick={() => onChange(id)}>
-      <span className="border-skin-preview border-skin-preview--pixel canvas-background-preview" aria-hidden="true">
-        <img src={BACKGROUND_ASSETS[`../../assets/theme-backgrounds/${id}.avif`]} alt="" loading="lazy" />
-      </span>
-      <span className="border-skin-choice__label">{t(locale, labelKeys[id])}</span>
-    </button>)}
     {pixelPacks.map((pack) => <button key={pack.id} type="button" className="border-skin-choice"
       aria-pressed={value === pack.id} onClick={() => onChange(pack.id)}>
       <span className="border-skin-preview border-skin-preview--pixel canvas-background-preview" aria-hidden="true">

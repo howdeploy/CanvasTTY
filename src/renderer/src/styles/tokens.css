@@ -127,12 +127,12 @@
 .app--canvas-rose { --canvas-bg: #b9a6ad; --dot: rgba(255, 245, 249, 0.17); }
 .app--canvas-slate { --canvas-bg: #262b36; --dot: rgba(220, 228, 241, 0.11); }
 
-/* Author profiles change interface typography; the shell keeps a monospace grid. */
-[data-appearance-font="mono"] {
+/* Theme typography belongs to Home. Settings retain the app typography. */
+[data-appearance-font="mono"] .home-zone {
   --font-sans: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
   font-family: var(--font-sans);
 }
-[data-appearance-font="serif"] {
+[data-appearance-font="serif"] .home-zone {
   --font-sans: Georgia, "Times New Roman", serif;
   font-family: var(--font-sans);
 }

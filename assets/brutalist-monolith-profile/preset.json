@@ -7,7 +7,7 @@
   "terminals": {
     "file": "../live-terminal-presets/brutalist-monolith.zip",
     "id": "pixel:92020000-0000-4000-8000-000000000008",
-    "sha256": "3d89be70f6f00ec4bdf5fd6ecd3565d44d32111611b63a590127dbdb47979d61"
+    "sha256": "24cd36b192b47fa05f7c468ac83b49e9825861f23712a1e9863ac6887269843c"
   },
   "apertures": {
     "minimal": {
@@ -32,15 +32,15 @@
   "wallpapers": {
     "canvas": {
       "file": "brutalist-monolith-canvas.ctwallpaper",
-      "sha256": "34a1369f04d24aaee720d52a97cabece878f59fd85543423584d4dec264277ce"
+      "sha256": "c9b11355e20c604167106ad9852c90eb5e7262d4552ad5a6d237bc1276d74f61"
     },
     "avatar": {
       "file": "brutalist-monolith-avatar.ctwallpaper",
-      "sha256": "a2827d6b72f1b40a114318c7a1e3412061c72d969f8ad2216366617da08340f2"
+      "sha256": "ef3b9159619c58288bb798a441dcd23e6b34b4a82457315e054eae040490c6f9"
     },
     "clock": {
       "file": "brutalist-monolith-clock.ctwallpaper",
-      "sha256": "841198bf61b9aefafc91f66edb4c2eea25b75b7e0acad35e65bee8cbc08a5797"
+      "sha256": "0a7ece6c1703a730e3377cdca3c58671a80b26d1662d9a34f0dc0801da986a05"
     }
   },
   "settings": {

@@ -81,12 +81,12 @@ extraResources:
   - from: assets
     to: appearance-presets
     filter:
-      - "living-forge-profile/{preset.json,preview.png,*.ctwallpaper}"
-      - "kisa-nocturne-profile/{preset.json,preview.png,*.ctwallpaper}"
-      - "teo-kurohane-profile/{preset.json,preview.png,*.ctwallpaper}"
-      - "steampunk-airship-profile/{preset.json,preview.png,*.ctwallpaper}"
-      - "brutalist-monolith-profile/{preset.json,preview.png,*.ctwallpaper}"
-      - "cyberpunk-noodle-bar-profile/{preset.json,preview.png,*.ctwallpaper}"
+      - "living-forge-profile/{preset.json,*.ctwallpaper}"
+      - "kisa-nocturne-profile/{preset.json,*.ctwallpaper}"
+      - "teo-kurohane-profile/{preset.json,*.ctwallpaper}"
+      - "steampunk-airship-profile/{preset.json,*.ctwallpaper}"
+      - "brutalist-monolith-profile/{preset.json,*.ctwallpaper}"
+      - "cyberpunk-noodle-bar-profile/{preset.json,*.ctwallpaper}"
   - from: assets/live-terminal-presets
     to: live-terminal-presets
     filter:

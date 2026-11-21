@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import test from 'node:test';
+import { inspectSkinMedia } from '../src/shared/skinMedia.ts';
 import { AuthorThemeService } from '../src/main/services/AuthorThemeService.ts';
 import { SettingsStore } from '../src/main/services/SettingsStore.ts';
 import { PixelSkinPackRegistry } from '../src/main/services/PixelSkinPackRegistry.ts';
@@ -26,8 +27,12 @@ test('all bundled profiles apply atomically and survive restart without duplicat
   await f.settings.update({ homeTime: { ...initial.homeTime, clocks: [{ id: 'local', label: 'My clock', timeZone: 'local' }], timers: [timer], hour12: false, showSeconds: true } });
   const before = f.settings.get();
   const listing = await f.service.list(); assert.equal(listing.length, 6);
-  assert.ok(listing.every(item => item.preview.startsWith('data:image/png;base64,')));
   for (const item of listing) {
+    for (const slot of ['canvas', 'avatar', 'clock']) {
+      assert.equal(inspectSkinMedia(await f.service.preview(item.id, slot)).animated, true);
+    }
+    assert.deepEqual(Buffer.from(await f.skins.readAsset(item.skin, 'background')), Buffer.from(await f.service.preview(item.id, 'canvas')),
+      item.id + ' must use the full canvas artwork in both appearance pickers');
     const next = await f.service.apply(item.id);
     assert.match(next.canvasBackground, /^wallpaper:/);
     assert.match(next.homeAvatarWallpaper, /^wallpaper:/);
@@ -39,6 +44,7 @@ test('all bundled profiles apply atomically and survive restart without duplicat
     assert.deepEqual(next.stickyNotes, before.stickyNotes);
     assert.equal(next.homeAccentPreset, 'custom'); assert.equal(next.terminalSkinAnimationEnabled, true);
     assert.equal(next.homeClockDesign, 'new');
+    assert.equal(next.terminalBorderSkin, item.skin);
     if (item.id === 'teo-kurohane') {
       const { summary } = await f.wallpapers.read(next.canvasBackground);
       assert.equal(summary.media.format, 'webp');
@@ -60,7 +66,9 @@ test('all bundled profiles apply atomically and survive restart without duplicat
   const persisted = new SettingsStore(f.dir, 'ru'); await persisted.load();
   assert.equal(persisted.get().appearanceFont, 'mono');
   const background = await restarted.read(persisted.get().canvasBackground);
-  assert.equal(background.summary.recipe.fit, 'contain'); assert.equal(background.summary.recipe.pixelated, true);
+  assert.equal(background.summary.recipe.fit, 'cover');
+  assert.equal(background.summary.recipe.pixelated, false);
+  assert.deepEqual([background.summary.media.width, background.summary.media.height], [1920, 784]);
 });
 
 test('invalid IDs and corrupted assets leave appearance and wallpaper library untouched', async t => {
@@ -69,8 +77,16 @@ test('invalid IDs and corrupted assets leave appearance and wallpaper library un
   const service = new AuthorThemeService(root, f.settings, f.skins, f.wallpapers);
   const before = f.settings.get();
   await assert.rejects(service.apply('../kisa-nocturne'), /Unknown/);
+  await assert.rejects(service.preview('kisa-nocturne', '../clock'), /Invalid theme preview/);
+  await assert.rejects(service.apply('kisa-nocturne', () => false), /Only the host/);
+  let checks = 0;
+  await assert.rejects(service.apply('kisa-nocturne', () => checks++ === 0), /Only the host/);
+  assert.deepEqual(f.settings.get(), before);
+  assert.equal(f.wallpapers.list().length, 0);
+
   const manifest = JSON.parse(await readFile(join(root, 'kisa-nocturne-profile/preset.json'), 'utf8'));
   await writeFile(join(root, 'kisa-nocturne-profile', manifest.wallpapers.clock.file), '{}');
+  await assert.rejects(service.preview('kisa-nocturne', 'clock'), /checksum/);
   await assert.rejects(service.apply('kisa-nocturne'), /checksum/);
   assert.deepEqual(f.settings.get(), before); assert.equal(f.wallpapers.list().length, 0);
 });

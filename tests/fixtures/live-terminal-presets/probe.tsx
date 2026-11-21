@@ -8,7 +8,7 @@ import { inspectSkinMedia, SKIN_MEDIA_MIME } from '../../../src/shared/skinMedia
 const bridge = (window as any).presetFixture;
 window.canvasTTY = { pixelSkins: bridge, window: (window as any).fixtureWindowState } as any;
 const packs = await bridge.list();
-const visiblePack = packs[0];
+let visiblePack = packs[0];
 const root = createRoot(document.getElementById('root')!);
 let detail: any = 'detailed', status: any = 'working', paused = false, offscreen = false;
 let comparison = false;
@@ -35,7 +35,8 @@ function render() {
 }
 render();
 Object.assign(window, { presetProbe: {
-  set(next: any) { detail = next.detail ?? detail; status = next.status ?? status; paused = next.paused ?? paused; offscreen = next.offscreen ?? offscreen; comparison = next.comparison ?? comparison; render(); },
+  packIds() { return packs.map((pack: { id: string }) => pack.id); },
+  set(next: any) { visiblePack = packs.find((pack: { id: string }) => pack.id === next.packId) ?? visiblePack; detail = next.detail ?? detail; status = next.status ?? status; paused = next.paused ?? paused; offscreen = next.offscreen ?? offscreen; comparison = next.comparison ?? comparison; render(); },
   async verifyApertures() {
     let decoded = 0;
     for (const pack of packs) for (const detail of ['minimal','detailed','master']) for (const state of ['idle','working','completed']) {

@@ -125,6 +125,7 @@ export function createDuoDocumentRouter(raw:(channel:string,...args:any[])=>Prom
       if (active !== workspace) throw Error('Duo workspace changed.');
       if (matches.has(args[0])) {
         const bytes = await raw(channel, ...args).catch(() => null);
+        if (active !== workspace) throw Error('Duo workspace changed.');
         if (bytes) return bytes;
       }
     }

@@ -230,3 +230,45 @@ test('guest updates skin state and orchestrator detail even when terminal output
   assert.equal(working.status, 'working');
   assert.equal(duoSession({...card, status:'idle', turnCompleted:true}).turnCompleted, true);
 });
+
+test('revoking control releases temporary folder handles and keeps visible Files cards readable', async () => {
+  const settings = initial();
+  const shared = {rootType:'folder', folderPath:'/project'};
+  settings.fileCards = [{id:'project-card', root:shared}];
+  const closed = [];
+  const doc = new DuoDocumentService({get:() => settings}, async (channel, [arg]) => {
+    if (channel === IPC.filesRegisterRoot) return {rootId:arg.folderPath, folderPath:arg.folderPath};
+    if (channel === IPC.filesCloseRoot) closed.push(arg);
+    if (channel === IPC.filesList) return [];
+  }, undefined, () => {}, async () => null);
+  for (const folder of [shared, {rootType:'folder', folderPath:'/temporary'}]) {
+    await doc.resource(IPC.filesRegisterRoot, [folder], () => true, true);
+  }
+  doc.revokeControl();
+  assert.deepEqual(closed, ['/temporary']);
+  assert.equal(doc.terminalDirectory('/temporary'), undefined);
+  assert.deepEqual(await doc.resource(IPC.filesList, ['/project',''], () => false, false), {value:[]});
+  doc.clear();
+  assert.deepEqual(closed, ['/temporary','/project']);
+});
+
+test('discard an in-flight local skin read when the guest changes rooms', async () => {
+  const pack = {id:'test-pack', bundledSha256:'same-digest'};
+  const state = {role:'guest', documentSync:true, workspaceId:'first'};
+  const document = {settings:pickDuoSettings(initial()), materials, plugins:[], browser};
+  const started = Promise.withResolvers();
+  const read = Promise.withResolvers();
+  const router = createDuoDocumentRouter(async (channel) => {
+    if (channel === IPC.settingsGet) return initial();
+    if (channel === IPC.pixelSkinsList) return [pack];
+    if (channel === IPC.duoCommand) return {state, snapshot:{result:{value:[pack]}}};
+    if (channel === IPC.pixelSkinsReadAsset) { started.resolve(); return read.promise; }
+    assert.fail('Unexpected IPC call');
+  }, () => {});
+  await router.accept({state, snapshot:{document}});
+  const pending = router.invoke(IPC.pixelSkinsReadAsset, pack.id, 'minimal_idle');
+  await started.promise;
+  await router.accept({state:{...state,workspaceId:'second'}, snapshot:{document}});
+  read.resolve(new Uint8Array([1]));
+  await assert.rejects(pending, /workspace changed/);
+});

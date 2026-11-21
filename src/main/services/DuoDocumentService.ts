@@ -157,6 +157,12 @@ export class DuoDocumentService implements DuoDocumentPort {
     return {chunk:id,total:text.length,offset:0,data:text.slice(0,CHUNK)};
   }
   revokeControl(): void {
+    // The picker can unmount after revocation, when it can no longer release its temporary roots.
+    for (const [id, reference] of this.fileRoots) {
+      if (this.sharedRoot(reference)) continue;
+      this.fileRoots.delete(id);
+      void this.invoke(IPC.filesCloseRoot, [id]).catch(() => undefined);
+    }
     this.transfers?.clear();
     void this.browserResource('browser-release', [], () => true).catch(() => undefined);
     for (const [id, chunk] of this.chunks) if (!chunk.allowed()) this.chunks.delete(id);

@@ -46,6 +46,7 @@ class HangingSprite(Patch):
         # Only a few edge pixels are ever uncovered. Fill them from outside the
         # silhouette; leave the original pixels behind the opaque interior alone.
         inside = np.uint8(self.alpha>0)*255
+        self.restore = inside > 0
         self.back = cv2.inpaint(self.rgb, inside, round(3*self.scale), cv2.INPAINT_TELEA)
         self.sprite = self.rgb.astype(np.float32)*self.alpha[:,:,None]
         self.length = max(y for _,y in outline)-pivot[1]
@@ -66,7 +67,7 @@ class HangingSprite(Patch):
         alpha = cv2.remap(self.alpha,mx,my,cv2.INTER_LINEAR)
         sprite = cv2.remap(self.sprite,mx,my,cv2.INTER_LINEAR)
         dest = frame[self.rect]
-        back = np.where(self.alpha[:,:,None]>0,self.back,dest)
+        back = np.where(self.restore[:,:,None],self.back,dest)
         dest[:] = np.clip(sprite+back*(1-alpha[:,:,None]),0,255).astype(np.uint8)
 
 
@@ -240,11 +241,37 @@ class DeskLights:
 class NoodleShop:
     def __init__(self, painting):
         self.lantern = HangingSprite(painting,(403,85,503,232),
-            [(450,91),(457,93),(463,101),(467,103),(467,109),(476,115),(483,123),
-             (489,137),(491,153),(491,186),(488,198),(482,208),(473,215),(466,217),
-             (466,225),(441,227),(440,217),(431,214),(422,205),(418,196),
-             (414,182),(414,145),(417,132),(424,120),(433,114),(437,111),
-             (437,104),(442,102),(445,94)],(452,91),.038)
+            [(450,90), (453,90), (458,93), (463,102), (457.6,102.1), (464.8,102.9),
+             (468.5,104.4), (469.3,105.7), (469.3,110.7), (477.9,115.4), (483.6,121.1), (487,127.9),
+             (490.9,140.6), (491.4,145.3), (491.4,186.2), (490.4,193.8), (488.8,200.5), (487.5,203.6),
+             (485.4,206.5), (480.5,211.7), (473.7,215.9), (469.3,217.2), (469.3,224.2), (468.8,225.8),
+             (465.6,226.8), (460.9,227.3), (446.9,227.3), (441.7,226.8), (438.5,225.8), (438,224.2),
+             (438,218.2), (438.5,217.2), (429.7,214.1), (421.4,206.5), (419.5,203.6), (416.7,197.1),
+             (415.9,193.8), (414.8,182.3), (414.8,140.6), (415.4,135.9), (417.7,127.9), (422.4,121.1),
+             (428.4,115.4), (436.7,110.7), (436.7,105.7), (437.5,104.4), (441.4,102.9), (447.9,102.1),
+             (442,101), (443,97), (445,93)],(452,91),.038)
+        # The paper casts a narrow dark/red fringe outside the cutout. Restore
+        # that fringe as wall too, keeping the neighboring beam and sign intact.
+        lamp = self.lantern
+        pad = round(2.5*lamp.scale)
+        brush = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*pad+1,2*pad+1))
+        erase = cv2.dilate(lamp.restore.astype(np.uint8), brush)
+        beam = lamp.polygon([(458,85),(503,85),(503,139),(489,139),(488,119)])
+        sign = lamp.polygon([(470,223),(482,221),(486,222),(486,232),(470,232)])
+        erase[(beam > .5) | (sign > .5) | (lamp.y > 228)] = 0
+        # Clone uninterrupted vertical grain from the post to the left. The
+        # right-hand wall is warmer under the eaves. Feather only the outer
+        # repair edge so the lantern rim cannot seed an inpainted reflection.
+        donor_x = (410 + 2*np.sin((lamp.x-403)*.32))*lamp.scale
+        donor_y = lamp.y*lamp.scale
+        wood = cv2.remap(painting.art, donor_x.astype(np.float32), donor_y.astype(np.float32), cv2.INTER_LINEAR).astype(np.float32)
+        wood = cv2.GaussianBlur(wood, (0,0), 1.35*lamp.scale)
+        right = np.clip((lamp.x-450)/20,0,1)[:,:,None]
+        wood = wood * (1 + right*np.array([.2,-.27,-.32]))
+        coverage = cv2.distanceTransform(erase, cv2.DIST_L2, 5)
+        blend = np.minimum(coverage/(1.5*lamp.scale),1)[:,:,None]
+        lamp.back = np.rint(lamp.rgb*(1-blend)+wood*blend).clip(0,255).astype(np.uint8)
+        lamp.restore = erase.astype(bool)
         self.curtains = []
         for left,right,top,bottom,tilt in [(526,576,135,208,4),(577,628,125,203,4),(631,690,115,198,6)]:
             outline = [(left+2,top),(right,top-9),(right-2,bottom-tilt),(left,bottom)]

@@ -7,7 +7,7 @@
   "terminals": {
     "file": "../live-terminal-presets/cyberpunk-noodle-bar.zip",
     "id": "pixel:92020000-0000-4000-8000-000000000009",
-    "sha256": "0c3c2ae245ed436ab4f91a009f0a3037b6eb1dd05b37e7cd6b40d4f6091935d9"
+    "sha256": "39256369753afa36b5603dc3107e181c3f45f7545385dcd943947c025646c75f"
   },
   "apertures": {
     "minimal": {
@@ -32,15 +32,15 @@
   "wallpapers": {
     "canvas": {
       "file": "cyberpunk-noodle-bar-canvas.ctwallpaper",
-      "sha256": "b85cb64629822c4f164ae77422e4de8926253633a42db2c3ae907d9be5d1d83a"
+      "sha256": "8d4b25fce0d1a30700f7667a09c4245dae2e50c2b31c5541105db74473635ae4"
     },
     "avatar": {
       "file": "cyberpunk-noodle-bar-avatar.ctwallpaper",
-      "sha256": "24333d8b77b7fa8ccb771d989f2bfaa7e0400365a2b4113b377b06fda3f360e9"
+      "sha256": "3c37b828b1bb17e0c6cf9a39db5cf639bfb3ae6317b0e2654edfef649ec5a662"
     },
     "clock": {
       "file": "cyberpunk-noodle-bar-clock.ctwallpaper",
-      "sha256": "d59f9363d050c6ff89b3da82d28dac4920dee818e62209141eac3dab1d01dde5"
+      "sha256": "40ccd38210d65c4a19fa914e5d5066d24b704cbf7cddb96bf7121121374b5dfd"
     }
   },
   "settings": {

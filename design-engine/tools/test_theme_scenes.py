@@ -28,6 +28,12 @@ class ThemeSceneTests(unittest.TestCase):
         for index in range(image.n_frames):
             image.seek(index)
             rgb = np.asarray(image.convert('RGB'))
+            if theme == 'cyberpunk-noodle-bar' and index in (12, 48):
+                # The old lower rim and foot are exposed on opposite sides at
+                # these phases. They must show dark wood instead of red metal.
+                exposed = {12: [(929,393), (893,419)], 48: [(842,419), (849,427)]}
+                for x,y in exposed[index]:
+                    self.assertLess(int(rgb[y,x,0]), 65, (index,x,y))
             for box, tint in smoke:
                 # Translucent smoke may tint any backdrop pixel. A translated
                 # mullion or shelf cannot be explained by this alpha composite.

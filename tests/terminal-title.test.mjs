@@ -147,7 +147,7 @@ async function rendererCard(initial) {
     onRename: async (id, title) => { assert.equal(id, "rename-card"); renames.push(title); session = { ...session, title, titleCustomized: true }; },
     onRenameEnd: () => { ended++; editing = false; },
     startDrag: noop, drag: noop, endDrag: noop, cancelDrag: noop, activateSummary: noop, activateSummaryDouble: noop,
-    DuoTerminalParticipants: "duo-terminal-participants", ProviderIcon: "provider-icon", pixelControls: null, terminalActions: null, pluginDecorations: { badges: [] },
+    summaryMode: false, DuoTerminalParticipants: "duo-terminal-participants", ProviderIcon: "provider-icon", pixelControls: null, terminalActions: null, pluginDecorations: { badges: [] },
     t: (_locale, key) => key, locale: "en", focusActivation: "click", sessionStatusLabel: () => "idle"
   };
   const { code } = await transform(`${bind}\n${commit}\n${cancel}\nfunction renderTitle(session, oscTitle, renaming) {

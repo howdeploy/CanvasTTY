@@ -1759,7 +1759,7 @@ export function App(): React.JSX.Element {
     setRenamingSessionId((current) => current === id ? null : current);
   }, []);
 
-  const focusSession = useCallback((session: SessionSnapshot): void => {
+  const focusSession = useCallback((session: Pick<SessionSnapshot, "id" | "position" | "size">): void => {
     setBrowserSelected(false);
     setActiveSessionId(session.id);
     isHomeCamera.current = false;
@@ -2283,7 +2283,7 @@ export function App(): React.JSX.Element {
       {ready && <Suspense fallback={null}><CanvasDuo titlebarSlot={titlebarActions} locale={settings.locale}
         cursorDesign={settings.duoCursorDesign} onCursorDesignChange={design => void saveSettings({ duoCursorDesign: design })}
         cursorNickname={settings.duoCursorNickname} onCursorNicknameChange={nickname => void saveSettings({ duoCursorNickname: nickname })}
-        onVisibilityChange={setDuoOpen} onCreateShared={() => void openTerminal()} onGoHome={goHome} onCreateNote={() => { const c=cameraStore.get(); const size={width:window.innerWidth,height:window.innerHeight}; createStickyNote({id:crypto.randomUUID(),text:"",position:{x:(size.width/2-c.x)/c.zoom-150,y:(size.height/2-c.y)/c.zoom-110},size:{width:300,height:220}}); }} /></Suspense>}
+        onFocusTerminal={focusSession} onVisibilityChange={setDuoOpen} onCreateShared={() => void openTerminal()} onGoHome={goHome} onCreateNote={() => { const c=cameraStore.get(); const size={width:window.innerWidth,height:window.innerHeight}; createStickyNote({id:crypto.randomUUID(),text:"",position:{x:(size.width/2-c.x)/c.zoom-150,y:(size.height/2-c.y)/c.zoom-110},size:{width:300,height:220}}); }} /></Suspense>}
       <main className="app__content">
         {!ready && <div className="loading-screen"><span>{t(settings.locale, "loading")}</span></div>}
         {ready && duoFullCanvas && duoGuest && !duoDocument && <Suspense fallback={null}><DuoCanvasSurface locale={settings.locale} /></Suspense>}

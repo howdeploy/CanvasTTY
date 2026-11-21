@@ -367,8 +367,17 @@
 .duo-folder-list { display: grid; align-content: start; max-height: 50vh; overflow: auto; }
 .duo-folder-list button { text-align: start; }
 .duo-folder-dialog button:enabled:hover { background: var(--border); }
-.terminal-card__role[data-duo-participant="guest"] { border-inline-start: 3px solid #b8d888; }
-.terminal-card__role[data-duo-participant="host"] { border-inline-start: 3px solid #c4b5fd; }
+.duo-terminal-picker { max-inline-size: min(17em, 100%); cursor: pointer; }
+.terminal-card .duo-terminal-owner {
+  display: inline-flex; flex: none; align-items: center; align-self: center; gap: .4em;
+  padding: .2em .55em; border: 1px solid currentColor; border-radius: .45em;
+  font-weight: 750; line-height: 1.15; white-space: nowrap;
+}
+.terminal-card .duo-terminal-owner[data-duo-participant="host"] { color: #e7dcff; background: #382855; }
+.terminal-card .duo-terminal-owner[data-duo-participant="guest"] { color: #d0f5d5; background: #1b4032; }
+.duo-terminal-owner::before { content: ""; width: .55em; height: .55em; background: currentColor; }
+.duo-terminal-owner[data-duo-participant="guest"]::before { border-radius: 50%; }
+.terminal-card__summary .duo-terminal-owner { align-self: flex-start; }
 
 .duo-local-cursor { position: fixed; top: 0; left: 0; z-index: 241; pointer-events: none; }
 .duo-local-cursor[hidden] { display: none; }

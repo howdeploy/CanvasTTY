@@ -3,13 +3,13 @@ import { duoWorkspace, useDuoWorkspace } from "./duoWorkspaceRuntime";
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
 import type { LocaleId } from "../../../../shared/contracts";
-import { DUO_CURSOR_DESIGNS, DUO_CURSOR_NICKNAME_MAX_LENGTH, normalizeDuoCursorNickname, type DuoCommand, type DuoCursorDesign, type DuoReply, type DuoSnapshot, type DuoState } from "../../../../shared/canvasDuo";
+import { DUO_CURSOR_DESIGNS, DUO_CURSOR_NICKNAME_MAX_LENGTH, normalizeDuoCursorNickname, type DuoCard, type DuoCommand, type DuoCursorDesign, type DuoReply, type DuoSnapshot, type DuoState } from "../../../../shared/canvasDuo";
 import { defaultDuoCursorDesign, duoCursorName, DuoCursorMark } from "./DuoCursorMark";
 import { UiIcon } from "../../components/UiIcon";
 import { useModalFocus } from "../../lib/useModalFocus";
 import { Segmented } from "../settings/SettingsControls";
 const EMPTY: DuoState = { role: "idle", invites: [], expiresAt: 0, available: [], selected: [], controlled: [], peer: false };
-export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNickname = "", onCursorDesignChange, onCursorNicknameChange, onVisibilityChange, onCreateShared, onGoHome, onCreateNote }: {
+export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNickname = "", onCursorDesignChange, onCursorNicknameChange, onVisibilityChange, onCreateShared, onFocusTerminal, onGoHome, onCreateNote }: {
   titlebarSlot: HTMLDivElement | null;
   locale: LocaleId;
   cursorDesign?: DuoCursorDesign;
@@ -18,6 +18,7 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
   onCursorNicknameChange(nickname: string): void;
   onVisibilityChange(open: boolean): void;
   onCreateShared(): void;
+  onFocusTerminal(card: DuoCard): void;
   onGoHome(): void;
   onCreateNote(): void;
 }): React.JSX.Element {
@@ -123,6 +124,9 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
       <button type="button" className="duo-action" disabled={state.role==="guest" && (!workspace.connected || !shared?.manage)} onClick={()=>{if(state.role==="guest"&&state.fullCanvas&&!state.documentSync){void duoWorkspace.command({action:"surface-action",name:"terminal"}).catch(()=>undefined);}else onCreateShared();}}>
         <UiIcon name="terminal" size="1em" />{ru ? "Терминал" : "Terminal"}
       </button>
+      {workspace.connected && (!state.fullCanvas || state.documentSync) && shared?.cards.length ? (
+        <DuoTerminalPicker cards={shared.cards} viewer={state.role} ru={ru} onFocusTerminal={onFocusTerminal} />
+      ) : null}
       {state.fullCanvas && <>
         <button type="button" className="duo-action" disabled={state.role==='guest'&&(!workspace.connected||!state.manage)} onClick={()=>{if(state.documentSync)onCreateNote();else void duoWorkspace.command({action:'surface-action',name:'note'}).catch(()=>undefined);}}>
           <UiIcon name="sticky-note" size="1em" />{ru ? "Заметка" : "Note"}
@@ -259,4 +263,31 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
       </footer>
     </section></div>}
   </>;
+}
+
+function DuoTerminalPicker({ cards, viewer, ru, onFocusTerminal }: {
+  cards: DuoCard[];
+  viewer: DuoState["role"];
+  ru: boolean;
+  onFocusTerminal(card: DuoCard): void;
+}) {
+  const other = viewer === "guest" ? "host" : "guest";
+  const groups = [
+    { role: viewer, label: ru ? "Мои терминалы" : "My terminals" },
+    { role: other, label: other === "host" ? (ru ? "Терминалы хоста" : "Host terminals") : (ru ? "Терминалы гостя" : "Guest terminals") },
+    { role: undefined, label: ru ? "Общие терминалы" : "Shared terminals" }
+  ];
+  const label = ru ? "Перейти к терминалу" : "Go to terminal";
+  return <select className="duo-terminal-picker" aria-label={label} value="" onChange={event => {
+    const card = cards.find(item => item.id === event.target.value);
+    if (card) onFocusTerminal(card);
+  }}>
+    <option value="" disabled>{label}</option>
+    {groups.map(group => {
+      const owned = cards.filter(card => card.participant === group.role);
+      return owned.length > 0 && <optgroup key={group.role ?? "shared"} label={group.label}>
+        {owned.map((card, index) => <option key={card.id} value={card.id}>{index + 1}. {card.title}</option>)}
+      </optgroup>;
+    })}
+  </select>;
 }

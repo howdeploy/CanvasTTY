@@ -6,6 +6,11 @@ import { DuoCursorMark } from "./DuoCursorMark";
 import type { DuoCursorDesign } from "../../../../shared/canvasDuo";
 import type { LocaleId } from "../../../../shared/contracts";
 
+function setCursorPoint(element: HTMLSpanElement, x: number, y: number): void {
+  element.style.setProperty("--duo-cursor-x", `${x}px`);
+  element.style.setProperty("--duo-cursor-y", `${y}px`);
+}
+
 /** Remote pointer positions are card-relative; each participant keeps their own camera. */
 export function DuoCanvasCursors({ camera, design, nickname, locale }: {
   camera: CameraStore;
@@ -38,7 +43,7 @@ export function DuoCanvasCursors({ camera, design, nickname, locale }: {
       if (localMark.current) {
         const inside = event.target instanceof Element && !!event.target.closest(".workspace") && !event.target.closest("button,input,textarea,[role=dialog]");
         localMark.current.hidden = !inside;
-        if (inside) localMark.current.style.transform = `translate(${event.clientX + 12}px, ${event.clientY + 12}px)`;
+        if (inside) setCursorPoint(localMark.current, event.clientX, event.clientY);
       }
       if (!current.connected) return;
       if(current.reply?.state.documentSync){
@@ -69,7 +74,7 @@ export function DuoCanvasCursors({ camera, design, nickname, locale }: {
   </span>}{view.connected && view.reply?.snapshot?.cursors.filter(c=>c.author!==author&&Date.now()-c.at<5000).map(cursor=>{
     const card=view.reply?.snapshot?.cards.find(c=>c.id===cursor.cardId);if(!card&&cursor.cardId!=='canvas')return null;
     const x=card?card.position.x+cursor.x*card.size.width:cursor.x,y=card?card.position.y+cursor.y*card.size.height:cursor.y;
-    return <span className="duo-canvas-cursor" key={cursor.author} style={{ left: position.x + x * position.zoom, top: position.y + y * position.zoom }}>
+    return <span className="duo-canvas-cursor" key={cursor.author} ref={element => { if (element) setCursorPoint(element, position.x + x * position.zoom, position.y + y * position.zoom); }}>
       <DuoCursorMark design={cursor.design} author={cursor.author} nickname={cursor.nickname} locale={locale} />
     </span>;
   })}</>;

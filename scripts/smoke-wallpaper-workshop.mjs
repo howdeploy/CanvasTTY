@@ -1,6 +1,7 @@
 // Actual workshop, Home and media components + production registry/settings over isolated Electron IPC.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -44,6 +45,11 @@ async function probe() {
     const stopWindow = observeWindowState(window, state => window.webContents.send("probe:window-state", state));
     const errors = []; window.webContents.on("console-message", (_event, level, message) => { if (level >= 3) errors.push(message); });
     const run = source => window.webContents.executeJavaScript(source);
+    const reload = async () => {
+      const loaded = once(window.webContents, "did-finish-load");
+      window.reload();
+      await loaded;
+    };
     const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
     const until = async (predicate, message) => { for (let i = 0; i < 150; i++) { if (await predicate()) return; await delay(40); } throw new Error(message); };
     const click = async text => { await until(() => run(`Boolean([...document.querySelectorAll("button")].find(e => e.textContent === ${JSON.stringify(text)} && !e.disabled))`), `Button stayed disabled: ${text}`); await run(`window.wallpaperProbe.button(${JSON.stringify(text)})`); await delay(50); };
@@ -58,6 +64,8 @@ async function probe() {
     await select("Предпросмотр", "clock"); await click("Сохранить и применить");
     await until(() => Boolean(settings.get().homeClockWallpaper), "Clock did not save/apply");
     const clockId = settings.get().homeClockWallpaper;
+    await click("Старый");
+    await until(() => settings.get().homeClockDesign === "classic", "Classic clock did not activate");
     assert.equal(settings.get().homeClockFont, "pixel");
     await until(() => run("Boolean(document.querySelector('#clock [data-skin-media=gif] img') && document.querySelector('#clock svg.clock-pixel-digits'))"), "Clock media/digits missing");
     assert.equal(library.list()[0].recipe.x, 25); assert.equal(library.list()[0].recipe.y, 75); assert.equal(library.list()[0].recipe.dim, .5);
@@ -65,6 +73,9 @@ async function probe() {
     const first = (await window.webContents.capturePage(rect)).toBitmap(); let second = first;
     for (let i = 0; i < 20 && first.equals(second); i++) { await delay(125); second = (await window.webContents.capturePage(rect)).toBitmap(); }
     assert.notDeepEqual(first, second, "GIF clock background must move beneath real digits");
+    assert.equal(await run("Boolean(document.querySelector('#clock .clock-tile__details'))"), false);
+    await click("Новый");
+    await until(() => run("Boolean(document.querySelector('#clock .clock-tile__details') && document.querySelector('#clock [data-skin-media=gif] img') && document.querySelector('#clock svg.clock-pixel-digits'))"), "New clock must retain the themed wallpaper and digits");
     await select("Предпросмотр", "avatar"); await click("Сохранить и применить");
     await until(() => settings.get().homeAvatarWallpaper === clockId, "Avatar assignment failed");
     assert.equal(library.list().length, 1, "Reusing saved art must not duplicate it");
@@ -90,7 +101,7 @@ async function probe() {
     // Simulate a fresh app process: reconstruct services, reload renderer, read only copied profile assets.
     unsubscribe(); library = new WallpaperRegistry(profile); settings = new SettingsStore(profile, "ru");
     await library.initialize(); await settings.load(); unsubscribe = library.onChanged(() => window.webContents.send("wallpapers:changed"));
-    await window.reload();
+    await reload();
     await until(() => run("Boolean(document.querySelector('#clock img') && document.querySelector('#avatar img') && document.querySelector('#canvas video')?.readyState >= 2)"), "Saved assets did not return after restart");
     assert.equal(library.list().length, 3); assert.equal(settings.get().homeClockWallpaper, clockId);
     // Direct avatar upload uses the same decode + persistent import path as App.
@@ -143,7 +154,7 @@ async function probe() {
     await writeFile(join(output, 'home-time.png'), (await window.webContents.capturePage()).toPNG());
     unsubscribe(); library = new WallpaperRegistry(profile); settings = new SettingsStore(profile, 'ru');
     await library.initialize(); await settings.load(); unsubscribe = library.onChanged(() => window.webContents.send('wallpapers:changed'));
-    await window.reload();
+    await reload();
     await until(() => run("document.querySelectorAll('.home-timers article').length === 2 && Boolean(document.querySelector('#avatar img'))"), 'Timers/avatar did not restore');
     assert.equal(settings.get().homeAvatarWallpaper, avatarId);
     assert.equal(settings.get().homeTime.clocks.length, 2);

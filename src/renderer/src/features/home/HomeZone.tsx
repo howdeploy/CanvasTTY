@@ -28,6 +28,7 @@ import {
 import { sessionStatusIcon, sessionStatusLabel } from "../../lib/sessionStatus";
 import { sessionStatusTone } from "../../lib/sessionStatusTone";
 import { scheduleMinuteTicks } from "./homeClockSchedule";
+import { HomeClock } from "./HomeClock";
 import { HomeMediaWidget } from "./HomeMediaWidget";
 import { SessionFailureDetails, sessionFailureDetails } from "./SessionFailureDetails";
 import { PluginFrame } from "../plugins/PluginFrame";
@@ -54,7 +55,6 @@ import { homeCanvasWidgetId } from "../workspace/canvasWidgetFocus";
 
 const HomeLauncherDock = lazy(() => import("./HomeLauncherDock"));
 const HomeWidgetControls = lazy(() => import("./HomeWidgetControls"));
-const ClockWidget = lazy(() => import("./ClockWidget"));
 
 interface HomeZoneProps {
   settings: AppSettings;
@@ -335,9 +335,7 @@ export function HomeZone({
       );
     }
     if (widgetId === "core.clock") {
-      return settings.homeClockDesign === "new"
-        ? <Suspense fallback={null}><ClockWidget locale={locale} now={now} settings={settings} onChange={onSettingsChange} /></Suspense>
-        : <ClassicClockWidget locale={locale} now={now} />;
+      return <HomeClock locale={locale} now={now} settings={settings} onChange={onSettingsChange} />;
     }
     if (widgetId === "core.media") {
       return (
@@ -463,19 +461,6 @@ function isFocusableHomeWidget(widgetId: string, plugins: readonly InstalledPlug
     )));
 }
 
-
-function ClassicClockWidget({ locale, now }: { locale: LocaleId; now: Date }): React.JSX.Element {
-  const formatLocale = locale === "ru" ? "ru-RU" : "en-GB";
-  const time = now.toLocaleTimeString(formatLocale, { hour: "2-digit", minute: "2-digit" });
-  const date = now.toLocaleDateString(formatLocale, { weekday: "short", day: "numeric", month: "long", year: "numeric" });
-
-  return (
-    <section className="tile clock-tile">
-      <time className="clock-tile__time" dateTime={now.toISOString()}>{time}</time>
-      <span className="clock-tile__date">{date}</span>
-    </section>
-  );
-}
 
 function LimitRow({ row, locale, now, onOpenSettings }: { row: HomeLimitRow; locale: LocaleId; now: number; onOpenSettings(target?: SettingsDestination): void }): React.JSX.Element {
   const providerLabel = PROVIDERS[row.provider].limitsLabel ?? PROVIDERS[row.provider].label;

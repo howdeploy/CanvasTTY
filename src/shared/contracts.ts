@@ -53,7 +53,7 @@ export const DEFAULT_PIXEL_SKIN_APERTURES: PixelSkinApertures = {
   detailed: { left: 14, right: 14, top: 18, bottom: 19 },
   master: { left: 15, right: 15, top: 21, bottom: 22 }
 };
-export interface PixelSkinPackSummary { media?: Partial<Record<PixelSkinSlot, SkinMediaInfo>>; id: PixelTerminalBorderSkinId; name: string; aperture: PixelSkinAperture; apertures: PixelSkinApertures; controls?: PixelSkinControls }
+export interface PixelSkinPackSummary { bundledSha256?: string; media?: Partial<Record<PixelSkinSlot, SkinMediaInfo>>; id: PixelTerminalBorderSkinId; name: string; aperture: PixelSkinAperture; apertures: PixelSkinApertures; controls?: PixelSkinControls }
 export interface PixelSkinPackInstallRequest { name: string; files: Record<PixelSkinSlot, Uint8Array>; aperture?: PixelSkinAperture; apertures?: PixelSkinApertures; controls?: PixelSkinControls }
 export interface PixelSkinZipInstallRequest { name: string; archive: Uint8Array; apertures?: PixelSkinApertures }
 export type TerminalBorderSkinId = "classic" | "minimal" | "glass" | "cyber" | "nord" | "gradient" | "cybercore" | "titanium" | "retro" | "sakura" | "matrix" | "forest-cabin" | "gold-black" | "cat" | "gothic-eclipse" | CustomTerminalBorderSkinId | PixelTerminalBorderSkinId;

@@ -126,6 +126,7 @@ interface HomeEditDraft {
 // Settings and the modal dialogs are not needed for the first paint of the canvas, so their code
 // (and everything they alone pull in, like the plugin browser and shortcut editors) is split into
 // separate chunks instead of shipping in the app's single startup bundle.
+const HostFolderDialog = lazy(() => import("./features/duo/HostFolderDialog").then(m => ({ default: m.HostFolderDialog })));
 const AgentLaunchDialog = lazy(() =>
   import("./features/launcher/AgentLaunchDialog").then((module) => ({ default: module.AgentLaunchDialog })));
 const TerminalLinkDialog = lazy(() =>
@@ -417,6 +418,7 @@ export function App(): React.JSX.Element {
   const fileRootRequests = useRef<Record<string, symbol>>({});
   const fileRuntimeSpecs = useRef(new Map<string,string>());
   const fileRuntimeWorkspace = useRef('');
+  const [hostFolder, setHostFolder] = useState<{ workspace: string; position?: Point; fileCardId?: string } | null>(null);
   const [launchProvider, setLaunchProvider] = useState<ProviderId | null>(null);
   const [launchPosition, setLaunchPosition] = useState<Point | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -432,6 +434,11 @@ export function App(): React.JSX.Element {
   const [titlebarActions, setTitlebarActions] = useState<HTMLDivElement | null>(null);
   const [homeEditDraft, setHomeEditDraft] = useState<HomeEditDraft | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const sharedFocus = duoView.reply?.snapshot?.cards.some(card => card.id === activeSessionId) ? activeSessionId : null;
+  useEffect(() => {
+    if (duoView.connected && duoActive) void window.canvasTTY.duo.command({ action: "focus", cardId: sharedFocus ?? undefined,
+      design: settings.duoCursorDesign, nickname: settings.duoCursorNickname }).catch(() => undefined);
+  }, [duoView.connected, duoActive, duoView.reply?.state.workspaceId, sharedFocus, settings.duoCursorDesign, settings.duoCursorNickname]);
   const [browserSelected, setBrowserSelected] = useState(false);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [fullscreenSessionId, setFullscreenSessionId] = useState<string | null>(null);
@@ -820,6 +827,12 @@ export function App(): React.JSX.Element {
   }, [saveSettings]);
 
   const openTerminal = useCallback(async (position?: Point): Promise<void> => {
+    const state = duoWorkspace.get().reply?.state;
+    if (state?.role === "guest" && state.documentSync && state.workspaceId) {
+      if (state.manage) setHostFolder({ workspace: state.workspaceId, position });
+      else showToast(settings.locale === 'ru' ? 'Хост должен разрешить управление' : 'Host control is required');
+      return;
+    }
     if((!duoWorkspace.get().reply?.state.fullCanvas || (duoWorkspace.get().reply?.state.documentSync && duoWorkspace.get().reply?.state.role === "guest")) && duoWorkspace.get().reply?.state.role && duoWorkspace.get().reply?.state.role !== "idle") {
       try{await createSession("terminal","normal",settingsRef.current.lastDirectory,position);}catch(error){showToast(String(error));}
       return;
@@ -1263,6 +1276,11 @@ export function App(): React.JSX.Element {
   }, [updateFileCardRuntime]);
 
   const chooseFileFolder = useCallback((id: string): void => {
+    const state = duoWorkspace.get().reply?.state;
+    if (state?.role === "guest" && state.workspaceId && state.documentSync) {
+      if (state.manage) setHostFolder({ workspace: state.workspaceId, fileCardId: id });
+      return;
+    }
     const request = Symbol();
     fileRootRequests.current[id] = request;
     void (async () => {
@@ -2380,6 +2398,17 @@ export function App(): React.JSX.Element {
       <Suspense fallback={null}>
         {shortcutReferenceOpen && <ShortcutReference settings={settings}
           onClose={() => setShortcutReferenceOpen(false)} />}
+        {hostFolder && duoGuest && duoDocument && duoView.connected && duoView.reply?.state.manage &&
+          hostFolder.workspace === duoView.reply.state.workspaceId && <HostFolderDialog workspace={hostFolder.workspace}
+            ru={settings.locale === "ru"} onClose={() => setHostFolder(null)} filesOnly={Boolean(hostFolder.fileCardId)} onCreate={async (rootId, path) => {
+              if (hostFolder.fileCardId) { navigateFileFolder(hostFolder.fileCardId, path); return; }
+              const cards = duoWorkspace.get().reply?.snapshot?.cards ?? [];
+              const point = hostFolder.position ?? { x: cards.length ? Math.max(...cards.map(c => c.position.x + c.size.width)) + 40 : 80, y: 80 };
+              const reply = await duoWorkspace.command({ action: "create", rootId, ...point });
+              const card = reply.snapshot?.cards.find(c => c.id === reply.snapshot?.createdId);
+              if (!card) throw Error(settings.locale === "ru" ? "Хост не подтвердил запуск" : "Host did not confirm launch");
+              setActiveSessionId(card.id); isHomeCamera.current = false; setCamera(focusCamera(card.position, card.size));
+            }} />}
         <AgentLaunchDialog
           provider={launchProvider}
           settings={settings}

@@ -23,8 +23,8 @@ function selection(t) {
   } } };
   t.after(() => { globalThis.window = previousWindow; });
   // Execute the production App callbacks with deferred IPC and an observable card/root boundary.
-  const callbacks = new Function("useCallback", "settingsRef", "releaseFileCardRoot", "fileReadSequence", "fileRootRequests", "updateFileCard", "loadFileRoot", "updateFileCardRuntime", "fileErrorMessage", `${code}; return { chooseFileFolder, registerFileSession };`)(
-    (callback) => callback, settingsRef, () => {}, { current: {} }, { current: {} },
+  const callbacks = new Function("duoWorkspace", "useCallback", "settingsRef", "releaseFileCardRoot", "fileReadSequence", "fileRootRequests", "updateFileCard", "loadFileRoot", "updateFileCardRuntime", "fileErrorMessage", `${code}; return { chooseFileFolder, registerFileSession };`)(
+    { get: () => ({reply:null}) }, (callback) => callback, settingsRef, () => {}, { current: {} }, { current: {} },
     (_id, patch) => updates.push(patch), async (_id, root) => { loaded.push(root.rootId); },
     (_id, update) => runtime.push(update({})), (error) => error.message
   );
@@ -119,8 +119,8 @@ function rootLoading(t) {
   };
   globalThis.window = { canvasTTY: { files } };
   t.after(() => { globalThis.window = previousWindow; });
-  const callbacks = new Function("useCallback", "settingsRef", "releaseFileCardRoot", "fileReadSequence", "fileRootRequests", "updateFileCard", "updateFileCardRuntime", "fileErrorMessage", "fileCardToRootReference", "isFileRootUsable", "EMPTY_FILE_CARD_RUNTIME", `${rootCode}; return { chooseFileFolder, registerFileSession, restoreFileCard };`)(
-    (callback) => callback, settingsRef, (id) => { if (states[id]?.root) void files.closeRoot(states[id].root.rootId); },
+  const callbacks = new Function("duoWorkspace", "useCallback", "settingsRef", "releaseFileCardRoot", "fileReadSequence", "fileRootRequests", "updateFileCard", "updateFileCardRuntime", "fileErrorMessage", "fileCardToRootReference", "isFileRootUsable", "EMPTY_FILE_CARD_RUNTIME", `${rootCode}; return { chooseFileFolder, registerFileSession, restoreFileCard };`)(
+    { get: () => ({reply:null}) }, (callback) => callback, settingsRef, (id) => { if (states[id]?.root) void files.closeRoot(states[id].root.rootId); },
     { current: {} }, fileRootRequests,
     (id, patch) => { settingsRef.current.fileCards = settingsRef.current.fileCards.map((card) => card.id === id ? { ...card, ...patch } : card); },
     (id, update) => { states[id] = { ...states[id], ...update(states[id] ?? {}) }; },

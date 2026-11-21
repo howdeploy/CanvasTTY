@@ -30,6 +30,10 @@ export class DuoDocumentService implements DuoDocumentPort {
     const reference = typeof id === 'string' ? this.fileRoots.get(id) : undefined;
     return reference !== undefined && (this.sharedRoot(reference) || authorized());
   }
+  terminalDirectory(rootId: string): string | undefined {
+    const root = this.fileRoots.get(rootId);
+    return root?.rootType === 'folder' ? root.folderPath : undefined;
+  }
   private storage=new Map<string,{pluginId:string;key:string;value:unknown;version:number}>();
   private storageVersion=0;
   storageChanged(pluginId:string,key:string,value:unknown):void{
@@ -67,6 +71,7 @@ export class DuoDocumentService implements DuoDocumentPort {
       const [id,offset]=args as [string,number],c=this.chunks.get(id);
       if(!c||!Number.isSafeInteger(offset)||offset<0||offset>=c.text.length)throw Error('Canvas resource expired.');
       if(!c.allowed())throw Error('Shared resource access was revoked.');
+      c.at = Date.now();
       return {chunk:id,total:c.text.length,offset,data:c.text.slice(offset,offset+CHUNK)};
     }
     const reference = args[0] as FileRootReference | null;
@@ -126,16 +131,23 @@ export class DuoDocumentService implements DuoDocumentPort {
       if (register && this.fileRoots.size >= 256) throw Error('Too many shared Files folders.');
       result=await this.invoke(channel,args);
       if (register && result) {
-        const { rootId } = result as FileRootDescriptor;
+        const { rootId, folderPath } = result as FileRootDescriptor;
         if (!connected() || !reference || (!authorized() && !this.sharedRoot(reference))) {
           await this.invoke(IPC.filesCloseRoot, [rootId]);
           throw Error('Shared Files access was revoked.');
         }
-        this.fileRoots.set(rootId, reference);
+        this.fileRoots.set(rootId, folderPath && reference.rootType === 'folder'
+          ? { rootType: 'folder', folderPath } : reference);
       }
       if (closingRoot) this.fileRoots.delete(args[0] as string);
     }
     if(!allowed())throw Error('Shared resource access was revoked.');
+    if (result instanceof Uint8Array && (channel === IPC.authorThemesPreview || channel === IPC.pixelSkinsReadAsset)) {
+      result = { base64: Buffer.from(result).toString('base64') };
+    } else if (channel === IPC.wallpapersRead && result) {
+      const { summary, bytes } = result as { summary: unknown; bytes: Uint8Array };
+      result = { summary, base64: Buffer.from(bytes).toString('base64') };
+    }
     const text=JSON.stringify(result??null);if(text.length>MAX_RESULT)throw Error('Canvas resource is too large.');
     if(text.length<=CHUNK)return {value:result??null};
     if(this.chunks.size>=8)this.chunks.delete(this.chunks.keys().next().value!);

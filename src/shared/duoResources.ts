@@ -4,7 +4,7 @@ export const DUO_FILE_READ_CHANNELS = new Set<string>([IPC.filesList, IPC.filesR
 export const DUO_READ_CHANNELS = new Set<string>([
   ...DUO_FILE_READ_CHANNELS,
   IPC.materialsSnapshot,IPC.browserGetState,IPC.pluginsList,
-  IPC.wallpapersList,IPC.wallpapersRead,IPC.pixelSkinsList,IPC.pixelSkinsReadAsset,
+  IPC.authorThemesList,IPC.authorThemesPreview,IPC.wallpapersList,IPC.wallpapersRead,IPC.pixelSkinsList,IPC.pixelSkinsReadAsset,
   IPC.terminalBorderSkinsList,IPC.terminalBorderSkinsGet,IPC.mediaRead,IPC.pluginsStorageGet,
   IPC.pluginsMediaListLibraries,IPC.pluginsPlaylistsList,IPC.pluginsPlaylistsRead
 ]);

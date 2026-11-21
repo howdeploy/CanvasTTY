@@ -9,6 +9,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "re
 import type {
   AppSettings,
   AppSkinId,
+  AuthorThemeSummary,
   AgentCliAvailability,
   AgentProviderId,
   DefaultLaunchProfile,
@@ -98,7 +99,7 @@ import {
 } from "../../lib/skinStyles";
 import { PluginSettingsSection } from "../plugins/PluginSettingsSection";
 import { HomeClockAppearance } from "../home/HomeClockAppearance";
-import { AuthorThemePreview } from "./AuthorThemePreview";
+import { AuthorThemeApply, AuthorThemePreview } from "./AuthorThemePreview";
 import { HomeAppearanceSettings } from "../home/HomeAppearanceSettings";
 import {
   canvasColorPatch,
@@ -1882,6 +1883,12 @@ function BorderSkinChoices({
   onPackCreated(pack: PixelSkinPackSummary): void;
   onChange(value: TerminalBorderSkinId): void;
 }): React.JSX.Element {
+  const [catalog, setCatalog] = useState<AuthorThemeSummary[]>([]);
+  useEffect(() => {
+    let active = true;
+    void window.canvasTTY.authorThemes.list().then(items => { if (active) setCatalog(items); }).catch(() => {});
+    return () => { active = false; };
+  }, []);
   const [customSkins, setCustomSkins] = useState<TerminalBorderSkinListItem[]>([]);
   const [customSkinsLoadState, setCustomSkinsLoadState] = useState<"loading" | "ready" | "error">("loading");
   useEffect(() => {
@@ -1999,9 +2006,10 @@ function BorderSkinChoices({
           </button>
         );
       })}
-      {pixelPacks.map((pack) => (
+      {pixelPacks.map(pack => {
+        const theme = catalog.find(item => item.skin === pack.id);
+        return <div className="theme-pack-choice" key={pack.id}>
         <button
-          key={pack.id}
           type="button"
           className="border-skin-choice"
           aria-pressed={value === pack.id}
@@ -2012,7 +2020,9 @@ function BorderSkinChoices({
           </span>
           <span className="border-skin-choice__label">{pack.name}</span>
         </button>
-      ))}
+          {theme && <AuthorThemeApply theme={theme} locale={locale} readOnly={readOnly} />}
+        </div>;
+      })}
       <PixelSkinPackCreator locale={locale} onCreated={(pack) => {
         onPackCreated(pack);
         onChange(pack.id);
@@ -2047,7 +2057,15 @@ function BorderSkinChoices({
   );
 }
 
+const themePosters = import.meta.glob<string>("./theme-posters/*.png", { eager: true, import: "default", query: "?url" });
+
 function PixelSkinPackThumbnail({ id, slot = "detailed_idle" }: { id: PixelTerminalBorderSkinId; slot?: PixelSkinSlot }): React.JSX.Element {
+  const poster = themePosters[`./theme-posters/${id.slice(6)}-${slot}.png`];
+  if (poster) return <img src={poster} loading="lazy" alt="" />;
+  return <CustomPackThumbnail id={id} slot={slot} />;
+}
+
+function CustomPackThumbnail({ id, slot }: { id: PixelTerminalBorderSkinId; slot: PixelSkinSlot }) {
   const [url, setUrl] = useState<string | null>(null);
   const [media, setMedia] = useState<SkinMediaInfo | null>(null);
   useEffect(() => {

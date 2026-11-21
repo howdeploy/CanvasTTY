@@ -10,7 +10,7 @@ import type { DuoDiagnosticEvent } from "../../shared/duoDiagnostics.ts";
 import { DuoPeerTransport, type PeerInvite } from "./DuoPeerTransport.ts";
 import { SessionScreen, type ScreenPort } from "./materials/sessionScreen.ts";
 import type { DuoDocumentPort, DuoDocumentOp } from '../../shared/duoDocument';
-import { mergeDuoSnapshot, normalizeDuoCursorDesign, normalizeDuoCursorNickname } from '../../shared/canvasDuo.ts';
+import { DUO_CURSOR_DESIGNS, DUO_CURSOR_NICKNAME_MAX_LENGTH, mergeDuoSnapshot, normalizeDuoCursorDesign, normalizeDuoCursorNickname } from '../../shared/canvasDuo.ts';
 import { DUO_READ_CHANNELS } from '../../shared/duoResources.ts';
 
 interface TerminalPort extends ScreenPort {
@@ -29,7 +29,7 @@ interface DuoTerminalFiles {
   canOpen(id:string,reference:string):Promise<boolean>;
   open(id:string,reference:string,authorized:()=>boolean):Promise<void>;
 }
-type RemoteAction = { pageId?: string; pageOffset?: number; outputOffsets?:Record<string,number>; documentVersion?:string; ops?:DuoDocumentOp[]; channel?:string; args?:unknown[]; name?:"terminal"|"note"|"home"; frameId?:string; events?:DuoSurfaceInput[]; action: string; cardId?: string; text?: string; x?: number; y?: number; design?: unknown; nickname?: unknown; bounds?: import("../../shared/contracts").SessionBounds; cols?: number; rows?: number };
+type RemoteAction = { rootId?: string; pageId?: string; pageOffset?: number; outputOffsets?:Record<string,number>; documentVersion?:string; ops?:DuoDocumentOp[]; channel?:string; args?:unknown[]; name?:"terminal"|"note"|"home"; frameId?:string; events?:DuoSurfaceInput[]; action: string; cardId?: string; text?: string; x?: number; y?: number; design?: unknown; nickname?: unknown; bounds?: import("../../shared/contracts").SessionBounds; cols?: number; rows?: number };
 type Message = RemoteAction & { id: string; peer: string; at: number };
 const LIMIT = 2 * 1024 * 1024;
 // AES envelope base64 adds one third to the plaintext, plus transport framing.
@@ -117,6 +117,9 @@ export class CanvasDuoService {
   private documentPages = new Map<string, { text: string; peer: string; expires: number }>();
   private outputCursor = 0;
   private comments: DuoComment[] = [];
+  private focus = new Map<string, string>();
+  private profiles = new Map<string, Pick<DuoCursor, 'nickname' | 'design'>>();
+  private terminalAuthors = new Map<string, "host" | "guest">();
   private cursors = new Map<string, DuoCursor>();
   private screens = new Map<string, SessionScreen>();
   private snapshotPending: Promise<DuoSnapshot> | null = null;
@@ -197,7 +200,7 @@ export class CanvasDuoService {
   private hosting(): boolean { return Boolean(this.server || this.peerHost); }
 
   private available(): DuoCard[] {
-    return this.terminals.listMetadata().map(s => ({ id: s.id, title: s.title, provider: s.provider, running: s.exitCode === null, control: this.documentSync ? this.manage : this.controlled.has(s.id), position: s.position, size: s.size, revision: (s as any).revision, nativeEditor: (s as any).nativeEditor }));
+    return this.terminals.listMetadata().map(s => ({ id: s.id, title: s.title, focusedBy: [...this.focus].filter(([, id]) => id === s.id).map(([role]) => this.identity(role).nickname ?? role), participant: this.terminalAuthors.get(s.id) ?? 'host', provider: s.provider, running: s.exitCode === null, control: this.documentSync ? this.manage : this.controlled.has(s.id), position: s.position, size: s.size, revision: (s as any).revision, nativeEditor: (s as any).nativeEditor }));
   }
   private expirePeer(): void {
     if (!this.connectedPeer || Date.now() - this.peerLastSeen <= PEER_LEASE_MS) return;
@@ -212,6 +215,7 @@ export class CanvasDuoService {
     this.manage = false;
     this.options.surface?.release();
     this.options.document?.clear();
+    this.focus.delete("guest"); this.profiles.delete("guest");
     this.cursors.delete("guest");
   }
   state(): DuoState {
@@ -394,8 +398,10 @@ export class CanvasDuoService {
     if (!value || typeof value.id !== "string" || !/^[\w-]{1,80}$/.test(value.id) || typeof value.peer !== "string" || !/^[\w-]{1,80}$/.test(value.peer) || !Number.isFinite(value.at) || Math.abs(now - value.at) > 60_000) throw new Error("Expired request.");
     for (const [id, at] of this.seen) if (now - at > 120_000) this.seen.delete(id);
     const upload = value.action === 'resource' && value.channel === 'file-upload';
-    const lane = upload ? 'upload' : value.action === 'heartbeat' || value.action === 'document-page' ? value.action : 'control';
-    const limit = lane === 'upload' ? 16 : lane === 'heartbeat' ? 4 : lane === 'document-page' ? 22 : 30;
+    const chunk = value.action === 'resource' && value.channel === 'chunk';
+    const pointer = value.action === 'cursor' && value.cardId === 'canvas' && this.documentSync;
+    const lane = upload ? 'upload' : chunk ? 'chunk' : pointer ? 'pointer' : value.action === 'heartbeat' || value.action === 'document-page' ? value.action : 'control';
+    const limit = lane === 'pointer' ? 12 : lane === 'upload' ? 16 : lane === 'heartbeat' ? 4 : (lane === 'document-page' || lane === 'chunk') ? 22 : 30;
     const requests = (this.requests.get(lane) ?? []).filter(at => now - at < 1000);
     if (this.seen.has(value.id) || this.seen.size >= 10_000 || requests.length >= limit) throw new Error("Repeated or excessive request.");
     this.seen.set(value.id, now);
@@ -404,6 +410,7 @@ export class CanvasDuoService {
   private remoteInFlight = 0;
   private remoteWaiters: Array<() => void> = [];
   private readonly bulkRequests = {
+    chunk: { tail: Promise.resolve<unknown>(undefined), lastAt: -Infinity, intervalMs: 55 },
     upload: { tail: Promise.resolve<unknown>(undefined), lastAt: -Infinity, intervalMs: 85 },
     "document-page": { tail: Promise.resolve<unknown>(undefined), lastAt: -Infinity, intervalMs: 55 }
   };
@@ -421,6 +428,7 @@ export class CanvasDuoService {
   private async remote(command: RemoteAction): Promise<DuoSnapshot> {
     const generation = this.generation;
     if (command.action === 'heartbeat') return this.remoteNow(command);
+    if (command.action === 'resource' && command.channel === 'chunk') return this.requestBulk('chunk', command, generation);
     if (command.action === 'resource' && command.channel === 'file-upload') {
       // A single paced bulk slot leaves the normal queue and keepalive free.
       return this.requestBulk('upload', command, generation);
@@ -500,11 +508,29 @@ export class CanvasDuoService {
     finally { if(performance.now()-started>2000)trace?.record("request-slow"); }
   }
   private recordCursor(author: "host" | "guest", cardId: string, x: number, y: number, command: RemoteAction): void {
+    this.profiles.set(author, {design: normalizeDuoCursorDesign(command.design), nickname: normalizeDuoCursorNickname(command.nickname)});
     this.cursors.set(author, {
       cardId, x, y, author, at: Date.now(),
       design: normalizeDuoCursorDesign(command.design),
       nickname: normalizeDuoCursorNickname(command.nickname)
     });
+  }
+
+  private visibleCursors(): DuoCursor[] {
+    return [...this.cursors.values()]
+      .filter(c => (this.documentSync || this.selected.has(c.cardId)) && Date.now() - c.at < 5000)
+      .map(cursor => ({ ...cursor, ...this.identity(cursor.author) }));
+  }
+
+  private identity(role: string): Pick<DuoCursor, 'design' | 'nickname'> {
+    const profile = this.profiles.get(role) ?? {};
+    if (role === 'host') return profile;
+    const host = this.profiles.get('host');
+    const design = profile.design ?? 'circle';
+    const nickname = profile.nickname;
+    const collision = nickname && host?.nickname && nickname.toLowerCase() === host.nickname.toLowerCase();
+    return { design: design === (host?.design ?? 'blob') ? DUO_CURSOR_DESIGNS.find(id => id !== design) : profile.design,
+      nickname: collision ? nickname.slice(0, DUO_CURSOR_NICKNAME_MAX_LENGTH - 2) + ' 2' : nickname };
   }
 
   private async perform(command: RemoteAction, author: "host" | "guest"): Promise<DuoSnapshot> {
@@ -536,6 +562,8 @@ export class CanvasDuoService {
         await this.options.document.edit(command.ops!,authorized);
       }else result=await this.options.document.resource(command.channel!,command.args!,authorized,author==='host'||this.manage,connected);
       if(!connected())throw Error('Duo session changed.');
+      if (command.action === 'resource') return { partial:true, cards:[], comments:[], cursors:[], result,
+        expiresAt:this.expiresAt, workspaceId:this.workspaceId, manage:this.manage, fullCanvas:true, documentSync:true };
       return {incremental:true,sequence:++this.snapshotSequence,cards:this.available(),comments:this.comments,cursors:[],expiresAt:this.expiresAt,workspaceId:this.workspaceId,manage:this.manage,fullCanvas:true,documentSync:true,
         ...(command.action==='document-edit'?{document:await this.options.document.snapshot()}:{result})};
     }
@@ -559,6 +587,15 @@ export class CanvasDuoService {
       }
       return {sequence:++this.snapshotSequence,cards:this.available(),comments:this.comments,cursors:[],expiresAt:this.expiresAt,workspaceId:this.workspaceId,manage:this.manage,fullCanvas:true,...(command.action==='surface'?{surface:await this.options.surface.capture()}:{})};
     }
+    if (command.action === 'focus') {
+      const id = command.cardId;
+      if (id && !this.available().some(c => c.id === id && (this.fullCanvas || this.selected.has(id)))) throw Error('This card is not shared.');
+      if (id) this.focus.set(author, id);
+      else this.focus.delete(author);
+      this.profiles.set(author, { design: normalizeDuoCursorDesign(command.design), nickname: normalizeDuoCursorNickname(command.nickname) });
+      return { partial:true, cards:[], comments:[], cursors:[], expiresAt:this.expiresAt, workspaceId:this.workspaceId,
+        manage:this.manage, fullCanvas:this.fullCanvas, documentSync:this.documentSync };
+    }
     if (command.action === 'updates') {
       if (!this.documentSync || !command.outputOffsets || typeof command.outputOffsets !== 'object' || Array.isArray(command.outputOffsets) || Object.keys(command.outputOffsets).length > 128 || !Object.values(command.outputOffsets).every(n => Number.isSafeInteger(n) && n >= 0) || (command.documentVersion !== undefined && !/^[a-f0-9]{64}$/.test(command.documentVersion))) throw Error('Invalid workspace update cursor.');
     }
@@ -567,7 +604,14 @@ export class CanvasDuoService {
     if(command.action==='create') {
       if(author==='guest'&&!this.manage)throw new Error("The host has not granted shared workspace control.");
       if(!this.terminals.create||!finite(command.x)||!finite(command.y)||(this.fullCanvas?this.available().length:this.selected.size)>=(this.fullCanvas?128:8))throw new Error("Cannot create this shared terminal (limit: 8).");
-      const session=this.terminals.create({provider:'terminal',profile:'normal',cwd:this.options.cwd ?? process.cwd(),position:{x:command.x,y:command.y},title:'Duo · Terminal'});
+      let cwd = this.options.cwd ?? process.cwd();
+      if (command.rootId !== undefined) {
+        const selected = this.documentSync && this.options.document?.terminalDirectory?.(command.rootId);
+        if (!selected) throw Error('The selected host folder is no longer available.');
+        cwd = selected;
+      }
+      const session=this.terminals.create({provider:'terminal',profile:'normal',cwd,position:{x:command.x,y:command.y},title:'Duo · Terminal'});
+      this.terminalAuthors.set(session.id, author);
       createdId=session.id;this.selected.add(session.id);if(this.manage)this.controlled.add(session.id);
     } else if (command.action !== "snapshot" && command.action !== 'updates') {
       const id = command.cardId;
@@ -579,6 +623,8 @@ export class CanvasDuoService {
       if(command.action==='cursor'&&id==='canvas'&&this.documentSync){
         if(!finite(command.x)||!finite(command.y))throw Error('Invalid canvas cursor.');
         this.recordCursor(author, id, command.x, command.y, command);
+        return { partial:true, cursorUpdate:true, cards:[], comments:[], cursors:this.visibleCursors(), expiresAt:this.expiresAt,
+          workspaceId:this.workspaceId, manage:this.manage, fullCanvas:true, documentSync:true };
       } else {
       if (typeof id !== "string" || (!this.fullCanvas&&!this.selected.has(id)) || !this.available().some(c => c.id === id)) throw new Error("This card is not shared.");
       if(command.action==='file-open'||command.action==='file-can-open') {
@@ -633,7 +679,7 @@ export class CanvasDuoService {
       snapshot = await this.snapshot();
     }
     // Recheck sharing after async terminal parsing: revocation must take effect immediately.
-    return { ...snapshot, workspaceId:this.workspaceId, manage:this.manage, fullCanvas:this.fullCanvas, documentSync:this.documentSync, createdId, cards: snapshot.cards.filter(c => this.fullCanvas||this.selected.has(c.id)).map(c => ({ ...c, control: this.documentSync?this.manage:this.controlled.has(c.id) })), comments: this.comments.filter(c => c.cardId==="canvas"||this.fullCanvas||this.selected.has(c.cardId)), cursors: [...this.cursors.values()].filter(c => (this.documentSync || this.selected.has(c.cardId)) && Date.now() - c.at < 5000) };
+    return { ...snapshot, workspaceId:this.workspaceId, manage:this.manage, fullCanvas:this.fullCanvas, documentSync:this.documentSync, createdId, cards: snapshot.cards.filter(c => this.fullCanvas||this.selected.has(c.id)).map(c => ({ ...c, control: this.documentSync?this.manage:this.controlled.has(c.id) })), comments: this.comments.filter(c => c.cardId==="canvas"||this.fullCanvas||this.selected.has(c.cardId)), cursors: this.visibleCursors() };
   }
   private async snapshot(updates?:RemoteAction): Promise<DuoSnapshot> {
     const sequence = ++this.snapshotSequence;
@@ -695,6 +741,7 @@ export class CanvasDuoService {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer); this.heartbeatTimer = null;
     if (this.updatesTimer) clearTimeout(this.updatesTimer); this.updatesTimer = null;
     this.updateSnapshot=undefined;this.reconnectAfter=0;this.reconnectAttempts=0;this.reconnectPending=null;
+    this.terminalAuthors.clear(); this.focus.clear(); this.profiles.clear();
     this.invites = []; this.selected.clear(); this.controlled.clear(); this.comments = []; this.cursors.clear(); this.seen.clear(); this.requests.clear(); this.documentPages.clear(); this.outputCursor = 0;
     for (const screen of this.screens.values()) screen.dispose(); this.screens.clear(); this.snapshotPending = null;
     this.published='';this.publish({state:this.state()});

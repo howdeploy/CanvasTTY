@@ -173,3 +173,37 @@ test('view-only guest opens an existing Files card, cannot register a new folder
   await assert.rejects(request('protocol', [`canvastty-preview://${rootId}/preview.mp4`, null]), /not shared/);
   await request(IPC.filesCloseRoot, [rootId]);
 });
+
+test('host directory handles, participant focus and cursor acknowledgements cross the Duo connection', async t => {
+ const p = pair(t);
+ await connect(p);
+ const selected = await p.guest.command({action:'resource',channel:IPC.filesRegisterRoot,args:[{rootType:'folder',folderPath:'/host/project'}]});
+ const rootId = selected.snapshot.result.value.rootId;
+ const created = await p.guest.command({action:'create',rootId,x:24,y:32});
+ assert.equal(p.cards[0].cwd,'/host/project');
+ const cardId = created.snapshot.createdId;
+ assert.equal(created.snapshot.cards[0].participant,'guest');
+ for (const peer of [p.host,p.guest]) await peer.command({action:'focus',cardId,nickname:'Teo',design:'diamond'});
+ const cursor = await p.guest.command({action:'cursor',cardId:'canvas',x:15,y:2,nickname:'Teo',design:'diamond'});
+ assert.equal(cursor.snapshot.cursors[0].nickname,'Teo 2');
+ assert.notEqual(cursor.snapshot.cursors[0].design,'diamond');
+ assert.equal(cursor.snapshot.partial,true);
+ assert.ok(!cursor.snapshot.document && !cursor.snapshot.cards.length);
+ assert.deepEqual((await p.host.command({action:'snapshot'})).snapshot.cards[0].focusedBy,['Teo','Teo 2']);
+ await p.guest.command({action:'resource',channel:IPC.filesCloseRoot,args:[rootId]});
+ await assert.rejects(p.guest.command({action:'create',rootId,x:0,y:0}),/no longer available/);
+});
+
+test('shared wallpaper bytes survive JSON and multiple resource pages',async () => {
+ const bytes = Uint8Array.from({length:200000},(_,i)=>i%251);
+ const service = new DuoDocumentService({get:initial},async()=>({summary:{name:'clock'},bytes}),async()=>null,()=>{},async()=>null);
+ const state = {role:'guest',documentSync:true,workspaceId:'binary-test'};
+ const router = createDuoDocumentRouter(async(channel,request)=>{
+   if(channel===IPC.settingsGet)return initial();
+   return {state,snapshot:{result:await service.resource(request.channel,request.args,()=>true,true)}};
+ },()=>{});
+ await router.accept({state,snapshot:{document:{settings:pickDuoSettings(initial()),materials,plugins:[],browser}}});
+ const result=await router.invoke(IPC.wallpapersRead,'shared');
+ assert.deepEqual(result.bytes,bytes);
+ assert.equal(result.summary.name,'clock');
+});

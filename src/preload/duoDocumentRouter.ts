@@ -1,4 +1,4 @@
-import { IPC, type AppSettings } from '../shared/contracts';
+import { IPC, type AppSettings, type PixelSkinPackSummary } from '../shared/contracts';
 import type { DuoReply } from '../shared/canvasDuo';
 import { DUO_SETTINGS_KEYS, duoSettingsOps, type DuoDocument, type DuoDocumentOp } from '../shared/duoDocument';
 import { DUO_READ_CHANNELS, DUO_WRITE_CHANNELS, DUO_LOCAL_BROWSER_SENDS } from '../shared/duoResources';
@@ -6,6 +6,7 @@ import { DUO_READ_CHANNELS, DUO_WRITE_CHANNELS, DUO_LOCAL_BROWSER_SENDS } from '
 /** Routes only explicit Canvas capabilities. The global API and the local profile are never replaced. */
 export function createDuoDocumentRouter(raw:(channel:string,...args:any[])=>Promise<any>,emit:(channel:string,payload:any)=>void){
   let document:DuoDocument|null=null,localSettings:AppSettings|null=null,workspace='',sequence=0;
+  let matchingPacks: Promise<Set<string>> | undefined;
   let confirmed:DuoDocument|null=null;
   const pending:Array<{ops:DuoDocumentOp[]}> = [];
   const project=():DuoDocument|null=>{
@@ -32,12 +33,12 @@ export function createDuoDocumentRouter(raw:(channel:string,...args:any[])=>Prom
   };
   const acceptNow=async(reply:DuoReply):Promise<DuoReply>=>{
     if(reply.state.role==='guest'&&reply.state.documentSync){
-      if(workspace!==reply.state.workspaceId){workspace=reply.state.workspaceId??'';sequence=0;document=null;confirmed=null;pending.length=0;localSettings=await raw(IPC.settingsGet);}
+      if(workspace!==reply.state.workspaceId){matchingPacks=undefined;workspace=reply.state.workspaceId??'';sequence=0;document=null;confirmed=null;pending.length=0;localSettings=await raw(IPC.settingsGet);}
       if(reply.snapshot?.document&&(reply.snapshot.sequence??0)>=sequence){
         sequence=reply.snapshot.sequence??0;const previous=document;confirmed=reply.snapshot.document;document=project();if(document)notify(document,previous);
       }
     }else if(workspace){
-      workspace='';document=null;confirmed=null;pending.length=0;sequence=0;
+      matchingPacks=undefined;workspace='';document=null;confirmed=null;pending.length=0;sequence=0;
       const [settings,materials,browser]=await Promise.all([raw(IPC.settingsGet),raw(IPC.materialsSnapshot),raw(IPC.browserGetState)]);
       localSettings=settings;emit(IPC.settingsChanged,settings);emit(IPC.materialsChanged,materials);emit(IPC.browserState,{snapshot:browser});
     }
@@ -60,9 +61,15 @@ export function createDuoDocumentRouter(raw:(channel:string,...args:any[])=>Prom
         if(!part||part.chunk!==id||part.offset!==text.length||typeof part.data!=='string'||!part.data.length)throw Error('Invalid shared resource chunk.');
         text+=part.data;
       }
-      return JSON.parse(text);
+      part = { value: JSON.parse(text) };
     }
-    return part?.value;
+    const value = part?.value;
+    if (value && typeof value.base64 === 'string' &&
+        [IPC.wallpapersRead, IPC.pixelSkinsReadAsset, IPC.authorThemesPreview].some(key => key === channel)) {
+      const bytes = Uint8Array.from(atob(value.base64), char => char.charCodeAt(0));
+      return channel === IPC.wallpapersRead ? { summary: value.summary, bytes } : bytes;
+    }
+    return value;
   };
   const invoke=async(channel:string,...args:any[]):Promise<any>=>{
     if(channel===IPC.duoCommand)return command(args[0]);
@@ -91,8 +98,21 @@ export function createDuoDocumentRouter(raw:(channel:string,...args:any[])=>Prom
     if(channel===IPC.materialsSnapshot)return document.materials;
     if(channel===IPC.browserGetState)return document.browser;
     if(channel===IPC.pluginsList)return document.plugins;
+    if (channel === IPC.pixelSkinsReadAsset) {
+      const active = workspace;
+      matchingPacks ??= Promise.all([raw(IPC.pixelSkinsList), resource(IPC.pixelSkinsList, [])]).then(([local, host]) => {
+        const localDigests = new Map((local as PixelSkinPackSummary[]).map(pack => [pack.id, pack.bundledSha256]));
+        return new Set((host as PixelSkinPackSummary[]).filter(pack => pack.bundledSha256 && localDigests.get(pack.id) === pack.bundledSha256).map(pack => String(pack.id)));
+      }).catch(() => new Set<string>());
+      const matches = await matchingPacks;
+      if (active !== workspace) throw Error('Duo workspace changed.');
+      if (matches.has(args[0])) {
+        const bytes = await raw(channel, ...args).catch(() => null);
+        if (bytes) return bytes;
+      }
+    }
     if(DUO_READ_CHANNELS.has(channel)||DUO_WRITE_CHANNELS.has(channel))return resource(channel,args);
-    if(channel.startsWith('plugins:')||channel===IPC.filesOpenFolder||channel===IPC.materialsPick||channel===IPC.materialsPaste)throw Error('Это действие выполняется хозяином общего Canvas.');
+    if(channel.startsWith('plugins:')||channel===IPC.filesOpenFolder||channel===IPC.dialogPickDirectory||channel===IPC.materialsPick||channel===IPC.materialsPaste)throw Error('Это действие выполняется хозяином общего Canvas.');
     return raw(channel,...args);
   };
   return {invoke,resource,accept,localEvent:(channel:string,payload:any):any=>{

@@ -133,11 +133,11 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
       </>}
       <button type="button" className="duo-action duo-action--danger" onClick={()=>void run({action:"stop"})}>{ru ? "Отключиться" : "Disconnect"}</button>
       {workspace.error && <p role="alert">{workspace.error}</p>}
-      <details className="duo-shared-comments" open={state.fullCanvas?undefined:true}><summary>{ru ? "Комментарии" : "Comments"}</summary>
-        <select aria-label={ru ? "Куда добавить комментарий" : "Comment target"} value={selectedCommentCard} onChange={e=>setCommentCard(e.target.value)}>{state.fullCanvas&&<option value="canvas">{ru ? "Весь холст" : "Entire canvas"}</option>}{shared?.cards.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select>
+      <details className="duo-shared-comments" open={state.fullCanvas?undefined:true}><summary>{ru ? "Чат" : "Chat"}</summary>
+        <select aria-label={ru ? "Канал чата" : "Chat channel"} value={selectedCommentCard} onChange={e=>setCommentCard(e.target.value)}>{state.fullCanvas&&<option value="canvas">{ru ? "Весь холст" : "Entire canvas"}</option>}{shared?.cards.map(c=><option key={c.id} value={c.id}>{c.title}</option>)}</select>
         <div className="duo-comments" aria-live="polite">{shared?.comments.filter(c=>c.cardId===selectedCommentCard).map(c=><p key={c.id}><b>{c.author === "host" ? (ru ? "Хост" : "Host") : (ru ? "Гость" : "Guest")}</b> {c.text}</p>)}</div>
         <form onSubmit={e=>{e.preventDefault();void duoWorkspace.command({action:"comment",cardId:selectedCommentCard,text:sharedComment}).then(()=>setSharedComment("")).catch(()=>undefined);}}>
-          <input aria-label={ru ? "Общий комментарий" : "Shared comment"} value={sharedComment} maxLength={1000} onChange={e=>setSharedComment(e.target.value)} placeholder={ru ? "Комментарий…" : "Comment…"} />
+          <input aria-label={ru ? "Сообщение" : "Chat message"} value={sharedComment} maxLength={1000} onChange={e=>setSharedComment(e.target.value)} placeholder={ru ? "Сообщение…" : "Message…"} />
           <button className="duo-action" disabled={!selectedCommentCard || !sharedComment.trim() || (state.role==="guest"&&!workspace.connected)}>{ru ? "Отправить" : "Send"}</button>
         </form>
       </details>
@@ -237,7 +237,7 @@ export default function CanvasDuo({ titlebarSlot, locale, cursorDesign, cursorNi
             <button type="button" className="duo-action" disabled={busy || !card.running} onClick={() => void run({ action: "input", cardId: card.id, text: "\u0003" })}>Ctrl+C</button>
           </form>}
           <div className="duo-comments">{snapshot.comments.filter(c => c.cardId === card.id).map(c => <p key={c.id}><strong>{c.author === "host" ? (ru ? "Хост" : "Host") : (ru ? "Гость" : "Guest")}</strong> {c.text}</p>)}</div>
-          <form className="duo-input" onSubmit={e => { e.preventDefault(); void run({ action: "comment", cardId: card.id, text: comments[card.id] ?? "" }).then(ok => { if (ok) setComments(d => ({ ...d, [card.id]: "" })); }); }}><input aria-label={ru ? "Комментарий к карточке" : "Card comment"} placeholder={ru ? "Комментарий к карточке…" : "Comment on this card…"} maxLength={1000} disabled={busy} value={comments[card.id] ?? ""} onChange={e => { const value = e.currentTarget.value; setComments(d => ({ ...d, [card.id]: value })); }} /><button className="duo-action" disabled={busy || !comments[card.id]?.trim()}>{ru ? "Добавить" : "Add"}</button></form>
+          <form className="duo-input" onSubmit={e => { e.preventDefault(); void run({ action: "comment", cardId: card.id, text: comments[card.id] ?? "" }).then(ok => { if (ok) setComments(d => ({ ...d, [card.id]: "" })); }); }}><input aria-label={ru ? "Сообщение в чат терминала" : "Terminal chat message"} placeholder={ru ? "Сообщение в чат терминала…" : "Message…"} maxLength={1000} disabled={busy} value={comments[card.id] ?? ""} onChange={e => { const value = e.currentTarget.value; setComments(d => ({ ...d, [card.id]: value })); }} /><button className="duo-action" disabled={busy || !comments[card.id]?.trim()}>{ru ? "Отправить" : "Send"}</button></form>
         </article>)}</div>}
       </div>
       <footer className="duo-panel__footer">

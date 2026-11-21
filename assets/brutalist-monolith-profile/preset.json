@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "kind": "canvastty-appearance-preset",
+  "id": "brutalist-monolith-v1",
+  "name": "Brutalist Monolith",
+  "version": "1.0.0",
+  "terminals": {
+    "file": "../live-terminal-presets/brutalist-monolith.zip",
+    "id": "pixel:92020000-0000-4000-8000-000000000008",
+    "sha256": "24cd36b192b47fa05f7c468ac83b49e9825861f23712a1e9863ac6887269843c"
+  },
+  "apertures": {
+    "minimal": {
+      "left": 5.859,
+      "top": 17.188,
+      "right": 5.729,
+      "bottom": 11.816
+    },
+    "detailed": {
+      "left": 12.37,
+      "top": 22.461,
+      "right": 12.109,
+      "bottom": 20.508
+    },
+    "master": {
+      "left": 18.815,
+      "top": 22.949,
+      "right": 18.294,
+      "bottom": 27.246
+    }
+  },
+  "wallpapers": {
+    "canvas": {
+      "file": "brutalist-monolith-canvas.ctwallpaper",
+      "sha256": "c9b11355e20c604167106ad9852c90eb5e7262d4552ad5a6d237bc1276d74f61"
+    },
+    "avatar": {
+      "file": "brutalist-monolith-avatar.ctwallpaper",
+      "sha256": "ef3b9159619c58288bb798a441dcd23e6b34b4a82457315e054eae040490c6f9"
+    },
+    "clock": {
+      "file": "brutalist-monolith-clock.ctwallpaper",
+      "sha256": "0a7ece6c1703a730e3377cdca3c58671a80b26d1662d9a34f0dc0801da986a05"
+    }
+  },
+  "settings": {
+    "palette": "night",
+    "appSkin": "midnight",
+    "canvasColor": "night",
+    "pattern": "none",
+    "canvasBackgroundFit": "cover",
+    "canvasBackgroundPaused": false,
+    "terminalBackground": "none",
+    "terminalSkinDetail": "detailed",
+    "homeClockFont": "mono",
+    "homeAccentPreset": "custom",
+    "homeAccentColors": {
+      "clock": "#b1bac4",
+      "launcher": "#505a66",
+      "browser": "#f3cc77",
+      "settings": "#b1bac4",
+      "media": "#505a66"
+    }
+  }
+}

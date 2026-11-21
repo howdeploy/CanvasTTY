@@ -32,6 +32,7 @@ import type {
   PixelSkinZipInstallRequest,
   PixelSkinSlot,
   PixelTerminalBorderSkinId,
+  AuthorThemeWallpaperSlot,
   RemarkDraft,
   RemarkPatch,
   UpdateStatus,
@@ -138,6 +139,11 @@ const api: CanvasTTYApi = {
     get: () => invoke(IPC.settingsGet),
     update: (patch: Partial<AppSettings>) => invoke(IPC.settingsUpdate, patch),
     onChanged: (listener: (settings: AppSettings) => void) => subscribe(IPC.settingsChanged, listener)
+  },
+  authorThemes: {
+    list: () => invoke(IPC.authorThemesList),
+    preview: (id: string, slot: AuthorThemeWallpaperSlot) => invoke(IPC.authorThemesPreview, id, slot),
+    apply: (id: string) => invoke(IPC.authorThemesApply, id)
   },
   skins: {
     list: () => invoke(IPC.terminalBorderSkinsList),

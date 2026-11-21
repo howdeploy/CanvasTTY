@@ -1,4 +1,5 @@
 import React from 'react';
+import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Canvas2DSkinView } from '../../../src/renderer/src/features/skins/Canvas2DSkinView';
 import { SkinMediaView } from '../../../src/renderer/src/features/skins/SkinMediaView';
@@ -8,6 +9,7 @@ import { inspectSkinMedia, SKIN_MEDIA_MIME } from '../../../src/shared/skinMedia
 const bridge = (window as any).presetFixture;
 window.canvasTTY = { pixelSkins: bridge, window: (window as any).fixtureWindowState } as any;
 const packs = await bridge.list();
+let visiblePack = packs[0];
 const root = createRoot(document.getElementById('root')!);
 let detail: any = 'detailed', status: any = 'working', paused = false, offscreen = false;
 let comparison = false;
@@ -20,9 +22,9 @@ function render() {
   root.render(<main className={comparison ? 'comparison' : undefined} style={{ transform: offscreen ? 'translateY(2000px)' : undefined }}>
     <h1>CanvasTTY 2.0 <small>Live terminal presets</small></h1>
     <p>{detail} · {status} · decoded live media · isolated renderer check</p>
-    {packs.flatMap((pack: any) => comparison
-      ? ['minimal','detailed','master'].flatMap(detail => ['idle','working','done'].map(status => ({pack, detail, status})))
-      : [{pack, detail, status}]).map(({pack, detail, status}: any, index: number) => { const aperture = pack.apertures[detail]; return <article key={`${pack.id}/${detail}/${status}`}>
+    {(comparison
+      ? ['minimal','detailed','master'].flatMap(detail => ['idle','working','done'].map(status => ({pack: visiblePack, detail, status})))
+      : [{pack: visiblePack, detail, status}]).map(({pack, detail, status}: any, index: number) => { const aperture = pack.apertures[detail]; return <article key={`${pack.id}/${detail}/${status}`}>
       <h2>{pack.name} · {detail} · {status.toUpperCase()}</h2>
       <div id={String(index + 1)} className="terminal-card" data-pixel-skin="true" data-border-skin={pack.id}>
         <div className="wallpaper"><SkinMediaView src={urls.get(pack.id)!} media={pack.media.background} paused={paused}/></div>
@@ -34,7 +36,8 @@ function render() {
 }
 render();
 Object.assign(window, { presetProbe: {
-  set(next: any) { detail = next.detail ?? detail; status = next.status ?? status; paused = next.paused ?? paused; offscreen = next.offscreen ?? offscreen; comparison = next.comparison ?? comparison; render(); },
+  packIds() { return packs.map((pack: { id: string }) => pack.id); },
+  set(next: any) { visiblePack = packs.find((pack: { id: string }) => pack.id === next.packId) ?? visiblePack; detail = next.detail ?? detail; status = next.status ?? status; paused = next.paused ?? paused; offscreen = next.offscreen ?? offscreen; comparison = next.comparison ?? comparison; flushSync(render); },
   async verifyApertures() {
     let decoded = 0;
     for (const pack of packs) for (const detail of ['minimal','detailed','master']) for (const state of ['idle','working','completed']) {

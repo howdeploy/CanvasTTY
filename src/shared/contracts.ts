@@ -491,7 +491,16 @@ export interface CameraState extends Point {
   zoom: number;
 }
 
+export interface AuthorThemeSummary {
+  id: string;
+  name: string;
+  skin: PixelTerminalBorderSkinId;
+}
+
+export type AuthorThemeWallpaperSlot = "canvas" | "avatar" | "clock";
+
 export interface AppSettings {
+  appearanceFont?: "default" | "mono" | "serif";
   locale: LocaleId;
   sessionRestoreMode: SessionRestoreMode;
   persistCanvasRegions: boolean;
@@ -1988,6 +1997,11 @@ export interface CanvasTTYApi {
     update(patch: Partial<AppSettings>): Promise<AppSettings>;
     onChanged(listener: (settings: AppSettings) => void): () => void;
   };
+  authorThemes: {
+    list(): Promise<AuthorThemeSummary[]>;
+    preview(id: string, slot: AuthorThemeWallpaperSlot): Promise<Uint8Array>;
+    apply(id: string): Promise<AppSettings>;
+  };
   skins: {
     list(): Promise<TerminalBorderSkinListItem[]>;
     get(id: CustomTerminalBorderSkinId): Promise<TerminalBorderSkinReadResult>;
@@ -2236,6 +2250,9 @@ export const IPC = {
   clipboardWrite: "clipboard:write",
   externalOpenUrl: "external:open-url",
   terminalSetVisible: "terminal:set-visible",
+  authorThemesList: "author-themes:list",
+  authorThemesPreview: "author-themes:preview",
+  authorThemesApply: "author-themes:apply",
   settingsGet: "settings:get",
   settingsUpdate: "settings:update",
   settingsChanged: "settings:changed",

@@ -25,6 +25,131 @@
           "bottom": 15.5
         }
       }
+    },
+    {
+      "id": "pixel:92020000-0000-4000-8000-000000000005",
+      "name": "Kisa’s Theme",
+      "archive": "kisa-nocturne.zip",
+      "apertures": {
+        "minimal": {
+          "left": 4,
+          "right": 4,
+          "top": 12,
+          "bottom": 4
+        },
+        "detailed": {
+          "left": 4,
+          "right": 4,
+          "top": 12,
+          "bottom": 4
+        },
+        "master": {
+          "left": 4,
+          "right": 4,
+          "top": 12,
+          "bottom": 4
+        }
+      }
+    },
+    {
+      "id": "pixel:92020000-0000-4000-8000-000000000006",
+      "name": "Teo’s Theme",
+      "archive": "teo-kurohane.zip",
+      "apertures": {
+        "minimal": {
+          "left": 10,
+          "right": 10,
+          "top": 20,
+          "bottom": 15.5
+        },
+        "detailed": {
+          "left": 10,
+          "right": 10,
+          "top": 20,
+          "bottom": 15.5
+        },
+        "master": {
+          "left": 10,
+          "right": 10,
+          "top": 20,
+          "bottom": 15.5
+        }
+      }
+    },
+    {
+      "id": "pixel:92020000-0000-4000-8000-000000000007",
+      "name": "Steampunk Airship",
+      "archive": "steampunk-airship.zip",
+      "apertures": {
+        "minimal": {
+          "left": 5.99,
+          "top": 25.781,
+          "right": 5.99,
+          "bottom": 9.766
+        },
+        "detailed": {
+          "left": 12.109,
+          "top": 27.148,
+          "right": 13.867,
+          "bottom": 20.703
+        },
+        "master": {
+          "left": 14.648,
+          "top": 27.148,
+          "right": 13.867,
+          "bottom": 22.754
+        }
+      }
+    },
+    {
+      "id": "pixel:92020000-0000-4000-8000-000000000008",
+      "name": "Brutalist Monolith",
+      "archive": "brutalist-monolith.zip",
+      "apertures": {
+        "minimal": {
+          "left": 5.859,
+          "top": 17.188,
+          "right": 5.729,
+          "bottom": 11.816
+        },
+        "detailed": {
+          "left": 12.37,
+          "top": 22.461,
+          "right": 12.109,
+          "bottom": 20.508
+        },
+        "master": {
+          "left": 18.815,
+          "top": 22.949,
+          "right": 18.294,
+          "bottom": 27.246
+        }
+      }
+    },
+    {
+      "id": "pixel:92020000-0000-4000-8000-000000000009",
+      "name": "Cyberpunk Noodle Bar",
+      "archive": "cyberpunk-noodle-bar.zip",
+      "apertures": {
+        "minimal": {
+          "left": 11.914,
+          "top": 15.137,
+          "right": 8.203,
+          "bottom": 7.812
+        },
+        "detailed": {
+          "left": 15.625,
+          "top": 21.875,
+          "right": 16.016,
+          "bottom": 23.633
+        },
+        "master": {
+          "left": 20.182,
+          "top": 22.363,
+          "right": 20.117,
+          "bottom": 22.266
+        }
+      }
     }
   ],
   "retiredIds": [

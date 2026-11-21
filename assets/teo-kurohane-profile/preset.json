@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "kind": "canvastty-appearance-preset",
+  "id": "teo-kurohane-v1",
+  "name": "Teo’s Theme",
+  "version": "1.0.0-preview.6",
+  "requires": "CanvasTTY 2.0 Live Engine",
+  "terminals": {
+    "file": "../live-terminal-presets/teo-kurohane.zip",
+    "sha256": "654fa1d99466a9125dfec5f1ffcfdc94b86e34dd24215fa4ea39259fb027e07b",
+    "id": "pixel:92020000-0000-4000-8000-000000000006"
+  },
+  "apertures": {
+    "minimal": {
+      "left": 10,
+      "right": 10,
+      "top": 20,
+      "bottom": 15.5
+    },
+    "detailed": {
+      "left": 10,
+      "right": 10,
+      "top": 20,
+      "bottom": 15.5
+    },
+    "master": {
+      "left": 10,
+      "right": 10,
+      "top": 20,
+      "bottom": 15.5
+    }
+  },
+  "wallpapers": {
+    "canvas": {
+      "file": "Teo-Kurohane-canvas.ctwallpaper",
+      "sha256": "9597c4b45c3ed0684fd5fdd3f0a04e81e6690db4fd6d9ed04582a71fb1750ab0"
+    },
+    "avatar": {
+      "file": "Teo-Kurohane-avatar.ctwallpaper",
+      "sha256": "885388b4ce9315d3e300cbbc759d523359cec1daba9227dd65091d1d9f836819"
+    },
+    "clock": {
+      "file": "Teo-Kurohane-clock.ctwallpaper",
+      "sha256": "2bafd414f2ca5cedb00a58b96858c1cad0e27953e1fc84a75e14a5995b1a04f1"
+    }
+  },
+  "settings": {
+    "palette": "night",
+    "appSkin": "midnight",
+    "canvasColor": "night",
+    "pattern": "none",
+    "canvasBackgroundFit": "cover",
+    "canvasBackgroundPaused": false,
+    "terminalBackground": "none",
+    "terminalSkinDetail": "detailed",
+    "homeClockFont": "serif",
+    "homeAccentPreset": "custom",
+    "homeAccentColors": {
+      "clock": "#e6e6e6",
+      "launcher": "#7b0d1d",
+      "browser": "#b2394d",
+      "settings": "#b8a9ad",
+      "media": "#d4cbd0"
+    }
+  }
+}

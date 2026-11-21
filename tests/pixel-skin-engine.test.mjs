@@ -171,7 +171,7 @@ test("master terminal openings keep output within the themed frame", async () =>
   assert.match(css, /\.terminal-card\[data-pixel-skin="true"\]\s*\{[^}]*outline:\s*none;/s);
   assert.match(css, /\.terminal-card\[data-pixel-skin="true"\] \.terminal-card__summary\s*\{[^}]*inset:\s*var\(--pixel-skin-top-inset\)/s);
   assert.match(card, /skinDetailLevel\(skinDetail, forceMasterDetail \|\| session\.role === "orchestrator"\)/);
-  assert.match(card, /pixelSkinSurfaceBounds\(pixelSkinTheme, pixelDetail, size\.width, size\.height, 26,\s*pixelPack\?\.apertures\[pixelDetail\] \?\? pixelPack\?\.aperture\)/);
+  assert.match(card, /pixelSkinSurfaceBounds\(pixelSkinTheme, pixelDetail, skinSize\.width, skinSize\.height, 26,\s*pixelPack\?\.apertures\[pixelDetail\] \?\? pixelPack\?\.aperture\)/);
   assert.doesNotMatch(card, /pixelDetailRef|skinDetailLevel\([^)]*zoom|pixelDetail === "overview"/);
   // Summary mode changes at the threshold; continuous artwork scaling stays in CSS.
   assert.match(card, /const summaryMode = useCameraSelector\(camera, \(current\) => current\.zoom < SUMMARY_ZOOM\);/);

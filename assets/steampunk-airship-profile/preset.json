@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "kind": "canvastty-appearance-preset",
+  "id": "steampunk-airship-v1",
+  "name": "Steampunk Airship",
+  "version": "1.0.0",
+  "terminals": {
+    "file": "../live-terminal-presets/steampunk-airship.zip",
+    "id": "pixel:92020000-0000-4000-8000-000000000007",
+    "sha256": "0adbd70cf2bace1cce8fa6e04b569d0cbd0819dbd11fa7a72957dceecc884cc5"
+  },
+  "apertures": {
+    "minimal": {
+      "left": 5.99,
+      "top": 25.781,
+      "right": 5.99,
+      "bottom": 9.766
+    },
+    "detailed": {
+      "left": 12.109,
+      "top": 27.148,
+      "right": 13.867,
+      "bottom": 20.703
+    },
+    "master": {
+      "left": 14.648,
+      "top": 27.148,
+      "right": 13.867,
+      "bottom": 22.754
+    }
+  },
+  "wallpapers": {
+    "canvas": {
+      "file": "steampunk-airship-canvas.ctwallpaper",
+      "sha256": "af0cd6d1f729eced24f3deb387cabf355c55bfe5d26cc7ce5b6a5d2b97012fb9"
+    },
+    "avatar": {
+      "file": "steampunk-airship-avatar.ctwallpaper",
+      "sha256": "a71e285928798728dd4d15b24cf80c4bb60789001681fba20c1ad931fb604276"
+    },
+    "clock": {
+      "file": "steampunk-airship-clock.ctwallpaper",
+      "sha256": "5193fd72da2d94a1de4ec356a44034fec26fa708fa0ebb4558582a86688102a3"
+    }
+  },
+  "settings": {
+    "palette": "night",
+    "appSkin": "midnight",
+    "canvasColor": "night",
+    "pattern": "none",
+    "canvasBackgroundFit": "cover",
+    "canvasBackgroundPaused": false,
+    "terminalBackground": "none",
+    "terminalSkinDetail": "detailed",
+    "homeClockFont": "serif",
+    "homeAccentPreset": "custom",
+    "homeAccentColors": {
+      "clock": "#e8b975",
+      "launcher": "#795338",
+      "browser": "#8be0d2",
+      "settings": "#e8b975",
+      "media": "#795338"
+    }
+  }
+}

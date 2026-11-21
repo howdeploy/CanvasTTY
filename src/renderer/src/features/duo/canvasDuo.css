@@ -29,7 +29,7 @@
 
 .duo-backdrop { padding: clamp(10px, 3vw, 24px); }
 .duo-panel {
-  width: min(63em, 100%);
+  width: min(52em, 100%);
   height: auto;
   max-height: 100%;
   display: flex;

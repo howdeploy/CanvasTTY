@@ -928,6 +928,8 @@ async function initializeServices(ipc: IpcRegistrar): Promise<void> {
     getMainWindow: () => mainWindow
   });
   registerIpc(ipc, {
+    pixelSkinPacks,
+    wallpapers,
     duoDiagnostic:event=>diagnostics.record(event.code ? "warn":"info","duo",event.stage,event),
     materials:materialService,
     mascots: mascotManager,

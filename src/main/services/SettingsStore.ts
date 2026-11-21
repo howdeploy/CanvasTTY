@@ -723,6 +723,7 @@ export function normalizeSettings(
     homeClockDesign: source.homeClockDesign === "new" ? "new" : "classic",
     duoCursorDesign: normalizeDuoCursorDesign(source.duoCursorDesign),
     duoCursorNickname: normalizeDuoCursorNickname(source.duoCursorNickname),
+    appearanceFont: source.appearanceFont === "mono" || source.appearanceFont === "serif" ? source.appearanceFont : "default",
     homeClockFont: ["mono", "sans", "serif", "pixel"].includes(source.homeClockFont as string) ? source.homeClockFont as AppSettings["homeClockFont"] : "mono",
     canvasBackgroundPaused: typeof source.canvasBackgroundPaused === "boolean" ? source.canvasBackgroundPaused : fallback.canvasBackgroundPaused ?? false,
     canvasBackgroundFit: source.canvasBackgroundFit === "cover" || source.canvasBackgroundFit === "contain" ? source.canvasBackgroundFit : fallback.canvasBackgroundFit ?? "contain",

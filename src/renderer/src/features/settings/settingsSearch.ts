@@ -100,7 +100,7 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   },
   {
     "section": "appearance",
-    "label": "terminalBorderSkin"
+    "label": "terminalBordersAndThemes"
   },
   {
     "section": "appearance",

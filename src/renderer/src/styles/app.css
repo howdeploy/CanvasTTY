@@ -1829,3 +1829,7 @@ button { border: 0; }
 .file-browser-card__tree-row { content-visibility: auto; contain-intrinsic-size: auto 26px; }
 
 .file-browser-card__actions .file-browser-card__place { width: auto; padding: 6px 10px; }
+
+.theme-preview { grid-column: 1 / -1; min-width: 0; display: grid; gap: .65em; margin-top: .85em; }
+.theme-preview__wallpaper { display: grid; place-items: center; background: var(--surface-soft); border-radius: 8px; overflow: hidden; }
+.theme-preview__wallpaper > :is(img, canvas, video) { display: block; max-width: 100%; max-height: 240px; object-fit: contain; image-rendering: pixelated; }

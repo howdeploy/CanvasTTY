@@ -224,7 +224,7 @@ test("skin changes retain decoded artwork while loading, ignore stale loads and 
     },
     useEffect: effect, useLayoutEffect: effect,
     isPixelSkinPackId: () => true, isPixelSkinThemeId: () => false,
-    usePixelSkinPackAssets: () => ({ minimal_idle: "idle", minimal_working: "working", minimal_completed: "completed" }),
+    usePixelSkinPackAsset: (_id, slot) => ({ url: slot.slice("minimal_".length) }),
     pixelSkinStateForSession, pixelSkinSurfaceBounds,
     acquireSkinImage(url) {
       const load = { url, released: false };

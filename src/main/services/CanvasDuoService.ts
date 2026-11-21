@@ -13,13 +13,15 @@ import type { DuoDocumentPort, DuoDocumentOp } from '../../shared/duoDocument';
 import { DUO_CURSOR_DESIGNS, DUO_CURSOR_NICKNAME_MAX_LENGTH, mergeDuoSnapshot, normalizeDuoCursorDesign, normalizeDuoCursorNickname } from '../../shared/canvasDuo.ts';
 import { DUO_READ_CHANNELS } from '../../shared/duoResources.ts';
 
+type TerminalMetadata = import("../../shared/contracts").SessionMetadata;
 interface TerminalPort extends ScreenPort {
   create?(request: import("../../shared/contracts").CreateSessionRequest): { id: string };
   setBounds?(id: string, bounds: import("../../shared/contracts").SessionBounds): void;
   rename?(id: string, title: string): unknown;
   dispose?(id: string): void;
   resize?(id: string, cols: number, rows: number): void;
-  listMetadata(): Array<{ id: string; title: string; provider: string; exitCode: number | null; position: { x: number; y: number }; size: { width: number; height: number } }>;
+  listMetadata(): Array<Pick<TerminalMetadata, "id" | "title" | "provider" | "exitCode" | "position" | "size"> &
+    Partial<Pick<TerminalMetadata, "role" | "status" | "turnCompleted" | "revision" | "nativeEditor">>>;
   inputChecked(id: string, text: string, origin: "person"): boolean;
 }
 interface LanInvite { version: 1; host: string; port: number; key: string }
@@ -200,7 +202,7 @@ export class CanvasDuoService {
   private hosting(): boolean { return Boolean(this.server || this.peerHost); }
 
   private available(): DuoCard[] {
-    return this.terminals.listMetadata().map(s => ({ id: s.id, title: s.title, focusedBy: [...this.focus].filter(([, id]) => id === s.id).map(([role]) => this.identity(role).nickname ?? role), participant: this.terminalAuthors.get(s.id) ?? 'host', provider: s.provider, running: s.exitCode === null, control: this.documentSync ? this.manage : this.controlled.has(s.id), position: s.position, size: s.size, revision: (s as any).revision, nativeEditor: (s as any).nativeEditor }));
+    return this.terminals.listMetadata().map(s => ({ id: s.id, title: s.title, focusedBy: [...this.focus].filter(([, id]) => id === s.id).map(([role]) => this.identity(role).nickname ?? role), participant: this.terminalAuthors.get(s.id) ?? 'host', provider: s.provider, role: s.role, status: s.status, turnCompleted: s.turnCompleted, running: s.exitCode === null, control: this.documentSync ? this.manage : this.controlled.has(s.id), position: s.position, size: s.size, revision: s.revision, nativeEditor: s.nativeEditor }));
   }
   private expirePeer(): void {
     if (!this.connectedPeer || Date.now() - this.peerLastSeen <= PEER_LEASE_MS) return;

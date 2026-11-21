@@ -23,6 +23,9 @@ export interface DuoCard {
   title: string;
   provider: string;
   running: boolean;
+  role?: SessionMetadata["role"];
+  status?: SessionMetadata["status"];
+  turnCompleted?: boolean;
   control: boolean;
   text?: string;
   position: { x: number; y: number };

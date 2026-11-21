@@ -59,7 +59,7 @@ import { TerminalCard } from "../terminal/TerminalCard";
 import { PersistentTerminalCardHost } from "../terminal/PersistentTerminalCardHost";
 import { shouldTogglePixelSkinMasterView } from "../terminal/terminalShortcuts";
 import { isPixelSkinThemeId } from "../skins/skinCatalog";
-import { isPixelSkinPackId, usePixelSkinPackAssets } from "../skins/SkinAssets";
+import { isPixelSkinPackId, usePixelSkinPackAsset } from "../skins/SkinAssets";
 import { CanvasMinimap } from "./CanvasMinimap";
 import { AgentChatHistoryHud } from "./AgentChatHistoryHud";
 import { CanvasRegionCard } from "./CanvasRegionCard";
@@ -1106,11 +1106,11 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps): React.JSX.Element 
 
   const themeBackground = (BUNDLED_CANVAS_BACKGROUND_IDS as readonly string[]).includes(settings.canvasBackground)
     ? settings.canvasBackground : undefined;
-  const backgroundPack = usePixelSkinPackAssets(
-    isPixelSkinPackId(settings.canvasBackground) ? settings.canvasBackground : null
+  const backgroundPack = usePixelSkinPackAsset(
+    isPixelSkinPackId(settings.canvasBackground) ? settings.canvasBackground : null, "background"
   );
-  const packBackground = backgroundPack?.background;
-  const backgroundMedia = backgroundPack?.media.background;
+  const packBackground = backgroundPack?.url;
+  const backgroundMedia = backgroundPack?.media;
 
   const getTerminalBackground = (sessionId: string) => {
     const o = settings.terminalBackgroundOverrides[sessionId];

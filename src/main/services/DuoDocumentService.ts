@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { IPC, type AppSettings, type FileRootDescriptor, type FileRootReference } from '../../shared/contracts';
 import { applyDuoSettingsOps, pickDuoSettings, type DuoDocument, type DuoDocumentOp, type DuoDocumentPort } from '../../shared/duoDocument';
-import { DUO_FILE_READ_CHANNELS, DUO_READ_CHANNELS, DUO_WRITE_CHANNELS } from '../../shared/duoResources';
+import { DUO_RESOURCE_TRANSFER_LIMIT, DUO_FILE_READ_CHANNELS, DUO_READ_CHANNELS, DUO_WRITE_CHANNELS } from '../../shared/duoResources';
 import type { DuoFileTransferService } from './DuoFileTransferService';
 
 const CHUNK=128_000, MAX_RESULT=32*1024*1024;
@@ -72,7 +72,9 @@ export class DuoDocumentService implements DuoDocumentPort {
       if(!c||!Number.isSafeInteger(offset)||offset<0||offset>=c.text.length)throw Error('Canvas resource expired.');
       if(!c.allowed())throw Error('Shared resource access was revoked.');
       c.at = Date.now();
-      return {chunk:id,total:c.text.length,offset,data:c.text.slice(offset,offset+CHUNK)};
+      const data = c.text.slice(offset, offset + CHUNK);
+      if (offset + data.length === c.text.length) this.chunks.delete(id);
+      return {chunk:id,total:c.text.length,offset,data};
     }
     const reference = args[0] as FileRootReference | null;
     const register = channel === IPC.filesRegisterRoot;
@@ -150,7 +152,7 @@ export class DuoDocumentService implements DuoDocumentPort {
     }
     const text=JSON.stringify(result??null);if(text.length>MAX_RESULT)throw Error('Canvas resource is too large.');
     if(text.length<=CHUNK)return {value:result??null};
-    if(this.chunks.size>=8)this.chunks.delete(this.chunks.keys().next().value!);
+    if (this.chunks.size >= DUO_RESOURCE_TRANSFER_LIMIT) throw Error("Too many active shared resource transfers.");
     const id=randomUUID();this.chunks.set(id,{text,at:Date.now(),allowed});
     return {chunk:id,total:text.length,offset:0,data:text.slice(0,CHUNK)};
   }

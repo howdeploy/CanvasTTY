@@ -18,3 +18,6 @@ export const DUO_WRITE_CHANNELS = new Set<string>([
   IPC.pluginsMediaScanLibrary,IPC.pluginsPlaylistsWrite,IPC.pluginsFileDropText
 ]);
 export const DUO_LOCAL_BROWSER_SENDS = new Set<string>([IPC.browserSetViewport,IPC.browserFocus,IPC.browserSetInputFocused]);
+
+/** Maximum concurrent chunked results retained for a connected guest. */
+export const DUO_RESOURCE_TRANSFER_LIMIT = 8;

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {buildSync} from 'esbuild';
 import {CanvasDuoService,parseDuoInvite} from '../src/main/services/CanvasDuoService.ts';
-import {duoWorkspace,duoTerminalTransport} from '../src/renderer/src/features/duo/duoWorkspaceRuntime.ts';
+import {duoWorkspace,duoTerminalTransport,duoSession} from '../src/renderer/src/features/duo/duoWorkspaceRuntime.ts';
 import {mergeDuoSnapshot} from '../src/shared/canvasDuo.ts';
 const code=buildSync({stdin:{contents:`export * from './src/shared/duoDocument.ts';export * from './src/main/services/DuoDocumentService.ts';export * from './src/preload/duoDocumentRouter.ts';export {IPC} from './src/shared/contracts.ts';`,resolveDir:process.cwd()},bundle:true,platform:'node',format:'esm',write:false,logLevel:'silent'}).outputFiles[0].text;
 const {pickDuoSettings,duoSettingsOps,applyDuoSettingsOps,DuoDocumentService,createDuoDocumentRouter,IPC}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
@@ -206,4 +206,27 @@ test('shared wallpaper bytes survive JSON and multiple resource pages',async () 
  const result=await router.invoke(IPC.wallpapersRead,'shared');
  assert.deepEqual(result.bytes,bytes);
  assert.equal(result.summary.name,'clock');
+});
+
+test('parallel theme assets finish without evicting a still-visible frame', async () => {
+  const bytes = new Uint8Array(150000).fill(0x4b);
+  const doc = new DuoDocumentService({ get: initial }, async () => bytes);
+  const state = { role: 'guest', workspaceId: 'skin-test', documentSync: true };
+  const router = createDuoDocumentRouter(async (_channel, request) => {
+    if (!request) return initial();
+    await new Promise(resolve => setImmediate(resolve));
+    return {state, snapshot:{result:await doc.resource(request.channel, request.args, () => true, true)}};
+  }, () => {});
+  await router.accept({state, snapshot:{document:{settings:pickDuoSettings(initial()),materials,plugins:[],browser}}});
+  const assets = await Promise.all(Array.from({length:12}, () => router.resource(IPC.pixelSkinsReadAsset, ['id','minimal_idle'])));
+  for (const asset of assets) assert.deepEqual(asset, bytes);
+});
+
+test('guest updates skin state and orchestrator detail even when terminal output is unchanged', () => {
+  const card = {id:'skin-state', running:true, title:'Build', provider:'terminal'};
+  assert.equal(duoSession(card).status, 'idle');
+  const working = duoSession({...card, role:'orchestrator', status:'working'});
+  assert.equal(working.role, 'orchestrator');
+  assert.equal(working.status, 'working');
+  assert.equal(duoSession({...card, status:'idle', turnCompleted:true}).turnCompleted, true);
 });

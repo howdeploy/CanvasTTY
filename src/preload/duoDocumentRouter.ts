@@ -1,7 +1,7 @@
 import { IPC, type AppSettings, type PixelSkinPackSummary } from '../shared/contracts';
 import type { DuoReply } from '../shared/canvasDuo';
 import { DUO_SETTINGS_KEYS, duoSettingsOps, type DuoDocument, type DuoDocumentOp } from '../shared/duoDocument';
-import { DUO_READ_CHANNELS, DUO_WRITE_CHANNELS, DUO_LOCAL_BROWSER_SENDS } from '../shared/duoResources';
+import { DUO_RESOURCE_TRANSFER_LIMIT, DUO_READ_CHANNELS, DUO_WRITE_CHANNELS, DUO_LOCAL_BROWSER_SENDS } from '../shared/duoResources';
 
 /** Routes only explicit Canvas capabilities. The global API and the local profile are never replaced. */
 export function createDuoDocumentRouter(raw:(channel:string,...args:any[])=>Promise<any>,emit:(channel:string,payload:any)=>void){
@@ -49,7 +49,7 @@ export function createDuoDocumentRouter(raw:(channel:string,...args:any[])=>Prom
     const task=acceptance.catch(()=>undefined).then(()=>acceptNow(reply));acceptance=task;return task;
   };
   const command=async(command:unknown):Promise<DuoReply>=>accept(await raw(IPC.duoCommand,command));
-  const resource=async(channel:string,args:unknown[]):Promise<any>=>{
+  const readResource=async(channel:string,args:unknown[]):Promise<any>=>{
     const active=workspace;
     let reply=await command({action:'resource',channel,args});let part=reply.snapshot?.result as any;
     if(part?.chunk){
@@ -63,6 +63,7 @@ export function createDuoDocumentRouter(raw:(channel:string,...args:any[])=>Prom
       }
       part = { value: JSON.parse(text) };
     }
+    if (workspace !== active) throw Error("Duo workspace changed.");
     const value = part?.value;
     if (value && typeof value.base64 === 'string' &&
         [IPC.wallpapersRead, IPC.pixelSkinsReadAsset, IPC.authorThemesPreview].some(key => key === channel)) {
@@ -70,6 +71,22 @@ export function createDuoDocumentRouter(raw:(channel:string,...args:any[])=>Prom
       return channel === IPC.wallpapersRead ? { summary: value.summary, bytes } : bytes;
     }
     return value;
+  };
+  // Hold a slot until the final chunk, including the gaps between requests.
+  const waiting: Array<() => void> = [];
+  let activeTransfers = 0;
+  const resource = async (channel: string, args: unknown[]): Promise<any> => {
+    const room = workspace;
+    if (activeTransfers < DUO_RESOURCE_TRANSFER_LIMIT) activeTransfers++;
+    else await new Promise<void>(resolve => waiting.push(resolve));
+    try {
+      if (workspace !== room) throw Error("Duo workspace changed.");
+      return await readResource(channel, args);
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else activeTransfers--;
+    }
   };
   const invoke=async(channel:string,...args:any[]):Promise<any>=>{
     if(channel===IPC.duoCommand)return command(args[0]);
